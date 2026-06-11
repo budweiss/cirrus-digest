@@ -121,6 +121,7 @@ def cmd_help():
 /sources — list all monitored sources
 /latest — show latest daily digest summary
 /actions — show latest action items
+/gitpull - pull latest updates from GitHub
 /approve — review and approve pending recommendations
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory
@@ -225,6 +226,24 @@ def cmd_actions():
     if len(content) > 3000:
         preview += "\n\n_...truncated. Check your email for the full list._"
     return f"📋 *{latest.name}*\n\n{preview}"
+
+def cmd_gitpull():
+    try:
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout.strip() or result.stderr.strip()
+        # Delay restart so response can be sent first
+        subprocess.Popen(
+            ["bash", "-c", "sleep 5 && launchctl stop com.cirrus.bot && sleep 2 && launchctl start com.cirrus.bot"]
+        )
+        return f"✅ Git pull complete:\n{output}\n\nBot restarting in 5 seconds..."
+    except Exception as e:
+        return f"❌ Git pull failed: {e}"
 
 def cmd_run_daily(chat_id):
     send_message(chat_id, "⏳ Running daily digest now... This may take a few minutes.")
@@ -484,6 +503,8 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
+    elif cmd == "/gitpull":
+        return cmd_gitpull()
     elif cmd in ("approve", "reject") or text.lower() == "approve all":
         return handle_approval_reply(text, chat_id)
     else:
