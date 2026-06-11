@@ -1,0 +1,157 @@
+{
+  "email": {
+    "account": "weiss_buddy@yahoo.com",
+    "imap_server": "imap.mail.yahoo.com",
+    "imap_port": 993,
+    "senders": [
+      "Peter H. Diamandis",
+      "The Substack Post",
+      "Emerging AI",
+      "Artificial Corner",
+      "AI for Lifelong Learning"
+    ],
+    "keywords": [
+      "AI",
+      "artificial intelligence",
+      "machine learning",
+      "LLM",
+      "Ollama",
+      "Claude",
+      "GPT",
+      "Gemini",
+      "open source",
+      "model"
+    ],
+    "days_back": 7
+  },
+  "podcasts": [
+    {
+      "name": "Moonshots with Peter Diamandis",
+      "rss": "https://feeds.simplecast.com/Y7aITnhB"
+    },
+    {
+      "name": "AI News & Strategy Daily with Nate B. Jones",
+      "rss": "https://feeds.buzzsprout.com/2103333.rss"
+    },
+    {
+      "name": "All-In Podcast",
+      "rss": "https://feeds.megaphone.fm/all-in-with-chamath-jason-sacks-friedberg"
+    },
+    {
+      "name": "Lex Fridman Podcast",
+      "rss": "https://lexfridman.com/feed/podcast/"
+    },
+    {
+      "name": "Latent Space Podcast",
+      "rss": "https://feeds.transistor.fm/latent-space-the-ai-engineer-podcast"
+    },
+    {
+      "name": "Dwarkesh Podcast",
+      "rss": "https://feeds.transistor.fm/dwarkesh-podcast"
+    },
+    {
+      "name": "Hard Fork (NYT)",
+      "rss": "https://feeds.simplecast.com/l2i9YnTd"
+    }
+  ],
+  "web_sources": [
+    {
+      "name": "Phil | Rentier Digital",
+      "rss": "https://medium.com/feed/@rentierdigital",
+      "type": "medium"
+    },
+    {
+      "name": "Kusireddy",
+      "rss": "https://medium.com/feed/@kusireddy",
+      "type": "medium"
+    },
+    {
+      "name": "Steve Yegge",
+      "rss": "https://medium.com/feed/@steve-yegge",
+      "type": "medium"
+    },
+    {
+      "name": "Hakkache Mohamed",
+      "rss": "https://medium.com/feed/@hakkache.mohamed",
+      "type": "medium"
+    },
+    {
+      "name": "Medium Staff",
+      "rss": "https://medium.com/feed/@MediumStaff",
+      "type": "medium"
+    },
+    {
+      "name": "Peter Diamandis (Metatrends)",
+      "rss": "https://metatrends.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Artificial Corner",
+      "rss": "https://artificialcorner.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Emerging AI",
+      "rss": "https://emergingai.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "The Substack Post",
+      "rss": "https://post.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Chamath Palihapitiya",
+      "rss": "https://chamath.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "OpenClaw Unboxed",
+      "rss": "https://openclawunboxed.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "On Substack",
+      "rss": "https://on.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Not Boring by Packy McCormick",
+      "rss": "https://notboring.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Not Boring by Packy McCormick",
+      "rss": "https://notboring.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "The Batch by Andrew Ng",
+      "rss": "https://www.deeplearning.ai/the-batch/feed/",
+      "type": "substack"
+    },
+    {
+      "name": "Import AI by Jack Clark",
+      "rss": "https://importai.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Ahead of AI by Sebastian Raschka",
+      "rss": "https://magazine.sebastianraschka.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Latent Space Newsletter",
+      "rss": "https://www.latent.space/feed",
+      "type": "substack"
+    }
+  ],
+  "digest": {
+    "output_dir": "/Users/buddy/projects/cirrus-digest/digests",
+    "log_dir": "/Users/buddy/projects/cirrus-digest/logs",
+    "ollama_model": "qwen2.5:72b",
+    "ollama_host": "http://localhost:11434",
+    "max_article_length": 3000,
+    "max_episode_length": 2000
+  }
+}
