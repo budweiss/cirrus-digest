@@ -83,8 +83,7 @@ def send_message(chat_id, text):
         chunk = text[i:i+max_len]
         api_call("sendMessage", {
             "chat_id": chat_id,
-            "text": chunk,
-            "parse_mode": "Markdown"
+            "text": chunk
         })
         if len(text) > max_len:
             time.sleep(0.5)
@@ -225,7 +224,9 @@ def cmd_actions():
     preview = content[:3000]
     if len(content) > 3000:
         preview += "\n\n_...truncated. Check your email for the full list._"
-    return f"📋 *{latest.name}*\n\n{preview}"
+    import re
+    preview_clean = re.sub(r'\*+', '', preview)
+    return f"📋 {latest.name}\n\n{preview_clean}"
 
 def cmd_gitpull():
     try:
