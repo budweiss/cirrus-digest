@@ -70,7 +70,7 @@ def api_call(method, params=None):
     else:
         req = urllib.request.Request(url)
     try:
-        with urllib.request.urlopen(req, timeout=35) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except Exception as e:
         log(f"API error ({method}): {e}")
@@ -83,7 +83,8 @@ def send_message(chat_id, text):
         chunk = text[i:i+max_len]
         api_call("sendMessage", {
             "chat_id": chat_id,
-            "text": chunk
+            "text": chunk,
+            "parse_mode": "Markdown"
         })
         if len(text) > max_len:
             time.sleep(0.5)
@@ -120,7 +121,6 @@ def cmd_help():
 /sources — list all monitored sources
 /latest — show latest daily digest summary
 /actions — show latest action items
-/gitpull - pull latest updates from GitHub
 /approve — review and approve pending recommendations
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory
@@ -224,27 +224,7 @@ def cmd_actions():
     preview = content[:3000]
     if len(content) > 3000:
         preview += "\n\n_...truncated. Check your email for the full list._"
-    import re
-    preview_clean = re.sub(r'\*+', '', preview)
-    return f"📋 {latest.name}\n\n{preview_clean}"
-
-def cmd_gitpull():
-    try:
-        result = subprocess.run(
-            ["git", "pull"],
-            cwd=PROJECT_DIR,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        output = result.stdout.strip() or result.stderr.strip()
-        # Delay restart so response can be sent first
-        subprocess.Popen(
-            ["bash", "-c", "sleep 5 && launchctl stop com.cirrus.bot && sleep 2 && launchctl start com.cirrus.bot"]
-        )
-        return f"✅ Git pull complete:\n{output}\n\nBot restarting in 5 seconds..."
-    except Exception as e:
-        return f"❌ Git pull failed: {e}"
+    return f"📋 *{latest.name}*\n\n{preview}"
 
 def cmd_run_daily(chat_id):
     send_message(chat_id, "⏳ Running daily digest now... This may take a few minutes.")
@@ -313,6 +293,32 @@ def extract_recommendations(actions_file: Path) -> list:
                         "source_line": line[:120],
                         "status": "pending"
                     })
+
+    # Also pick up self-improvement style suggestions from the
+    # "## CIRRUS IMPROVEMENT NOTES" and "## RECOMMENDATIONS" sections.
+    # extract_actions.py reformats the digest's "→ CIRRUS NOTE:" lines into
+    # bullet points under these headings without the prefix, so the regex
+    # patterns above never match them — handle that here as CIRRUS_NOTE items.
+    current_section = None
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            current_section = stripped[3:].strip().upper()
+            continue
+        if current_section in ("CIRRUS IMPROVEMENT NOTES", "RECOMMENDATIONS") and stripped.startswith("- **"):
+            bullet_match = re.match(r"-\s*\*\*(.+?)\*\*", stripped)
+            if bullet_match:
+                detail = bullet_match.group(1).strip()[:150]
+                key = f"CIRRUS_NOTE:{detail}"
+                if key not in seen:
+                    seen.add(key)
+                    recommendations.append({
+                        "type": "CIRRUS_NOTE",
+                        "detail": detail,
+                        "source_line": stripped[:160],
+                        "status": "pending"
+                    })
+
     return recommendations
 
 def load_pending() -> list:
@@ -411,26 +417,33 @@ Answer:"""
 
 def cmd_approve(chat_id):
     """Scan latest action items and present pending recommendations."""
-    # Load existing pending
+    # Load existing pending (includes already-approved/rejected history)
     pending = load_pending()
 
-    # Scan latest action files if no pending items
-    if not pending:
-        for prefix in ["daily-actions", "weekly-actions"]:
-            latest = find_latest_action(prefix)
-            if latest:
-                new_items = extract_recommendations(latest)
-                pending.extend(new_items)
-
-    pending = [p for p in pending if p["status"] == "pending"]
-
-    if not pending:
-        return "✅ No pending recommendations to review."
+    # Always re-scan the latest action files for new recommendations and
+    # merge in anything not already tracked (deduped by type+detail).
+    # Previously this only ran when `pending` was completely empty, so once
+    # any item (even an old approved/rejected one) existed in the file, new
+    # recommendations from later digests were never picked up.
+    existing_keys = {f"{p['type']}:{p['detail']}" for p in pending}
+    for prefix in ["daily-actions", "weekly-actions"]:
+        latest = find_latest_action(prefix)
+        if latest:
+            for item in extract_recommendations(latest):
+                key = f"{item['type']}:{item['detail']}"
+                if key not in existing_keys:
+                    pending.append(item)
+                    existing_keys.add(key)
 
     save_pending(pending)
 
-    msg = f"📋 *{len(pending)} Pending Recommendations*\n\nReply with the number to approve, or `reject N` to reject:\n\n"
-    for i, item in enumerate(pending, 1):
+    active = [p for p in pending if p["status"] == "pending"]
+
+    if not active:
+        return "✅ No pending recommendations to review."
+
+    msg = f"📋 *{len(active)} Pending Recommendations*\n\nReply with the number to approve, or `reject N` to reject:\n\n"
+    for i, item in enumerate(active, 1):
         emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡", "CIRRUS_NOTE": "💡"}.get(item["type"], "•")
         msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n\n"
 
@@ -462,7 +475,7 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
         idx = int(match.group(2)) - 1
         if 0 <= idx < len(active):
             item = active[idx]
-            item["status"] = action + "d"
+            item["status"] = "approved" if action == "approve" else "rejected"
             save_pending(pending)
             if action == "approve":
                 return execute_action(item)
@@ -477,7 +490,7 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
 
 def handle_message(message, chat_id):
     text = message.get("text", "").strip()
-    cmd  = text.lower().split()[0].split("@")[0] if text else ""
+    cmd  = text.lower().split()[0] if text else ""
 
     if cmd == "/help":
         return cmd_help()
@@ -504,8 +517,6 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
-    elif cmd == "/gitpull":
-        return cmd_gitpull()
     elif cmd in ("approve", "reject") or text.lower() == "approve all":
         return handle_approval_reply(text, chat_id)
     else:
