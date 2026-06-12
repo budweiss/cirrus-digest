@@ -54,13 +54,13 @@ def clean_text(text, max_len=None):
         clean = clean[:max_len] + "..."
     return clean
 
-def ollama_summarize(prompt):
+def ollama_summarize(prompt, timeout=120):
     """Send a prompt to local Ollama and return the response."""
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
             json={"model": MODEL, "prompt": prompt, "stream": False},
-            timeout=120
+            timeout=timeout
         )
         resp.raise_for_status()
         return resp.json().get("response", "").strip()
@@ -280,9 +280,15 @@ Write a concise 3-5 sentence summary. If this topic was covered in past digests 
     return ollama_summarize(prompt)
 
 def generate_meta_recommendations(summaries):
-    """Ask the model to reflect on improvements to the digest process itself."""
-    combined = "\n\n".join(summaries[:5])  # use first 5 summaries
-    prompt = f"""You are CIRRUS, reviewing your own weekly AI digest process.
+    """Ask the model to reflect on improvements to the digest process itself.
+
+    Wrapped with a longer timeout (300s) since the 72b model can take a while
+    on this larger combined prompt, and with error handling so a failure here
+    never blocks the digest from being written or emailed.
+    """
+    try:
+        combined = "\n\n".join(summaries[:5])  # use first 5 summaries
+        prompt = f"""You are CIRRUS, reviewing your own weekly AI digest process.
 
 Based on these summaries from this week's digest:
 
@@ -292,7 +298,14 @@ Suggest 2-3 specific improvements to how CIRRUS monitors, fetches, or summarizes
 Consider: better sources, smarter filtering, new tools mentioned in the content, or process improvements.
 Be specific and actionable. Format as a numbered list."""
 
-    return ollama_summarize(prompt)
+        result = ollama_summarize(prompt, timeout=300)
+        if result.startswith("[Summarization error:"):
+            log(f"Self-improvement notes error: {result}")
+            return "*Self-improvement notes unavailable this week (Ollama error — see digest.log).*"
+        return result
+    except Exception as e:
+        log(f"Self-improvement notes failed: {e}")
+        return "*Self-improvement notes unavailable this week (error — see digest.log).*"
 
 # ── Digest Writer ─────────────────────────────────────────────────────────────
 
@@ -365,7 +378,11 @@ def main():
 
     # Meta self-improvement recommendations
     log("Generating CIRRUS self-improvement notes...")
-    meta = generate_meta_recommendations(summaries)
+    try:
+        meta = generate_meta_recommendations(summaries)
+    except Exception as e:
+        log(f"Self-improvement notes step crashed unexpectedly: {e}")
+        meta = "*Self-improvement notes unavailable this week (unexpected error — see digest.log).*"
 
     # Write digest
     digest_file = write_digest(all_items, summaries, meta)

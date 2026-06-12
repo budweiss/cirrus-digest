@@ -1,0 +1,94 @@
+[2026-05-31 07:00:02] === CIRRUS Weekly Digest Starting ===
+[2026-05-31 07:00:02] Connecting to Yahoo Mail...
+[2026-05-31 07:00:14]   Found: Welcome to Emerging AI | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:00:15]   Found: 24 AI Concepts You Must Learn in 2026 | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:00:22]   Found: AI Will Deliver Wisdom | From: "Peter H. Diamandis" <metatrends@substac
+[2026-05-31 07:00:24]   Found: What are YOU for? | From: AI for Lifelong Learning <aiforlifelongl
+[2026-05-31 07:00:40]   Found: HTML Is the New Output Layer for Claude Code | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:00:57]   Found: Purpose & Curiosity: Critical Mindsets for the Decade Ahead | From: "Peter H. Diamandis" <metatrends@substac
+[2026-05-31 07:00:58]   Found: How to Build Claude Plugins and Turn it into Small Business | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:01:00]   Found: How to Upgrade Your Summer Trip With AI | From: Artificial Corner <artificialcorner@subs
+[2026-05-31 07:01:32]   Found: Production-Ready AI Agents: How to Build and Deploy | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:01:56]   Found: Build Your Own GPT-Style Model From Scratch | From: Opinion AI from Emerging AI <emergingai@
+[2026-05-31 07:03:19] Email fetch error: unknown encoding: unknown-8bit
+[2026-05-31 07:03:19] Fetching podcast: Moonshots with Peter Diamandis
+[2026-05-31 07:03:20]   Episode: Pope Leo vs. AI, GPT 5.5 Beats Claude, and Sam Altman Walks 
+[2026-05-31 07:03:20]   Episode: The Organizational Singularity: AI-Proof Your Company | EP #
+[2026-05-31 07:03:20] Fetching podcast: AI News & Strategy Daily with Nate B. Jones
+[2026-05-31 07:03:20]   Episode: How I AI: My Weekly Codex Experiments
+[2026-05-31 07:03:20]   Episode: Product Management When Software Creation Is Cheap
+[2026-05-31 07:03:20]   Episode: Agent Product Analytics: What Your Dashboard Can't See
+[2026-05-31 07:03:20] Fetching podcast: All-In Podcast
+[2026-05-31 07:03:22]   Episode: Anthropic's Digital God, Pope vs AI, Job Loss Narrative Flip
+[2026-05-31 07:03:22] Podcasts: found 6 recent episodes
+[2026-05-31 07:03:22] Summarizing 16 items with qwen2.5:14b...
+[2026-05-31 07:03:22]   [1/16] Welcome to Emerging AI
+[2026-05-31 07:03:27]   [2/16] 24 AI Concepts You Must Learn in 2026
+[2026-05-31 07:03:32]   [3/16] AI Will Deliver Wisdom
+[2026-05-31 07:03:36]   [4/16] What are YOU for?
+[2026-05-31 07:03:39]   [5/16] HTML Is the New Output Layer for Claude Code
+[2026-05-31 07:03:44]   [6/16] Purpose & Curiosity: Critical Mindsets for the Dec
+[2026-05-31 07:03:48]   [7/16] How to Build Claude Plugins and Turn it into Small
+[2026-05-31 07:03:52]   [8/16] How to Upgrade Your Summer Trip With AI
+[2026-05-31 07:03:57]   [9/16] Production-Ready AI Agents: How to Build and Deplo
+[2026-05-31 07:04:01]   [10/16] Build Your Own GPT-Style Model From Scratch
+[2026-05-31 07:04:05]   [11/16] Pope Leo vs. AI, GPT 5.5 Beats Claude, and Sam Alt
+[2026-05-31 07:04:09]   [12/16] The Organizational Singularity: AI-Proof Your Comp
+[2026-05-31 07:04:13]   [13/16] How I AI: My Weekly Codex Experiments
+[2026-05-31 07:04:16]   [14/16] Product Management When Software Creation Is Cheap
+[2026-05-31 07:04:19]   [15/16] Agent Product Analytics: What Your Dashboard Can't
+[2026-05-31 07:04:22]   [16/16] Anthropic's Digital God, Pope vs AI, Job Loss Narr
+[2026-05-31 07:04:27] Generating CIRRUS self-improvement notes...
+[2026-05-31 07:04:33] Digest saved: /Users/buddy/projects/cirrus-digest/digests/digest-2026-05-31.md
+[2026-05-31 07:04:33] === Digest Complete ===
+[2026-05-31 07:04:33] Read it with: cat /Users/buddy/projects/cirrus-digest/digests/digest-2026-05-31.md
+[2026-06-07 07:00:04] === CIRRUS Weekly Digest Starting ===
+[2026-06-07 07:00:04] Connecting to Yahoo Mail...
+[2026-06-07 07:00:25]   Found: Coming this summer and fall for AIFLLL | From: AI for Lifelong Learning <aiforlifelongl
+[2026-06-07 07:01:49]   Found: The Real Fear Isn't AI - It's Life *Without* AI | From: "Peter H. Diamandis" <metatrends@substac
+[2026-06-07 07:03:19]   Found: Cowork Changed. The June 2026 Way to Use It | From: Opinion AI from Emerging AI <emergingai@
+[2026-06-07 07:05:57]   Found: 7 Amazing Things Claude Can Do (That ChatGPT Can’t) | From: Artificial Corner <artificialcorner@subs
+[2026-06-07 07:08:14]   Found: 9 Ways to Make Money with AI | From: Opinion AI from Emerging AI <emergingai@
+[2026-06-07 07:11:20]   Found: This Week on Moonshots: Ray Kurzweil | From: "Peter H. Diamandis" <metatrends@substac
+[2026-06-07 07:12:47]   Found: Code with AI: 15 Tools for Different People and Situations | From: Opinion AI from Emerging AI <emergingai@
+[2026-06-07 07:15:10]   Found: “Get your Splenda and go” | From: The Substack Post <post+the-weekender@su
+[2026-06-07 07:15:51]   Found: 20 Rules of Using Claude | From: Opinion AI from Emerging AI <emergingai@
+[2026-06-07 07:16:46] Email: found 9 relevant newsletters
+[2026-06-07 07:16:46] Fetching podcast: Moonshots with Peter Diamandis
+[2026-06-07 07:16:47] Fetching podcast: AI News & Strategy Daily with Nate B. Jones
+[2026-06-07 07:16:47] Fetching podcast: All-In Podcast
+[2026-06-07 07:16:47] Podcasts: found 0 recent episodes
+[2026-06-07 07:16:47] Summarizing 9 items with qwen2.5:72b...
+[2026-06-07 07:16:47]   [1/9] Coming this summer and fall for AIFLLL
+[2026-06-07 07:17:27]   [2/9] The Real Fear Isn't AI - It's Life *Without* AI
+[2026-06-07 07:17:59]   [3/9] Cowork Changed. The June 2026 Way to Use It
+[2026-06-07 07:18:33]   [4/9] 7 Amazing Things Claude Can Do (That ChatGPT Can’t
+[2026-06-07 07:19:07]   [5/9] 9 Ways to Make Money with AI
+[2026-06-07 07:19:40]   [6/9] This Week on Moonshots: Ray Kurzweil
+[2026-06-07 07:20:12]   [7/9] Code with AI: 15 Tools for Different People and Si
+[2026-06-07 07:20:44]   [8/9] “Get your Splenda and go”
+[2026-06-07 07:21:19]   [9/9] 20 Rules of Using Claude
+[2026-06-07 07:21:50] Generating CIRRUS self-improvement notes...
+[2026-06-07 07:22:38] Digest saved: /Users/buddy/projects/cirrus-digest/digests/digest-2026-06-07.md
+[2026-06-07 07:22:38] === Digest Complete ===
+[2026-06-07 07:22:38] Read it with: cat /Users/buddy/projects/cirrus-digest/digests/digest-2026-06-07.md
+[2026-06-07 07:22:38] Updating RAG knowledge base...
+[2026-06-07 07:22:38]   Indexing: digest-2026-06-07.md
+[2026-06-07 07:22:38]   Added 12 chunks from digest-2026-06-07.md
+[2026-06-07 07:22:38] Extracting action items...
+[2026-06-07 07:22:38] Extracting actions from: digest-2026-06-07.md
+[2026-06-07 07:24:38] Actions saved: /Users/buddy/projects/cirrus-digest/digests/actions/weekly-actions-2026-06-07.md
+[2026-06-07 07:24:38] Running space monitor...
+[2026-06-07 07:24:38] === CIRRUS Space Monitor ===
+[2026-06-07 07:24:38] Digest folder: 0.00 GB (/Users/buddy/projects/cirrus-digest/digests)
+[2026-06-07 07:24:38] Whisper cache: 0.45 GB (/Users/buddy/.cache/whisper)
+[2026-06-07 07:24:38] Free disk space: 772.1 GB
+[2026-06-07 07:24:38] Files: 3 weekly digests, 7 daily digests, 8 action files
+[2026-06-07 07:24:38] Running cleanup...
+[2026-06-07 07:24:38]   No old files to clean up
+[2026-06-07 07:24:38] === Space Monitor Complete ===
+[2026-06-07 07:24:38] Sending weekly digest email...
+[2026-06-07 07:24:38] === CIRRUS Email Delivery (weekly) ===
+[2026-06-07 07:24:38] Sending email: 📬 CIRRUS Weekly Digest — Sunday, June 07
+[2026-06-07 07:24:39] Email sent successfully to Buddy.Weiss@outlook.com
+[2026-06-07 07:24:39] === Done ===
