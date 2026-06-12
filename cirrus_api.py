@@ -6,6 +6,7 @@ Runs on port 5000, accessible via Tailscale only.
 """
 
 from flask import Flask, jsonify
+import json
 import subprocess
 import os
 from pathlib import Path
@@ -20,7 +21,8 @@ def is_allowed(request):
     ip = request.remote_addr
     return any(ip.startswith(s) for s in ALLOWED_SUBNETS)
 
-SECRET_TOKEN = "CIRRUS-BUDDY-2026-XK9"
+with open(PROJECT_DIR / "config/credentials.json") as f:
+    SECRET_TOKEN = json.load(f)["api_token"]
 
 def check_ip():
     from flask import request, abort
