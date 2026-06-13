@@ -43,6 +43,7 @@ DIGEST_CFG    = CONFIG["digest"]
 OUTPUT_DIR    = Path(DIGEST_CFG["output_dir"])
 LOG_DIR       = Path(DIGEST_CFG["log_dir"])
 ACTIONS_DIR   = OUTPUT_DIR / "actions"
+PROPOSALS_DIR = OUTPUT_DIR / "proposals"
 WHISPER_CACHE = Path.home() / ".cache" / "whisper"
 PROJECT_DIR   = Path.home() / "projects/cirrus-digest"
 
@@ -122,6 +123,7 @@ def cmd_help():
 /latest — show latest daily digest summary
 /actions — show latest action items
 /approve — review and approve pending recommendations
+/proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory
 /help — show this message
@@ -225,6 +227,26 @@ def cmd_actions():
     if len(content) > 3000:
         preview += "\n\n_...truncated. Check your email for the full list._"
     return f"📋 *{latest.name}*\n\n{preview}"
+
+def cmd_proposals():
+    if not PROPOSALS_DIR.exists():
+        return "No proposals generated yet."
+    files = sorted(PROPOSALS_DIR.glob("proposal-*.md"), reverse=True)
+    if not files:
+        return "No proposals generated yet."
+    msg = f"📝 *{len(files)} Proposal(s)*\n\n"
+    for f in files[:10]:
+        content = f.read_text()
+        status_match = re.search(r"\*\*Status:\*\*\s*(.+)", content)
+        status = status_match.group(1).strip() if status_match else "unknown"
+        title_match = re.search(r"^#\s*Proposal:\s*(.+)", content, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else f.stem
+        msg += f"• `{f.name}` — _{status}_\n  {title[:90]}\n\n"
+    if len(files) > 10:
+        msg += f"_...and {len(files) - 10} more. Check digests/proposals/ on CIRRUS._"
+    else:
+        msg += "_Review these with Claude in your next Cowork session._"
+    return msg
 
 def cmd_run_daily(chat_id):
     send_message(chat_id, "⏳ Running daily digest now... This may take a few minutes.")
@@ -349,6 +371,97 @@ def save_pending(items: list):
     with open(PENDING_FILE, "w") as f:
         json.dump(items, f, indent=2)
 
+# ── Proposal generation (3b) ────────────────────────────────────────────────
+
+PROJECT_CONTEXT = """CIRRUS is an AI digest system running on a Mac Studio M4 Max (macOS Tahoe).
+Project directory: ~/projects/cirrus-digest/
+
+Key components:
+- cirrus_digest.py: fetches RSS/web/podcast sources, summarizes with Ollama (qwen2.5:72b),
+  writes digests/daily-YYYY-MM-DD.md and digests/weekly-*.md
+- extract_actions.py: parses digests into digests/actions/daily-actions-*.md /
+  weekly-actions-*.md with sections: ACTION ITEMS, RECOMMENDATIONS,
+  CIRRUS IMPROVEMENT NOTES, INTERESTING TOOLS/MODELS, FOLLOW-UP READING
+- cirrus_bot.py: Telegram bot for remote control (/status, /disk, /daily, /weekly,
+  /sources, /latest, /actions, /approve, /knowledge, /ask)
+- cirrus_rag.py: RAG knowledge base over past digests, used by /ask
+- config/sources.json (RSS/podcast sources), config/credentials.json (secrets,
+  not in git), config/pending_approvals.json (approval queue)
+- launchd jobs: com.cirrus.bot, com.cirrus.daily (7am), com.cirrus.digest
+  (Sunday 7am weekly), com.cirrus.api (Flask API on port 5001)
+- All code lives in git (budweiss/cirrus-digest, gitleaks pre-commit hook).
+  Deploy flow: edit -> scp to CIRRUS -> git add/commit/push -> launchctl
+  kickstart -k gui/$(id -u)/<job-label> to restart the relevant service.
+"""
+
+def next_proposal_path() -> Path:
+    """Return the next proposal-YYYY-MM-DD-N.md path for today."""
+    PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    existing = sorted(PROPOSALS_DIR.glob(f"proposal-{today}-*.md"))
+    n = len(existing) + 1
+    return PROPOSALS_DIR / f"proposal-{today}-{n}.md"
+
+def generate_proposal(item: dict) -> Path:
+    """Ask the local LLM to draft a scoped implementation proposal for an
+    approved CIRRUS_NOTE recommendation, and save it for human review.
+    Does NOT modify or deploy any code itself."""
+    detail = item["detail"]
+    source_line = item.get("source_line", "")
+
+    prompt = f"""{PROJECT_CONTEXT}
+
+A self-improvement recommendation was extracted from a recent digest and approved by Buddy for further consideration:
+
+RECOMMENDATION: {detail}
+SOURCE CONTEXT: {source_line}
+
+Write a concrete, scoped implementation proposal for applying this recommendation to the CIRRUS project above. Be specific:
+1. Which file(s) would need to change
+2. What the change would do, in plain terms
+3. A rough sketch of the code/config change (pseudocode or a short snippet is fine — this is a proposal, not final code)
+4. Risks or things to verify before deploying
+
+If the recommendation is too vague, too broad, or not realistically actionable for this specific project, say so honestly instead of inventing a change — a "no good fit yet" verdict is a valid and useful proposal.
+
+Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Risks / Things to Verify"""
+
+    try:
+        resp = requests.post(
+            f"{OLLAMA_HOST}/api/generate",
+            json={"model": MODEL, "prompt": prompt, "stream": False},
+            timeout=300
+        )
+        resp.raise_for_status()
+        body = resp.json().get("response", "").strip()
+    except Exception as e:
+        body = f"_(LLM error generating proposal — fill in manually: {e})_"
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = next_proposal_path()
+    content = f"""# Proposal: {detail[:80]}
+
+**Date generated:** {today}
+**Status:** pending review
+**Source recommendation:** {detail}
+**Source context:** {source_line}
+
+---
+
+{body}
+
+---
+
+## Review Checklist
+- [ ] Reviewed by Buddy
+- [ ] Reviewed by Claude (Cowork)
+- [ ] Implemented and deployed
+- [ ] Rejected (not a good fit)
+"""
+    path.write_text(content)
+    log(f"Generated proposal: {path.name}")
+    return path
+
 def execute_action(item: dict) -> str:
     """Execute an approved action on CIRRUS."""
     action_type = item["type"]
@@ -380,7 +493,13 @@ def execute_action(item: dict) -> str:
         return f"ℹ️ Source suggestion noted: `{detail}`. Add manually via sources.json or ask CIRRUS to find the RSS feed."
 
     elif action_type == "CIRRUS_NOTE":
-        return f"ℹ️ CIRRUS note logged: `{detail}`"
+        try:
+            path = generate_proposal(item)
+            return (f"📝 Proposal drafted: `{path.name}`\n"
+                    f"Saved to `digests/proposals/` — review with Claude next Cowork session. "
+                    f"No code was changed.")
+        except Exception as e:
+            return f"⚠️ CIRRUS note logged, but proposal generation failed: {e}"
 
     return f"⚠️ Unknown action type: {action_type}"
 
@@ -479,6 +598,10 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
     text = text.strip().lower()
 
     if text == "approve all":
+        note_count = sum(1 for item in active if item["type"] == "CIRRUS_NOTE")
+        if note_count:
+            send_message(chat_id, f"⏳ Approving {len(active)} items, including {note_count} CIRRUS notes — "
+                                   f"each note drafts a proposal via qwen2.5:72b, this may take several minutes total...")
         results = []
         for item in active:
             item["status"] = "approved"
@@ -496,6 +619,8 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
             item["status"] = "approved" if action == "approve" else "rejected"
             save_pending(pending)
             if action == "approve":
+                if item["type"] == "CIRRUS_NOTE":
+                    send_message(chat_id, "⏳ Drafting implementation proposal via qwen2.5:72b — this can take a couple minutes...")
                 return execute_action(item)
             else:
                 return f"❌ Rejected: `{item['detail']}`"
@@ -534,6 +659,8 @@ def handle_message(message, chat_id):
         return cmd_run_weekly(chat_id)
     elif cmd == "/approve" and len(text.split()) == 1:
         return cmd_approve(chat_id)
+    elif cmd == "/proposals":
+        return cmd_proposals()
     elif cmd == "/knowledge":
         return cmd_knowledge()
     elif cmd == "/ask":
