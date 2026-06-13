@@ -219,8 +219,13 @@ def fetch_podcasts():
                         if download_audio(audio_url, tmp_path):
                             transcript = transcribe_audio(tmp_path)
                             if transcript:
-                                # Truncate to max length
-                                content = transcript[:MAX_EPISODE * 3] if len(transcript) > MAX_EPISODE * 3 else transcript
+                                # Truncate to max length. Stopgap: bumped 3x -> 10x
+                                # (~20000 chars) to cover more of long episodes
+                                # (e.g. 90+ min All-In) within the 8192-token
+                                # Ollama context. Proper fix is chunked
+                                # map-reduce summarization (see Session 13/14 recap).
+                                cap = MAX_EPISODE * 10
+                                content = transcript[:cap] if len(transcript) > cap else transcript
                                 content = f"[TRANSCRIBED]\n{content}"
                     finally:
                         tmp_path.unlink(missing_ok=True)
