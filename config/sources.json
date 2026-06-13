@@ -11,16 +11,8 @@
       "AI for Lifelong Learning"
     ],
     "keywords": [
-      "AI",
-      "artificial intelligence",
-      "machine learning",
-      "LLM",
-      "Ollama",
-      "Claude",
-      "GPT",
-      "Gemini",
-      "open source",
-      "model"
+      "AI", "artificial intelligence", "machine learning", "LLM",
+      "Ollama", "Claude", "GPT", "Gemini", "open source", "model"
     ],
     "days_back": 7
   },
@@ -31,27 +23,11 @@
     },
     {
       "name": "AI News & Strategy Daily with Nate B. Jones",
-      "rss": "https://feeds.buzzsprout.com/2103333.rss"
+      "rss": "https://feeds.acast.com/public/shows/ai-news-strategy-daily-with-nate-b-jones"
     },
     {
       "name": "All-In Podcast",
       "rss": "https://feeds.megaphone.fm/all-in-with-chamath-jason-sacks-friedberg"
-    },
-    {
-      "name": "Lex Fridman Podcast",
-      "rss": "https://lexfridman.com/feed/podcast/"
-    },
-    {
-      "name": "Latent Space Podcast",
-      "rss": "https://feeds.transistor.fm/latent-space-the-ai-engineer-podcast"
-    },
-    {
-      "name": "Dwarkesh Podcast",
-      "rss": "https://feeds.transistor.fm/dwarkesh-podcast"
-    },
-    {
-      "name": "Hard Fork (NYT)",
-      "rss": "https://feeds.simplecast.com/l2i9YnTd"
     }
   ],
   "web_sources": [
@@ -114,42 +90,12 @@
       "name": "On Substack",
       "rss": "https://on.substack.com/feed",
       "type": "substack"
-    },
-    {
-      "name": "Not Boring by Packy McCormick",
-      "rss": "https://notboring.substack.com/feed",
-      "type": "substack"
-    },
-    {
-      "name": "Not Boring by Packy McCormick",
-      "rss": "https://notboring.substack.com/feed",
-      "type": "substack"
-    },
-    {
-      "name": "The Batch by Andrew Ng",
-      "rss": "https://www.deeplearning.ai/the-batch/feed/",
-      "type": "substack"
-    },
-    {
-      "name": "Import AI by Jack Clark",
-      "rss": "https://importai.substack.com/feed",
-      "type": "substack"
-    },
-    {
-      "name": "Ahead of AI by Sebastian Raschka",
-      "rss": "https://magazine.sebastianraschka.com/feed",
-      "type": "substack"
-    },
-    {
-      "name": "Latent Space Newsletter",
-      "rss": "https://www.latent.space/feed",
-      "type": "substack"
     }
   ],
   "digest": {
     "output_dir": "/Users/buddy/projects/cirrus-digest/digests",
     "log_dir": "/Users/buddy/projects/cirrus-digest/logs",
-    "ollama_model": "qwen2.5:72b",
+    "ollama_model": "qwen2.5:14b",
     "ollama_host": "http://localhost:11434",
     "max_article_length": 3000,
     "max_episode_length": 2000
