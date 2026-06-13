@@ -295,17 +295,21 @@ def extract_recommendations(actions_file: Path) -> list:
                     })
 
     # Also pick up self-improvement style suggestions from the
-    # "## CIRRUS IMPROVEMENT NOTES" and "## RECOMMENDATIONS" sections.
-    # extract_actions.py reformats the digest's "→ CIRRUS NOTE:" lines into
-    # bullet points under these headings without the prefix, so the regex
-    # patterns above never match them — handle that here as CIRRUS_NOTE items.
+    # "## CIRRUS IMPROVEMENT NOTES" section. extract_actions.py reformats the
+    # digest's "→ CIRRUS NOTE:" lines into bullet points under this heading
+    # without the prefix, so the regex patterns above never match them —
+    # handle that here as CIRRUS_NOTE items.
+    # NOTE: "## RECOMMENDATIONS" is intentionally excluded — those are
+    # general reading takeaways from source articles, not CIRRUS-specific
+    # self-improvement ideas, and including them flooded /approve with ~6
+    # low-relevance items per daily digest.
     current_section = None
     for line in content.split("\n"):
         stripped = line.strip()
         if stripped.startswith("## "):
             current_section = stripped[3:].strip().upper()
             continue
-        if current_section in ("CIRRUS IMPROVEMENT NOTES", "RECOMMENDATIONS") and stripped.startswith("- **"):
+        if current_section == "CIRRUS IMPROVEMENT NOTES" and stripped.startswith("- **"):
             # Bullets come in two shapes:
             #   - **Full sentence recommendation.** (Source: ...)
             #   - **Note**: actual text here     <- "Note"/"Suggestion"/"Source" are
