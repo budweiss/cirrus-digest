@@ -25,7 +25,7 @@ import shutil
 import time
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -134,6 +134,27 @@ def cmd_help():
 `approve all` — approve everything
 `reject all` — reject everything"""
 
+STALE_PROPOSAL_DAYS = 7
+
+def stale_proposal_count(days=STALE_PROPOSAL_DAYS) -> int:
+    """Count proposal-*.md files older than `days` whose checklist still
+    has 'Reviewed by Buddy' unchecked."""
+    if not PROPOSALS_DIR.exists():
+        return 0
+    cutoff = datetime.now() - timedelta(days=days)
+    count = 0
+    for f in PROPOSALS_DIR.glob("proposal-*.md"):
+        try:
+            date_str = "-".join(f.stem.split("-")[1:4])  # YYYY-MM-DD
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            text = f.read_text()
+            if "- [ ] Reviewed by Buddy" in text:
+                count += 1
+    return count
+
 def cmd_status():
     # Last digest files
     last_daily  = find_latest("daily-*.md")
@@ -145,8 +166,9 @@ def cmd_status():
     daily_count  = len(list(OUTPUT_DIR.glob("daily-*.md")))
     weekly_count = len(list(OUTPUT_DIR.glob("digest-*.md")))
     free_gb      = free_disk_gb()
+    stale        = stale_proposal_count()
 
-    return f"""🖥 *CIRRUS Status*
+    status_text = f"""🖥 *CIRRUS Status*
 
 *Last daily digest:* {daily_time}
 *Last weekly digest:* {weekly_time}
@@ -156,6 +178,12 @@ def cmd_status():
 *Time on CIRRUS:* {datetime.now().strftime("%Y-%m-%d %H:%M")}
 
 ✅ CIRRUS is running"""
+
+    if stale:
+        status_text += f"\n\n📋 {stale} proposal(s) pending review for " \
+                        f"{STALE_PROPOSAL_DAYS}+ days — check /proposals"
+
+    return status_text
 
 def cmd_disk():
     digest_gb  = folder_size_gb(OUTPUT_DIR)
