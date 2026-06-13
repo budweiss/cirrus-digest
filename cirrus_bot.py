@@ -492,6 +492,12 @@ def handle_message(message, chat_id):
     text = message.get("text", "").strip()
     cmd  = text.lower().split()[0] if text else ""
 
+    # Normalize a leading "/" so "/approve 8" behaves the same as "approve 8".
+    # Without this, "/approve 8" matched the "/approve" branch below (which
+    # ignores any extra words) and just re-displayed the list instead of
+    # approving item 8.
+    normalized = text.lstrip("/").strip()
+
     if cmd == "/help":
         return cmd_help()
     elif cmd == "/status":
@@ -508,7 +514,7 @@ def handle_message(message, chat_id):
         return cmd_run_daily(chat_id)
     elif cmd == "/weekly":
         return cmd_run_weekly(chat_id)
-    elif cmd == "/approve":
+    elif cmd == "/approve" and len(text.split()) == 1:
         return cmd_approve(chat_id)
     elif cmd == "/knowledge":
         return cmd_knowledge()
@@ -517,8 +523,8 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
-    elif cmd in ("approve", "reject") or text.lower() == "approve all":
-        return handle_approval_reply(text, chat_id)
+    elif re.match(r"^(approve|reject)(\s+(\d+|all))?$", normalized, re.IGNORECASE):
+        return handle_approval_reply(normalized, chat_id)
     else:
         return "Unknown command. Type /help to see available commands."
 
