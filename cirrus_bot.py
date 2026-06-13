@@ -131,7 +131,8 @@ def cmd_help():
 *Approval replies:*
 `approve 1` — approve item 1
 `reject 2` — reject item 2
-`approve all` — approve everything"""
+`approve all` — approve everything
+`reject all` — reject everything"""
 
 def cmd_status():
     # Last digest files
@@ -584,7 +585,7 @@ def cmd_approve(chat_id):
         emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡", "CIRRUS_NOTE": "💡"}.get(item["type"], "•")
         msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n\n"
 
-    msg += "_Reply: `approve 1` or `reject 2` or `approve all`_"
+    msg += "_Reply: `approve 1` or `reject 2` or `approve all` or `reject all`_"
     return msg
 
 def handle_approval_reply(text: str, chat_id: str) -> str:
@@ -596,6 +597,12 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
         return "No pending items to approve."
 
     text = text.strip().lower()
+
+    if text == "reject all":
+        for item in active:
+            item["status"] = "rejected"
+        save_pending(pending)
+        return f"❌ Rejected all {len(active)} pending items."
 
     if text == "approve all":
         note_count = sum(1 for item in active if item["type"] == "CIRRUS_NOTE")
