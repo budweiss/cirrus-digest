@@ -306,9 +306,23 @@ def extract_recommendations(actions_file: Path) -> list:
             current_section = stripped[3:].strip().upper()
             continue
         if current_section in ("CIRRUS IMPROVEMENT NOTES", "RECOMMENDATIONS") and stripped.startswith("- **"):
-            bullet_match = re.match(r"-\s*\*\*(.+?)\*\*", stripped)
+            # Bullets come in two shapes:
+            #   - **Full sentence recommendation.** (Source: ...)
+            #   - **Note**: actual text here     <- "Note"/"Suggestion"/"Source" are
+            #   - **Source**: [link]                just sub-labels, not the content
+            bullet_match = re.match(r"-\s*\*\*(.+?)\*\*:?\s*(.*)", stripped)
             if bullet_match:
-                detail = bullet_match.group(1).strip()[:150]
+                label = bullet_match.group(1).strip()
+                rest = bullet_match.group(2).strip()
+                if label.lower() == "source":
+                    # Just a citation link for the preceding item, not its own recommendation.
+                    continue
+                if label.lower() in ("suggestion", "note", "task", "description"):
+                    detail = rest[:150]
+                else:
+                    detail = label[:150]
+                if not detail:
+                    continue
                 key = f"CIRRUS_NOTE:{detail}"
                 if key not in seen:
                     seen.add(key)
