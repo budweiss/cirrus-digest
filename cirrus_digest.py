@@ -59,7 +59,8 @@ def ollama_summarize(prompt, timeout=120):
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False},
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "options": {"num_ctx": 8192}},
             timeout=timeout
         )
         resp.raise_for_status()
