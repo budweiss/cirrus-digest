@@ -477,7 +477,8 @@ Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Ris
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False},
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "options": {"num_ctx": 8192}},
             timeout=300
         )
         resp.raise_for_status()
@@ -591,7 +592,8 @@ Answer:"""
 
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False},
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "options": {"num_ctx": 8192}},
             timeout=120
         )
         resp.raise_for_status()

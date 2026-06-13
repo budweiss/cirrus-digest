@@ -36,14 +36,14 @@ def ollama_extract(prompt):
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False},
-            timeout=300
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "options": {"num_ctx": 8192}},
+            timeout=120
         )
         resp.raise_for_status()
         return resp.json().get("response", "").strip()
     except Exception as e:
-        log(f"Extraction error: {e}")
-        return ""
+        return f"[Extraction error: {e}]"
 
 # ── Extractor ────────────────────────────────────────────────────────────────
 
