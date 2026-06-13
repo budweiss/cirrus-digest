@@ -395,6 +395,17 @@ Key components:
   kickstart -k gui/$(id -u)/<job-label> to restart the relevant service.
 """
 
+CONVENTIONS_PATH = PROJECT_DIR / "CIRRUS-CONVENTIONS.md"
+
+def load_conventions() -> str:
+    """Load CIRRUS-CONVENTIONS.md (ground-truth architecture facts) so
+    proposal generation is grounded in the real codebase instead of
+    generic patterns. Returns "" if the file isn't present."""
+    try:
+        return CONVENTIONS_PATH.read_text().strip()
+    except Exception:
+        return ""
+
 def next_proposal_path() -> Path:
     """Return the next proposal-YYYY-MM-DD-N.md path for today."""
     PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -410,8 +421,16 @@ def generate_proposal(item: dict) -> Path:
     detail = item["detail"]
     source_line = item.get("source_line", "")
 
-    prompt = f"""{PROJECT_CONTEXT}
+    conventions = load_conventions()
+    conventions_block = (
+        f"\nThe following conventions document is ground truth for this "
+        f"project — any proposal that contradicts it (wrong framework, "
+        f"wrong scheduling mechanism, etc.) is not a fit:\n\n{conventions}\n"
+        if conventions else ""
+    )
 
+    prompt = f"""{PROJECT_CONTEXT}
+{conventions_block}
 A self-improvement recommendation was extracted from a recent digest and approved by Buddy for further consideration:
 
 RECOMMENDATION: {detail}
