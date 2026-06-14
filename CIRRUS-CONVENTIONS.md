@@ -64,6 +64,19 @@ before reviewing proposals or writing any code for CIRRUS.
   `launchctl kickstart -k gui/$(id -u)/<job-label>` to restart the affected
   service. No CI/CD beyond that.
 
+- **External LLM fallback (added 2026-06-14)**: `cirrus_bot.py`'s `/ask`
+  command tries Ollama (qwen2.5:72b) first; if the answer is empty, errors,
+  or hedges (`is_uncertain()`), it escalates through `ask_with_fallback()` to
+  Gemini → Grok → Claude in order, via plain `requests.post()` calls to each
+  provider's REST API (`call_gemini`/`call_grok`/`call_claude`). Each tier
+  reads its API key from `credentials.json` (`gemini_api_key`,
+  `grok_api_key`, `anthropic_api_key`) and is silently skipped if the key is
+  blank/missing — no error. Model names are also configurable via
+  `credentials.json` (`gemini_model`, `grok_model`, `claude_model`) since
+  provider model availability changes over time. This is currently scoped to
+  `/ask` only — proposal generation (`generate_proposal()`) still uses Ollama
+  only.
+
 ## Style/scope conventions for proposals and code changes
 
 - Prefer small, additive changes to existing files over rewrites. A "proposal"

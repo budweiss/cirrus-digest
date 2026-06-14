@@ -56,6 +56,20 @@ API_URL       = f"https://api.telegram.org/bot{BOT_TOKEN}"
 OLLAMA_HOST   = DIGEST_CFG["ollama_host"]
 MODEL         = DIGEST_CFG["ollama_model"]
 
+# ── External LLM fallback (added 2026-06-14) ────────────────────────────────
+# When the local qwen2.5:72b model is uncertain or unavailable for /ask, fall
+# back to a hosted API in this order: Gemini -> Grok -> Claude. Any key left
+# blank/missing in credentials.json simply disables that tier (no error).
+# Model names are overridable via credentials.json since provider model
+# names/availability change over time - verify these are still current.
+GEMINI_API_KEY    = CREDS.get("gemini_api_key", "")
+GROK_API_KEY      = CREDS.get("grok_api_key", "")
+ANTHROPIC_API_KEY = CREDS.get("anthropic_api_key", "")
+
+GEMINI_MODEL = CREDS.get("gemini_model", "gemini-2.0-flash")
+GROK_MODEL   = CREDS.get("grok_model", "grok-3-mini")
+CLAUDE_MODEL = CREDS.get("claude_model", "claude-haiku-4-5-20251001")
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def log(msg):
@@ -113,6 +127,84 @@ def find_latest_action(prefix):
     files = sorted(ACTIONS_DIR.glob(f"{prefix}-*.md"), reverse=True)
     return files[0] if files else None
 
+# ── External LLM fallback helpers ───────────────────────────────────────────
+
+UNCERTAIN_PHRASES = [
+    "i don't know", "i do not know", "i'm not sure", "i am not sure",
+    "i don't have enough information", "i do not have enough information",
+    "no relevant", "not enough context", "cannot determine",
+    "unable to determine", "i'm unable to", "i don't have access",
+    "doesn't contain enough information", "does not contain enough information",
+]
+
+def is_uncertain(answer: str) -> bool:
+    """True if `answer` is empty/too short or hedges in a way that suggests
+    the local model couldn't really answer the question."""
+    if not answer or len(answer.strip()) < 10:
+        return True
+    lower = answer.lower()
+    return any(p in lower for p in UNCERTAIN_PHRASES)
+
+def call_gemini(prompt: str, timeout: int = 60):
+    if not GEMINI_API_KEY:
+        return None
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
+    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]},
+                          timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+def call_grok(prompt: str, timeout: int = 60):
+    if not GROK_API_KEY:
+        return None
+    resp = requests.post(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROK_API_KEY}"},
+        json={"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]},
+        timeout=timeout
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+def call_claude(prompt: str, timeout: int = 60):
+    if not ANTHROPIC_API_KEY:
+        return None
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={"model": CLAUDE_MODEL, "max_tokens": 1024,
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=timeout
+    )
+    resp.raise_for_status()
+    return resp.json()["content"][0]["text"].strip()
+
+FALLBACK_CHAIN = [
+    ("Gemini", call_gemini),
+    ("Grok", call_grok),
+    ("Claude", call_claude),
+]
+
+def ask_with_fallback(prompt: str):
+    """Try each configured external LLM in order. Returns (answer, name) for
+    the first one that responds with a non-empty, non-hedging answer, or
+    (None, None) if none are configured or all fail."""
+    for name, fn in FALLBACK_CHAIN:
+        try:
+            answer = fn(prompt)
+        except Exception as e:
+            log(f"Fallback {name} error: {e}")
+            continue
+        if answer and not is_uncertain(answer):
+            return answer, name
+    return None, None
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_help():
@@ -128,7 +220,7 @@ def cmd_help():
 /approve — review and approve pending recommendations
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
-/ask <question> — ask CIRRUS a question using past digest memory
+/ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
 /omit <sender> — skip future emails from this sender/address
 /omitlist — show the current email omit list
 /help — show this message
@@ -623,14 +715,14 @@ CIRRUS uses this memory to connect dots across past digests when summarizing new
         return f"❌ Knowledge base error: {e}"
 
 def cmd_ask(question: str) -> str:
-    """Answer a question using RAG memory + Ollama."""
+    """Answer a question using RAG memory + Ollama. If the local model is
+    uncertain (or RAG found nothing), escalate to Gemini -> Grok -> Claude
+    (whichever are configured in credentials.json)."""
     try:
         from cirrus_rag import retrieve
         results = retrieve(question, top_k=3)
-        if not results:
-            return "No relevant past knowledge found for that question."
-
-        context = "\n\n".join([f"[{r['date']}]: {r['text']}" for r in results])
+        context = "\n\n".join([f"[{r['date']}]: {r['text']}" for r in results]) if results else ""
+        sources_note = f"\n\n_Sources: {', '.join(sorted(set(r['date'] for r in results)))}_" if results else ""
 
         prompt = f"""You are CIRRUS, an AI assistant with memory of past digests.
 
@@ -638,21 +730,49 @@ Answer the following question using only the past digest knowledge provided belo
 Be concise and specific. If the knowledge doesn't contain enough information, say so.
 
 PAST KNOWLEDGE:
-{context}
+{context if context else "(no relevant past knowledge found)"}
 
 QUESTION: {question}
 
 Answer:"""
 
-        resp = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False,
-                  "options": {"num_ctx": 8192}},
-            timeout=120
+        answer = ""
+        try:
+            resp = requests.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json={"model": MODEL, "prompt": prompt, "stream": False,
+                      "options": {"num_ctx": 8192}},
+                timeout=120
+            )
+            resp.raise_for_status()
+            answer = resp.json().get("response", "").strip()
+        except Exception as e:
+            log(f"Ollama /ask error: {e}")
+
+        if not is_uncertain(answer):
+            return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
+
+        # Local model couldn't answer confidently (or errored/timed out) -
+        # escalate to external fallback chain. Include digest context if we
+        # have it; otherwise just ask the question directly.
+        fallback_prompt = (
+            f"Using this context from past digests if relevant:\n\n{context}\n\n"
+            f"Question: {question}\n\nAnswer concisely."
+            if context else f"Question: {question}\n\nAnswer concisely."
         )
-        resp.raise_for_status()
-        answer = resp.json().get("response", "").strip()
-        return f"🧠 *CIRRUS Memory Answer*\n\n{answer}\n\n_Sources: {', '.join(set(r['date'] for r in results))}_"
+        fb_answer, fb_name = ask_with_fallback(fallback_prompt)
+        if fb_answer:
+            return (f"🧠 *CIRRUS Answer (via {fb_name} fallback)*\n\n{fb_answer}"
+                    f"{sources_note}\n\n_Local model (qwen2.5) was uncertain — "
+                    f"escalated to {fb_name}._")
+
+        # Nothing else worked - return whatever the local model said (even if
+        # hedged), or a final "nothing found" message.
+        if answer:
+            return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
+        if not results:
+            return "No relevant past knowledge found for that question, and no fallback LLM is configured/available."
+        return "❌ Local model gave no answer, and no fallback LLM is configured/available."
     except Exception as e:
         return f"❌ Error: {e}"
 
