@@ -14,6 +14,8 @@ Commands:
   /latest     - show latest digest summary
   /actions    - show latest action items
   /approve    - review and approve pending recommendations
+  /omit       - add a sender to the email omit list
+  /omitlist   - show the current email omit list
 """
 
 import json
@@ -46,6 +48,7 @@ ACTIONS_DIR   = OUTPUT_DIR / "actions"
 PROPOSALS_DIR = OUTPUT_DIR / "proposals"
 WHISPER_CACHE = Path.home() / ".cache" / "whisper"
 PROJECT_DIR   = Path.home() / "projects/cirrus-digest"
+EMAIL_OMIT_PATH = PROJECT_DIR / "config/email_omit.txt"
 
 BOT_TOKEN     = CREDS["telegram_bot_token"]
 ALLOWED_ID    = int(CREDS["telegram_user_id"])
@@ -126,6 +129,8 @@ def cmd_help():
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory
+/omit <sender> — skip future emails from this sender/address
+/omitlist — show the current email omit list
 /help — show this message
 
 *Approval replies:*
@@ -233,6 +238,55 @@ def cmd_sources():
     result += "*🎙 Podcasts:*\n" + "\n".join(f"• {s}" for s in podcast_names) + "\n\n"
     result += "*✉️ Email newsletters:*\n" + "\n".join(f"• {s}" for s in email_senders)
     return result
+
+def cmd_omit(arg: str) -> str:
+    """Add a sender (address or substring) to config/email_omit.txt.
+
+    cirrus_daily.py re-reads this file from scratch on every run (via
+    load_omit_senders()), so no restart is needed — the next daily run will
+    pick up the new entry.
+    """
+    sender = arg.strip()
+    if not sender:
+        return ("Usage: `/omit <sender email or substring>`\n\n"
+                "Example: `/omit newsletter@spammydomain.com`")
+
+    existing = []
+    if EMAIL_OMIT_PATH.exists():
+        existing = [l.strip() for l in EMAIL_OMIT_PATH.read_text().splitlines()]
+
+    active = [l.lower() for l in existing if l and not l.startswith("#")]
+    if sender.lower() in active:
+        return f"`{sender}` is already on the omit list."
+
+    EMAIL_OMIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(EMAIL_OMIT_PATH, "a") as f:
+        # Ensure the new entry starts on its own line even if the file
+        # doesn't currently end with a newline.
+        if existing and existing[-1] != "":
+            f.write("\n")
+        f.write(f"{sender}\n")
+
+    log(f"Added to email omit list: {sender}")
+    return (f"🚫 Added `{sender}` to the email omit list.\n\n"
+            f"Future emails whose From header contains this will be skipped "
+            f"starting with tomorrow's daily run (or run /daily now to apply immediately).")
+
+def cmd_omitlist() -> str:
+    """Show the current contents of config/email_omit.txt (entries only)."""
+    if not EMAIL_OMIT_PATH.exists():
+        return "Email omit list is empty."
+
+    entries = [l.strip() for l in EMAIL_OMIT_PATH.read_text().splitlines()
+               if l.strip() and not l.strip().startswith("#")]
+
+    if not entries:
+        return "Email omit list is empty."
+
+    msg = f"🚫 *Email Omit List* ({len(entries)})\n\n"
+    msg += "\n".join(f"• `{e}`" for e in entries)
+    msg += "\n\n_Add more with `/omit <sender>`._"
+    return msg
 
 def cmd_latest():
     latest = find_latest("daily-*.md")
@@ -724,6 +778,11 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
+    elif cmd == "/omit":
+        sender = " ".join(text.split()[1:])
+        return cmd_omit(sender)
+    elif cmd == "/omitlist":
+        return cmd_omitlist()
     elif re.match(r"^(approve|reject)(\s+(\d+|all))?$", normalized, re.IGNORECASE):
         return handle_approval_reply(normalized, chat_id)
     else:
