@@ -1,8 +1,24 @@
 {
   "email": {
-    "account": "weiss_buddy@yahoo.com",
-    "imap_server": "imap.mail.yahoo.com",
-    "imap_port": 993,
+    "accounts": [
+      {
+        "label": "yahoo",
+        "address": "weiss_buddy@yahoo.com",
+        "imap_server": "imap.mail.yahoo.com",
+        "imap_port": 993,
+        "credential_key": "yahoo_password",
+        "enabled": true
+      },
+      {
+        "label": "outlook",
+        "address": "buddy.weiss@outlook.com",
+        "imap_server": "outlook.office365.com",
+        "imap_port": 993,
+        "credential_key": "outlook_imap_password",
+        "enabled": false,
+        "_note": "Disabled - Microsoft retired basic auth (incl. app passwords) for outlook.com IMAP in Oct 2024. Needs OAuth2 (Azure app registration + token flow) before this can be enabled. See Session 14 recap."
+      }
+    ],
     "senders": [
       "Peter H. Diamandis",
       "The Substack Post",

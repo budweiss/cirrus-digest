@@ -1,0 +1,15 @@
+# CIRRUS email omit list
+#
+# One sender (email address or substring) per line. Lines starting with #
+# are comments/blank lines are ignored. Any incoming email whose "From"
+# header contains one of these strings is skipped entirely - even if it
+# would otherwise match a sender or keyword.
+#
+# Use this for noise: junk/spam senders, or anything that keeps showing up
+# in digests without adding value.
+
+# CIRRUS's own outgoing digest emails (send_digest.py sends TO
+# Buddy.Weiss@outlook.com). Without this, scanning that inbox would cause
+# CIRRUS to re-summarize its own weekly/daily digests every day.
+cirrustask@gmail.com
+cirrustask@outlook.com

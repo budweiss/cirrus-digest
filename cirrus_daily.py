@@ -121,88 +121,129 @@ def fetch_web_sources():
 
 # ── Email Fetcher ─────────────────────────────────────────────────────────────
 
-def fetch_emails(password):
-    """Connect to Yahoo IMAP and fetch newsletters from the last few days.
+def load_omit_senders():
+    """Load sender substrings to always skip (junk, CIRRUS's own outgoing
+    emails, etc.) from config/email_omit.txt.
+
+    One entry per line; blank lines and lines starting with # are ignored.
+    """
+    omit_path = Path.home() / "projects/cirrus-digest/config/email_omit.txt"
+    omit = []
+    try:
+        with open(omit_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    omit.append(line.lower())
+    except FileNotFoundError:
+        pass
+    return omit
+
+def fetch_emails(credentials):
+    """Connect to each configured IMAP account and fetch newsletters from the
+    last few days.
 
     An email is included if EITHER:
     - its sender matches one of EMAIL_CFG["senders"], OR
     - its subject or body contains one of EMAIL_CFG["keywords"]
 
-    This casts a wider net than the sender-only allowlist used previously,
-    so AI-relevant emails from new/unlisted senders get picked up too.
+    ...unless its sender matches an entry in config/email_omit.txt, in which
+    case it's always skipped (e.g. CIRRUS's own outgoing digest emails, or
+    junk senders added over time).
     """
-    log("Connecting to Yahoo Mail...")
     results = []
+    senders_lower = [s.lower() for s in EMAIL_CFG["senders"]]
+    keywords_lower = [k.lower() for k in EMAIL_CFG["keywords"]]
+    omit_senders = load_omit_senders()
 
-    try:
-        mail = imaplib.IMAP4_SSL(EMAIL_CFG["imap_server"], EMAIL_CFG["imap_port"])
-        mail.login(EMAIL_CFG["account"], password)
-        mail.select("inbox")
+    days_back = EMAIL_CFG.get("daily_days_back", 3)
+    since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
 
-        days_back = EMAIL_CFG.get("daily_days_back", 3)
-        since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-        _, msg_ids = mail.search(None, f'SINCE {since_date}')
+    for account in EMAIL_CFG.get("accounts", []):
+        if not account.get("enabled", True):
+            log(f"  Skipping {account.get('label', account.get('address'))}: disabled in config")
+            continue
 
-        senders_lower = [s.lower() for s in EMAIL_CFG["senders"]]
-        keywords_lower = [k.lower() for k in EMAIL_CFG["keywords"]]
+        label = account.get("label", account["address"])
+        password = credentials.get(account["credential_key"])
+        if not password:
+            log(f"  Skipping {label}: no '{account['credential_key']}' in credentials.json")
+            continue
 
-        for msg_id in msg_ids[0].split():
-            _, msg_data = mail.fetch(msg_id, "(RFC822)")
-            msg = email.message_from_bytes(msg_data[0][1])
+        log(f"Connecting to {label} ({account['address']})...")
+        found = 0
+        try:
+            mail = imaplib.IMAP4_SSL(account["imap_server"], account.get("imap_port", 993))
+            mail.login(account["address"], password)
+            mail.select("inbox")
 
-            # Decode sender and subject
-            from_raw = msg.get("From", "")
-            subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
-            subject = subj_raw.decode(enc or "utf-8") if isinstance(subj_raw, bytes) else subj_raw
+            _, msg_ids = mail.search(None, f'SINCE {since_date}')
 
-            # Extract body
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    ct = part.get_content_type()
-                    if ct == "text/plain":
-                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
-                        break
-                    elif ct == "text/html" and not body:
-                        body = clean_text(
-                            part.get_payload(decode=True).decode("utf-8", errors="ignore"),
-                            MAX_ARTICLE
-                        )
-            else:
-                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            for msg_id in msg_ids[0].split():
+                _, msg_data = mail.fetch(msg_id, "(RFC822)")
+                msg = email.message_from_bytes(msg_data[0][1])
 
-            body = clean_text(body, MAX_ARTICLE)
+                # Decode sender and subject
+                from_raw = msg.get("From", "")
+                from_lower = from_raw.lower()
 
-            # Match if sender is on the allowlist, or subject/body mentions a keyword
-            sender_match = any(s in from_raw.lower() for s in senders_lower)
-            keyword_match = any(
-                k in subject.lower() or k in body.lower() for k in keywords_lower
-            )
-            if not (sender_match or keyword_match):
-                continue
+                # Always skip omitted senders, regardless of keyword/sender match
+                if any(o in from_lower for o in omit_senders):
+                    continue
 
-            match_type = "sender" if sender_match else "keyword"
-            log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
+                subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
+                subject = subj_raw.decode(enc or "utf-8") if isinstance(subj_raw, bytes) else subj_raw
 
-            try:
-                published = parsedate_to_datetime(msg.get("Date", "")).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                published = datetime.now().strftime("%Y-%m-%d %H:%M")
+                # Extract body
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        ct = part.get_content_type()
+                        if ct == "text/plain":
+                            body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            break
+                        elif ct == "text/html" and not body:
+                            body = clean_text(
+                                part.get_payload(decode=True).decode("utf-8", errors="ignore"),
+                                MAX_ARTICLE
+                            )
+                else:
+                    body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
 
-            results.append({
-                "source": from_raw,
-                "subject": subject,
-                "content": body,
-                "type": "email",
-                "published": published
-            })
+                body = clean_text(body, MAX_ARTICLE)
 
-        mail.logout()
-        log(f"Email: found {len(results)} relevant newsletters")
+                # Match if sender is on the allowlist, or subject/body mentions a keyword
+                sender_match = any(s in from_lower for s in senders_lower)
+                keyword_match = any(
+                    k in subject.lower() or k in body.lower() for k in keywords_lower
+                )
+                if not (sender_match or keyword_match):
+                    continue
 
-    except Exception as e:
-        log(f"Email fetch error: {e}")
+                match_type = "sender" if sender_match else "keyword"
+                log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
 
+                try:
+                    published = parsedate_to_datetime(msg.get("Date", "")).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    published = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                results.append({
+                    "source": f"{from_raw} ({label})",
+                    "subject": subject,
+                    "content": body,
+                    "type": "email",
+                    "published": published
+                })
+                found += 1
+
+            mail.logout()
+            log(f"  {label}: found {found} relevant email(s)")
+
+        except Exception as e:
+            log(f"Email fetch error ({label}): {e}")
+
+    log(f"Email: found {len(results)} relevant newsletter(s) total")
     return results
 
 # ── Summarizer ────────────────────────────────────────────────────────────────
@@ -301,8 +342,8 @@ def main():
     try:
         creds_path = Path.home() / "projects/cirrus-digest/config/credentials.json"
         with open(creds_path) as f:
-            password = json.load(f)["yahoo_password"]
-        email_items = fetch_emails(password)
+            credentials = json.load(f)
+        email_items = fetch_emails(credentials)
     except Exception as e:
         log(f"Email fetch skipped: {e}")
 
