@@ -121,6 +121,8 @@ def fetch_web_sources():
 
 # ── Email Fetcher ─────────────────────────────────────────────────────────────
 
+EMAIL_STATE_PATH = Path.home() / "projects/cirrus-digest/config/email_state.json"
+
 def load_omit_senders():
     """Load sender substrings to always skip (junk, CIRRUS's own outgoing
     emails, etc.) from config/email_omit.txt.
@@ -139,9 +141,43 @@ def load_omit_senders():
         pass
     return omit
 
+def load_email_state():
+    """Load per-account IMAP tracking state (last processed UID + mailbox
+    UIDVALIDITY) from config/email_state.json.
+
+    Returns {} if the file is missing or unreadable - in that case every
+    account falls back to treating last_uid as 0, i.e. the full
+    daily_days_back window is scanned (same as before this tracking existed).
+    """
+    try:
+        with open(EMAIL_STATE_PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log(f"  Warning: could not read email_state.json ({e}), starting fresh")
+        return {}
+
+def save_email_state(state):
+    """Persist per-account IMAP tracking state to config/email_state.json."""
+    try:
+        EMAIL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(EMAIL_STATE_PATH, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        log(f"  Warning: could not save email_state.json: {e}")
+
 def fetch_emails(credentials):
-    """Connect to each configured IMAP account and fetch newsletters from the
-    last few days.
+    """Connect to each configured IMAP account and fetch newsletters that
+    haven't been processed yet.
+
+    For each account, only messages with a UID greater than the last
+    processed UID (stored in config/email_state.json) are fetched, so the
+    same email is never summarized twice across daily runs. The
+    daily_days_back window is still used to bound the IMAP search (and as a
+    fallback on the first run, or if the mailbox's UIDVALIDITY changes -
+    which means previously stored UIDs may no longer refer to the same
+    messages).
 
     An email is included if EITHER:
     - its sender matches one of EMAIL_CFG["senders"], OR
@@ -155,6 +191,7 @@ def fetch_emails(credentials):
     senders_lower = [s.lower() for s in EMAIL_CFG["senders"]]
     keywords_lower = [k.lower() for k in EMAIL_CFG["keywords"]]
     omit_senders = load_omit_senders()
+    state = load_email_state()
 
     days_back = EMAIL_CFG.get("daily_days_back", 3)
     since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
@@ -177,10 +214,33 @@ def fetch_emails(credentials):
             mail.login(account["address"], password)
             mail.select("inbox")
 
-            _, msg_ids = mail.search(None, f'SINCE {since_date}')
+            # UIDVALIDITY changes if the mailbox is recreated/migrated, which
+            # means previously stored UIDs may now point at different
+            # messages. Detect that and fall back to the date-window scan.
+            uidvalidity = None
+            try:
+                typ, data = mail.status("inbox", "(UIDVALIDITY)")
+                if typ == "OK" and data and data[0]:
+                    m = re.search(rb"UIDVALIDITY (\d+)", data[0])
+                    if m:
+                        uidvalidity = int(m.group(1))
+            except Exception:
+                pass
 
-            for msg_id in msg_ids[0].split():
-                _, msg_data = mail.fetch(msg_id, "(RFC822)")
+            acct_state = state.get(label, {})
+            last_uid = acct_state.get("last_uid", 0)
+            if uidvalidity is not None and acct_state.get("uidvalidity") != uidvalidity:
+                if acct_state:
+                    log(f"  {label}: mailbox UIDVALIDITY changed - rescanning last {days_back} day(s)")
+                last_uid = 0
+
+            _, msg_ids = mail.uid("search", None, f'SINCE {since_date}')
+            uids = [int(u) for u in msg_ids[0].split()]
+            new_uids = [u for u in uids if u > last_uid]
+            skipped = len(uids) - len(new_uids)
+
+            for uid in new_uids:
+                _, msg_data = mail.uid("fetch", str(uid), "(RFC822)")
                 msg = email.message_from_bytes(msg_data[0][1])
 
                 # Decode sender and subject
@@ -194,31 +254,42 @@ def fetch_emails(credentials):
                 subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
                 subject = subj_raw.decode(enc or "utf-8") if isinstance(subj_raw, bytes) else subj_raw
 
-                # Extract body
-                body = ""
+                # Extract the raw (uncleaned) body so we can do a cheap
+                # keyword pre-check before running the full HTML clean below.
+                raw_body = ""
+                raw_is_html = False
                 if msg.is_multipart():
                     for part in msg.walk():
                         ct = part.get_content_type()
                         if ct == "text/plain":
-                            body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            raw_body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            raw_is_html = False
                             break
-                        elif ct == "text/html" and not body:
-                            body = clean_text(
-                                part.get_payload(decode=True).decode("utf-8", errors="ignore"),
-                                MAX_ARTICLE
-                            )
+                        elif ct == "text/html" and not raw_body:
+                            raw_body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            raw_is_html = True
                 else:
-                    body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    raw_body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    raw_is_html = msg.get_content_type() == "text/html"
 
-                body = clean_text(body, MAX_ARTICLE)
-
-                # Match if sender is on the allowlist, or subject/body mentions a keyword
+                # Match if sender is on the allowlist...
                 sender_match = any(s in from_lower for s in senders_lower)
-                keyword_match = any(
-                    k in subject.lower() or k in body.lower() for k in keywords_lower
-                )
-                if not (sender_match or keyword_match):
-                    continue
+
+                if not sender_match:
+                    # ...otherwise only keep it if a keyword shows up in the
+                    # subject or the first 100 lines of the body. This skips
+                    # the full HTML clean (and the email entirely) for
+                    # newsletters that clearly aren't relevant, and avoids
+                    # matching on stray keyword mentions buried in footers.
+                    preview_raw = "\n".join(raw_body.splitlines()[:100])
+                    preview_text = clean_text(preview_raw) if raw_is_html else preview_raw
+                    keyword_match = any(
+                        k in subject.lower() or k in preview_text.lower() for k in keywords_lower
+                    )
+                    if not keyword_match:
+                        continue
+
+                body = clean_text(raw_body, MAX_ARTICLE)
 
                 match_type = "sender" if sender_match else "keyword"
                 log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
@@ -238,11 +309,17 @@ def fetch_emails(credentials):
                 found += 1
 
             mail.logout()
-            log(f"  {label}: found {found} relevant email(s)")
+
+            if uids:
+                state[label] = {"last_uid": max(uids), "uidvalidity": uidvalidity}
+
+            log(f"  {label}: found {found} relevant email(s) "
+                f"({len(new_uids)} new, {skipped} already processed)")
 
         except Exception as e:
             log(f"Email fetch error ({label}): {e}")
 
+    save_email_state(state)
     log(f"Email: found {len(results)} relevant newsletter(s) total")
     return results
 

@@ -8,3 +8,4 @@ config/pending_approvals.json
 digests/
 knowledge/
 logs/
+config/email_state.json
