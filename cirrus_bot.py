@@ -129,21 +129,30 @@ def find_latest_action(prefix):
 
 # ── External LLM fallback helpers ───────────────────────────────────────────
 
-UNCERTAIN_PHRASES = [
-    "i don't know", "i do not know", "i'm not sure", "i am not sure",
-    "i don't have enough information", "i do not have enough information",
-    "no relevant", "not enough context", "cannot determine",
-    "unable to determine", "i'm unable to", "i don't have access",
-    "doesn't contain enough information", "does not contain enough information",
+UNCERTAIN_PATTERNS = [
+    r"\bdon'?t know\b",
+    r"\bdo not know\b",
+    r"\bnot sure\b",
+    r"\bcannot determine\b",
+    r"\bunable to determine\b",
+    r"\bdon'?t have (?:access|enough)\b",
+    r"\bdo not have (?:access|enough)\b",
+    # Catches "does/doesn't/don't ... contain/have ... information/knowledge",
+    # regardless of what comes between (e.g. "contain information about X",
+    # "contain enough information", "have any information").
+    r"\b(?:does not|doesn'?t|do not|don'?t)\b[^.\n]{0,40}\b(?:contain|have)\b[^.\n]{0,40}\b(?:information|knowledge|data|details)\b",
+    r"\bno (?:relevant )?(?:past )?(?:information|knowledge|data)\b",
+    r"\bnot enough context\b",
 ]
+
+UNCERTAIN_RE = re.compile("|".join(UNCERTAIN_PATTERNS), re.IGNORECASE)
 
 def is_uncertain(answer: str) -> bool:
     """True if `answer` is empty/too short or hedges in a way that suggests
     the local model couldn't really answer the question."""
     if not answer or len(answer.strip()) < 10:
         return True
-    lower = answer.lower()
-    return any(p in lower for p in UNCERTAIN_PHRASES)
+    return bool(UNCERTAIN_RE.search(answer))
 
 def call_gemini(prompt: str, timeout: int = 60):
     if not GEMINI_API_KEY:
