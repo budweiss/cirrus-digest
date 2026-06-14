@@ -14,7 +14,8 @@
       "AI", "artificial intelligence", "machine learning", "LLM",
       "Ollama", "Claude", "GPT", "Gemini", "open source", "model"
     ],
-    "days_back": 7
+    "days_back": 7,
+    "daily_days_back": 3
   },
   "podcasts": [
     {
