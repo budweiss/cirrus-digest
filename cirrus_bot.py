@@ -212,6 +212,7 @@ def ask_with_fallback(prompt: str):
             continue
         if answer and not is_uncertain(answer):
             return answer, name
+        log(f"Fallback {name} answer rejected (empty or uncertain): {answer!r}")
     return None, None
 
 # ── Commands ──────────────────────────────────────────────────────────────────
