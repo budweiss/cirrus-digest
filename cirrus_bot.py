@@ -703,6 +703,15 @@ Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Ris
 """
     path.write_text(content)
     log(f"Generated proposal: {path.name}")
+    # Notify Buddy in Telegram so proposals don't pile up unnoticed between
+    # Cowork sessions. Sends directly to ALLOWED_ID (Buddy's private chat).
+    try:
+        send_message(ALLOWED_ID,
+            f"📝 *New proposal generated:* `{path.name}`\n\n"
+            f"_{detail[:150]}_\n\n"
+            f"Review with `/proposals` or in your next Cowork session.")
+    except Exception as e:
+        log(f"Proposal notification error: {e}")
     return path
 
 def execute_action(item: dict) -> str:
