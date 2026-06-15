@@ -95,6 +95,10 @@ before reviewing proposals or writing any code for CIRRUS.
 
 ## Shell / zsh scripting notes
 
+- **SSH inline commands with nested quotes:** `ssh host "python3 -c \"...\""` is
+  fragile — nested quote escaping often causes silent failures or no output.
+  Prefer: `ssh host "cat ~/path/to/file | grep pattern"` or use a heredoc
+  (`ssh host bash -l -s <<EOF ... EOF`) for anything complex.
 - **Truncating a file in zsh:** use `: > file`, not `> file`. In zsh, a bare
   `> file` with no command may hang waiting for stdin (depends on `NULLCMD`
   setting). `: > file` is safe in both bash and zsh and always truncates
