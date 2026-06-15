@@ -440,16 +440,33 @@ def cmd_proposals():
     files = sorted(PROPOSALS_DIR.glob("proposal-*.md"), reverse=True)
     if not files:
         return "No proposals generated yet."
-    msg = f"📝 *{len(files)} Proposal(s)*\n\n"
-    for f in files[:10]:
+
+    pending, done = [], []
+    for f in files:
+        content = f.read_text()
+        if ("[x] Rejected" in content or
+                "[x] Implemented and deployed" in content):
+            done.append(f)
+        else:
+            pending.append(f)
+
+    if not pending:
+        return (f"✅ No open proposals — all {len(done)} proposal(s) are "
+                f"implemented or rejected.")
+
+    msg = f"📝 *{len(pending)} Open Proposal(s)*"
+    if done:
+        msg += f" _(+{len(done)} closed)_"
+    msg += "\n\n"
+    for f in pending[:10]:
         content = f.read_text()
         status_match = re.search(r"\*\*Status:\*\*\s*(.+)", content)
         status = status_match.group(1).strip() if status_match else "unknown"
         title_match = re.search(r"^#\s*Proposal:\s*(.+)", content, re.MULTILINE)
         title = title_match.group(1).strip() if title_match else f.stem
         msg += f"• `{f.name}` — _{status}_\n  {title[:90]}\n\n"
-    if len(files) > 10:
-        msg += f"_...and {len(files) - 10} more. Check digests/proposals/ on CIRRUS._"
+    if len(pending) > 10:
+        msg += f"_...and {len(pending) - 10} more. Check digests/proposals/ on CIRRUS._"
     else:
         msg += "_Review these with Claude in your next Cowork session._"
     return msg
