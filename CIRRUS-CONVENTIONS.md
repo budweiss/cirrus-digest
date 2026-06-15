@@ -92,3 +92,15 @@ before reviewing proposals or writing any code for CIRRUS.
 - Telegram replies go through `send_message(chat_id, text)`, which chunks at
   4000 chars and uses Markdown parse mode — reuse it rather than calling the
   API directly.
+
+## Shell / zsh scripting notes
+
+- **Truncating a file in zsh:** use `: > file`, not `> file`. In zsh, a bare
+  `> file` with no command may hang waiting for stdin (depends on `NULLCMD`
+  setting). `: > file` is safe in both bash and zsh and always truncates
+  instantly.
+- Scripts that run under `launchd` (LaunchAgents/LaunchDaemons) do NOT inherit
+  the interactive shell environment — no `.zshrc`, no `PATH` additions, no
+  `NULLCMD` overrides. Always use explicit binary paths (e.g. `/bin/bash`,
+  `/usr/bin/ssh`) in plist `ProgramArguments` and inside scripts triggered by
+  launchd.
