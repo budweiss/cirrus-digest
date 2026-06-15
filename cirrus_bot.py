@@ -147,6 +147,16 @@ UNCERTAIN_PATTERNS = [
 
 UNCERTAIN_RE = re.compile("|".join(UNCERTAIN_PATTERNS), re.IGNORECASE)
 
+# Matches a leading sentence where the model comments on the provided context
+# rather than answering — e.g. "The provided context does not contain
+# information about X." followed by the real answer. Stripped before
+# is_uncertain() so a correct answer isn't rejected due to the preamble.
+CONTEXT_DISCLAIMER_RE = re.compile(
+    r'^[^.!?]*\b(?:provided context|background context|context (?:provided|given|above))\b'
+    r'[^.!?]*[.!?]\s*',
+    re.IGNORECASE
+)
+
 def is_uncertain(answer: str) -> bool:
     """True if `answer` is empty/too short or hedges in a way that suggests
     the local model couldn't really answer the question."""
@@ -159,8 +169,13 @@ def call_gemini(prompt: str, timeout: int = 60):
         return None
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]},
-                          timeout=timeout)
+    # google_search grounding gives Gemini live web access (same as the
+    # iPhone Gemini app) — required for real-time questions like sports
+    # scores, current news, etc. Works with gemini-2.x models.
+    resp = requests.post(url, json={
+        "contents": [{"parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}],
+    }, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
