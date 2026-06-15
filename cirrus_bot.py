@@ -764,11 +764,20 @@ Answer:"""
 
         # Local model couldn't answer confidently (or errored/timed out) -
         # escalate to external fallback chain. Include digest context if we
-        # have it; otherwise just ask the question directly.
+        # have it; otherwise just ask the question directly. Explicitly tell
+        # the fallback model not to comment on the context's relevance -
+        # otherwise it tends to preface its (often correct) answer with
+        # "the provided context doesn't mention X", which trips
+        # is_uncertain() and discards an otherwise-good answer.
         fallback_prompt = (
-            f"Using this context from past digests if relevant:\n\n{context}\n\n"
-            f"Question: {question}\n\nAnswer concisely."
-            if context else f"Question: {question}\n\nAnswer concisely."
+            f"Background context from past digests (may or may not be relevant "
+            f"to the question):\n\n{context}\n\n"
+            f"Question: {question}\n\n"
+            f"Answer the question directly and concisely using your own knowledge. "
+            f"Do not mention or comment on the background context, or whether it "
+            f"is relevant or sufficient - just answer the question."
+            if context else
+            f"Question: {question}\n\nAnswer directly and concisely using your own knowledge."
         )
         fb_answer, fb_name = ask_with_fallback(fallback_prompt)
         if fb_answer:
