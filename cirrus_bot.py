@@ -225,8 +225,14 @@ def ask_with_fallback(prompt: str):
         except Exception as e:
             log(f"Fallback {name} error: {e}")
             continue
-        if answer and not is_uncertain(answer):
-            return answer, name
+        if answer:
+            # Strip any leading context-disclaimer sentence before checking
+            # uncertainty — Gemini sometimes prefixes a correct answer with
+            # "The provided context does not contain information about X."
+            # which would otherwise trip is_uncertain() and discard the answer.
+            cleaned = CONTEXT_DISCLAIMER_RE.sub("", answer).strip()
+            if cleaned and not is_uncertain(cleaned):
+                return cleaned, name
         log(f"Fallback {name} answer rejected (empty or uncertain): {answer!r}")
     return None, None
 
