@@ -913,7 +913,7 @@ def cmd_approve(chat_id):
 
     save_pending(pending)
 
-    active = [p for p in pending if p["status"] == "pending"]
+    active = [p for p in pending if p.get("status", "pending") == "pending"]
 
     if not active:
         return "✅ No pending recommendations to review."
@@ -929,7 +929,7 @@ def cmd_approve(chat_id):
 def handle_approval_reply(text: str, chat_id: str) -> str:
     """Handle approve/reject replies."""
     pending = load_pending()
-    active = [p for p in pending if p["status"] == "pending"]
+    active = [p for p in pending if p.get("status", "pending") == "pending"]
 
     if not active:
         return "No pending items to approve."
