@@ -668,17 +668,28 @@ If the recommendation is too vague, too broad, or not realistically actionable f
 
 Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Risks / Things to Verify"""
 
+    # Try Gemini first (faster, higher quality); fall back to local Ollama.
+    body = None
     try:
-        resp = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False,
-                  "options": {"num_ctx": 8192}},
-            timeout=300
-        )
-        resp.raise_for_status()
-        body = resp.json().get("response", "").strip()
+        body = call_gemini(prompt, timeout=120)
+        if body:
+            log("Proposal generated via Gemini")
     except Exception as e:
-        body = f"_(LLM error generating proposal — fill in manually: {e})_"
+        log(f"Gemini proposal error, falling back to Ollama: {e}")
+    if not body:
+        try:
+            resp = requests.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json={"model": MODEL, "prompt": prompt, "stream": False,
+                      "options": {"num_ctx": 8192}},
+                timeout=300
+            )
+            resp.raise_for_status()
+            body = resp.json().get("response", "").strip()
+            if body:
+                log("Proposal generated via Ollama (Gemini fallback)")
+        except Exception as e:
+            body = f"_(LLM error generating proposal — fill in manually: {e})_"
 
     today = datetime.now().strftime("%Y-%m-%d")
     path = next_proposal_path()
