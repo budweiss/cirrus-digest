@@ -253,6 +253,7 @@ def cmd_help():
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
+/pullmodel <name> — pull an Ollama model on CIRRUS (runs in background, notifies when done)
 /omit <sender> — skip future emails from this sender/address
 /omitlist — show the current email omit list
 /help — show this message
@@ -1012,6 +1013,9 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
+    elif cmd == "/pullmodel":
+        model = " ".join(text.split()[1:]).strip()
+        return cmd_pullmodel(model, chat_id)
     elif cmd == "/omit":
         sender = " ".join(text.split()[1:])
         return cmd_omit(sender)
