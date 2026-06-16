@@ -109,6 +109,11 @@
       "type": "substack"
     },
     {
+      "name": "Noor Mohamad",
+      "rss": "https://medium.com/feed/@reactjsbd",
+      "type": "medium"
+    },
+    {
       "name": "Simon Willison's Weblog",
       "rss": "https://simonwillison.net/atom/entries/",
       "type": "blog"
