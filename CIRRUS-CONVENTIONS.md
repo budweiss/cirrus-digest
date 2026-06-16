@@ -93,6 +93,13 @@ before reviewing proposals or writing any code for CIRRUS.
   4000 chars and uses Markdown parse mode — reuse it rather than calling the
   API directly.
 
+## pip / package installation notes
+
+- On **CIRRUS (macOS)**: `pip3 install flask` — no extra flags needed
+- On **Linux**: `pip3 install flask --break-system-packages` — required on Debian/Ubuntu systems
+- `--break-system-packages` is a Linux-only flag; using it on macOS causes "no such option" error
+- Always check the target OS before writing pip install commands in scripts or instructions
+
 ## Shell / zsh scripting notes
 
 - **SSH inline commands with nested quotes:** `ssh host "python3 -c \"...\""` is
