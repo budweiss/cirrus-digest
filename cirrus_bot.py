@@ -504,6 +504,42 @@ def cmd_run_weekly(chat_id):
     except Exception as e:
         return f"❌ Error: {e}"
 
+def _pull_model_background(model: str, chat_id: int):
+    """Run ollama pull in background and notify when done."""
+    log(f"Starting ollama pull: {model}")
+    try:
+        result = subprocess.run(
+            ["ollama", "pull", model],
+            capture_output=True, text=True, timeout=3600
+        )
+        if result.returncode == 0:
+            send_message(chat_id, f"✅ Model pulled successfully: `{model}`")
+            log(f"ollama pull complete: {model}")
+        else:
+            err = result.stderr[-300:] if result.stderr else "unknown error"
+            send_message(chat_id, f"❌ Pull failed for `{model}`:\n```{err}```")
+            log(f"ollama pull failed: {model} — {err}")
+    except subprocess.TimeoutExpired:
+        send_message(chat_id, f"⏱ Pull timed out after 60 minutes for `{model}`.")
+        log(f"ollama pull timed out: {model}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Pull error for `{model}`: {e}")
+        log(f"ollama pull error: {model} — {e}")
+
+def cmd_pullmodel(model: str, chat_id: int):
+    if not model:
+        return "Usage: /pullmodel <model>\nExample: `/pullmodel llama3.3:70b`\n\nSee available models at ollama.com/library"
+    # Basic safety check — only allow word chars, colon, dot, hyphen
+    if not re.match(r'^[\w\.\-:]+$', model):
+        return f"❌ Invalid model name: `{model}`"
+    send_message(chat_id,
+        f"⏳ Starting pull for `{model}`...\n"
+        f"This runs in the background — I'll notify you when it's done.\n"
+        f"Large models (70b+) may take 20-40 minutes.")
+    t = threading.Thread(target=_pull_model_background, args=(model, chat_id), daemon=True)
+    t.start()
+    return f"🔄 Pull started for `{model}`. You'll get a notification when it completes."
+
 # ── Approval System ───────────────────────────────────────────────────────────
 
 PENDING_FILE = PROJECT_DIR / "config/pending_approvals.json"
