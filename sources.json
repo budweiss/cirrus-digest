@@ -1,0 +1,145 @@
+{
+  "email": {
+    "accounts": [
+      {
+        "label": "yahoo",
+        "address": "weiss_buddy@yahoo.com",
+        "imap_server": "imap.mail.yahoo.com",
+        "imap_port": 993,
+        "credential_key": "yahoo_password",
+        "enabled": true
+      },
+      {
+        "label": "outlook",
+        "address": "buddy.weiss@outlook.com",
+        "imap_server": "outlook.office365.com",
+        "imap_port": 993,
+        "credential_key": "outlook_imap_password",
+        "enabled": false,
+        "_note": "Disabled - Microsoft retired basic auth (incl. app passwords) for outlook.com IMAP in Oct 2024. Needs OAuth2 (Azure app registration + token flow) before this can be enabled. See Session 14 recap."
+      }
+    ],
+    "senders": [
+      "Peter H. Diamandis",
+      "The Substack Post",
+      "Emerging AI",
+      "Artificial Corner",
+      "AI for Lifelong Learning"
+    ],
+    "keywords": [
+      "AI", "artificial intelligence", "machine learning", "LLM",
+      "Ollama", "Claude", "GPT", "Gemini", "open source", "model"
+    ],
+    "days_back": 7,
+    "daily_days_back": 3
+  },
+  "podcasts": [
+    {
+      "name": "Moonshots with Peter Diamandis",
+      "rss": "https://feeds.megaphone.fm/DVVTS2890392624"
+    },
+    {
+      "name": "AI News & Strategy Daily with Nate B. Jones",
+      "rss": "https://feeds.acast.com/public/shows/ai-news-strategy-daily-with-nate-b-jones"
+    },
+    {
+      "name": "All-In Podcast",
+      "rss": "https://allinchamathjason.libsyn.com/rss"
+    }
+  ],
+  "web_sources": [
+    {
+      "name": "Phil | Rentier Digital",
+      "rss": "https://medium.com/feed/@rentierdigital",
+      "type": "medium"
+    },
+    {
+      "name": "Kusireddy",
+      "rss": "https://medium.com/feed/@kusireddy",
+      "type": "medium"
+    },
+    {
+      "name": "Steve Yegge",
+      "rss": "https://medium.com/feed/@steve-yegge",
+      "type": "medium"
+    },
+    {
+      "name": "Hakkache Mohamed",
+      "rss": "https://medium.com/feed/@hakkache.mohamed",
+      "type": "medium"
+    },
+    {
+      "name": "Medium Staff",
+      "rss": "https://medium.com/feed/@MediumStaff",
+      "type": "medium"
+    },
+    {
+      "name": "Peter Diamandis (Metatrends)",
+      "rss": "https://metatrends.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Artificial Corner",
+      "rss": "https://artificialcorner.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Emerging AI",
+      "rss": "https://emergingai.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "The Substack Post",
+      "rss": "https://post.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Chamath Palihapitiya",
+      "rss": "https://chamath.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "OpenClaw Unboxed",
+      "rss": "https://openclawunboxed.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "On Substack",
+      "rss": "https://on.substack.com/feed",
+      "type": "substack"
+    },
+    {
+      "name": "Simon Willison's Weblog",
+      "rss": "https://simonwillison.net/atom/entries/",
+      "type": "blog"
+    },
+    {
+      "name": "The Rundown AI",
+      "rss": "https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml",
+      "type": "newsletter"
+    },
+    {
+      "name": "Hugging Face Blog",
+      "rss": "https://huggingface.co/blog/feed.xml",
+      "type": "blog"
+    },
+    {
+      "name": "VentureBeat AI",
+      "rss": "https://venturebeat.com/category/ai/feed/",
+      "type": "blog"
+    },
+    {
+      "name": "Ars Technica",
+      "rss": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+      "type": "blog"
+    }
+  ],
+  "digest": {
+    "output_dir": "/Users/buddy/projects/cirrus-digest/digests",
+    "log_dir": "/Users/buddy/projects/cirrus-digest/logs",
+    "ollama_model": "qwen2.5:14b",
+    "ollama_host": "http://localhost:11434",
+    "max_article_length": 3000,
+    "max_episode_length": 2000
+  }
+}
