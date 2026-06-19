@@ -281,10 +281,24 @@ def fetch_emails(credentials):
                     # the full HTML clean (and the email entirely) for
                     # newsletters that clearly aren't relevant, and avoids
                     # matching on stray keyword mentions buried in footers.
+                    #
+                    # IMPORTANT: use whole-word (\b) matching for all keywords.
+                    # Simple substring ("ai" in text) causes massive false positives:
+                    # "ai" matches "email", "paid", "trail", etc.
+                    # "model" matches "payment model", "business model", etc.
                     preview_raw = "\n".join(raw_body.splitlines()[:100])
                     preview_text = clean_text(preview_raw) if raw_is_html else preview_raw
+                    combined = (subject + " " + preview_text).lower()
+
+                    def whole_word_match(keyword: str, text: str) -> bool:
+                        return bool(re.search(
+                            r'\b' + re.escape(keyword.lower()) + r'\b',
+                            text,
+                            re.IGNORECASE
+                        ))
+
                     keyword_match = any(
-                        k in subject.lower() or k in preview_text.lower() for k in keywords_lower
+                        whole_word_match(k, combined) for k in keywords_lower
                     )
                     if not keyword_match:
                         continue
