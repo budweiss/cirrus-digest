@@ -27,8 +27,22 @@
       "AI for Lifelong Learning"
     ],
     "keywords": [
-      "AI", "artificial intelligence", "machine learning", "LLM",
-      "Ollama", "Claude", "GPT", "Gemini", "open source", "model"
+      "AI",
+      "artificial intelligence",
+      "machine learning",
+      "LLM",
+      "Ollama",
+      "Claude",
+      "GPT",
+      "Gemini",
+      "open source",
+      "language model",
+      "AI model",
+      "foundation model",
+      "AI tool",
+      "neural network",
+      "chatbot",
+      "generative AI"
     ],
     "days_back": 7,
     "daily_days_back": 3
@@ -107,6 +121,31 @@
       "name": "On Substack",
       "rss": "https://on.substack.com/feed",
       "type": "substack"
+    },
+    {
+      "name": "Simon Willison's Weblog",
+      "rss": "https://simonwillison.net/atom/entries/",
+      "type": "blog"
+    },
+    {
+      "name": "The Rundown AI",
+      "rss": "https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml",
+      "type": "newsletter"
+    },
+    {
+      "name": "Hugging Face Blog",
+      "rss": "https://huggingface.co/blog/feed.xml",
+      "type": "blog"
+    },
+    {
+      "name": "VentureBeat AI",
+      "rss": "https://venturebeat.com/category/ai/feed/",
+      "type": "blog"
+    },
+    {
+      "name": "Ars Technica",
+      "rss": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+      "type": "blog"
     }
   ],
   "digest": {
