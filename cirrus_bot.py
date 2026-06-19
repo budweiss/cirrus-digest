@@ -577,22 +577,30 @@ def extract_recommendations(actions_file: Path) -> list:
                         "status": "pending"
                     })
 
-    # Also pick up self-improvement style suggestions from the
-    # "## CIRRUS IMPROVEMENT NOTES" section. extract_actions.py reformats the
-    # digest's "→ CIRRUS NOTE:" lines into bullet points under this heading
-    # without the prefix, so the regex patterns above never match them —
-    # handle that here as CIRRUS_NOTE items.
-    # NOTE: "## RECOMMENDATIONS" is intentionally excluded — those are
-    # general reading takeaways from source articles, not CIRRUS-specific
-    # self-improvement ideas, and including them flooded /approve with ~6
-    # low-relevance items per daily digest.
+    # Also pick up self-improvement style suggestions from the CIRRUS notes
+    # section. extract_actions.py asks the LLM to write this section but the
+    # exact heading varies ("CIRRUS Improvement Notes", "Cirrus Notes", etc.)
+    # and the "→ CIRRUS NOTE:" prefix is rarely reproduced verbatim.
+    # Match any section whose heading contains "cirrus" OR "improvement" OR
+    # "action" (but NOT "recommendations" alone — those are general reading
+    # takeaways that flooded /approve with low-relevance items).
+    # Pick up bullet lines under those sections as CIRRUS_NOTE items.
+    CIRRUS_SECTIONS = re.compile(
+        r'\b(cirrus|improvement|action\s*item)\b', re.IGNORECASE
+    )
+    SKIP_SECTIONS = re.compile(r'^recommendations?$', re.IGNORECASE)
+
     current_section = None
     for line in content.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("## "):
-            current_section = stripped[3:].strip().upper()
+        if re.match(r'^#{1,3}\s+', stripped):
+            heading = re.sub(r'^#{1,3}\s+', '', stripped).strip()
+            if CIRRUS_SECTIONS.search(heading) and not SKIP_SECTIONS.match(heading):
+                current_section = "CIRRUS"
+            else:
+                current_section = None
             continue
-        if current_section == "CIRRUS IMPROVEMENT NOTES" and stripped.startswith("- **"):
+        if current_section == "CIRRUS" and stripped.startswith("- "):
             # Bullets come in two shapes:
             #   - **Full sentence recommendation.** (Source: ...)
             #   - **Note**: actual text here     <- "Note"/"Suggestion"/"Source" are
