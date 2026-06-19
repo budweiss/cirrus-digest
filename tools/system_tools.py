@@ -236,6 +236,34 @@ def check_service_status(service_name: str = "", **kwargs) -> str:
         return f"Error checking service status: {e}"
 
 
+# ── Tool Error Log ────────────────────────────────────────────────────────────
+
+def check_tool_errors(lines: int = 20, **kwargs) -> str:
+    """
+    Read the last N lines of tool_calls.log so CIRRUS can self-diagnose.
+    Only returns ERR lines unless there are none (then shows all recent).
+    """
+    log_path = Path.home() / "projects/cirrus-digest/tool_calls.log"
+    if not log_path.exists():
+        return "tool_calls.log not found — no tool calls have been logged yet."
+    try:
+        with open(log_path) as f:
+            all_lines = f.readlines()
+        recent = all_lines[-lines:]
+        err_lines = [l for l in recent if "[ERR]" in l]
+        if err_lines:
+            return (
+                f"Recent tool errors ({len(err_lines)} of last {lines} calls):\n"
+                + "".join(err_lines).strip()
+            )
+        return (
+            f"No errors in the last {len(recent)} tool calls. Recent activity:\n"
+            + "".join(recent[-5:]).strip()
+        )
+    except Exception as e:
+        return f"Error reading tool log: {e}"
+
+
 # ── Dispatch table (used by registry.py) ──────────────────────────────────────
 
 TOOL_FUNCTIONS = {
@@ -244,4 +272,5 @@ TOOL_FUNCTIONS = {
     "check_system_health":  check_system_health,
     "list_ollama_models":   list_ollama_models,
     "check_service_status": check_service_status,
+    "check_tool_errors":    check_tool_errors,
 }
