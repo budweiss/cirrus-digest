@@ -601,32 +601,34 @@ def extract_recommendations(actions_file: Path) -> list:
                 current_section = None
             continue
         if current_section == "CIRRUS" and stripped.startswith("- "):
-            # Bullets come in two shapes:
-            #   - **Full sentence recommendation.** (Source: ...)
-            #   - **Note**: actual text here     <- "Note"/"Suggestion"/"Source" are
-            #   - **Source**: [link]                just sub-labels, not the content
-            bullet_match = re.match(r"-\s*\*\*(.+?)\*\*:?\s*(.*)", stripped)
-            if bullet_match:
-                label = bullet_match.group(1).strip()
-                rest = bullet_match.group(2).strip()
+            # Handle bold-label bullets:  - **Label**: rest text
+            # and plain bullets:          - Plain text here
+            # Skip "Source:" citation lines.
+            bold_match = re.match(r"-\s*\*\*(.+?)\*\*:?\s*(.*)", stripped)
+            if bold_match:
+                label = bold_match.group(1).strip()
+                rest = bold_match.group(2).strip()
                 if label.lower() == "source":
-                    # Just a citation link for the preceding item, not its own recommendation.
-                    continue
+                    continue  # citation, not a recommendation
                 if label.lower() in ("suggestion", "note", "task", "description"):
                     detail = rest[:150]
                 else:
-                    detail = label[:150]
-                if not detail:
-                    continue
-                key = f"CIRRUS_NOTE:{detail}"
-                if key not in seen:
-                    seen.add(key)
-                    recommendations.append({
-                        "type": "CIRRUS_NOTE",
-                        "detail": detail,
-                        "source_line": stripped[:160],
-                        "status": "pending"
-                    })
+                    detail = (label + (" — " + rest if rest else ""))[:150]
+            else:
+                # Plain bullet — strip the leading "- " and any trailing source ref
+                detail = re.sub(r'\s*\(Source:.*?\)\s*$', '', stripped[2:]).strip()[:150]
+
+            if not detail:
+                continue
+            key = f"CIRRUS_NOTE:{detail}"
+            if key not in seen:
+                seen.add(key)
+                recommendations.append({
+                    "type": "CIRRUS_NOTE",
+                    "detail": detail,
+                    "source_line": stripped[:160],
+                    "status": "pending"
+                })
 
     return recommendations
 
