@@ -869,12 +869,14 @@ def cmd_ask(question: str) -> str:
             from registry import ask_with_tools, CLAUDE_API_KEY
             if CLAUDE_API_KEY:
                 tool_answer, tool_model = ask_with_tools(question, context=context)
-                if tool_answer:
+                if tool_answer and not is_uncertain(tool_answer):
                     log(f"/ask answered via Claude tool loop ({tool_model})")
                     return (
                         f"🛠️ *CIRRUS Agent Answer*\n\n{tool_answer}"
                         f"{sources_note}"
                     )
+                elif tool_answer:
+                    log(f"/ask tool loop uncertain, falling through to Gemini: {tool_answer[:80]!r}")
         except Exception as e:
             log(f"/ask tool loop unavailable: {e}")
 
