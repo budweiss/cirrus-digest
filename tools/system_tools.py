@@ -34,9 +34,11 @@ def check_network_speed(**kwargs) -> str:
                 for line in output.splitlines()
                 if ":" in line and line.strip()
             }
-            download = lines.get("Download capacity", "unknown")
-            upload   = lines.get("Upload capacity",   "unknown")
-            latency  = lines.get("Idle Latency",       "unknown")
+            download = lines.get("Downlink capacity", "unknown")
+            upload   = lines.get("Uplink capacity",   "unknown")
+            latency  = lines.get("Idle Latency",      "unknown")
+            # Strip RPM suffix if present (e.g. "10.158 milliseconds | 5906 RPM")
+            latency  = latency.split("|")[0].strip()
             return (
                 f"Network speed (CIRRUS):\n"
                 f"  Download: {download}\n"
