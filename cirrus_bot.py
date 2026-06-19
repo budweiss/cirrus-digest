@@ -831,15 +831,40 @@ CIRRUS uses this memory to connect dots across past digests when summarizing new
         return f"❌ Knowledge base error: {e}"
 
 def cmd_ask(question: str) -> str:
-    """Answer a question using RAG memory + Ollama. If the local model is
-    uncertain (or RAG found nothing), escalate to Gemini -> Grok -> Claude
-    (whichever are configured in credentials.json)."""
+    """Answer a question using the agent tool loop (if Claude API key present)
+    or RAG memory + Ollama with external fallback chain.
+
+    Priority:
+    1. Claude API tool loop  — can call live system tools (speedtest, disk, etc.)
+    2. RAG + local Ollama    — answers from past digest knowledge
+    3. External fallback     — Gemini → Grok → Claude for general knowledge
+    """
     try:
+        # ── 1. Claude API tool loop ───────────────────────────────────────────
+        # Load RAG context first — useful even for tool-loop questions
         from cirrus_rag import retrieve
         results = retrieve(question, top_k=3)
         context = "\n\n".join([f"[{r['date']}]: {r['text']}" for r in results]) if results else ""
         sources_note = f"\n\n_Sources: {', '.join(sorted(set(r['date'] for r in results)))}_" if results else ""
 
+        try:
+            import sys as _sys
+            _tools_dir = str(Path.home() / "projects/cirrus-digest/tools")
+            if _tools_dir not in _sys.path:
+                _sys.path.insert(0, _tools_dir)
+            from registry import ask_with_tools, CLAUDE_API_KEY
+            if CLAUDE_API_KEY:
+                tool_answer, tool_model = ask_with_tools(question, context=context)
+                if tool_answer:
+                    log(f"/ask answered via Claude tool loop ({tool_model})")
+                    return (
+                        f"🛠️ *CIRRUS Agent Answer*\n\n{tool_answer}"
+                        f"{sources_note}"
+                    )
+        except Exception as e:
+            log(f"/ask tool loop unavailable: {e}")
+
+        # ── 2. RAG + local Ollama ─────────────────────────────────────────────
         prompt = f"""You are CIRRUS, an AI assistant with memory of past digests.
 
 Answer the following question using only the past digest knowledge provided below.
@@ -868,13 +893,7 @@ Answer:"""
         if not is_uncertain(answer):
             return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
 
-        # Local model couldn't answer confidently (or errored/timed out) -
-        # escalate to external fallback chain. Include digest context if we
-        # have it; otherwise just ask the question directly. Explicitly tell
-        # the fallback model not to comment on the context's relevance -
-        # otherwise it tends to preface its (often correct) answer with
-        # "the provided context doesn't mention X", which trips
-        # is_uncertain() and discards an otherwise-good answer.
+        # ── 3. External fallback chain ────────────────────────────────────────
         fallback_prompt = (
             f"Background context from past digests (may or may not be relevant "
             f"to the question):\n\n{context}\n\n"
@@ -888,11 +907,8 @@ Answer:"""
         fb_answer, fb_name = ask_with_fallback(fallback_prompt)
         if fb_answer:
             return (f"🧠 *CIRRUS Answer (via {fb_name} fallback)*\n\n{fb_answer}"
-                    f"{sources_note}\n\n_Local model (qwen2.5) was uncertain — "
-                    f"escalated to {fb_name}._")
+                    f"{sources_note}\n\n_Local model was uncertain — escalated to {fb_name}._")
 
-        # Nothing else worked - return whatever the local model said (even if
-        # hedged), or a final "nothing found" message.
         if answer:
             return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
         if not results:
