@@ -91,6 +91,13 @@ def api_call(method, params=None):
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        # Return the error body so callers can inspect ok/error_code
+        log(f"API error ({method}): {e}")
+        try:
+            return json.loads(e.read())
+        except Exception:
+            return {"ok": False, "error_code": e.code}
     except Exception as e:
         log(f"API error ({method}): {e}")
         return {}
@@ -100,11 +107,18 @@ def send_message(chat_id, text):
     max_len = 4000
     for i in range(0, len(text), max_len):
         chunk = text[i:i+max_len]
-        api_call("sendMessage", {
+        result = api_call("sendMessage", {
             "chat_id": chat_id,
             "text": chunk,
             "parse_mode": "Markdown"
         })
+        # Telegram rejects messages with unmatched/invalid markdown (400 error).
+        # Retry as plain text so tool output with tabs, dashes, etc. always sends.
+        if not result.get("ok"):
+            api_call("sendMessage", {
+                "chat_id": chat_id,
+                "text": chunk,
+            })
         if len(text) > max_len:
             time.sleep(0.5)
 
