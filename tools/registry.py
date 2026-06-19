@@ -10,7 +10,9 @@ Claude reason about a question, call tools, and synthesize a final answer.
 
 import json
 import sys
+import logging
 import requests
+from datetime import datetime
 from pathlib import Path
 
 # Load credentials for Claude API key
@@ -25,6 +27,20 @@ CLAUDE_API_KEY   = _CREDS.get("anthropic_api_key", "")
 # Use Haiku for tool loops — fast and cheap; reasoning quality comes from the loop
 CLAUDE_MODEL     = _CREDS.get("claude_tool_model", "claude-haiku-4-5-20251001")
 CLAUDE_API_URL   = "https://api.anthropic.com/v1/messages"
+
+# Tool call log — writes to same dir as bot.log for easy inspection
+_LOG_PATH = Path.home() / "projects/cirrus-digest/tool_calls.log"
+
+def _log_tool_call(name: str, args: dict, result: str, ok: bool) -> None:
+    """Append one line to tool_calls.log so errors are visible without SSH."""
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status = "OK" if ok else "ERR"
+        preview = result[:120].replace("\n", " ") if result else ""
+        with open(_LOG_PATH, "a") as f:
+            f.write(f"[{ts}] [{status}] {name}({json.dumps(args)}) → {preview}\n")
+    except Exception:
+        pass
 
 # ── Tool Schemas (Claude API format) ─────────────────────────────────────────
 
@@ -79,6 +95,24 @@ TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "check_tool_errors",
+        "description": (
+            "Read recent tool call results from CIRRUS's tool_calls.log. "
+            "Use when asked if there are any errors, what failed recently, "
+            "why a tool returned wrong data, or to self-diagnose a problem."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "integer",
+                    "description": "Number of recent log lines to return (default 20)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "check_service_status",
         "description": (
             "Check whether a launchd service is running on CIRRUS. "
@@ -114,14 +148,22 @@ def _load_tool_functions():
 
 
 def call_tool(name: str, args: dict) -> str:
-    """Dispatch a tool call by name and return the result as a string."""
+    """Dispatch a tool call by name, log result, and return as a string."""
     try:
         fns = _load_tool_functions()
         if name not in fns:
-            return f"Unknown tool: {name}"
-        return fns[name](**args)
+            msg = f"Unknown tool: {name}"
+            _log_tool_call(name, args, msg, ok=False)
+            return msg
+        result = fns[name](**args)
+        # Flag if the tool returned "unknown" values — log as ERR for visibility
+        has_unknown = isinstance(result, str) and "unknown" in result.lower()
+        _log_tool_call(name, args, result, ok=not has_unknown)
+        return result
     except Exception as e:
-        return f"Tool '{name}' error: {e}"
+        msg = f"Tool '{name}' error: {e}"
+        _log_tool_call(name, args, msg, ok=False)
+        return msg
 
 
 # ── Claude API Tool Loop ───────────────────────────────────────────────────────
