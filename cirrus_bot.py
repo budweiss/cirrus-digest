@@ -18,6 +18,9 @@ Commands:
   /omitlist   - show the current email omit list
 """
 
+import warnings
+warnings.filterwarnings("ignore", category=Warning, module="urllib3")
+
 import json
 import os
 import re
