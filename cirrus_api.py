@@ -271,6 +271,53 @@ def service_status():
     lines = [l for l in result.stdout.splitlines() if "cirrus" in l.lower()]
     return jsonify({"services": lines})
 
+# ── Admin: Deploy ─────────────────────────────────────────────────────────────
+
+@app.route("/admin/deploy", methods=["GET"])
+def deploy():
+    """Pull latest from GitHub and optionally restart a service.
+
+    Cowork pushes a file to GitHub, then calls this endpoint so CIRRUS
+    pulls it down and restarts the relevant service — no SSH or SCP needed.
+
+    GET: /admin/deploy?job=com.cirrus.bot&token=<token>
+         ?job=none   to skip restart
+    """
+    require_token()
+    job = request.args.get("job", "none").strip()
+
+    # Pull latest from GitHub
+    git = subprocess.run(
+        ["git", "-C", str(PROJECT_DIR), "pull", "--ff-only"],
+        capture_output=True, text=True
+    )
+    git_output = (git.stdout + git.stderr).strip()
+    git_ok = git.returncode == 0
+
+    # Optionally restart a service
+    restart_info = None
+    if job and job != "none":
+        if job not in ALLOWED_SERVICES:
+            return jsonify({
+                "git": {"ok": git_ok, "output": git_output},
+                "restart": {"error": f"service not allowed: {job}"}
+            }), 400
+        uid = os.getuid()
+        r = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/{job}"],
+            capture_output=True, text=True
+        )
+        restart_info = {
+            "service": job,
+            "status": "restarted" if r.returncode == 0 else "error",
+            "stderr": r.stderr.strip()
+        }
+
+    return jsonify({
+        "git": {"ok": git_ok, "output": git_output},
+        "restart": restart_info
+    })
+
 # ── Write (token-protected) ────────────────────────────────────────────────────
 
 @app.route("/write/file/<filename>", methods=["POST"])
