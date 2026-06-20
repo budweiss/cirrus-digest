@@ -289,4 +289,7 @@ def write_file(filename):
     return jsonify({"status": "written", "filename": filename})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    # Bind to localhost only — Cloudflare tunnel connects via 127.0.0.1,
+    # so external access still works via the tunnel. Binding to 0.0.0.0
+    # would expose port 5001 to anyone on the local network unnecessarily.
+    app.run(host="127.0.0.1", port=5001)
