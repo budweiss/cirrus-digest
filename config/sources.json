@@ -146,6 +146,11 @@
       "name": "Ars Technica",
       "rss": "https://feeds.arstechnica.com/arstechnica/technology-lab",
       "type": "blog"
+    },
+    {
+      "name": "Nate B. Jones (AI Strategy Newsletter)",
+      "rss": "https://natesnewsletter.substack.com/feed",
+      "type": "substack"
     }
   ],
   "digest": {
