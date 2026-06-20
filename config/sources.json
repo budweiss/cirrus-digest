@@ -160,5 +160,6 @@
     "ollama_host": "http://localhost:11434",
     "max_article_length": 3000,
     "max_episode_length": 2000
-  }
+  },
+  "_last_updated": "2026-06-20"
 }
