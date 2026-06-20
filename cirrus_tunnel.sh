@@ -25,6 +25,13 @@ echo "[$(date)] Starting Cloudflare quick tunnel → http://localhost:5001"
         if [ -n "$URL" ]; then
             echo "$URL" > "$URL_FILE"
             echo "[$(date)] Tunnel URL saved: $URL"
+            # Notify via Telegram so Buddy knows the URL changed after a reboot
+            CREDS="$HOME/projects/cirrus-digest/config/credentials.json"
+            BOT_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_bot_token'])")
+            CHAT_ID=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_user_id'])")
+            curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d "chat_id=${CHAT_ID}&text=🌐 CIRRUS tunnel restarted.%0ANew URL: ${URL}%0AUpdate local.json if starting a Cowork session." \
+                > /dev/null
         fi
     fi
 done
