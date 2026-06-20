@@ -42,7 +42,15 @@
       "AI tool",
       "neural network",
       "chatbot",
-      "generative AI"
+      "generative AI",
+      "DGX Spark",
+      "Grace Blackwell",
+      "GB10",
+      "AI workstation",
+      "GPU server",
+      "LLM training",
+      "inference server",
+      "AI infrastructure"
     ],
     "days_back": 7,
     "daily_days_back": 3
@@ -151,6 +159,16 @@
       "name": "Nate B. Jones (AI Strategy Newsletter)",
       "rss": "https://natesnewsletter.substack.com/feed",
       "type": "substack"
+    },
+    {
+      "name": "ServeTheHome",
+      "rss": "https://www.servethehome.com/feed/",
+      "type": "blog"
+    },
+    {
+      "name": "Tom's Hardware",
+      "rss": "https://cdn.mos.cms.futurecdn.net/siteIcons/tomshardware/tomshardware.rss",
+      "type": "blog"
     }
   ],
   "digest": {
