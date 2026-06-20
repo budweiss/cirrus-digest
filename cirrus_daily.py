@@ -14,6 +14,7 @@ import feedparser
 from datetime import datetime, timedelta
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from pathlib import Path
 
@@ -50,6 +51,63 @@ def clean_text(text, max_len=None):
     if max_len and len(clean) > max_len:
         clean = clean[:max_len] + "..."
     return clean
+
+# URL patterns that are never worth following (trackers, social, nav, images)
+_SKIP_URL_PATTERNS = [
+    "unsubscribe", "mailto:", "twitter.com", "x.com", "facebook.com",
+    "linkedin.com", "instagram.com", "youtube.com", "t.co/", "click.",
+    "track.", "open.", "beacon.", ".gif", ".jpg", ".png", ".svg",
+    "privacy", "terms", "manage-subscription", "list-unsubscribe",
+    "/tag/", "/category/", "/author/", "/feed", "?utm_",
+]
+
+def is_article_url(url: str) -> bool:
+    """Return True if a URL looks like an article (not a tracker/social/nav link)."""
+    if not url.startswith("http"):
+        return False
+    url_lower = url.lower()
+    if any(pat in url_lower for pat in _SKIP_URL_PATTERNS):
+        return False
+    path = urlparse(url).path.rstrip("/")
+    return len(path) > 5  # must have a non-trivial path, not just a homepage
+
+def fetch_article_content(url: str, timeout: int = 8) -> str:
+    """GET a URL and extract its main readable text.
+    Returns '' on failure or if extracted content is too short to be useful.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Strip chrome elements
+        for tag in soup(["nav", "footer", "header", "script", "style",
+                         "aside", "form", "button"]):
+            tag.decompose()
+        # Try common article containers in priority order
+        for selector in [
+            "article",
+            "[class*='post-content']", "[class*='article-body']",
+            "[class*='entry-content']", "[class*='post-body']",
+            "[class*='article-content']", "main",
+        ]:
+            el = soup.select_one(selector)
+            if el:
+                text = clean_text(el.get_text(), MAX_ARTICLE)
+                if len(text) > 200:
+                    return text
+        # Fallback: join all substantial paragraphs
+        paras = [p.get_text() for p in soup.find_all("p") if len(p.get_text()) > 50]
+        if paras:
+            text = re.sub(r"\s+", " ", " ".join(paras)).strip()
+            return text[:MAX_ARTICLE] if len(text) > 200 else ""
+    except Exception:
+        pass
+    return ""
 
 def ollama_summarize(prompt):
     """Send a prompt to local Ollama and return the response."""
@@ -98,6 +156,16 @@ def fetch_web_sources():
 
                 if not content:
                     continue
+
+                # RSS feeds often only include a short teaser. If the content
+                # is under 400 chars, try fetching the full article page.
+                entry_url = entry.get("link", "")
+                if entry_url and len(content) < 400 and is_article_url(entry_url):
+                    log(f"    Short RSS snippet ({len(content)} chars), fetching full article...")
+                    fetched = fetch_article_content(entry_url)
+                    if len(fetched) > len(content):
+                        content = fetched
+                        log(f"    → fetched {len(content)} chars")
 
                 results.append({
                     "source": source["name"],
@@ -304,6 +372,20 @@ def fetch_emails(credentials):
                         continue
 
                 body = clean_text(raw_body, MAX_ARTICLE)
+
+                # If the email body is short (teaser-style newsletter), try
+                # following article links in the email to get the full content.
+                if raw_is_html and len(body) < 800:
+                    soup_links = BeautifulSoup(raw_body, "html.parser")
+                    hrefs = [a.get("href", "") for a in soup_links.find_all("a", href=True)]
+                    article_urls = [u for u in hrefs if is_article_url(u)][:3]
+                    for article_url in article_urls:
+                        log(f"    Following article link: {article_url[:70]}")
+                        fetched = fetch_article_content(article_url)
+                        if len(fetched) > len(body):
+                            body = fetched
+                            log(f"    → fetched {len(body)} chars from linked article")
+                            break
 
                 match_type = "sender" if sender_match else "keyword"
                 log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
