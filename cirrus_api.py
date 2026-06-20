@@ -35,8 +35,10 @@ ALLOWED_SERVICES = {
 }
 
 def require_token():
-    """Abort with 403 if the request doesn't include the correct API token."""
-    token = request.headers.get("X-API-Token", "")
+    """Abort with 403 if the request doesn't include the correct API token.
+    Accepts token via X-API-Token header OR ?token= query param (for web_fetch GET calls).
+    """
+    token = request.headers.get("X-API-Token", "") or request.args.get("token", "")
     if not SECRET_TOKEN or token != SECRET_TOKEN:
         abort(403, description="Invalid or missing API token.")
 
@@ -142,14 +144,18 @@ def pending_proposals():
             })
     return jsonify({"proposals": results})
 
-@app.route("/admin/proposals/reject", methods=["POST"])
+@app.route("/admin/proposals/reject", methods=["GET", "POST"])
 def reject_proposal():
     """Mark one or more proposals as rejected.
-    Body: {"names": ["proposal-2026-06-20-1.md", ...]}
+    GET:  /admin/proposals/reject?names=proposal-a.md,proposal-b.md&token=<token>
+    POST: body {"names": [...]} with X-API-Token header
     """
     require_token()
-    data  = request.get_json() or {}
-    names = data.get("names", [])
+    if request.method == "GET":
+        names = [n.strip() for n in request.args.get("names", "").split(",") if n.strip()]
+    else:
+        data  = request.get_json() or {}
+        names = data.get("names", [])
     if not names:
         return jsonify({"error": "missing names list"}), 400
 
@@ -173,14 +179,18 @@ def reject_proposal():
         results.append({"name": name, "status": "rejected"})
     return jsonify({"results": results})
 
-@app.route("/admin/proposals/approve", methods=["POST"])
+@app.route("/admin/proposals/approve", methods=["GET", "POST"])
 def approve_proposal():
     """Mark a proposal as approved.
-    Body: {"name": "proposal-2026-06-20-1.md"}
+    GET:  /admin/proposals/approve?name=proposal-a.md&token=<token>
+    POST: body {"name": "..."} with X-API-Token header
     """
     require_token()
-    data = request.get_json() or {}
-    name = data.get("name", "")
+    if request.method == "GET":
+        name = request.args.get("name", "").strip()
+    else:
+        data = request.get_json() or {}
+        name = data.get("name", "")
     if not re.match(r'^proposal-[\w\-]+\.md$', name):
         return jsonify({"error": "invalid filename"}), 400
     path = PROJECT_DIR / "digests/proposals" / name
@@ -204,14 +214,18 @@ def list_omit():
                if l.strip() and not l.strip().startswith("#")]
     return jsonify({"entries": entries})
 
-@app.route("/admin/omit", methods=["POST"])
+@app.route("/admin/omit", methods=["GET", "POST"])
 def add_omit():
     """Add a sender to the email omit list.
-    Body: {"sender": "receipts@example.com"}
+    GET:  /admin/omit?sender=email@example.com&token=<token>
+    POST: body {"sender": "..."} with X-API-Token header
     """
     require_token()
-    data   = request.get_json() or {}
-    sender = data.get("sender", "").strip()
+    if request.method == "GET" and request.args.get("sender"):
+        sender = request.args.get("sender", "").strip()
+    else:
+        data   = request.get_json() or {}
+        sender = data.get("sender", "").strip()
     if not sender:
         return jsonify({"error": "missing sender"}), 400
     omit_path = PROJECT_DIR / "config/email_omit.txt"
