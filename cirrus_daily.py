@@ -9,6 +9,7 @@ import imaplib
 import email
 import json
 import re
+import unicodedata
 import requests
 import feedparser
 from datetime import datetime, timedelta
@@ -51,6 +52,14 @@ def clean_text(text, max_len=None):
     if max_len and len(clean) > max_len:
         clean = clean[:max_len] + "..."
     return clean
+
+def strip_unicode_format(text: str) -> str:
+    """Strip Unicode formatting/invisible characters (category Cf).
+    Spammers inject these between letters to bypass keyword filters —
+    e.g. 'Me͏t͏aI' visually reads as 'MetaI' but the invisible
+    U+034F chars create false \b word boundaries, making \bAI\b match.
+    """
+    return ''.join(c for c in text if unicodedata.category(c) != 'Cf')
 
 # URL patterns that are never worth following (trackers, social, nav, images)
 _SKIP_URL_PATTERNS = [
@@ -345,18 +354,24 @@ def fetch_emails(credentials):
 
                 if not sender_match:
                     # ...otherwise only keep it if a keyword shows up in the
-                    # subject or the first 100 lines of the body. This skips
-                    # the full HTML clean (and the email entirely) for
-                    # newsletters that clearly aren't relevant, and avoids
-                    # matching on stray keyword mentions buried in footers.
+                    # subject or the first 30 lines of the body. Keeping this
+                    # window short (was 100) avoids false positives from
+                    # generic newsletters that mention AI once in a sidebar or
+                    # footer. If a newsletter consistently covers AI but has
+                    # non-descriptive subjects, add it to EMAIL_CFG["senders"].
                     #
                     # IMPORTANT: use whole-word (\b) matching for all keywords.
                     # Simple substring ("ai" in text) causes massive false positives:
                     # "ai" matches "email", "paid", "trail", etc.
                     # "model" matches "payment model", "business model", etc.
-                    preview_raw = "\n".join(raw_body.splitlines()[:100])
+                    #
+                    # Also strip Unicode formatting chars (category Cf) before
+                    # matching — spammers inject invisible chars between letters
+                    # (e.g. U+034F) to create false \b word boundaries that make
+                    # \bAI\b match inside words like "MetaI".
+                    preview_raw = "\n".join(raw_body.splitlines()[:30])
                     preview_text = clean_text(preview_raw) if raw_is_html else preview_raw
-                    combined = (subject + " " + preview_text).lower()
+                    combined = strip_unicode_format((subject + " " + preview_text).lower())
 
                     def whole_word_match(keyword: str, text: str) -> bool:
                         return bool(re.search(
