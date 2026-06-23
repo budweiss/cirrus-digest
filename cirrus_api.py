@@ -79,21 +79,34 @@ def approvals_all():
 
 @app.route("/admin/approvals/reject")
 def approvals_reject():
-    """Mark one or more approval items as rejected by matching their detail text.
+    """Mark approval items as rejected.
 
-    GET: /admin/approvals/reject?details=Source: foo,Source: bar&token=<token>
-         Comma-separated list of detail strings to reject.
+    GET: /admin/approvals/reject?details=foo,bar&token=<token>
+         Comma-separated detail strings to reject by exact match.
+    GET: /admin/approvals/reject?all_pending=1&token=<token>
+         Reject ALL items currently in pending status.
     """
     require_token()
+    pending_file = PROJECT_DIR / "config/pending_approvals.json"
+    if not pending_file.exists():
+        return jsonify({"rejected": 0, "not_found": []})
+    with open(pending_file) as f:
+        all_items = json.load(f)
+
+    if request.args.get("all_pending") == "1":
+        rejected = []
+        for item in all_items:
+            if item.get("status") == "pending":
+                item["status"] = "rejected"
+                rejected.append(item["detail"])
+        with open(pending_file, "w") as f:
+            json.dump(all_items, f, indent=2)
+        return jsonify({"rejected": len(rejected), "items": rejected, "not_found": []})
+
     raw = request.args.get("details", "")
     targets = {d.strip() for d in raw.split(",") if d.strip()}
     if not targets:
-        return jsonify({"error": "missing details param"}), 400
-    pending_file = PROJECT_DIR / "config/pending_approvals.json"
-    if not pending_file.exists():
-        return jsonify({"rejected": 0, "not_found": list(targets)})
-    with open(pending_file) as f:
-        all_items = json.load(f)
+        return jsonify({"error": "use ?details=... or ?all_pending=1"}), 400
     rejected = []
     for item in all_items:
         if item.get("detail", "") in targets and item.get("status") == "pending":
@@ -103,7 +116,6 @@ def approvals_reject():
         json.dump(all_items, f, indent=2)
     not_found = list(targets - set(rejected))
     return jsonify({"rejected": len(rejected), "items": rejected, "not_found": not_found})
-
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 
