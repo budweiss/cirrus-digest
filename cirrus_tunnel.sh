@@ -1,37 +1,31 @@
 #!/bin/bash
 # cirrus_tunnel.sh
-# Starts a Cloudflare quick tunnel pointing to the local Flask API (port 5001).
-# Captures the assigned URL and writes it to digests/tunnel-url.txt so
-# Cowork can read it via the SMB mount without needing SSH.
+# Starts the permanent named Cloudflare tunnel (cirrus → cirrus.cirrustask.com → port 5001).
+# Token is read from credentials.json — never hardcoded here.
+# No URL capture needed — URL is always https://cirrus.cirrustask.com
 #
 # Managed by launchd as com.cirrus.tunnel — do not run manually.
 
-URL_FILE="$HOME/projects/cirrus-digest/digests/tunnel-url.txt"
 CLOUDFLARED="/opt/homebrew/bin/cloudflared"
+CREDS="$HOME/projects/cirrus-digest/config/credentials.json"
+CONFIG="$HOME/.cloudflared/config.yml"
 
-# Clear any stale URL from a previous run
-echo "" > "$URL_FILE"
+# Read tunnel token from credentials.json
+TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS'))['cloudflare_tunnel_token'])")
 
-echo "[$(date)] Starting Cloudflare quick tunnel → http://localhost:5001"
+if [ -z "$TOKEN" ]; then
+    echo "[$(date)] ERROR: cloudflare_tunnel_token not found in credentials.json"
+    exit 1
+fi
 
-# Run cloudflared and watch its output for the assigned URL.
-# cloudflared prints the URL to stderr in a banner like:
-#   | https://example-words.trycloudflare.com |
-"$CLOUDFLARED" tunnel --url http://localhost:5001 2>&1 | while IFS= read -r line; do
-    echo "$line"
-    # Match the trycloudflare.com URL in the banner
-    if echo "$line" | grep -q "trycloudflare.com"; then
-        URL=$(echo "$line" | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com')
-        if [ -n "$URL" ]; then
-            echo "$URL" > "$URL_FILE"
-            echo "[$(date)] Tunnel URL saved: $URL"
-            # Notify via Telegram so Buddy knows the URL changed after a reboot
-            CREDS="$HOME/projects/cirrus-digest/config/credentials.json"
-            BOT_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_bot_token'])")
-            CHAT_ID=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_user_id'])")
-            curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-                -d "chat_id=${CHAT_ID}&text=🌐 CIRRUS tunnel restarted.%0ANew URL: ${URL}%0AUpdate local.json if starting a Cowork session." \
-                > /dev/null
-        fi
-    fi
-done
+echo "[$(date)] Starting permanent Cloudflare tunnel → https://cirrus.cirrustask.com → http://localhost:5001"
+
+# Notify via Telegram that tunnel is starting
+BOT_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_bot_token'])")
+CHAT_ID=$(python3 -c "import json; print(json.load(open('$CREDS'))['telegram_user_id'])")
+curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${CHAT_ID}&text=🌐 CIRRUS tunnel started.%0AURL: https://cirrus.cirrustask.com" \
+    > /dev/null
+
+# Run the named tunnel with local ingress config
+exec "$CLOUDFLARED" tunnel --config "$CONFIG" run --token "$TOKEN"
