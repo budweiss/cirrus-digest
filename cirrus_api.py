@@ -2,10 +2,11 @@
 """
 CIRRUS Flask API
 Allows Cowork/Claude to trigger digest runs and make changes remotely.
-Runs on port 5001, accessible via Cloudflare Tunnel.
+Runs on port 5001, accessible via Cloudflare Tunnel at https://cirrus.cirrustask.com
 
-Auth: every request (except /status) must include header:
+Auth: ALL endpoints require the API token, including /status.
   X-API-Token: <credentials.json["api_token"]>
+  or ?token=<api_token> query param
 """
 
 from flask import Flask, jsonify, request, abort
@@ -46,7 +47,8 @@ def require_token():
 
 @app.route("/status")
 def status():
-    """Public health check — no auth required."""
+    """Health check — requires API token."""
+    require_token()
     return jsonify({"status": "ok", "cirrus": "running",
                     "time": datetime.now().isoformat()})
 
