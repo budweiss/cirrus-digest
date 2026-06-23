@@ -52,6 +52,31 @@ def status():
     return jsonify({"status": "ok", "cirrus": "running",
                     "time": datetime.now().isoformat()})
 
+# ── Approvals ──────────────────────────────────────────────────────────────────
+
+@app.route("/admin/approvals/pending")
+def approvals_pending():
+    """Return all items in pending_approvals.json with status=pending."""
+    require_token()
+    pending_file = PROJECT_DIR / "config/pending_approvals.json"
+    if not pending_file.exists():
+        return jsonify({"pending": [], "total": 0})
+    with open(pending_file) as f:
+        all_items = json.load(f)
+    pending = [i for i in all_items if i.get("status") == "pending"]
+    return jsonify({"pending": pending, "total": len(pending)})
+
+@app.route("/admin/approvals/all")
+def approvals_all():
+    """Return all items in pending_approvals.json regardless of status."""
+    require_token()
+    pending_file = PROJECT_DIR / "config/pending_approvals.json"
+    if not pending_file.exists():
+        return jsonify({"items": [], "total": 0})
+    with open(pending_file) as f:
+        all_items = json.load(f)
+    return jsonify({"items": all_items, "total": len(all_items)})
+
 # ── Run ────────────────────────────────────────────────────────────────────────
 
 @app.route("/run/daily", methods=["POST"])
