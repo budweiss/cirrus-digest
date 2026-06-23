@@ -28,4 +28,4 @@ curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     > /dev/null
 
 # Run the named tunnel with local ingress config
-exec "$CLOUDFLARED" tunnel --config "$CONFIG" run --token "$TOKEN"
+exec "$CLOUDFLARED" --config "$CONFIG" tunnel run --token "$TOKEN"
