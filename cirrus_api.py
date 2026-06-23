@@ -43,6 +43,13 @@ def require_token():
     if not SECRET_TOKEN or token != SECRET_TOKEN:
         abort(403, description="Invalid or missing API token.")
 
+@app.after_request
+def no_cache(response):
+    """Tell Cloudflare and all intermediate caches never to cache API responses."""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
 # ── Health ─────────────────────────────────────────────────────────────────────
 
 @app.route("/status")
