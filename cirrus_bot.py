@@ -634,6 +634,9 @@ def extract_recommendations(actions_file: Path) -> list:
             else:
                 # Plain bullet — strip the leading "- " and any trailing source ref
                 detail = re.sub(r'\s*\(Source:.*?\)\s*$', '', stripped[2:]).strip()[:150]
+                # Skip source-attribution lines: "Source: X" or "*Source*: X"
+                if re.match(r'\*?source\*?\s*:', detail, re.IGNORECASE):
+                    continue
 
             if not detail:
                 continue

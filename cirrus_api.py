@@ -77,6 +77,34 @@ def approvals_all():
         all_items = json.load(f)
     return jsonify({"items": all_items, "total": len(all_items)})
 
+@app.route("/admin/approvals/reject")
+def approvals_reject():
+    """Mark one or more approval items as rejected by matching their detail text.
+
+    GET: /admin/approvals/reject?details=Source: foo,Source: bar&token=<token>
+         Comma-separated list of detail strings to reject.
+    """
+    require_token()
+    raw = request.args.get("details", "")
+    targets = {d.strip() for d in raw.split(",") if d.strip()}
+    if not targets:
+        return jsonify({"error": "missing details param"}), 400
+    pending_file = PROJECT_DIR / "config/pending_approvals.json"
+    if not pending_file.exists():
+        return jsonify({"rejected": 0, "not_found": list(targets)})
+    with open(pending_file) as f:
+        all_items = json.load(f)
+    rejected = []
+    for item in all_items:
+        if item.get("detail", "") in targets and item.get("status") == "pending":
+            item["status"] = "rejected"
+            rejected.append(item["detail"])
+    with open(pending_file, "w") as f:
+        json.dump(all_items, f, indent=2)
+    not_found = list(targets - set(rejected))
+    return jsonify({"rejected": len(rejected), "items": rejected, "not_found": not_found})
+
+
 # ── Run ────────────────────────────────────────────────────────────────────────
 
 @app.route("/run/daily", methods=["POST"])

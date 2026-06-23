@@ -449,7 +449,10 @@ Published: {item['published']}
 Content:
 {item['content']}
 
-Write a concise 2-4 sentence summary. If this topic was covered in past digests (see RELEVANT PAST KNOWLEDGE above), note what's new or different. End with one bullet point labeled "→ CIRRUS NOTE:" if anything is directly relevant to improving this AI system."""
+Write a concise 2-4 sentence summary. If this topic was covered in past digests (see RELEVANT PAST KNOWLEDGE above), note what's new or different.
+
+Only add a "→ CIRRUS NOTE:" bullet if this content mentions something CONCRETELY actionable for CIRRUS itself — for example: a specific Ollama model to pull by name, a specific Python package to install, a specific RSS feed or newsletter URL worth adding to sources.json, or a specific code change to make. The note must describe a discrete action CIRRUS can execute.
+DO NOT add a CIRRUS NOTE for: general AI trend observations, content descriptions, podcast themes, vague suggestions like "consider monitoring more sources", or source attribution lines. Most items should have NO CIRRUS NOTE — only add one when there is a specific, named action."""
 
     return ollama_summarize(prompt)
 
