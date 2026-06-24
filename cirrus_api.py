@@ -54,10 +54,40 @@ def no_cache(response):
 
 @app.route("/status")
 def status():
-    """Health check — requires API token."""
+    """Health check — includes stale proposal nudge (pending > 3 days)."""
     require_token()
-    return jsonify({"status": "ok", "cirrus": "running",
-                    "time": datetime.now().isoformat()})
+    result = {"status": "ok", "cirrus": "running", "time": datetime.now().isoformat()}
+
+    # Surface proposals that have been pending review for more than 3 days
+    # so Cowork sessions notice them without having to call /admin/proposals.
+    try:
+        proposals_dir = PROJECT_DIR / "digests/proposals"
+        stale = []
+        if proposals_dir.exists():
+            today = datetime.now().date()
+            for f in sorted(proposals_dir.glob("proposal-*.md"), reverse=True):
+                content = f.read_text()
+                status_match = re.search(r"\*\*Status:\*\*\s*(.+)", content)
+                if not status_match or status_match.group(1).strip() != "pending review":
+                    continue
+                date_match = re.match(r"proposal-(\d{4}-\d{2}-\d{2})", f.name)
+                if not date_match:
+                    continue
+                proposal_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").date()
+                days = (today - proposal_date).days
+                if days >= 3:
+                    title_match = re.search(r"^#\s*Proposal:\s*(.+)", content, re.MULTILINE)
+                    stale.append({
+                        "name": f.name,
+                        "days_pending": days,
+                        "title": (title_match.group(1).strip()[:80] if title_match else f.stem)
+                    })
+        if stale:
+            result["stale_proposals"] = stale
+    except Exception as e:
+        result["stale_proposals_error"] = str(e)
+
+    return jsonify(result)
 
 # ── Approvals ──────────────────────────────────────────────────────────────────
 

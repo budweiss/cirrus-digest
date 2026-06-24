@@ -331,6 +331,19 @@ def fetch_emails(credentials):
                 subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
                 subject = subj_raw.decode(enc or "utf-8") if isinstance(subj_raw, bytes) else subj_raw
 
+                # Skip transactional emails by subject — applied even for
+                # allowlisted senders (e.g. Metatrends sends purchase receipts
+                # that pass the sender check but are never digest-worthy).
+                _OMIT_SUBJECT_PATTERNS = [
+                    "receipt", "invoice", "payment confirmation",
+                    "order confirmation", "billing", "your subscription to",
+                    "thank you for your purchase", "thank you for subscribing",
+                    "subscription renewal",
+                ]
+                if any(pat in subject.lower() for pat in _OMIT_SUBJECT_PATTERNS):
+                    log(f"  Skipping transactional email: {subject[:60]}")
+                    continue
+
                 # Extract the raw (uncleaned) body so we can do a cheap
                 # keyword pre-check before running the full HTML clean below.
                 raw_body = ""
