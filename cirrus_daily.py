@@ -39,6 +39,55 @@ MAX_ARTICLE = DIGEST_CFG["max_article_length"]
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Subject-level skip patterns (transactional / non-digest email) ────────────
+# Applied before keyword scan — keeps receipts, billing, etc. out regardless
+# of sender allowlist. Add new patterns here; all comparisons are lowercased.
+_OMIT_SUBJECT_PATTERNS = [
+    "receipt",
+    "invoice",
+    "payment confirmation",
+    "order confirmation",
+    "billing",
+    "your subscription to",
+    "thank you for your purchase",
+    "thank you for subscribing",
+    "subscription renewal",
+    "account statement",
+    "monthly statement",
+    "your statement",
+    "statement of account",
+]
+
+# ── Paywall detection ─────────────────────────────────────────────────────────
+# Substrings searched (case-insensitive) in fetched page text.
+_PAYWALL_PHRASES = [
+    "member-only story",
+    "this story is only available to members",
+    "subscribe to read",
+    "subscribe to continue reading",
+    "this post is for paying subscribers",
+    "unlock this article",
+    "subscribe to unlock",
+    "paid subscribers only",
+    "become a paying subscriber",
+    "upgrade to read",
+    "upgrade your subscription",
+    "you've reached your limit",
+    "this content is for subscribers",
+    "sign in to read the rest",
+    "read the full story",
+]
+
+PAYWALL_LOG_PATH = LOG_DIR / "paywalls.log"
+
+def log_paywall_hit(url: str, sender: str, subject: str):
+    """Append a paywall hit to the dedicated paywall log for Buddy to review."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"[{ts}] PAYWALL | URL: {url}\n          Sender: {sender}\n          Subject: {subject}\n"
+    with open(PAYWALL_LOG_PATH, "a") as f:
+        f.write(entry)
+    log(f"    ⚠️  PAYWALL — logged to paywalls.log: {url[:70]}")
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def log(msg):
@@ -80,43 +129,111 @@ def is_article_url(url: str) -> bool:
     path = urlparse(url).path.rstrip("/")
     return len(path) > 5  # must have a non-trivial path, not just a homepage
 
-def fetch_article_content(url: str, timeout: int = 8) -> str:
+def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
     """GET a URL and extract its main readable text.
-    Returns '' on failure or if extracted content is too short to be useful.
+
+    Returns (content, is_paywalled).
+    content  — extracted article text, '' on failure or too-short content.
+    is_paywalled — True if a paywall page was detected (content will be partial).
+
+    Timeout defaults to 30s — internet is free at 7am, no rush needed.
     """
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36"
+                          "Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
         resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         resp.raise_for_status()
+        page_text_lower = resp.text.lower()
+
+        # Paywall check before full parse
+        is_paywalled = any(phrase in page_text_lower for phrase in _PAYWALL_PHRASES)
+
         soup = BeautifulSoup(resp.text, "html.parser")
+
         # Strip chrome elements
         for tag in soup(["nav", "footer", "header", "script", "style",
-                         "aside", "form", "button"]):
+                         "aside", "form", "button", "iframe"]):
             tag.decompose()
+
         # Try common article containers in priority order
+        # Medium uses <article>, Substack uses .post-content or article
         for selector in [
             "article",
-            "[class*='post-content']", "[class*='article-body']",
-            "[class*='entry-content']", "[class*='post-body']",
-            "[class*='article-content']", "main",
+            "[class*='post-content']",
+            "[class*='article-body']",
+            "[class*='entry-content']",
+            "[class*='post-body']",
+            "[class*='article-content']",
+            "[class*='body-markup']",   # Substack
+            "[class*='markup']",        # Substack fallback
+            "main",
         ]:
             el = soup.select_one(selector)
             if el:
                 text = clean_text(el.get_text(), MAX_ARTICLE)
                 if len(text) > 200:
-                    return text
+                    return text, is_paywalled
+
         # Fallback: join all substantial paragraphs
         paras = [p.get_text() for p in soup.find_all("p") if len(p.get_text()) > 50]
         if paras:
             text = re.sub(r"\s+", " ", " ".join(paras)).strip()
-            return text[:MAX_ARTICLE] if len(text) > 200 else ""
-    except Exception:
-        pass
-    return ""
+            if len(text) > 200:
+                return text[:MAX_ARTICLE], is_paywalled
+
+    except requests.exceptions.Timeout:
+        log(f"    Fetch timed out: {url[:70]}")
+    except requests.exceptions.HTTPError as e:
+        log(f"    Fetch HTTP error {e.response.status_code}: {url[:70]}")
+    except Exception as e:
+        log(f"    Fetch error: {e}")
+
+    return "", False
+
+
+def score_article_url(url: str, subject_words: list[str]) -> int:
+    """Score a URL for article quality. Higher = better candidate to follow.
+    Used to pick the best link from a newsletter email.
+    """
+    score = 0
+    url_lower = url.lower()
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
+
+    # Prefer known quality article domains
+    quality_domains = [
+        "medium.com", "substack.com", "towards", "hackernoon.com",
+        "towardsdatascience.com", "levelup.gitconnected.com",
+        "betterprogramming.pub", "pub.towardsai.net", "newsletter",
+        "blog.", "news.", "techcrunch", "venturebeat", "wired.com",
+        "arstechnica", "theverge.com",
+    ]
+    for d in quality_domains:
+        if d in domain or d in path:
+            score += 10
+            break
+
+    # Longer, more specific paths are more likely to be articles
+    path_depth = path.rstrip("/").count("/")
+    score += min(path_depth * 2, 8)
+
+    # URL contains words from the subject → strong signal it's the main article
+    for word in subject_words:
+        if len(word) > 4 and word in url_lower:
+            score += 5
+
+    # Penalise likely list/home/tag pages
+    for fragment in ["/tag/", "/category/", "/author/", "/topics/", "/page/"]:
+        if fragment in path:
+            score -= 10
+
+    return score
 
 def ollama_summarize(prompt):
     """Send a prompt to local Ollama and return the response."""
@@ -166,15 +283,17 @@ def fetch_web_sources():
                 if not content:
                     continue
 
-                # RSS feeds often only include a short teaser. If the content
-                # is under 400 chars, try fetching the full article page.
+                # RSS feeds often only include a short teaser. Always try
+                # fetching the full article page for richer content.
                 entry_url = entry.get("link", "")
-                if entry_url and len(content) < 400 and is_article_url(entry_url):
-                    log(f"    Short RSS snippet ({len(content)} chars), fetching full article...")
-                    fetched = fetch_article_content(entry_url)
+                if entry_url and is_article_url(entry_url):
+                    log(f"    Fetching full article ({len(content)} chars in RSS)...")
+                    fetched, paywalled = fetch_article_content(entry_url)
+                    if paywalled:
+                        log_paywall_hit(entry_url, source["name"], entry.get("title", ""))
                     if len(fetched) > len(content):
                         content = fetched
-                        log(f"    → fetched {len(content)} chars")
+                        log(f"    ✓ Fetched {len(content):,} chars")
 
                 results.append({
                     "source": source["name"],
@@ -331,15 +450,7 @@ def fetch_emails(credentials):
                 subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
                 subject = subj_raw.decode(enc or "utf-8") if isinstance(subj_raw, bytes) else subj_raw
 
-                # Skip transactional emails by subject — applied even for
-                # allowlisted senders (e.g. Metatrends sends purchase receipts
-                # that pass the sender check but are never digest-worthy).
-                _OMIT_SUBJECT_PATTERNS = [
-                    "receipt", "invoice", "payment confirmation",
-                    "order confirmation", "billing", "your subscription to",
-                    "thank you for your purchase", "thank you for subscribing",
-                    "subscription renewal",
-                ]
+                # Skip transactional emails by subject (module-level constant).
                 if any(pat in subject.lower() for pat in _OMIT_SUBJECT_PATTERNS):
                     log(f"  Skipping transactional email: {subject[:60]}")
                     continue
@@ -401,19 +512,43 @@ def fetch_emails(credentials):
 
                 body = clean_text(raw_body, MAX_ARTICLE)
 
-                # If the email body is short (teaser-style newsletter), try
-                # following article links in the email to get the full content.
-                if raw_is_html and len(body) < 800:
+                # ── Article link-following ────────────────────────────────────
+                # Always try to fetch the full article from links in the email.
+                # Newsletter emails are almost always teasers — following the
+                # link gives qwen the real content for a better summary.
+                # Uses URL scoring to pick the best candidate link.
+                # Logs paywall hits to paywalls.log for Buddy to review.
+                if raw_is_html:
                     soup_links = BeautifulSoup(raw_body, "html.parser")
                     hrefs = [a.get("href", "") for a in soup_links.find_all("a", href=True)]
-                    article_urls = [u for u in hrefs if is_article_url(u)][:3]
-                    for article_url in article_urls:
-                        log(f"    Following article link: {article_url[:70]}")
-                        fetched = fetch_article_content(article_url)
+                    candidate_urls = [u for u in hrefs if is_article_url(u)]
+
+                    # Score and rank candidates; take top 3 to try
+                    subject_words = re.findall(r"[a-z]{4,}", subject.lower())
+                    ranked = sorted(
+                        set(candidate_urls),
+                        key=lambda u: score_article_url(u, subject_words),
+                        reverse=True
+                    )[:3]
+
+                    for article_url in ranked:
+                        log(f"    → Following: {article_url[:80]}")
+                        fetched, paywalled = fetch_article_content(article_url)
+                        if paywalled:
+                            log_paywall_hit(article_url, from_raw, subject)
+                            # Use what was fetched (partial content is still
+                            # better than the email teaser) but keep looking
+                            # for a non-paywalled link
+                            if len(fetched) > len(body):
+                                body = fetched
+                            continue
                         if len(fetched) > len(body):
                             body = fetched
-                            log(f"    → fetched {len(body)} chars from linked article")
+                            log(f"    ✓ Fetched {len(body):,} chars")
                             break
+                    else:
+                        if body:
+                            log(f"    Using email body ({len(body):,} chars) — no better article found")
 
                 match_type = "sender" if sender_match else "keyword"
                 log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
