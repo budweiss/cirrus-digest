@@ -68,6 +68,169 @@ def ollama_summarize(prompt, timeout=120):
     except Exception as e:
         return f"[Summarization error: {e}]"
 
+
+# ── Reference Search & Enrichment ─────────────────────────────────────────────
+
+def search_web(query: str, max_results: int = 3) -> list[str]:
+    """Search DuckDuckGo HTML and return top result URLs (no API key required)."""
+    try:
+        encoded = requests.utils.quote(query)
+        search_url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/124.0.0.0 Safari/537.36",
+        }
+        resp = requests.get(search_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        urls = []
+        for a in soup.select("a.result__a"):
+            href = a.get("href", "")
+            if "uddg=" in href:
+                raw = href.split("uddg=")[1].split("&")[0]
+                actual = requests.utils.unquote(raw)
+                if actual.startswith("http") and "duckduckgo.com" not in actual:
+                    urls.append(actual)
+                    if len(urls) >= max_results:
+                        break
+        log(f"    Web search '{query[:50]}' → {len(urls)} result(s)")
+        return urls
+    except Exception as e:
+        log(f"    Web search error: {e}")
+        return []
+
+
+def fetch_ref_content(url: str, timeout: int = 30) -> str:
+    """Fetch and extract readable text from a URL for reference enrichment.
+
+    Simplified version of cirrus_daily's fetch_article_content — no paywall
+    logging needed here (podcasts aren't paywalled). Returns empty string on
+    any failure.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["nav", "footer", "header", "script", "style",
+                         "aside", "form", "button", "iframe"]):
+            tag.decompose()
+        for selector in [
+            "article", "[class*='post-content']", "[class*='article-body']",
+            "[class*='entry-content']", "[class*='post-body']",
+            "[class*='article-content']", "main",
+        ]:
+            el = soup.select_one(selector)
+            if el:
+                text = re.sub(r"\s+", " ", el.get_text()).strip()
+                if len(text) > 200:
+                    return text[:MAX_ARTICLE]
+        paras = [p.get_text() for p in soup.find_all("p") if len(p.get_text()) > 50]
+        if paras:
+            return re.sub(r"\s+", " ", " ".join(paras)).strip()[:MAX_ARTICLE]
+    except requests.exceptions.Timeout:
+        log(f"    Fetch timed out: {url[:70]}")
+    except Exception as e:
+        log(f"    Fetch error: {e}")
+    return ""
+
+
+def extract_named_references(text: str) -> list[str]:
+    """Ask qwen to identify specific named external sources mentioned in text.
+
+    Returns 0-3 search query strings for named papers, repos, blog posts,
+    AI models, or datasets. Skips vague references like "a recent study."
+    """
+    if len(text) < 300:
+        return []
+
+    snippet = text[:3000]
+    prompt = f"""Read the following content and identify any specific named external resources that are referenced — such as named research papers, GitHub repositories, blog posts, specific AI models by name, or named datasets.
+
+Return ONLY a JSON array of search query strings (max 3) suitable for a web search to find each resource. If nothing specific is named, return an empty array [].
+
+Examples of what to extract:
+- "the Attention is All You Need paper" → ["Attention is All You Need transformer paper"]
+- "Mistral's new 7B model" → ["Mistral 7B model release"]
+- "the LangChain blog post on agents" → ["LangChain blog agents 2025"]
+- "llama.cpp on GitHub" → ["llama.cpp GitHub repository"]
+
+Do NOT include vague references like "a recent study", "researchers found", "according to experts", or company homepages. Only specific, named resources worth fetching.
+
+Content:
+{snippet}
+
+Return only the JSON array on a single line, nothing else:"""
+
+    try:
+        result = ollama_summarize(prompt, timeout=45)
+        match = re.search(r'\[.*?\]', result, re.DOTALL)
+        if match:
+            refs = json.loads(match.group())
+            if isinstance(refs, list):
+                clean = [str(r).strip() for r in refs if isinstance(r, str) and len(r.strip()) > 5]
+                return clean[:3]
+    except Exception as e:
+        log(f"    Reference extraction error: {e}")
+    return []
+
+
+def enrich_with_references(content: str, source: str, title: str) -> str:
+    """Find named references in content, search + fetch each, append as context.
+
+    Used for both podcast transcripts and newsletter content. Caps at
+    2 references per item. Returns enriched content (unchanged if none found).
+    """
+    if len(content) < 300:
+        return content
+
+    log(f"    Extracting named references from: {title[:50]}")
+    refs = extract_named_references(content)
+    if not refs:
+        log(f"    No named references found.")
+        return content
+
+    log(f"    References to search: {refs}")
+    appended = []
+
+    for ref in refs[:2]:
+        log(f"    → Searching: {ref}")
+        urls = search_web(ref)
+        if not urls:
+            log(f"      No results for: {ref}")
+            continue
+
+        for url in urls[:2]:
+            # Skip obviously non-article URLs
+            parsed_path = url.lower()
+            if any(x in parsed_path for x in [".jpg", ".png", ".gif", ".pdf",
+                                               "twitter.com", "x.com", "linkedin.com",
+                                               "facebook.com", "instagram.com"]):
+                continue
+            log(f"      Fetching: {url[:70]}")
+            fetched = fetch_ref_content(url)
+            if len(fetched) > 200:
+                appended.append(
+                    f"\n\n--- Referenced Source: {ref} ---\n"
+                    f"URL: {url}\n\n"
+                    f"{fetched[:2000]}"
+                )
+                log(f"      ✓ {len(fetched):,} chars from: {url[:60]}")
+                break
+
+    if appended:
+        log(f"    Enriched with {len(appended)} referenced source(s).")
+        return content + "".join(appended)
+    return content
+
+
 # ── Whisper Transcription ─────────────────────────────────────────────────────
 
 WHISPER_BIN = "/Users/buddy/Library/Python/3.9/bin/whisper"
@@ -189,7 +352,13 @@ def fetch_podcasts():
 # ── Summarizer ────────────────────────────────────────────────────────────────
 
 def summarize_item(item):
-    """Summarize a single newsletter or podcast episode, enriched with RAG context."""
+    """Summarize a single newsletter or podcast episode, enriched with RAG context
+    and any referenced external sources fetched via web search."""
+    # Reference enrichment: find named papers/repos/models mentioned in the
+    # content, search for each, fetch and append source material so qwen
+    # summarizes with the original referenced content, not just a mention.
+    content = enrich_with_references(item["content"], item["source"], item["subject"])
+
     # Try to get relevant past knowledge
     rag_context = ""
     try:
@@ -217,9 +386,13 @@ Source: {item['source']}
 Title: {item['subject']}
 
 Content:
-{item['content']}
+{content}
 
 Write a concise 3-5 sentence summary. If this topic was covered in past digests (see RELEVANT PAST KNOWLEDGE above), note what's new or different.
+
+If the content names specific external resources — papers, GitHub repos, blog posts, AI models, datasets, or tools — add a line at the very end formatted exactly as:
+Referenced: [name 1], [name 2], ...
+Omit this line entirely if nothing specific is named (do not write "Referenced: none").
 
 Only add a "→ CIRRUS NOTE:" bullet if this content mentions something CONCRETELY actionable for CIRRUS itself — for example: a specific Ollama model to pull by name (with its model string), a specific Python package to install, a specific RSS feed or newsletter URL worth adding to sources.json, or a specific code change to make. For open-source models, if one is named and seems worth tracking locally, note it by exact model name. For AI tool comparisons, only add a CIRRUS NOTE if there is a specific workflow recommendation worth logging.
 DO NOT add a CIRRUS NOTE for: general AI trend observations, content descriptions, podcast themes, vague suggestions like "consider monitoring more sources", or source attribution lines. Most items should have NO CIRRUS NOTE — only add one when there is a specific, named action."""

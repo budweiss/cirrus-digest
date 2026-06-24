@@ -88,6 +88,143 @@ def log_paywall_hit(url: str, sender: str, subject: str):
         f.write(entry)
     log(f"    ⚠️  PAYWALL — logged to paywalls.log: {url[:70]}")
 
+
+# ── Reference Search & Enrichment ─────────────────────────────────────────────
+
+def search_web(query: str, max_results: int = 3) -> list[str]:
+    """Search DuckDuckGo HTML and return top result URLs (no API key required).
+
+    DuckDuckGo wraps result links in a redirect:
+      //duckduckgo.com/l/?uddg=<encoded_url>&...
+    We decode the `uddg` parameter to get the actual destination URL.
+    """
+    try:
+        encoded = requests.utils.quote(query)
+        search_url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/124.0.0.0 Safari/537.36",
+        }
+        resp = requests.get(search_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        urls = []
+        for a in soup.select("a.result__a"):
+            href = a.get("href", "")
+            if "uddg=" in href:
+                raw = href.split("uddg=")[1].split("&")[0]
+                actual = requests.utils.unquote(raw)
+                if actual.startswith("http") and "duckduckgo.com" not in actual:
+                    urls.append(actual)
+                    if len(urls) >= max_results:
+                        break
+        log(f"    Web search '{query[:50]}' → {len(urls)} result(s)")
+        return urls
+    except Exception as e:
+        log(f"    Web search error: {e}")
+        return []
+
+
+def extract_named_references(text: str) -> list[str]:
+    """Ask qwen to identify specific named external sources in text.
+
+    Returns a list of 0-3 search query strings for: named research papers,
+    GitHub repos, blog posts, specific AI models, or named datasets.
+    Only returns results for clearly named, specific resources — not vague
+    references like "a recent study" or "researchers found."
+    """
+    if len(text) < 300:
+        return []
+
+    snippet = text[:3000]
+    prompt = f"""Read the following content and identify any specific named external resources that are referenced — such as named research papers, GitHub repositories, blog posts, specific AI models by name, or named datasets.
+
+Return ONLY a JSON array of search query strings (max 3) suitable for a web search to find each resource. If nothing specific is named, return an empty array [].
+
+Examples of what to extract:
+- "the Attention is All You Need paper" → ["Attention is All You Need transformer paper"]
+- "Mistral's new 7B model" → ["Mistral 7B model release"]
+- "the LangChain blog post on agents" → ["LangChain blog agents 2025"]
+- "llama.cpp on GitHub" → ["llama.cpp GitHub repository"]
+- "the DSPy framework" → ["DSPy framework Stanford"]
+
+Do NOT include vague references like "a recent study", "researchers found", "according to experts", or company homepages. Only specific, named resources worth fetching.
+
+Content:
+{snippet}
+
+Return only the JSON array on a single line, nothing else:"""
+
+    try:
+        result = ollama_summarize(prompt, timeout=45)
+        match = re.search(r'\[.*?\]', result, re.DOTALL)
+        if match:
+            refs = json.loads(match.group())
+            if isinstance(refs, list):
+                clean = [str(r).strip() for r in refs if isinstance(r, str) and len(r.strip()) > 5]
+                return clean[:3]
+    except Exception as e:
+        log(f"    Reference extraction error: {e}")
+    return []
+
+
+def enrich_with_references(body: str, sender: str, subject: str) -> str:
+    """Extract named references from body, search + fetch each, append as context.
+
+    Runs after link-following. Adds fetched source content to the body so
+    qwen summarizes with the original referenced material, not just a mention.
+
+    Caps at 2 references per item to keep latency reasonable.
+    Returns the enriched body string (unchanged if no references found).
+    """
+    if len(body) < 300:
+        return body
+
+    log(f"    Extracting named references...")
+    refs = extract_named_references(body)
+    if not refs:
+        log(f"    No named references found.")
+        return body
+
+    log(f"    References to search: {refs}")
+    appended = []
+
+    for ref in refs[:2]:
+        log(f"    → Searching: {ref}")
+        urls = search_web(ref)
+        if not urls:
+            log(f"      No results for: {ref}")
+            continue
+
+        fetched_content = ""
+        fetched_url = ""
+        for url in urls[:2]:
+            if not is_article_url(url):
+                continue
+            log(f"      Fetching: {url[:70]}")
+            content, paywalled = fetch_article_content(url)
+            if paywalled:
+                log_paywall_hit(url, sender, f"[ref] {subject}")
+            if len(content) > 200:
+                fetched_content = content[:2000]
+                fetched_url = url
+                log(f"      ✓ {len(content):,} chars from: {url[:60]}")
+                break
+
+        if fetched_content:
+            appended.append(
+                f"\n\n--- Referenced Source: {ref} ---\n"
+                f"URL: {fetched_url}\n\n"
+                f"{fetched_content}"
+            )
+
+    if appended:
+        log(f"    Enriched body with {len(appended)} referenced source(s).")
+        return body + "".join(appended)
+    return body
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def log(msg):
@@ -294,6 +431,12 @@ def fetch_web_sources():
                     if len(fetched) > len(content):
                         content = fetched
                         log(f"    ✓ Fetched {len(content):,} chars")
+
+                # Reference enrichment: search for named papers/models/repos
+                # mentioned in the article and append their content as context.
+                content = enrich_with_references(
+                    content, source["name"], entry.get("title", "")
+                )
 
                 results.append({
                     "source": source["name"],
@@ -550,6 +693,11 @@ def fetch_emails(credentials):
                         if body:
                             log(f"    Using email body ({len(body):,} chars) — no better article found")
 
+                # Reference enrichment: find named papers/repos/models in body,
+                # search the web for each, fetch and append as additional context
+                # so qwen summarizes with the original source material.
+                body = enrich_with_references(body, from_raw, subject)
+
                 match_type = "sender" if sender_match else "keyword"
                 log(f"  Found ({match_type}): {subject[:60]} | From: {from_raw[:40]}")
 
@@ -617,6 +765,10 @@ Content:
 {item['content']}
 
 Write a concise 2-4 sentence summary. If this topic was covered in past digests (see RELEVANT PAST KNOWLEDGE above), note what's new or different.
+
+If the content names specific external resources — papers, GitHub repos, blog posts, AI models, datasets, or tools — add a line at the very end formatted exactly as:
+Referenced: [name 1], [name 2], ...
+Omit this line entirely if nothing specific is named (do not write "Referenced: none").
 
 Only add a "→ CIRRUS NOTE:" bullet if this content mentions something CONCRETELY actionable for CIRRUS itself — for example: a specific Ollama model to pull by name (with its model string), a specific Python package to install, a specific RSS feed or newsletter URL worth adding to sources.json, or a specific code change to make. For open-source models, if one is named and seems worth tracking locally, note it by exact model name. For AI tool comparisons, only add a CIRRUS NOTE if there is a specific workflow recommendation worth logging.
 DO NOT add a CIRRUS NOTE for: general AI trend observations, content descriptions, podcast themes, vague suggestions like "consider monitoring more sources", or source attribution lines. Most items should have NO CIRRUS NOTE — only add one when there is a specific, named action."""
