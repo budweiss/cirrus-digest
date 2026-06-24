@@ -19,6 +19,7 @@ import feedparser
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,46 @@ def ollama_summarize(prompt, timeout=120):
         return f"[Summarization error: {e}]"
 
 
+# ── Site Cookie Injection ──────────────────────────────────────────────────────
+# Shared with cirrus_daily.py — same cookies.json file, same domain-matching
+# logic. Used here for reference source fetching in podcast enrichment.
+
+COOKIES_PATH = Path.home() / "projects/cirrus-digest/config/cookies.json"
+_SITE_COOKIES: dict = {}
+_SITE_COOKIES_LOADED = False
+
+
+def _load_site_cookies():
+    global _SITE_COOKIES, _SITE_COOKIES_LOADED
+    if _SITE_COOKIES_LOADED:
+        return
+    _SITE_COOKIES_LOADED = True
+    if not COOKIES_PATH.exists():
+        return
+    try:
+        with open(COOKIES_PATH) as f:
+            _SITE_COOKIES = json.load(f)
+        log(f"Loaded cookies for {len(_SITE_COOKIES)} domain(s): {', '.join(_SITE_COOKIES)}")
+    except Exception as e:
+        log(f"Could not load cookies.json: {e}")
+
+
+def get_cookies_for_url(url: str) -> dict:
+    """Return stored cookies matching the URL's domain, or {} if none."""
+    _load_site_cookies()
+    if not _SITE_COOKIES:
+        return {}
+    try:
+        domain = urlparse(url).netloc.lower().lstrip("www.")
+        for cookie_domain, cookies in _SITE_COOKIES.items():
+            cd = cookie_domain.lower().lstrip("www.")
+            if domain == cd or domain.endswith("." + cd):
+                return cookies
+    except Exception:
+        pass
+    return {}
+
+
 # ── Reference Search & Enrichment ─────────────────────────────────────────────
 
 def search_web(query: str, max_results: int = 3) -> list[str]:
@@ -104,9 +145,9 @@ def search_web(query: str, max_results: int = 3) -> list[str]:
 def fetch_ref_content(url: str, timeout: int = 30) -> str:
     """Fetch and extract readable text from a URL for reference enrichment.
 
-    Simplified version of cirrus_daily's fetch_article_content — no paywall
-    logging needed here (podcasts aren't paywalled). Returns empty string on
-    any failure.
+    Uses stored cookies for subscribed sites so paywalled reference sources
+    (papers on member-only blogs, etc.) are also reachable.
+    Returns empty string on any failure.
     """
     try:
         headers = {
@@ -116,7 +157,11 @@ def fetch_ref_content(url: str, timeout: int = 30) -> str:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        site_cookies = get_cookies_for_url(url)
+        if site_cookies:
+            log(f"    🍪 Using stored cookies for: {urlparse(url).netloc}")
+        resp = requests.get(url, headers=headers, cookies=site_cookies,
+                            timeout=timeout, allow_redirects=True)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["nav", "footer", "header", "script", "style",

@@ -89,6 +89,61 @@ def log_paywall_hit(url: str, sender: str, subject: str):
     log(f"    ⚠️  PAYWALL — logged to paywalls.log: {url[:70]}")
 
 
+# ── Site Cookie Injection ──────────────────────────────────────────────────────
+# Stores per-domain browser session cookies so CIRRUS can fetch paywalled
+# content from sites Buddy subscribes to.
+#
+# File: ~/projects/cirrus-digest/config/cookies.json  (chmod 600, never deploy)
+# Format:
+#   {
+#     "medium.com":    { "uid": "...", "sid": "...", "sz": "..." },
+#     "theatlantic.com": { "piano_d": "...", "xbc": "..." }
+#   }
+#
+# Domain matching uses suffix logic: stored key "medium.com" also matches
+# "towardsdatascience.medium.com" and any other medium.com subdomain.
+
+COOKIES_PATH = Path.home() / "projects/cirrus-digest/config/cookies.json"
+_SITE_COOKIES: dict = {}
+_SITE_COOKIES_LOADED = False
+
+
+def _load_site_cookies():
+    """Load cookies.json once on first use. Silently skips if file not found."""
+    global _SITE_COOKIES, _SITE_COOKIES_LOADED
+    if _SITE_COOKIES_LOADED:
+        return
+    _SITE_COOKIES_LOADED = True
+    if not COOKIES_PATH.exists():
+        return
+    try:
+        with open(COOKIES_PATH) as f:
+            _SITE_COOKIES = json.load(f)
+        log(f"Loaded cookies for {len(_SITE_COOKIES)} domain(s): {', '.join(_SITE_COOKIES)}")
+    except Exception as e:
+        log(f"Could not load cookies.json: {e}")
+
+
+def get_cookies_for_url(url: str) -> dict:
+    """Return stored cookies matching the URL's domain, or {} if none.
+
+    Strips www. prefix and uses suffix matching so "medium.com" covers
+    both "medium.com" and "towardsdatascience.medium.com".
+    """
+    _load_site_cookies()
+    if not _SITE_COOKIES:
+        return {}
+    try:
+        domain = urlparse(url).netloc.lower().lstrip("www.")
+        for cookie_domain, cookies in _SITE_COOKIES.items():
+            cd = cookie_domain.lower().lstrip("www.")
+            if domain == cd or domain.endswith("." + cd):
+                return cookies
+    except Exception:
+        pass
+    return {}
+
+
 # ── Reference Search & Enrichment ─────────────────────────────────────────────
 
 def search_web(query: str, max_results: int = 3) -> list[str]:
@@ -283,7 +338,11 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        site_cookies = get_cookies_for_url(url)
+        if site_cookies:
+            log(f"    🍪 Using stored cookies for: {urlparse(url).netloc}")
+        resp = requests.get(url, headers=headers, cookies=site_cookies,
+                            timeout=timeout, allow_redirects=True)
         resp.raise_for_status()
         page_text_lower = resp.text.lower()
 
