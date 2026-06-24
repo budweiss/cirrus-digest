@@ -226,6 +226,83 @@ DO NOT add a CIRRUS NOTE for: general AI trend observations, content description
 
     return ollama_summarize(prompt)
 
+def generate_learning_report(summaries, all_items):
+    """Generate the Weekly Learning Report — a meta-analysis of what CIRRUS
+    observed this week across ALL sources (daily digests + this week's podcasts).
+
+    Reads the last 7 daily digest files from disk, combines them with this
+    week's podcast summaries, then asks qwen to identify patterns, themes,
+    and what to prioritize next week.
+
+    Four sections:
+      1. Top Themes This Week
+      2. Emerging vs. Ongoing
+      3. Watch Next Week
+      4. Source Quality Note
+    """
+    # ── Gather daily digest content from the past 7 days ─────────────────────
+    daily_excerpts = []
+    for days_ago in range(1, 8):
+        date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        daily_file = OUTPUT_DIR / f"daily-{date}.md"
+        if daily_file.exists():
+            try:
+                content = daily_file.read_text()
+                # Trim to first 2,500 chars — enough context without overwhelming qwen
+                daily_excerpts.append(f"=== Daily {date} ===\n{content[:2500]}")
+                log(f"  Learning Report: loaded daily-{date}.md")
+            except Exception as e:
+                log(f"  Learning Report: could not read daily-{date}.md ({e})")
+
+    if not daily_excerpts:
+        log("  Learning Report: no daily digests found for the past 7 days")
+
+    # Combine sources: daily digests (up to 5 days) + this week's summaries
+    daily_block = "\n\n".join(daily_excerpts[:5]) or "(no daily digests available)"
+    weekly_block = "\n\n".join(summaries[:10]) or "(no weekly summaries available)"
+
+    # Source names for context
+    source_names = list({item["source"] for item in all_items})
+    sources_line = ", ".join(source_names[:10]) if source_names else "various"
+
+    prompt = f"""You are CIRRUS, an AI assistant that has been monitoring AI developments all week across newsletters, podcasts, and RSS feeds.
+
+DAILY DIGEST EXCERPTS (last 5 days):
+{daily_block}
+
+THIS WEEK'S PODCAST & SOURCE SUMMARIES:
+{weekly_block}
+
+Sources monitored this week: {sources_line}
+
+Generate a **Weekly Learning Report** with exactly these four sections:
+
+**1. TOP THEMES THIS WEEK**
+3-5 bullet points. The most frequently appearing topics this week. Be specific — name actual tools, models, companies, and techniques. Do NOT use vague categories like "AI advancement" or "continued progress."
+
+**2. EMERGING VS. ONGOING**
+Emerging (new this week or rapidly accelerating): specific developments that appeared or became urgent THIS week.
+Ongoing (steady presence from prior weeks): topics that have been consistently present across multiple weeks.
+
+**3. WATCH NEXT WEEK**
+2-3 specific items — products, companies, model releases, events, or regulatory actions — to pay close attention to in the coming 7 days, and a one-line reason why each matters.
+
+**4. SOURCE QUALITY NOTE**
+1-2 sentences. Which source types (newsletters, podcasts, RSS) delivered the most substantive AI content this week vs. which were mostly noise or off-topic. Be specific about source types, not vague praise.
+
+Write for a developer running local AI models on Mac Studio who wants to stay at the leading edge of AI tooling and infrastructure. Be direct and specific throughout."""
+
+    try:
+        result = ollama_summarize(prompt, timeout=300)
+        if result.startswith("[Summarization error:"):
+            log(f"Learning Report error: {result}")
+            return "*Weekly Learning Report unavailable (Ollama error — see digest.log).*"
+        return result
+    except Exception as e:
+        log(f"Learning Report failed: {e}")
+        return "*Weekly Learning Report unavailable (error — see digest.log).*"
+
+
 def generate_meta_recommendations(summaries):
     """Ask the model to reflect on improvements to the digest process itself.
 
@@ -260,7 +337,7 @@ Format as a numbered list."""
 
 # ── Digest Writer ─────────────────────────────────────────────────────────────
 
-def write_digest(items, summaries, meta):
+def write_digest(items, summaries, meta, learning_report=None):
     """Write the final digest file."""
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = OUTPUT_DIR / f"digest-{date_str}.md"
@@ -280,6 +357,13 @@ def write_digest(items, summaries, meta):
                 f.write(f"*From: {item['source']}*\n\n")
                 f.write(f"{summary}\n\n")
                 f.write("---\n\n")
+
+        # Weekly Learning Report (Sunday only — appears before Self-Improvement Notes)
+        if learning_report:
+            f.write("## 📊 Weekly Learning Report\n\n")
+            f.write("*Meta-analysis of this week's AI developments across all CIRRUS sources:*\n\n")
+            f.write(f"{learning_report}\n\n")
+            f.write("---\n\n")
 
         # Meta recommendations
         f.write("## 🔄 CIRRUS Self-Improvement Notes\n\n")
@@ -318,8 +402,21 @@ def main():
         log(f"Self-improvement notes step crashed unexpectedly: {e}")
         meta = "*Self-improvement notes unavailable this week (unexpected error — see digest.log).*"
 
+    # Weekly Learning Report (Sundays only — meta-analysis for Buddy)
+    learning_report = None
+    if datetime.now().weekday() == 6:  # 6 = Sunday
+        log("Sunday detected — generating Weekly Learning Report...")
+        try:
+            learning_report = generate_learning_report(summaries, all_items)
+            log("Weekly Learning Report generated.")
+        except Exception as e:
+            log(f"Weekly Learning Report crashed unexpectedly: {e}")
+            learning_report = "*Weekly Learning Report unavailable (unexpected error — see digest.log).*"
+    else:
+        log("Skipping Weekly Learning Report (runs on Sundays only).")
+
     # Write digest
-    digest_file = write_digest(all_items, summaries, meta)
+    digest_file = write_digest(all_items, summaries, meta, learning_report=learning_report)
 
     log("=== Digest Complete ===")
     log(f"Read it with: cat {digest_file}")
