@@ -435,14 +435,20 @@ Content:
 
 Write a concise 3-5 sentence summary. If this topic was covered in past digests (see RELEVANT PAST KNOWLEDGE above), note what's new or different.
 
-If the content names specific external resources — papers, GitHub repos, blog posts, AI models, datasets, or tools — add a line at the very end formatted exactly as:
+If the content names specific external resources — papers, GitHub repos, blog posts, AI models, datasets, or tools — add a line at the very end:
 Referenced: [name 1], [name 2], ...
-Omit this line entirely if nothing specific is named (do not write "Referenced: none").
+IMPORTANT: Only add this line if you can name something specific. If nothing is named, do not write this line at all — not "Referenced: None", not "Referenced: N/A", not "Referenced: nothing". Simply end your response without it.
 
 Only add a "→ CIRRUS NOTE:" bullet if this content mentions something CONCRETELY actionable for CIRRUS itself — for example: a specific Ollama model to pull by name (with its model string), a specific Python package to install, a specific RSS feed or newsletter URL worth adding to sources.json, or a specific code change to make. For open-source models, if one is named and seems worth tracking locally, note it by exact model name. For AI tool comparisons, only add a CIRRUS NOTE if there is a specific workflow recommendation worth logging.
 DO NOT add a CIRRUS NOTE for: general AI trend observations, content descriptions, podcast themes, vague suggestions like "consider monitoring more sources", or source attribution lines. Most items should have NO CIRRUS NOTE — only add one when there is a specific, named action."""
 
-    return ollama_summarize(prompt)
+    summary = ollama_summarize(prompt)
+    # Strip any "Referenced: None/N/A/nothing" lines qwen produces despite instructions
+    summary = re.sub(
+        r'\nReferenced:\s*(None|none|N\/A|n\/a|nothing|no specific.*|-)?\s*$',
+        '', summary, flags=re.IGNORECASE
+    ).rstrip()
+    return summary
 
 def generate_learning_report(summaries, all_items):
     """Generate the Weekly Learning Report — a meta-analysis of what CIRRUS
