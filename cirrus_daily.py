@@ -81,12 +81,15 @@ _PAYWALL_PHRASES = [
 PAYWALL_LOG_PATH = LOG_DIR / "paywalls.log"
 
 def log_paywall_hit(url: str, sender: str, subject: str):
-    """Append a paywall hit to the dedicated paywall log for Buddy to review."""
+    """Append a paywall hit to the dedicated paywall log for Buddy to review.
+    Also flags the domain for automatic cookie refresh if it's on the watchlist.
+    """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{ts}] PAYWALL | URL: {url}\n          Sender: {sender}\n          Subject: {subject}\n"
     with open(PAYWALL_LOG_PATH, "a") as f:
         f.write(entry)
     log(f"    ⚠️  PAYWALL — logged to paywalls.log: {url[:70]}")
+    flag_cookie_refresh(url)
 
 
 # ── Site Cookie Injection ──────────────────────────────────────────────────────
@@ -103,9 +106,47 @@ def log_paywall_hit(url: str, sender: str, subject: str):
 # Domain matching uses suffix logic: stored key "medium.com" also matches
 # "towardsdatascience.medium.com" and any other medium.com subdomain.
 
-COOKIES_PATH = Path.home() / "projects/cirrus-digest/config/cookies.json"
+COOKIES_PATH     = Path.home() / "projects/cirrus-digest/config/cookies.json"
+WATCHLIST_PATH   = Path.home() / "projects/cirrus-digest/config/cookie_watchlist.json"
+REFRESH_FLAG     = Path.home() / "projects/cirrus-digest/logs/cookie_refresh.needed"
 _SITE_COOKIES: dict = {}
 _SITE_COOKIES_LOADED = False
+_COOKIE_WATCHLIST: list = []
+
+
+def _load_cookie_watchlist():
+    """Load the list of domains to watch for paywall hits."""
+    global _COOKIE_WATCHLIST
+    if WATCHLIST_PATH.exists():
+        try:
+            with open(WATCHLIST_PATH) as f:
+                data = json.load(f)
+            _COOKIE_WATCHLIST = [d.lower() for d in data.get("watch", [])]
+        except Exception as e:
+            log(f"Could not load cookie_watchlist.json: {e}")
+
+
+def flag_cookie_refresh(url: str):
+    """If URL's domain is on the watchlist, append it to the refresh flag file.
+
+    The MacBook sync_cookies.sh polls this file every 30 minutes and
+    automatically extracts fresh cookies from Safari for flagged domains.
+    """
+    if not _COOKIE_WATCHLIST:
+        return
+    try:
+        domain = urlparse(url).netloc.lower().lstrip("www.")
+        # Check if any watchlist entry matches this domain
+        for watched in _COOKIE_WATCHLIST:
+            if domain == watched or domain.endswith("." + watched):
+                log(f"    🔔 Flagging {watched} for cookie refresh (MacBook will sync next cycle)")
+                REFRESH_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                # Append domain to flag file (deduplicated at sync time)
+                with open(REFRESH_FLAG, "a") as f:
+                    f.write(f"{watched}\n")
+                return
+    except Exception as e:
+        log(f"    flag_cookie_refresh error: {e}")
 
 
 def _load_site_cookies():
@@ -895,6 +936,12 @@ def write_digest(items, summaries):
 
 def main():
     log("=== CIRRUS Daily Web Digest Starting ===")
+
+    # Load cookie watchlist so paywall hits on watched domains get flagged
+    # for automatic refresh by the MacBook sync_cookies.sh agent.
+    _load_cookie_watchlist()
+    if _COOKIE_WATCHLIST:
+        log(f"Cookie watchlist loaded: {', '.join(_COOKIE_WATCHLIST)}")
 
     web_items = fetch_web_sources()
 
