@@ -183,11 +183,13 @@ def run_weekly():
 @app.route("/read/log/<logname>")
 def read_log(logname):
     require_token()
-    allowed = ["daily", "daily-error", "bot", "bot-error", "digest", "tool_calls"]
+    allowed = ["daily", "daily-error", "bot", "bot-error", "digest", "tool_calls", "paywalls"]
     if logname not in allowed:
         return jsonify({"error": "log not found"}), 404
     if logname == "tool_calls":
         log_path = PROJECT_DIR / "tool_calls.log"
+    elif logname == "paywalls":
+        log_path = PROJECT_DIR / "logs" / "paywalls.log"
     else:
         log_path = PROJECT_DIR / "logs" / f"{logname}.log"
     if not log_path.exists():
@@ -423,6 +425,55 @@ def deploy():
     })
 
 # ── Write (token-protected) ────────────────────────────────────────────────────
+
+# ── Admin: Upload Config ───────────────────────────────────────────────────────
+
+# Config files that can be uploaded via the API.
+# credentials.json is intentionally excluded — overwriting it would revoke API access.
+ALLOWED_CONFIG_UPLOADS = {
+    "cookies.json",
+    "cookie_watchlist.json",
+    "sources.json",
+    "email_omit.txt",
+    "pending_approvals.json",
+}
+
+@app.route("/admin/upload-config", methods=["POST"])
+def upload_config():
+    """Upload (create or overwrite) a file in the config directory.
+
+    Body: {"filename": "cookies.json", "content": "..."}
+
+    - filename must be in the allowlist (credentials.json is excluded)
+    - Content is written to PROJECT_DIR/config/<filename>
+    - cookies.json is chmod 600 automatically
+    """
+    require_token()
+    data = request.get_json()
+    if not data or "filename" not in data or "content" not in data:
+        return jsonify({"error": "missing filename or content"}), 400
+
+    filename = data["filename"].strip()
+
+    # Reject path traversal, hidden files, or anything not on the allowlist
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return jsonify({"error": "invalid filename"}), 400
+    if filename not in ALLOWED_CONFIG_UPLOADS:
+        return jsonify({"error": f"filename not allowed: {filename}"}), 403
+
+    config_path = PROJECT_DIR / "config" / filename
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(data["content"])
+
+    # Restrict permissions on sensitive files
+    if filename in ("cookies.json",):
+        os.chmod(config_path, 0o600)
+
+    return jsonify({
+        "status": "written",
+        "filename": filename,
+        "bytes": len(data["content"])
+    })
 
 @app.route("/write/file/<filename>", methods=["POST"])
 def write_file(filename):
