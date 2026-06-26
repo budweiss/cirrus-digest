@@ -472,14 +472,14 @@ def score_article_url(url: str, subject_words: list[str]) -> int:
 
     return score
 
-def ollama_summarize(prompt):
+def ollama_summarize(prompt, timeout=120):
     """Send a prompt to local Ollama and return the response."""
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
             json={"model": MODEL, "prompt": prompt, "stream": False,
                   "options": {"num_ctx": 8192}},
-            timeout=120
+            timeout=timeout
         )
         resp.raise_for_status()
         return resp.json().get("response", "").strip()
