@@ -270,6 +270,8 @@ def cmd_help():
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
+/todo <text> — add a new item to the work queue (shows up in /approve)
+/detail <keyword> :: <context> — add more detail to an existing pending item
 /pullmodel <name> — pull an Ollama model on CIRRUS (runs in background, notifies when done)
 /omit <sender> — skip future emails from this sender/address
 /omitlist — show the current email omit list
@@ -380,6 +382,81 @@ def cmd_sources():
     result += "*🎙 Podcasts:*\n" + "\n".join(f"• {s}" for s in podcast_names) + "\n\n"
     result += "*✉️ Email newsletters:*\n" + "\n".join(f"• {s}" for s in email_senders)
     return result
+
+def cmd_todo(text: str) -> str:
+    """Add a new CIRRUS_NOTE item to the pending approvals queue manually.
+    Usage: /todo <description of the work item>
+    """
+    text = text.strip()
+    if not text:
+        return "Usage: /todo <description>\nExample: /todo Add dark mode to digest emails"
+
+    from datetime import date
+    items = load_pending()
+    new_item = {
+        "type": "CIRRUS_NOTE",
+        "detail": text,
+        "source": f"manual:/todo ({date.today()})",
+        "status": "pending"
+    }
+    items.append(new_item)
+    save_pending(items)
+    log(f"/todo added: {text[:80]}")
+    return f"✅ Added to work queue:\n_{text}_\n\nView with /approve."
+
+
+def cmd_detail(arg: str) -> str:
+    """Add more context to an existing pending item by keyword match.
+    Usage: /detail <keyword> :: <extra context>
+    Example: /detail reference extraction :: only happens on articles > 500 words
+    """
+    if "::" not in arg:
+        return (
+            "Usage: /detail <keyword> :: <extra context>\n"
+            "Example: /detail cookie sync :: medium.com needs uid and sid cookies\n\n"
+            "The keyword is matched against existing pending items."
+        )
+
+    keyword, extra = arg.split("::", 1)
+    keyword = keyword.strip().lower()
+    extra = extra.strip()
+
+    if not keyword or not extra:
+        return "Both keyword and extra context are required."
+
+    items = load_pending()
+    matched = [
+        i for i, item in enumerate(items)
+        if item.get("status") == "pending"
+        and keyword in item.get("detail", "").lower()
+    ]
+
+    if not matched:
+        return (
+            f"❌ No pending item found matching: _{keyword}_\n"
+            "Check spelling or use /approve to see current items."
+        )
+
+    if len(matched) > 3:
+        previews = "\n".join(
+            f"• {items[i]['detail'][:80]}" for i in matched[:5]
+        )
+        return (
+            f"⚠️ Found {len(matched)} matching items — be more specific:\n{previews}"
+        )
+
+    updated = []
+    for i in matched:
+        original = items[i]["detail"]
+        items[i]["detail"] = f"{original} — {extra}"
+        updated.append(items[i]["detail"][:100])
+
+    save_pending(items)
+    log(f"/detail updated {len(matched)} item(s) matching '{keyword}'")
+
+    result = "\n".join(f"• _{d}_" for d in updated)
+    return f"✅ Updated {len(matched)} item(s):\n{result}"
+
 
 def cmd_omit(arg: str) -> str:
     """Add a sender (address or substring) to config/email_omit.txt.
@@ -1056,6 +1133,12 @@ def handle_message(message, chat_id):
         return cmd_proposals()
     elif cmd == "/knowledge":
         return cmd_knowledge()
+    elif cmd == "/todo":
+        item = " ".join(text.split()[1:])
+        return cmd_todo(item)
+    elif cmd == "/detail":
+        arg = " ".join(text.split()[1:])
+        return cmd_detail(arg)
     elif cmd == "/ask":
         question = " ".join(text.split()[1:])
         if not question:
