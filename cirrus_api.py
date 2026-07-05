@@ -208,6 +208,40 @@ def read_file(filename):
     file_path = PROJECT_DIR / filename
     return jsonify({"filename": filename, "content": file_path.read_text()})
 
+@app.route("/read/proposal/<name>")
+def read_proposal(name):
+    """Return the full content of a single proposal file.
+    Name must match proposal-YYYY-MM-DD-N.md — no path traversal possible."""
+    require_token()
+    if not re.fullmatch(r"proposal-\d{4}-\d{2}-\d{2}-\d+\.md", name):
+        return jsonify({"error": "invalid proposal name"}), 400
+    path = PROJECT_DIR / "digests/proposals" / name
+    if not path.exists():
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"name": name, "content": path.read_text()})
+
+@app.route("/read/digest/<name>")
+def read_digest(name):
+    """Return a digest, actions, or research output file by name.
+    Allowed: daily-*.md, digest-*.md, daily-actions-*.md, weekly-actions-*.md,
+    research-*.md. Actions live in digests/actions/, research in
+    digests/research/ — resolved automatically. No path traversal possible."""
+    require_token()
+    if not re.fullmatch(r"[\w][\w\-\.]*\.md", name):
+        return jsonify({"error": "invalid file name"}), 400
+    digests_dir = PROJECT_DIR / "digests"
+    if name.startswith(("daily-actions-", "weekly-actions-")):
+        path = digests_dir / "actions" / name
+    elif name.startswith("research-"):
+        path = digests_dir / "research" / name
+    elif name.startswith(("daily-", "digest-")):
+        path = digests_dir / name
+    else:
+        return jsonify({"error": "file type not allowed"}), 403
+    if not path.exists():
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"name": name, "content": path.read_text()})
+
 # ── Admin: Proposals ───────────────────────────────────────────────────────────
 
 @app.route("/admin/proposals", methods=["GET"])
