@@ -112,6 +112,56 @@ def get_cookies_for_url(url: str) -> dict:
 
 # ── Reference Search & Enrichment ─────────────────────────────────────────────
 
+_GEMINI_KEY = None
+_GEMINI_MODEL = "gemini-2.0-flash"
+
+def _load_gemini_key() -> str:
+    """Lazy-load the Gemini API key from credentials.json (once)."""
+    global _GEMINI_KEY, _GEMINI_MODEL
+    if _GEMINI_KEY is not None:
+        return _GEMINI_KEY
+    try:
+        with open(Path.home() / "projects/cirrus-digest/config/credentials.json") as f:
+            creds = json.load(f)
+        _GEMINI_KEY = creds.get("gemini_api_key", "")
+        _GEMINI_MODEL = creds.get("gemini_model", _GEMINI_MODEL)
+    except Exception:
+        _GEMINI_KEY = ""
+    return _GEMINI_KEY
+
+def gemini_search(query: str, max_results: int = 3) -> list[str]:
+    """Google-grounded web search via the Gemini API (google_search tool).
+    Fallback for when DuckDuckGo blocks scraping (403s observed 2026-07-05).
+    Returns grounding source URLs (Google redirect links — requests follows
+    redirects, so fetching them works)."""
+    key = _load_gemini_key()
+    if not key:
+        return []
+    try:
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{_GEMINI_MODEL}:generateContent?key={key}")
+        resp = requests.post(url, json={
+            "contents": [{"parts": [{"text":
+                f"Search the web for: {query}\nBriefly say what the top results are."}]}],
+            "tools": [{"google_search": {}}],
+        }, timeout=30)
+        resp.raise_for_status()
+        cand = resp.json()["candidates"][0]
+        chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks", [])
+        urls = []
+        for ch in chunks:
+            uri = (ch.get("web") or {}).get("uri", "")
+            if uri.startswith("http") and uri not in urls:
+                urls.append(uri)
+            if len(urls) >= max_results:
+                break
+        log(f"    Gemini search '{query[:50]}' → {len(urls)} result(s)")
+        return urls
+    except Exception as e:
+        log(f"    Gemini search error: {e}")
+        return []
+
+
 def search_web(query: str, max_results: int = 3) -> list[str]:
     """Search DuckDuckGo HTML and return top result URLs (no API key required)."""
     try:
@@ -136,10 +186,12 @@ def search_web(query: str, max_results: int = 3) -> list[str]:
                     if len(urls) >= max_results:
                         break
         log(f"    Web search '{query[:50]}' → {len(urls)} result(s)")
+        if not urls:
+            return gemini_search(query, max_results)
         return urls
     except Exception as e:
-        log(f"    Web search error: {e}")
-        return []
+        log(f"    Web search error: {e} — trying Gemini search")
+        return gemini_search(query, max_results)
 
 
 def fetch_ref_content(url: str, timeout: int = 30) -> str:
