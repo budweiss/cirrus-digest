@@ -32,6 +32,13 @@ KEEP_DAILY_DAYS     = 30    # keep daily digests for 30 days
 KEEP_WEEKLY_DAYS    = 365   # keep weekly digests for 1 year
 KEEP_ACTIONS_DAYS   = 90    # keep action files for 90 days
 
+# Log rotation — bot.log reached 1.5GB (2026-07-05) via getUpdates timeout
+# spam before that bug was fixed. Any *.log over the max is trimmed in place
+# to its last KEEP_LOG_MB megabytes. Safe while services run: all CIRRUS
+# loggers reopen their file in append mode on every write.
+MAX_LOG_MB  = 50
+KEEP_LOG_MB = 5
+
 WHISPER_CACHE = Path.home() / ".cache" / "whisper"
 ACTIONS_DIR   = OUTPUT_DIR / "actions"
 
@@ -97,6 +104,32 @@ def cleanup_old_files():
 
     return removed
 
+def rotate_big_logs():
+    """Trim any log file over MAX_LOG_MB down to its last KEEP_LOG_MB."""
+    if not LOG_DIR.exists():
+        return
+    max_bytes  = MAX_LOG_MB * 1024 * 1024
+    keep_bytes = KEEP_LOG_MB * 1024 * 1024
+    for f in LOG_DIR.glob("*.log"):
+        try:
+            size = f.stat().st_size
+            if size <= max_bytes:
+                continue
+            with open(f, "rb") as src:
+                src.seek(-keep_bytes, 2)
+                tail = src.read()
+            # Start at a clean line boundary
+            nl = tail.find(b"\n")
+            if nl != -1:
+                tail = tail[nl + 1:]
+            tmp = f.with_suffix(".log.tmp")
+            with open(tmp, "wb") as dst:
+                dst.write(b"[... log trimmed by space_monitor ...]\n" + tail)
+            tmp.replace(f)
+            log(f"  ✂️  Trimmed {f.name}: {size / (1024**2):.0f} MB → {KEEP_LOG_MB} MB")
+        except Exception as e:
+            log(f"  Log rotation error for {f.name}: {e}")
+
 # ── Monitor ──────────────────────────────────────────────────────────────────
 
 def run_monitor():
@@ -129,6 +162,10 @@ def run_monitor():
     # Run cleanup
     log("Running cleanup...")
     cleanup_old_files()
+
+    # Rotate oversized logs
+    log("Checking log sizes...")
+    rotate_big_logs()
 
     log("=== Space Monitor Complete ===")
 
