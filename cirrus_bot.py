@@ -91,8 +91,13 @@ def api_call(method, params=None):
         req = urllib.request.Request(url, data=data)
     else:
         req = urllib.request.Request(url)
+    # Socket timeout must EXCEED any Telegram long-poll timeout param,
+    # otherwise every quiet getUpdates poll (timeout=30) hits the 30s socket
+    # limit and logs "read operation timed out" — the cause of the constant
+    # timeout spam in bot.log.
+    poll_timeout = int(params.get("timeout", 0)) if params else 0
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=max(30, poll_timeout + 15)) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         # Return the error body so callers can inspect ok/error_code
