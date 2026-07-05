@@ -187,6 +187,29 @@ def run_weekly():
     )
     return jsonify({"status": "started", "pid": proc.pid, "job": "weekly"})
 
+@app.route("/run/extract", methods=["GET"])
+def run_extract():
+    """Re-run action extraction on a digest file.
+    GET: /run/extract?name=daily-2026-07-05.md&token=<token>
+    Output appends to logs/daily-manual.log (see /read/log/daily-manual)."""
+    require_token()
+    name = request.args.get("name", "").strip()
+    if not re.fullmatch(r"(daily|digest)-[\w\-]+\.md", name):
+        return jsonify({"error": "invalid digest name"}), 400
+    path = PROJECT_DIR / "digests" / name
+    if not path.exists():
+        return jsonify({"error": "not found"}), 404
+    log_path = PROJECT_DIR / "logs" / "daily-manual.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logf = open(log_path, "a")
+    logf.write(f"\n=== manual /run/extract {name} @ {datetime.now().isoformat()} ===\n")
+    logf.flush()
+    proc = subprocess.Popen(
+        ["python3", "-u", "extract_actions.py", str(path)],
+        cwd=PROJECT_DIR, stdout=logf, stderr=subprocess.STDOUT
+    )
+    return jsonify({"status": "started", "pid": proc.pid, "digest": name})
+
 # ── Read ───────────────────────────────────────────────────────────────────────
 
 @app.route("/read/log/<logname>")
