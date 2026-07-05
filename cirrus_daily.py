@@ -300,6 +300,9 @@ def enrich_with_references(body: str, sender: str, subject: str) -> str:
                 continue
             log(f"      Fetching: {url[:70]}")
             content, paywalled = fetch_article_content(url)
+            status = "paywalled" if paywalled else (
+                "ok" if len(content) > 200 else "failed")
+            record_link_visit(url, status, f"ref: {ref}", len(content))
             if paywalled:
                 log_paywall_hit(url, sender, f"[ref] {subject}")
             if len(content) > 200:
@@ -342,6 +345,41 @@ def strip_unicode_format(text: str) -> str:
     U+034F chars create false \b word boundaries, making \bAI\b match.
     """
     return ''.join(c for c in text if unicodedata.category(c) != 'Cf')
+
+def whole_word_match(keyword: str, text: str) -> bool:
+    """Whole-word keyword match (\\b) — avoids 'ai' matching 'email' etc."""
+    return bool(re.search(
+        r'\b' + re.escape(keyword.lower()) + r'\b', text, re.IGNORECASE
+    ))
+
+def matches_keywords(text: str) -> bool:
+    """True if text contains any configured digest keyword (whole-word).
+
+    Used to filter EVERY digest item — RSS articles and emails alike — so
+    off-topic content never reaches the digest, regardless of source.
+    Returns True if no keywords are configured (filter disabled).
+    """
+    keywords = EMAIL_CFG.get("keywords", [])
+    if not keywords:
+        return True
+    cleaned = strip_unicode_format(text.lower())
+    return any(whole_word_match(k, cleaned) for k in keywords)
+
+# ── Link visit tracking ───────────────────────────────────────────────────────
+# Every external URL CIRRUS fetches during a run is recorded here and
+# reported in a "Links Visited" section at the end of the daily digest,
+# including paywall hits (sites needing cookie/login access).
+
+_VISITED_LINKS: list = []
+
+def record_link_visit(url: str, status: str, context: str = "", chars: int = 0):
+    """Record a fetched URL. status: 'ok' | 'paywalled' | 'failed'."""
+    _VISITED_LINKS.append({
+        "url": url,
+        "status": status,
+        "context": context[:80],
+        "chars": chars,
+    })
 
 # URL patterns that are never worth following (trackers, social, nav, images)
 _SKIP_URL_PATTERNS = [
@@ -526,11 +564,22 @@ def fetch_web_sources():
                 if entry_url and is_article_url(entry_url):
                     log(f"    Fetching full article ({len(content)} chars in RSS)...")
                     fetched, paywalled = fetch_article_content(entry_url)
+                    status = "paywalled" if paywalled else (
+                        "ok" if len(fetched) > 200 else "failed")
+                    record_link_visit(entry_url, status,
+                                      entry.get("title", ""), len(fetched))
                     if paywalled:
                         log_paywall_hit(entry_url, source["name"], entry.get("title", ""))
                     if len(fetched) > len(content):
                         content = fetched
                         log(f"    ✓ Fetched {len(content):,} chars")
+
+                # Keyword filter — EVERY item must match a configured keyword
+                # in its title or content, or it's dropped from the digest.
+                if not matches_keywords(
+                        entry.get("title", "") + " " + content[:3000]):
+                    log(f"  Skipping (no keyword match): {entry.get('title', '')[:60]}")
+                    continue
 
                 # Reference enrichment: search for named papers/models/repos
                 # mentioned in the article and append their content as context.
@@ -716,42 +765,26 @@ def fetch_emails(credentials):
                     raw_body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
                     raw_is_html = msg.get_content_type() == "text/html"
 
-                # Match if sender is on the allowlist...
+                # Sender allowlist match only affects HOW MUCH of the body we
+                # scan for keywords — it no longer bypasses the keyword filter.
+                # EVERY email must match a keyword to make the digest:
+                #   - allowlisted sender: keyword anywhere in subject or body
+                #     (trusted source, so we search the whole email)
+                #   - unknown sender: keyword in subject or first 30 lines only
+                #     (short window avoids false positives from generic
+                #     newsletters that mention AI once in a sidebar or footer)
+                #
+                # whole_word_match() uses \b matching (substring "ai" would
+                # match "email"/"paid") and matches_keywords() strips Unicode
+                # formatting chars spammers inject to fake word boundaries.
                 sender_match = any(s in from_lower for s in senders_lower)
 
-                if not sender_match:
-                    # ...otherwise only keep it if a keyword shows up in the
-                    # subject or the first 30 lines of the body. Keeping this
-                    # window short (was 100) avoids false positives from
-                    # generic newsletters that mention AI once in a sidebar or
-                    # footer. If a newsletter consistently covers AI but has
-                    # non-descriptive subjects, add it to EMAIL_CFG["senders"].
-                    #
-                    # IMPORTANT: use whole-word (\b) matching for all keywords.
-                    # Simple substring ("ai" in text) causes massive false positives:
-                    # "ai" matches "email", "paid", "trail", etc.
-                    # "model" matches "payment model", "business model", etc.
-                    #
-                    # Also strip Unicode formatting chars (category Cf) before
-                    # matching — spammers inject invisible chars between letters
-                    # (e.g. U+034F) to create false \b word boundaries that make
-                    # \bAI\b match inside words like "MetaI".
-                    preview_raw = "\n".join(raw_body.splitlines()[:30])
-                    preview_text = clean_text(preview_raw) if raw_is_html else preview_raw
-                    combined = strip_unicode_format((subject + " " + preview_text).lower())
-
-                    def whole_word_match(keyword: str, text: str) -> bool:
-                        return bool(re.search(
-                            r'\b' + re.escape(keyword.lower()) + r'\b',
-                            text,
-                            re.IGNORECASE
-                        ))
-
-                    keyword_match = any(
-                        whole_word_match(k, combined) for k in keywords_lower
-                    )
-                    if not keyword_match:
-                        continue
+                scan_raw = raw_body if sender_match else "\n".join(raw_body.splitlines()[:30])
+                scan_text = clean_text(scan_raw) if raw_is_html else scan_raw
+                if not matches_keywords(subject + " " + scan_text):
+                    if sender_match:
+                        log(f"  Skipping (trusted sender, no keyword match): {subject[:60]}")
+                    continue
 
                 body = clean_text(raw_body, MAX_ARTICLE)
 
@@ -761,6 +794,7 @@ def fetch_emails(credentials):
                 # link gives qwen the real content for a better summary.
                 # Uses URL scoring to pick the best candidate link.
                 # Logs paywall hits to paywalls.log for Buddy to review.
+                fetched_url = ""
                 if raw_is_html:
                     soup_links = BeautifulSoup(raw_body, "html.parser")
                     hrefs = [a.get("href", "") for a in soup_links.find_all("a", href=True)]
@@ -777,6 +811,9 @@ def fetch_emails(credentials):
                     for article_url in ranked:
                         log(f"    → Following: {article_url[:80]}")
                         fetched, paywalled = fetch_article_content(article_url)
+                        status = "paywalled" if paywalled else (
+                            "ok" if len(fetched) > 200 else "failed")
+                        record_link_visit(article_url, status, subject, len(fetched))
                         if paywalled:
                             log_paywall_hit(article_url, from_raw, subject)
                             # Use what was fetched (partial content is still
@@ -784,9 +821,11 @@ def fetch_emails(credentials):
                             # for a non-paywalled link
                             if len(fetched) > len(body):
                                 body = fetched
+                                fetched_url = article_url
                             continue
                         if len(fetched) > len(body):
                             body = fetched
+                            fetched_url = article_url
                             log(f"    ✓ Fetched {len(body):,} chars")
                             break
                     else:
@@ -811,7 +850,8 @@ def fetch_emails(credentials):
                     "subject": subject,
                     "content": body,
                     "type": "email",
-                    "published": published
+                    "published": published,
+                    "fetched_url": fetched_url
                 })
                 found += 1
 
@@ -904,6 +944,8 @@ def write_digest(items, summaries):
             for item, summary in email_items:
                 f.write(f"### {item['subject']}\n")
                 f.write(f"*From: {item['source']} — {item['published']}*\n\n")
+                if item.get("fetched_url"):
+                    f.write(f"🔗 *Full article fetched from:* {item['fetched_url']}\n\n")
                 f.write(f"{summary}\n\n")
                 f.write("---\n\n")
 
@@ -926,6 +968,32 @@ def write_digest(items, summaries):
                     f.write(f"[Read article]({item['url']})\n\n")
                 f.write(f"{summary}\n\n")
                 f.write("---\n\n")
+
+        # ── Links Visited section ─────────────────────────────────────────
+        # Full transparency: every external URL CIRRUS fetched this run,
+        # its outcome, and which sites need cookie/login access.
+        if _VISITED_LINKS:
+            emoji_map = {"ok": "✅", "paywalled": "🔒", "failed": "⚠️"}
+            f.write("## 🔗 Links Visited This Run\n\n")
+            for v in _VISITED_LINKS:
+                em = emoji_map.get(v["status"], "•")
+                size = f" ({v['chars']:,} chars)" if v["status"] == "ok" else ""
+                ctx = f" — _{v['context']}_" if v["context"] else ""
+                f.write(f"- {em} {v['url']}{size}{ctx}\n")
+
+            paywalled_domains = sorted({
+                urlparse(v["url"]).netloc.lstrip("www.")
+                for v in _VISITED_LINKS if v["status"] == "paywalled"
+            })
+            if paywalled_domains:
+                f.write("\n### 🔒 Access Needed\n\n")
+                f.write("These sites returned paywalls — cookies are missing or expired:\n\n")
+                for d in paywalled_domains:
+                    f.write(f"- {d}\n")
+                f.write("\nWatched domains are auto-flagged for cookie refresh from the MacBook. "
+                        "Others need entries added to `cookies.json` "
+                        "(Safari → Web Inspector → Storage → Cookies).\n")
+            f.write("\n---\n\n")
 
         f.write(f"*End of daily digest — {date_str}*\n")
 

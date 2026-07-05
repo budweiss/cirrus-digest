@@ -270,6 +270,7 @@ def cmd_help():
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
+/research <topic> — search the web, fetch ~5 sources, and reply with a research brief (runs in background)
 /todo <text> — add a new item to the work queue (shows up in /approve)
 /detail <keyword> :: <context> — add more detail to an existing pending item
 /pullmodel <name> — pull an Ollama model on CIRRUS (runs in background, notifies when done)
@@ -635,14 +636,133 @@ def cmd_pullmodel(model: str, chat_id: int):
     t.start()
     return f"🔄 Pull started for `{model}`. You'll get a notification when it completes."
 
+# ── Research Command ──────────────────────────────────────────────────────────
+
+RESEARCH_DIR = OUTPUT_DIR / "research"
+
+def _research_background(topic: str, chat_id: int):
+    """Run a web research task in the background and reply when done.
+
+    Reuses search_web / fetch_article_content from cirrus_daily.py, so it
+    gets cookie injection (Medium/Substack access) and paywall logging
+    automatically. Fetches up to 5 readable sources, summarizes with
+    Gemini (fallback: local Ollama), saves a research file, replies in
+    Telegram with the findings and the list of URLs visited.
+    """
+    try:
+        import sys as _sys
+        if str(PROJECT_DIR) not in _sys.path:
+            _sys.path.insert(0, str(PROJECT_DIR))
+        from cirrus_daily import search_web, fetch_article_content, is_article_url
+
+        log(f"/research started: {topic}")
+        urls = search_web(topic, max_results=8)
+        if not urls:
+            send_message(chat_id, f"❌ Research: web search returned no results for _{topic}_")
+            return
+
+        fetched, paywalled_urls = [], []
+        for url in urls:
+            if not is_article_url(url):
+                continue
+            content, paywalled = fetch_article_content(url)
+            if paywalled:
+                paywalled_urls.append(url)
+            if len(content) > 300:
+                fetched.append((url, content[:4000]))
+            if len(fetched) >= 5:
+                break
+
+        if not fetched:
+            send_message(chat_id,
+                f"❌ Research: no readable sources found for _{topic}_.\n"
+                + (f"🔒 {len(paywalled_urls)} hit paywalls." if paywalled_urls else ""))
+            return
+
+        sources_block = "\n\n".join(
+            f"--- SOURCE {i}: {u} ---\n{c}" for i, (u, c) in enumerate(fetched, 1)
+        )
+        prompt = f"""You are CIRRUS, researching a topic requested by Buddy.
+
+TOPIC: {topic}
+
+Below are {len(fetched)} web sources fetched just now. Write a research brief with:
+1. **Key Findings** — the most important specific facts, tools, models, or developments (cite sources as [1], [2], ...)
+2. **Differing Views** — where sources disagree or emphasize different angles (skip if none)
+3. **Actionable Takeaways** — 2-3 concrete next steps or things worth trying
+
+Be specific — name tools, models, versions, numbers. Do not pad.
+
+{sources_block}
+
+Write the research brief now:"""
+
+        body = None
+        try:
+            body = call_gemini(prompt, timeout=120)
+            if body:
+                log("/research summarized via Gemini")
+        except Exception as e:
+            log(f"/research Gemini error, falling back to Ollama: {e}")
+        if not body:
+            resp = requests.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json={"model": MODEL, "prompt": prompt, "stream": False,
+                      "options": {"num_ctx": 16384}},
+                timeout=600
+            )
+            resp.raise_for_status()
+            body = resp.json().get("response", "").strip()
+
+        # Save research file
+        RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r'[^\w]+', '-', topic.lower()).strip('-')[:40]
+        ts = datetime.now().strftime("%Y-%m-%d-%H%M")
+        path = RESEARCH_DIR / f"research-{ts}-{slug}.md"
+        sources_list = "\n".join(f"{i}. {u}" for i, (u, _) in enumerate(fetched, 1))
+        path.write_text(
+            f"# Research: {topic}\n\n**Date:** {ts}\n\n{body}\n\n"
+            f"---\n\n## Sources Visited\n\n{sources_list}\n"
+            + (f"\n## Paywalled (no access)\n\n"
+               + "\n".join(f"- {u}" for u in paywalled_urls) + "\n"
+               if paywalled_urls else "")
+        )
+
+        reply = f"🔎 *Research: {topic}*\n\n{body}\n\n*Sources:*\n{sources_list}"
+        if paywalled_urls:
+            reply += f"\n\n🔒 {len(paywalled_urls)} source(s) hit paywalls (logged)."
+        reply += f"\n\n_Saved: {path.name}_"
+        send_message(chat_id, reply)
+        log(f"/research complete: {path.name}")
+    except Exception as e:
+        log(f"/research error: {e}")
+        send_message(chat_id, f"❌ Research error: {e}")
+
+def cmd_research(topic: str, chat_id: int) -> str:
+    if not topic.strip():
+        return ("Usage: /research <topic>\n"
+                "Example: `/research best local coding models under 32B in 2026`")
+    t = threading.Thread(target=_research_background,
+                         args=(topic.strip(), chat_id), daemon=True)
+    t.start()
+    return (f"🔎 Researching: _{topic.strip()}_\n"
+            f"Searching the web, fetching ~5 sources, summarizing... "
+            f"I'll reply here when done (usually 2-5 minutes).")
+
 # ── Approval System ───────────────────────────────────────────────────────────
 
 PENDING_FILE = PROJECT_DIR / "config/pending_approvals.json"
 
 def extract_recommendations(actions_file: Path) -> list:
-    """Parse action items file and extract actionable recommendations."""
+    """Parse action items file and extract actionable recommendations.
+
+    Each item carries `source` (the actions file it came from, which names
+    the digest date) and `added` (date extracted) so /approve can show
+    where and when every recommendation originated.
+    """
     content = actions_file.read_text()
     recommendations = []
+    added_date = datetime.now().strftime("%Y-%m-%d")
 
     # Look for patterns indicating actionable items
     patterns = [
@@ -668,6 +788,8 @@ def extract_recommendations(actions_file: Path) -> list:
                         "type": action_type,
                         "detail": detail,
                         "source_line": line[:120],
+                        "source": actions_file.name,
+                        "added": added_date,
                         "status": "pending"
                     })
 
@@ -724,6 +846,8 @@ def extract_recommendations(actions_file: Path) -> list:
                     "type": "CIRRUS_NOTE",
                     "detail": detail,
                     "source_line": stripped[:160],
+                    "source": actions_file.name,
+                    "added": added_date,
                     "status": "pending"
                 })
 
@@ -1046,7 +1170,13 @@ def cmd_approve(chat_id):
     msg = f"📋 *{len(active)} Pending Recommendations*\n\nReply with the number to approve, or `reject N` to reject:\n\n"
     for i, item in enumerate(active, 1):
         emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡", "CIRRUS_NOTE": "💡"}.get(item["type"], "•")
-        msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n\n"
+        msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n"
+        src = item.get("source", "")
+        added = item.get("added", "")
+        if src or added:
+            parts = [p for p in (src, added) if p]
+            msg += f"_from: {' — '.join(parts)}_\n"
+        msg += "\n"
 
     msg += "_Reply: `approve 1` or `reject 2` or `approve all` or `reject all`_"
     return msg
@@ -1144,6 +1274,9 @@ def handle_message(message, chat_id):
         if not question:
             return "Usage: /ask <your question>"
         return cmd_ask(question)
+    elif cmd == "/research":
+        topic = " ".join(text.split()[1:])
+        return cmd_research(topic, chat_id)
     elif cmd == "/pullmodel":
         model = " ".join(text.split()[1:]).strip()
         return cmd_pullmodel(model, chat_id)
