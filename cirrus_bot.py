@@ -201,7 +201,12 @@ def call_gemini(prompt: str, timeout: int = 60):
     }, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    # Gemini splits responses containing code blocks into MULTIPLE parts.
+    # Taking only parts[0] silently truncated every proposal at its first
+    # code fence (the cause of proposals missing their sketch + Risks
+    # sections). Join ALL text parts.
+    parts = data["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts).strip()
 
 def call_grok(prompt: str, timeout: int = 60):
     if not GROK_API_KEY:
@@ -916,6 +921,8 @@ def generate_proposal(item: dict) -> Path:
     Does NOT modify or deploy any code itself."""
     detail = item["detail"]
     source_line = item.get("source_line", "")
+    origin = item.get("source", "")
+    added = item.get("added", "")
 
     conventions = load_conventions()
     conventions_block = (
@@ -931,12 +938,19 @@ A self-improvement recommendation was extracted from a recent digest and approve
 
 RECOMMENDATION: {detail}
 SOURCE CONTEXT: {source_line}
+ORIGIN: {origin or "unknown"} (extracted {added or "date unknown"})
 
 Write a concrete, scoped implementation proposal for applying this recommendation to the CIRRUS project above. Be specific:
 1. Which file(s) would need to change
 2. What the change would do, in plain terms
 3. A rough sketch of the code/config change (pseudocode or a short snippet is fine — this is a proposal, not final code)
 4. Risks or things to verify before deploying
+
+Hard requirements:
+- COMPLETE all three sections — never stop after a heading. The code sketch and Risks section are mandatory.
+- Strictly follow the conventions document above: correct file paths, no new frameworks, no new scheduling mechanisms, prefer small additive changes.
+- BEFORE proposing to add a source, check whether it already appears in the conventions/source list — if it may already be monitored, say so and propose verification instead.
+- If the recommendation duplicates an obvious existing capability, recommend rejection.
 
 If the recommendation is too vague, too broad, or not realistically actionable for this specific project, say so honestly instead of inventing a change — a "no good fit yet" verdict is a valid and useful proposal.
 

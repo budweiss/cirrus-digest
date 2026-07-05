@@ -341,6 +341,41 @@ def approve_proposal():
     path.write_text(updated)
     return jsonify({"name": name, "status": "approved"})
 
+@app.route("/admin/proposals/implemented", methods=["GET", "POST"])
+def implemented_proposal():
+    """Mark one or more proposals as implemented and deployed.
+    GET:  /admin/proposals/implemented?names=proposal-a.md,proposal-b.md&token=<token>
+    POST: body {"names": [...]} with X-API-Token header
+    """
+    require_token()
+    if request.method == "GET":
+        names = [n.strip() for n in request.args.get("names", "").split(",") if n.strip()]
+    else:
+        data  = request.get_json() or {}
+        names = data.get("names", [])
+    if not names:
+        return jsonify({"error": "missing names list"}), 400
+
+    proposals_dir = PROJECT_DIR / "digests/proposals"
+    results = []
+    for name in names:
+        if not re.match(r'^proposal-[\w\-]+\.md$', name):
+            results.append({"name": name, "status": "skipped", "reason": "invalid filename"})
+            continue
+        path = proposals_dir / name
+        if not path.exists():
+            results.append({"name": name, "status": "not_found"})
+            continue
+        content = path.read_text()
+        updated = re.sub(r'\*\*Status:\*\*\s*.+', '**Status:** implemented', content)
+        updated = updated.replace(
+            "- [ ] Implemented and deployed",
+            "- [x] Implemented and deployed"
+        )
+        path.write_text(updated)
+        results.append({"name": name, "status": "implemented"})
+    return jsonify({"results": results})
+
 # ── Admin: Email Omit ──────────────────────────────────────────────────────────
 
 @app.route("/admin/omit", methods=["GET"])

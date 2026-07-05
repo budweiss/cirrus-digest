@@ -169,6 +169,11 @@
       "name": "Tom's Hardware",
       "rss": "https://cdn.mos.cms.futurecdn.net/siteIcons/tomshardware/tomshardware.rss",
       "type": "blog"
+    },
+    {
+      "name": "Hacker News (150+ pts)",
+      "type": "blog",
+      "rss": "https://hnrss.org/frontpage?points=150"
     }
   ],
   "digest": {
