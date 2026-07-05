@@ -156,16 +156,25 @@ def approvals_reject():
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 
-@app.route("/run/daily", methods=["POST"])
+@app.route("/run/daily", methods=["GET", "POST"])
 def run_daily():
+    """Start a daily digest run. GET support added so Cowork's web_fetch
+    (GET-only) can trigger runs. Output goes to logs/daily-manual.log so
+    manual runs are inspectable via /read/log/daily-manual."""
     require_token()
+    log_path = PROJECT_DIR / "logs" / "daily-manual.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logf = open(log_path, "a")
+    logf.write(f"\n=== manual /run/daily @ {datetime.now().isoformat()} ===\n")
+    logf.flush()
     proc = subprocess.Popen(
-        ["python3", "cirrus_daily.py"],
+        ["python3", "-u", "cirrus_daily.py"],
         cwd=PROJECT_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stdout=logf,
+        stderr=subprocess.STDOUT
     )
-    return jsonify({"status": "started", "pid": proc.pid, "job": "daily"})
+    return jsonify({"status": "started", "pid": proc.pid, "job": "daily",
+                    "log": "daily-manual"})
 
 @app.route("/run/weekly", methods=["POST"])
 def run_weekly():
@@ -183,7 +192,7 @@ def run_weekly():
 @app.route("/read/log/<logname>")
 def read_log(logname):
     require_token()
-    allowed = ["daily", "daily-error", "bot", "bot-error", "digest", "tool_calls", "paywalls"]
+    allowed = ["daily", "daily-error", "daily-manual", "bot", "bot-error", "digest", "tool_calls", "paywalls"]
     if logname not in allowed:
         return jsonify({"error": "log not found"}), 404
     if logname == "tool_calls":
