@@ -698,7 +698,11 @@ def fetch_emails(credentials):
         log(f"Connecting to {label} ({account['address']})...")
         found = 0
         try:
-            mail = imaplib.IMAP4_SSL(account["imap_server"], account.get("imap_port", 993))
+            # timeout=60 prevents a single slow/stalled IMAP operation from
+            # hanging the entire daily run indefinitely (observed 2026-07-05:
+            # run froze >10 min inside mail.uid("fetch") with no timeout).
+            mail = imaplib.IMAP4_SSL(account["imap_server"], account.get("imap_port", 993),
+                                     timeout=60)
             mail.login(account["address"], password)
             mail.select("inbox")
 
@@ -728,6 +732,11 @@ def fetch_emails(credentials):
             skipped = len(uids) - len(new_uids)
 
             for uid in new_uids:
+              # Per-email guard: one malformed email (bad encoding, huge
+              # attachment, fetch error) must not abort the whole account —
+              # previously "unknown encoding: unknown-8bit" killed the loop
+              # and dropped every remaining email that day.
+              try:
                 _, msg_data = mail.uid("fetch", str(uid), "(RFC822)")
                 msg = email.message_from_bytes(msg_data[0][1])
 
@@ -854,6 +863,8 @@ def fetch_emails(credentials):
                     "fetched_url": fetched_url
                 })
                 found += 1
+              except Exception as e:
+                log(f"  Skipping email UID {uid} (error: {e})")
 
             mail.logout()
 
