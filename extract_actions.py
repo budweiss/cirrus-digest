@@ -67,7 +67,8 @@ MAX_CHUNK_CHARS = 5500
 MAX_CHUNKS = 10  # safety cap: 10 x ~30s qwen calls ≈ 5 min worst case
 
 _NONE_BULLET = re.compile(
-    r'^-\s*\**\s*(none|n/?a|nothing)\b', re.IGNORECASE
+    r'^-\s*\**\s*(none|n/?a|nothing|no\s+specific\s+action|no\s+action)',
+    re.IGNORECASE
 )
 
 def split_digest_chunks(content: str, max_chunk: int = MAX_CHUNK_CHARS) -> list[str]:

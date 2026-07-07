@@ -140,6 +140,27 @@ def approvals_reject():
             json.dump(all_items, f, indent=2)
         return jsonify({"rejected": len(rejected), "items": rejected, "not_found": []})
 
+    # Reject by 1-based pending index (matches /approve numbering).
+    # Needed because ?details= splits on commas, so any detail string
+    # containing a comma can't be matched that way.
+    idx_raw = request.args.get("idx", "")
+    if idx_raw:
+        try:
+            idxs = {int(i) for i in idx_raw.split(",") if i.strip()}
+        except ValueError:
+            return jsonify({"error": "idx must be comma-separated integers"}), 400
+        pending_items = [it for it in all_items if it.get("status") == "pending"]
+        rejected = []
+        for n, item in enumerate(pending_items, 1):
+            if n in idxs:
+                item["status"] = "rejected"
+                rejected.append(f"{n}: {item.get('detail', '')[:80]}")
+        with open(pending_file, "w") as f:
+            json.dump(all_items, f, indent=2)
+        bad = sorted(idxs - set(range(1, len(pending_items) + 1)))
+        return jsonify({"rejected": len(rejected), "items": rejected,
+                        "invalid_idx": bad})
+
     raw = request.args.get("details", "")
     targets = {d.strip() for d in raw.split(",") if d.strip()}
     if not targets:

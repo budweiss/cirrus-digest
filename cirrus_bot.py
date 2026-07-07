@@ -763,6 +763,20 @@ def cmd_research(topic: str, chat_id: int) -> str:
 
 PENDING_FILE = PROJECT_DIR / "config/pending_approvals.json"
 
+# Junk detail guard: qwen emits "No specific action noted. → CIRRUS NOTE:"
+# style non-items despite prompt instructions; these produced empty /approve
+# entries (observed 2026-07-07, item 13 was blank after marker stripping).
+_JUNK_DETAIL = re.compile(
+    r'^\W*(none|n/?a|nothing|no\s+specific\s+action|no\s+action)', re.IGNORECASE
+)
+
+def _clean_detail(detail: str) -> str:
+    """Strip dangling '→ CIRRUS NOTE:' / truncated '→ <source>' tails."""
+    return re.sub(r'\s*(→|->)[^→]{0,40}$', '', detail).strip()
+
+def _is_junk_detail(detail: str) -> bool:
+    return len(detail) < 15 or bool(_JUNK_DETAIL.match(detail))
+
 def extract_recommendations(actions_file: Path) -> list:
     """Parse action items file and extract actionable recommendations.
 
@@ -790,7 +804,9 @@ def extract_recommendations(actions_file: Path) -> list:
         for pattern, action_type in patterns:
             match = re.search(pattern, line, re.IGNORECASE)
             if match:
-                detail = match.group(1).strip()[:100]
+                detail = _clean_detail(match.group(1).strip()[:100])
+                if _is_junk_detail(detail):
+                    continue
                 key = f"{action_type}:{detail}"
                 if key not in seen:
                     seen.add(key)
@@ -847,7 +863,8 @@ def extract_recommendations(actions_file: Path) -> list:
                 if re.match(r'\*?source\*?\s*:', detail, re.IGNORECASE):
                     continue
 
-            if not detail:
+            detail = _clean_detail(detail)
+            if not detail or _is_junk_detail(detail):
                 continue
             key = f"CIRRUS_NOTE:{detail}"
             if key not in seen:
