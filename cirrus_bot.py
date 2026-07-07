@@ -941,6 +941,33 @@ Key components:
 
 CONVENTIONS_PATH = PROJECT_DIR / "CIRRUS-CONVENTIONS.md"
 
+def load_current_sources_block() -> str:
+    """Fresh inventory of everything CIRRUS already monitors, injected into
+    proposal prompts so the generator never proposes re-adding an existing
+    source (observed 2026-07-07: proposal suggested VentureBeat AI, which
+    was already in sources.json). Re-reads sources.json on every call so
+    it's always current without a bot restart."""
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        lines = ["CURRENTLY MONITORED SOURCES — CIRRUS already has these. "
+                 "Do NOT propose adding any of them (or close variants) again:"]
+        for s in cfg.get("web_sources", []):
+            lines.append(f"- [{s.get('type', '?')}] {s.get('name', '?')} — {s.get('rss', '')}")
+        pods = [p.get("name", "?") for p in cfg.get("podcasts", [])]
+        if pods:
+            lines.append("- [podcasts] " + ", ".join(pods))
+        senders = cfg.get("email", {}).get("senders", [])
+        if senders:
+            lines.append("- [email sender allowlist] " + ", ".join(senders))
+        kws = cfg.get("email", {}).get("keywords", [])
+        if kws:
+            lines.append("- [digest keywords] " + ", ".join(kws))
+        return "\n".join(lines)
+    except Exception as e:
+        log(f"load_current_sources_block error: {e}")
+        return ""
+
 def load_conventions() -> str:
     """Load CIRRUS-CONVENTIONS.md (ground-truth architecture facts) so
     proposal generation is grounded in the real codebase instead of
@@ -974,6 +1001,9 @@ def generate_proposal(item: dict) -> Path:
         f"wrong scheduling mechanism, etc.) is not a fit:\n\n{conventions}\n"
         if conventions else ""
     )
+    sources_block = load_current_sources_block()
+    if sources_block:
+        conventions_block += f"\n{sources_block}\n"
 
     prompt = f"""{PROJECT_CONTEXT}
 {conventions_block}

@@ -613,6 +613,76 @@ Format as a numbered list."""
 
 # ── Digest Writer ─────────────────────────────────────────────────────────────
 
+def weekly_pipeline_metrics() -> str:
+    """Aggregate the week's daily run metrics + approval/proposal outcomes
+    into a markdown block. This is the measurement layer: it shows whether
+    pipeline changes are actually improving signal vs. noise over time."""
+    lines = []
+
+    # 1. Sum the last 7 daily metrics files (written by cirrus_daily.py)
+    totals: dict = {}
+    days = 0
+    metrics_dir = OUTPUT_DIR / "metrics"
+    if metrics_dir.exists():
+        for fp in sorted(metrics_dir.glob("daily-*.json"), reverse=True)[:7]:
+            try:
+                d = json.loads(fp.read_text())
+            except Exception:
+                continue
+            days += 1
+            for k, v in d.items():
+                if isinstance(v, int):
+                    totals[k] = totals.get(k, 0) + v
+    if days:
+        kept = totals.get("rss_kept", 0) + totals.get("emails_kept", 0)
+        dropped = (totals.get("rss_dropped_keyword", 0)
+                   + totals.get("emails_dropped_keyword", 0))
+        scanned = totals.get("rss_candidates", 0) + totals.get("emails_scanned", 0)
+        lines.append(f"**Pipeline (last {days} daily run(s)):** "
+                     f"{kept} items kept of {scanned} scanned — "
+                     f"{dropped} dropped by keyword filter, "
+                     f"{totals.get('emails_transactional', 0)} transactional, "
+                     f"{totals.get('emails_omitted', 0)} omitted senders.")
+        lines.append(f"**Links:** {totals.get('links_ok', 0)} fetched ok, "
+                     f"{totals.get('links_paywalled', 0)} paywalled, "
+                     f"{totals.get('links_failed', 0)} failed.")
+    else:
+        lines.append("**Pipeline:** no daily metrics files yet (they start "
+                     "accumulating with the next daily run).")
+
+    # 2. Approval queue outcomes
+    try:
+        pa_path = Path.home() / "projects/cirrus-digest/config/pending_approvals.json"
+        pa = json.loads(pa_path.read_text())
+        counts: dict = {}
+        for it in pa:
+            st = it.get("status", "pending")
+            counts[st] = counts.get(st, 0) + 1
+        lines.append(f"**Approval queue (all-time):** "
+                     f"{counts.get('pending', 0)} pending, "
+                     f"{counts.get('approved', 0)} approved, "
+                     f"{counts.get('rejected', 0)} rejected.")
+    except Exception:
+        pass
+
+    # 3. Proposal outcomes
+    props: dict = {}
+    pdir = OUTPUT_DIR / "proposals"
+    if pdir.exists():
+        for fp in pdir.glob("proposal-*.md"):
+            try:
+                m = re.search(r"\*\*Status:\*\*\s*(.+)", fp.read_text())
+                st = m.group(1).strip() if m else "unknown"
+            except Exception:
+                st = "unknown"
+            props[st] = props.get(st, 0) + 1
+    if props:
+        lines.append("**Proposals (all-time):** " + ", ".join(
+            f"{n} {st}" for st, n in sorted(props.items())) + ".")
+
+    return "\n\n".join(lines)
+
+
 def write_digest(items, summaries, meta, learning_report=None):
     """Write the final digest file."""
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -640,6 +710,16 @@ def write_digest(items, summaries, meta, learning_report=None):
             f.write("*Meta-analysis of this week's AI developments across all CIRRUS sources:*\n\n")
             f.write(f"{learning_report}\n\n")
             f.write("---\n\n")
+
+        # Pipeline metrics — measurement layer for self-improvement
+        try:
+            metrics_block = weekly_pipeline_metrics()
+            if metrics_block:
+                f.write("## 📈 Pipeline Metrics This Week\n\n")
+                f.write(f"{metrics_block}\n\n")
+                f.write("---\n\n")
+        except Exception as e:
+            log(f"Pipeline metrics section error: {e}")
 
         # Meta recommendations
         f.write("## 🔄 CIRRUS Self-Improvement Notes\n\n")

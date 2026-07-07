@@ -426,6 +426,17 @@ def matches_keywords(text: str) -> bool:
 
 _VISITED_LINKS: list = []
 
+# ── Run metrics ───────────────────────────────────────────────────────────────
+# Counters for pipeline observability: how much came in, what was kept,
+# what was dropped and why. Written to digests/metrics/daily-YYYY-MM-DD.json
+# and summarized in a "Run Stats" section at the end of each daily digest.
+# The Sunday weekly digest aggregates the week's files.
+
+RUN_STATS: dict = {}
+
+def bump(key: str, n: int = 1):
+    RUN_STATS[key] = RUN_STATS.get(key, 0) + n
+
 def record_link_visit(url: str, status: str, context: str = "", chars: int = 0):
     """Record a fetched URL. status: 'ok' | 'paywalled' | 'failed'."""
     _VISITED_LINKS.append({
@@ -628,11 +639,14 @@ def fetch_web_sources():
                         content = fetched
                         log(f"    ✓ Fetched {len(content):,} chars")
 
+                bump("rss_candidates")
+
                 # Keyword filter — EVERY item must match a configured keyword
                 # in its title or content, or it's dropped from the digest.
                 if not matches_keywords(
                         entry.get("title", "") + " " + content[:3000]):
                     log(f"  Skipping (no keyword match): {entry.get('title', '')[:60]}")
+                    bump("rss_dropped_keyword")
                     continue
 
                 # Reference enrichment: search for named papers/models/repos
@@ -641,6 +655,7 @@ def fetch_web_sources():
                     content, source["name"], entry.get("title", "")
                 )
 
+                bump("rss_kept")
                 results.append({
                     "source": source["name"],
                     "type": source["type"],
@@ -784,6 +799,7 @@ def fetch_emails(credentials):
             uids = [int(u) for u in msg_ids[0].split()]
             new_uids = [u for u in uids if u > last_uid]
             skipped = len(uids) - len(new_uids)
+            bump("emails_scanned", len(new_uids))
 
             for uid in new_uids:
               # Per-email guard: one malformed email (bad encoding, huge
@@ -800,6 +816,7 @@ def fetch_emails(credentials):
 
                 # Always skip omitted senders, regardless of keyword/sender match
                 if any(o in from_lower for o in omit_senders):
+                    bump("emails_omitted")
                     continue
 
                 subj_raw, enc = decode_header(msg.get("Subject", ""))[0]
@@ -808,6 +825,7 @@ def fetch_emails(credentials):
                 # Skip transactional emails by subject (module-level constant).
                 if any(pat in subject.lower() for pat in _OMIT_SUBJECT_PATTERNS):
                     log(f"  Skipping transactional email: {subject[:60]}")
+                    bump("emails_transactional")
                     continue
 
                 # Extract the raw (uncleaned) body so we can do a cheap
@@ -847,6 +865,7 @@ def fetch_emails(credentials):
                 if not matches_keywords(subject + " " + scan_text):
                     if sender_match:
                         log(f"  Skipping (trusted sender, no keyword match): {subject[:60]}")
+                    bump("emails_dropped_keyword")
                     continue
 
                 body = clean_text(raw_body, MAX_ARTICLE)
@@ -917,8 +936,10 @@ def fetch_emails(credentials):
                     "fetched_url": fetched_url
                 })
                 found += 1
+                bump("emails_kept")
               except Exception as e:
                 log(f"  Skipping email UID {uid} (error: {e})")
+                bump("emails_errored")
 
             mail.logout()
 
@@ -1074,7 +1095,43 @@ def write_digest(items, summaries):
                         "(Safari → Web Inspector → Storage → Cookies).\n")
             f.write("\n---\n\n")
 
+        # ── Run Stats ─────────────────────────────────────────────────────
+        # Pipeline observability: volumes in, kept, dropped and why.
+        # Also saved as JSON to digests/metrics/ for weekly aggregation.
+        link_counts = {"ok": 0, "paywalled": 0, "failed": 0}
+        for v in _VISITED_LINKS:
+            link_counts[v["status"]] = link_counts.get(v["status"], 0) + 1
+
+        stats = dict(RUN_STATS)
+        stats.update({f"links_{k}": n for k, n in link_counts.items()})
+        stats["items_in_digest"] = len(items)
+        stats["date"] = date_str
+
+        f.write("## 📊 Run Stats\n\n")
+        f.write(f"- **RSS/feeds:** {stats.get('rss_kept', 0)} kept, "
+                f"{stats.get('rss_dropped_keyword', 0)} dropped (no keyword) "
+                f"of {stats.get('rss_candidates', 0)} new articles\n")
+        f.write(f"- **Email:** {stats.get('emails_kept', 0)} kept of "
+                f"{stats.get('emails_scanned', 0)} scanned "
+                f"({stats.get('emails_dropped_keyword', 0)} no keyword, "
+                f"{stats.get('emails_transactional', 0)} transactional, "
+                f"{stats.get('emails_omitted', 0)} omitted senders, "
+                f"{stats.get('emails_errored', 0)} errors)\n")
+        f.write(f"- **Links fetched:** {link_counts['ok']} ok, "
+                f"{link_counts['paywalled']} paywalled, "
+                f"{link_counts['failed']} failed\n\n")
+        f.write("---\n\n")
+
         f.write(f"*End of daily digest — {date_str}*\n")
+
+    # Persist metrics for the weekly rollup
+    try:
+        metrics_dir = OUTPUT_DIR / "metrics"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        with open(metrics_dir / f"daily-{date_str}.json", "w") as mf:
+            json.dump(stats, mf, indent=2)
+    except Exception as e:
+        log(f"Could not write metrics file: {e}")
 
     log(f"Daily digest saved: {filename}")
     return filename
