@@ -283,6 +283,23 @@ def read_digest(name):
     if not re.fullmatch(r"[\w][\w\-\.]*\.md", name):
         return jsonify({"error": "invalid file name"}), 400
     digests_dir = PROJECT_DIR / "digests"
+    # "latest" aliases — fixed URLs for clients that can't construct dated
+    # names (e.g. Cowork scheduled runs, where web_fetch only allows literal
+    # URLs). Resolves to the newest matching dated file; the response's
+    # "name" field carries the real filename so callers can verify the date.
+    latest_aliases = {
+        "daily-latest.md":          (digests_dir,             "daily-????-??-??.md"),
+        "digest-latest.md":         (digests_dir,             "digest-????-??-??.md"),
+        "daily-actions-latest.md":  (digests_dir / "actions", "daily-actions-????-??-??.md"),
+        "weekly-actions-latest.md": (digests_dir / "actions", "weekly-actions-????-??-??.md"),
+    }
+    if name in latest_aliases:
+        alias_dir, pattern = latest_aliases[name]
+        candidates = sorted(alias_dir.glob(pattern))  # ISO dates sort chronologically
+        if not candidates:
+            return jsonify({"error": "not found"}), 404
+        path = candidates[-1]
+        return jsonify({"name": path.name, "content": path.read_text()})
     if name.startswith(("daily-actions-", "weekly-actions-")):
         path = digests_dir / "actions" / name
     elif name.startswith("research-"):
