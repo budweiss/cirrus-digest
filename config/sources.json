@@ -179,6 +179,11 @@
       "name": "Google News: Anthropic / Claude",
       "type": "blog",
       "rss": "https://news.google.com/rss/search?q=Anthropic%20OR%20%22Claude%20AI%22&hl=en-US&gl=US&ceid=US:en"
+    },
+    {
+      "name": "Google News: AI Coding Tools (Qoder, alternatives)",
+      "type": "blog",
+      "rss": "https://news.google.com/rss/search?q=Qoder%20OR%20%22AI%20coding%20tool%22%20OR%20%22coding%20agent%22&hl=en-US&gl=US&ceid=US:en"
     }
   ],
   "digest": {
