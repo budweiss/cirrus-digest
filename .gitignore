@@ -9,3 +9,4 @@ digests/
 knowledge/
 logs/
 config/email_state.json
+__pycache__/
