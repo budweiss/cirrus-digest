@@ -863,6 +863,32 @@ def extract_recommendations(actions_file: Path) -> list:
 
     return recommendations
 
+def _norm_tokens(text: str) -> set:
+    """Meaningful lowercase words (3+ chars) for similarity comparison."""
+    return set(re.findall(r'[a-z]{3,}', text.lower()))
+
+def is_duplicate_detail(detail: str, existing: list, threshold: float = 0.65) -> bool:
+    """Fuzzy-match a new recommendation against existing item details.
+
+    qwen re-suggests the same ideas across days in slightly different
+    wording, so exact-string dedup isn't enough — and once Buddy rejects
+    an item, its reworded twin would re-enter /approve the next day.
+    Token-overlap ratio (intersection / smaller set) >= threshold counts
+    as duplicate. Compared against ALL tracked items regardless of status,
+    so rejected ideas stay rejected.
+    """
+    tokens = _norm_tokens(detail)
+    if not tokens:
+        return False
+    for other in existing:
+        other_tokens = _norm_tokens(other)
+        if not other_tokens:
+            continue
+        overlap = len(tokens & other_tokens) / min(len(tokens), len(other_tokens))
+        if overlap >= threshold:
+            return True
+    return False
+
 def load_pending() -> list:
     if PENDING_FILE.exists():
         with open(PENDING_FILE) as f:
@@ -1170,14 +1196,26 @@ def cmd_approve(chat_id):
     # any item (even an old approved/rejected one) existed in the file, new
     # recommendations from later digests were never picked up.
     existing_keys = {f"{p['type']}:{p['detail']}" for p in pending}
+    existing_details = [p.get("detail", "") for p in pending]
+    skipped_dupes = 0
     for prefix in ["daily-actions", "weekly-actions"]:
         latest = find_latest_action(prefix)
         if latest:
             for item in extract_recommendations(latest):
                 key = f"{item['type']}:{item['detail']}"
-                if key not in existing_keys:
-                    pending.append(item)
-                    existing_keys.add(key)
+                if key in existing_keys:
+                    continue
+                # Fuzzy dedup: reworded twins of anything already tracked
+                # (pending, approved, OR rejected) never re-enter the queue.
+                if is_duplicate_detail(item["detail"], existing_details):
+                    skipped_dupes += 1
+                    log(f"Skipping near-duplicate recommendation: {item['detail'][:70]}")
+                    continue
+                pending.append(item)
+                existing_keys.add(key)
+                existing_details.append(item["detail"])
+    if skipped_dupes:
+        log(f"/approve merge: skipped {skipped_dupes} near-duplicate(s)")
 
     save_pending(pending)
 
