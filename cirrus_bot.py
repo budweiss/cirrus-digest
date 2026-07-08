@@ -110,11 +110,42 @@ def api_call(method, params=None):
         log(f"API error ({method}): {e}")
         return {}
 
+TELEGRAM_MAX_LEN = 4000  # Telegram hard limit is 4096 chars; keep a margin
+
+def split_for_telegram(text, max_len=TELEGRAM_MAX_LEN):
+    """Split text into <= max_len chunks for sequential sendMessage calls.
+
+    The old fixed-slice chunking (text[i:i+4000]) cut mid-line and
+    mid-Markdown-entity, which caused HTTP 400s on long /research replies
+    (unbalanced */`_ in a chunk) and made /approve items look truncated.
+    Prefer breaking at the last newline in the window, then the last space;
+    hard-cut only if a single unbroken line exceeds max_len.
+    """
+    chunks = []
+    remaining = text
+    while len(remaining) > max_len:
+        window = remaining[:max_len]
+        cut = window.rfind("\n")
+        if cut < max_len // 2:
+            cut = window.rfind(" ")
+        if cut < max_len // 2:
+            cut = max_len  # pathological: one giant unbroken line
+        chunk = remaining[:cut].rstrip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[cut:].lstrip("\n ")
+    if remaining.strip():
+        chunks.append(remaining)
+    return chunks or [text]
+
 def send_message(chat_id, text):
-    # Split long messages into chunks of 4000 chars
-    max_len = 4000
-    for i in range(0, len(text), max_len):
-        chunk = text[i:i+max_len]
+    # Split long messages into multiple sequential messages BEFORE calling
+    # sendMessage — Telegram rejects >4096-char messages with HTTP 400.
+    chunks = split_for_telegram(text)
+    total = len(chunks)
+    if total > 1:
+        log(f"send_message: splitting {len(text)}-char message into {total} chunks")
+    for n, chunk in enumerate(chunks, 1):
         result = api_call("sendMessage", {
             "chat_id": chat_id,
             "text": chunk,
@@ -127,7 +158,7 @@ def send_message(chat_id, text):
                 "chat_id": chat_id,
                 "text": chunk,
             })
-        if len(text) > max_len:
+        if n < total:
             time.sleep(0.5)
 
 def folder_size_gb(path: Path) -> float:
@@ -777,6 +808,40 @@ def _clean_detail(detail: str) -> str:
 def _is_junk_detail(detail: str) -> bool:
     return len(detail) < 15 or bool(_JUNK_DETAIL.match(detail))
 
+# ── /approve actionability filter (added 2026-07-08) ─────────────────────────
+# Only escalate extracted notes that contain a concrete action approval would
+# execute. Monitor-only notes ("Monitor X for updates"), placeholders ("no
+# actionable items"), and tracking-redirect links (grounding-api-redirect /
+# vertexaisearch) are logged and dropped at extraction time. This filter is
+# ONLY applied to items parsed out of action files — manual /todo items never
+# pass through extract_recommendations, so they are never filtered, and items
+# already saved in pending_approvals.json are never removed by this.
+_MONITOR_ONLY = re.compile(
+    r'^\W*(monitor|watch|keep\s+an\s+eye|track|observe|'
+    r'stay\s+(tuned|updated|informed)|'
+    r'follow\s+(the\s+)?(news|updates?|developments?|progress|situation|story)|'
+    r'await|wait\s+(for|and\s+see)|revisit|check\s+back)\b', re.IGNORECASE)
+_PLACEHOLDER = re.compile(
+    r'no\s+(actionable|new|specific|further)\s+'
+    r'(items?|actions?|notes?|recommendations?|improvements?|suggestions?)|'
+    r'nothing\s+(actionable|new|specific|to\s+(do|report|add|note))|'
+    r'^\W*(tbd|placeholder|see\s+above|as\s+above)\b', re.IGNORECASE)
+_TRACKING_URL = re.compile(r'grounding-api-redirect|vertexaisearch', re.IGNORECASE)
+
+def _skip_reason(item: dict) -> str:
+    """Why an extracted item should NOT enter the /approve queue ('' = keep)."""
+    detail = item.get("detail", "")
+    combined = f"{detail} {item.get('source_line', '')}"
+    if _TRACKING_URL.search(combined):
+        return "tracking-redirect URL"
+    # ^\W* in the regex skips leading bullets/arrows/bold markers, so the
+    # check works on both the cleaned detail and the raw source line.
+    if _MONITOR_ONLY.match(detail) or _MONITOR_ONLY.match(item.get("source_line", "")):
+        return "monitor-only"
+    if _PLACEHOLDER.search(detail):
+        return "placeholder"
+    return ""
+
 def extract_recommendations(actions_file: Path) -> list:
     """Parse action items file and extract actionable recommendations.
 
@@ -878,7 +943,16 @@ def extract_recommendations(actions_file: Path) -> list:
                     "status": "pending"
                 })
 
-    return recommendations
+    # Actionability filter: log-and-drop non-actionable extracted items so
+    # they never reach the /approve queue (see _skip_reason above).
+    actionable = []
+    for item in recommendations:
+        reason = _skip_reason(item)
+        if reason:
+            log(f"/approve filter: dropped ({reason}): {item['detail'][:80]}")
+        else:
+            actionable.append(item)
+    return actionable
 
 def _norm_tokens(text: str) -> set:
     """Meaningful lowercase words (3+ chars) for similarity comparison."""
