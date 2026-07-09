@@ -30,6 +30,19 @@ WEB_SOURCES = CONFIG["web_sources"]
 EMAIL_CFG   = CONFIG["email"]
 DIGEST_CFG  = CONFIG["digest"]
 
+# Sources overlay (added 2026-07-08): feeds added by approving ADD_SOURCE
+# items in Telegram land in config/sources.local.json (outside git, so
+# deploy pulls never clobber them). Merged here, deduped by feed URL.
+_OVERLAY_PATH = Path.home() / "projects/cirrus-digest/config/sources.local.json"
+if _OVERLAY_PATH.exists():
+    try:
+        _known = {s.get("rss") for s in WEB_SOURCES}
+        _extra = [s for s in json.load(open(_OVERLAY_PATH))
+                  if s.get("rss") and s["rss"] not in _known]
+        WEB_SOURCES = WEB_SOURCES + _extra
+    except Exception as _e:
+        print(f"[warn] could not merge sources overlay: {_e}")
+
 OUTPUT_DIR  = Path(DIGEST_CFG["output_dir"])
 LOG_DIR     = Path(DIGEST_CFG["log_dir"])
 MODEL       = DIGEST_CFG["ollama_model"]

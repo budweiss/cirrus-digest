@@ -10,3 +10,4 @@ knowledge/
 logs/
 config/email_state.json
 __pycache__/
+config/sources.local.json

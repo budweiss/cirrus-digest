@@ -805,6 +805,18 @@ def _clean_detail(detail: str) -> str:
     """Strip dangling '→ CIRRUS NOTE:' / truncated '→ <source>' tails."""
     return re.sub(r'\s*(→|->)[^→]{0,40}$', '', detail).strip()
 
+def _split_why(text: str):
+    """Split a ' — WHY: <rationale>' tail off a note (added 2026-07-08).
+
+    The extraction prompt asks qwen to justify every CIRRUS improvement
+    note. Returns (detail, why); why is '' when absent so old-format
+    notes keep working.
+    """
+    m = re.search(r'\s*[—–-]+\s*WHY\s*:\s*(.+)$', text, re.IGNORECASE)
+    if not m:
+        return text.strip(), ""
+    return text[:m.start()].strip(), m.group(1).strip()[:200]
+
 def _is_junk_detail(detail: str) -> bool:
     return len(detail) < 15 or bool(_JUNK_DETAIL.match(detail))
 
@@ -869,7 +881,8 @@ def extract_recommendations(actions_file: Path) -> list:
         for pattern, action_type in patterns:
             match = re.search(pattern, line, re.IGNORECASE)
             if match:
-                detail = _clean_detail(match.group(1).strip()[:100])
+                raw, why = _split_why(match.group(1).strip())
+                detail = _clean_detail(raw[:100])
                 if _is_junk_detail(detail):
                     continue
                 key = f"{action_type}:{detail}"
@@ -878,6 +891,7 @@ def extract_recommendations(actions_file: Path) -> list:
                     recommendations.append({
                         "type": action_type,
                         "detail": detail,
+                        "why": why,
                         "source_line": line[:120],
                         "source": actions_file.name,
                         "added": added_date,
@@ -918,25 +932,34 @@ def extract_recommendations(actions_file: Path) -> list:
                 if label.lower() == "source":
                     continue  # citation, not a recommendation
                 if label.lower() in ("suggestion", "note", "task", "description"):
-                    detail = rest[:150]
+                    raw = rest
                 else:
-                    detail = (label + (" — " + rest if rest else ""))[:150]
+                    raw = label + (" — " + rest if rest else "")
             else:
                 # Plain bullet — strip the leading "- " and any trailing source ref
-                detail = re.sub(r'\s*\(Source:.*?\)\s*$', '', stripped[2:]).strip()[:150]
+                raw = re.sub(r'\s*\(Source:.*?\)\s*$', '', stripped[2:]).strip()
                 # Skip source-attribution lines: "Source: X" or "*Source*: X"
-                if re.match(r'\*?source\*?\s*:', detail, re.IGNORECASE):
+                if re.match(r'\*?source\*?\s*:', raw, re.IGNORECASE):
                     continue
 
-            detail = _clean_detail(detail)
+            # Split the WHY rationale off BEFORE truncating, so long
+            # rationales don't get chopped mid-sentence (added 2026-07-08).
+            raw, why = _split_why(raw)
+            item_type = "CIRRUS_NOTE"
+            cap = re.match(r'^\W*CAPABILITY\s*:\s*(.+)$', raw, re.IGNORECASE)
+            if cap:
+                item_type = "CAPABILITY_REQUEST"
+                raw = cap.group(1).strip()
+            detail = _clean_detail(raw[:150])
             if not detail or _is_junk_detail(detail):
                 continue
-            key = f"CIRRUS_NOTE:{detail}"
+            key = f"{item_type}:{detail}"
             if key not in seen:
                 seen.add(key)
                 recommendations.append({
-                    "type": "CIRRUS_NOTE",
+                    "type": item_type,
                     "detail": detail,
+                    "why": why,
                     "source_line": stripped[:160],
                     "source": actions_file.name,
                     "added": added_date,
@@ -1188,7 +1211,55 @@ def execute_action(item: dict) -> str:
             return f"❌ Failed to install `{detail}`: {result.stderr[:200]}"
 
     elif action_type == "ADD_SOURCE":
-        return f"ℹ️ Source suggestion noted: `{detail}`. Add manually via sources.json or ask CIRRUS to find the RSS feed."
+        # Executable since 2026-07-08: validate the feed and add it to the
+        # sources overlay (config/sources.local.json). The overlay is merged
+        # by cirrus_daily at load and is deliberately OUTSIDE git so deploy
+        # pulls never clobber bot-approved additions.
+        url_match = re.search(r'https?://[^\s`\'")\]]+', f"{detail} {item.get('source_line', '')}")
+        if not url_match:
+            return (f"ℹ️ Source suggestion noted: `{detail}` — no feed URL found to "
+                    f"validate. Add manually via sources.json, or /research the feed URL.")
+        url = url_match.group(0)
+        try:
+            resp = requests.get(url, timeout=20,
+                                headers={"User-Agent": "CIRRUS-digest/1.0"})
+            head = resp.text[:2000].lower()
+            if resp.status_code != 200 or not ("<rss" in head or "<feed" in head or "<?xml" in head):
+                return (f"⚠️ `{url}` responded but doesn't look like an RSS/Atom feed "
+                        f"(status {resp.status_code}). Noted, not added.")
+        except Exception as e:
+            return f"⚠️ Could not validate feed `{url}`: {e}. Noted, not added."
+        overlay_path = PROJECT_DIR / "config/sources.local.json"
+        try:
+            overlay = json.loads(overlay_path.read_text()) if overlay_path.exists() else []
+        except Exception:
+            overlay = []
+        if any(s.get("rss") == url for s in overlay):
+            return f"ℹ️ Feed already in the overlay: `{url}`"
+        overlay.append({
+            "name": detail[:60],
+            "rss": url,
+            "type": "blog",
+            "added_by": "approve",
+            "added": datetime.now().strftime("%Y-%m-%d"),
+        })
+        overlay_path.write_text(json.dumps(overlay, indent=2) + "\n")
+        log(f"ADD_SOURCE: validated and added {url} to sources overlay")
+        return (f"✅ Feed validated and added to sources overlay: `{url}`\n"
+                f"Included in the next digest run. ({len(overlay)} overlay source(s) total.)")
+
+    elif action_type == "CAPABILITY_REQUEST":
+        # A change that needs Buddy's permission/hardware/software/access.
+        # Approval = a build ticket for the next Claude Cowork session.
+        tickets = ACTIONS_DIR / "capability-approved.md"
+        with open(tickets, "a") as f:
+            f.write(f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')} — APPROVED\n"
+                    f"- **Request:** {detail}\n"
+                    + (f"- **Why:** {item.get('why')}\n" if item.get("why") else "")
+                    + f"- **Source:** {item.get('source', '?')}\n")
+        log(f"CAPABILITY_REQUEST approved: {detail[:80]}")
+        return (f"🔑 Capability request approved and logged to `{tickets.name}`.\n"
+                f"It will be designed and built with Claude in the next Cowork session.")
 
     elif action_type == "CIRRUS_NOTE":
         try:
@@ -1347,8 +1418,11 @@ def cmd_approve(chat_id):
 
     msg = f"📋 *{len(active)} Pending Recommendations*\n\nReply with the number to approve, or `reject N` to reject:\n\n"
     for i, item in enumerate(active, 1):
-        emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡", "CIRRUS_NOTE": "💡"}.get(item["type"], "•")
+        emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡",
+                 "CIRRUS_NOTE": "💡", "CAPABILITY_REQUEST": "🔑"}.get(item["type"], "•")
         msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n"
+        if item.get("why"):
+            msg += f"_why: {item['why']}_\n"
         src = item.get("source", "")
         added = item.get("added", "")
         if src or added:

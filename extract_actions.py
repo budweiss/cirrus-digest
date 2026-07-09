@@ -131,7 +131,13 @@ Read the following digest section and extract ALL of the following:
 
 1. ACTION ITEMS — concrete tasks or next steps mentioned (e.g. install a tool, test a model, update a script)
 2. RECOMMENDATIONS — suggestions for improving AI workflows, tools, or setups
-3. CIRRUS IMPROVEMENT NOTES — anything tagged with "→ CIRRUS NOTE:" or suggestions for improving this digest system
+3. CIRRUS IMPROVEMENT NOTES — concrete changes CIRRUS should make to itself: a new
+   RSS/podcast/web source to add, software to install, a config or prompt change, or
+   a new capability to build. Every note MUST name the specific change AND end with
+   " — WHY: <one line on how it improves CIRRUS's digests, cost, or capability>".
+   If the change needs Buddy's permission, new hardware, new software, or new access,
+   start the bullet with "CAPABILITY: ". A note without a concrete change and a WHY
+   is worthless — omit it entirely.
 4. INTERESTING TOOLS/MODELS — any new AI tools, models, or services worth investigating
 5. FOLLOW-UP READING — articles, papers, or resources mentioned that are worth reading in full
 
@@ -144,6 +150,8 @@ Format your response with EXACTLY these 5 markdown headers:
 
 Under each header, write bullet items ("- ..."), each with a one-line source reference (which newsletter/article it came from).
 Be specific and actionable — skip vague observations, stock-market items, and anything not related to AI tools, models, or workflows.
+NEVER write "Monitor X", "Track Y", "Watch for Z", or "Stay updated on..." bullets —
+news is not an action. Only include an item when there is a concrete step to take today.
 If a section has nothing, leave it EMPTY — do not write "None" or "N/A" bullets.
 
 DIGEST CONTENT:
