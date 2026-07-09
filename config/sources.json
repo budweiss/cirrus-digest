@@ -199,6 +199,11 @@
       "name": "ExO Insight (OpenExO) [trial 2026-07-08]",
       "rss": "https://openexo.com/insight/rss",
       "type": "blog"
+    },
+    {
+      "name": "Google News: STRATUS hardware watch (DGX Spark / M5 Ultra / LLM boxes)",
+      "type": "blog",
+      "rss": "https://news.google.com/rss/search?q=%22DGX%20Spark%22%20OR%20%22M5%20Ultra%22%20OR%20%22Mac%20Studio%22%20memory%20OR%20%22RTX%20Pro%206000%22%20OR%20%22local%20LLM%20hardware%22%20price&hl=en-US&gl=US&ceid=US:en"
     }
   ],
   "digest": {
