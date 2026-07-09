@@ -994,6 +994,12 @@ When AI coding tools are compared or discussed (e.g. Claude Code, Codex, Cursor,
 
 When open-source AI model adoption is mentioned, emphasize the trend of businesses and developers moving toward running models locally (Ollama, llama.cpp, LM Studio, vLLM) to avoid proprietary API dependency, data privacy concerns, and ongoing cost. If a specific open-source model is named, note its size, architecture, and benchmark performance if mentioned.
 
+If the content is primarily about business models, monetization schemes, marketing, fundraising, or "passive income" angles WITHOUT a direct AI technological development (new model, tool, technique, or infrastructure), summarize it in ONE sentence, prefix it with [LOW-AI-RELEVANCE], and do not add a Referenced line or CIRRUS NOTE for it.
+
+When a security vulnerability is mentioned that affects cloud infrastructure, virtualization/hypervisors, or self-hosted AI stacks (e.g. Ollama, local API servers, tunnels), always include: the affected product and version range, the CVE identifier if named, and one clause on whether it plausibly touches a Mac-based local-LLM setup (macOS, Cloudflare tunnel, Ollama). Do not speculate beyond what the source states.
+
+When a new AI model or tool is covered, include the concrete performance metrics the source provides — benchmark names and scores, tokens/sec, context window, parameter count, memory footprint, or pricing. Prefer numbers over adjectives like "faster" or "powerful". If the source provides no numbers, do not invent any.
+
 {rag_context}
 
 Source: {item['source']}
