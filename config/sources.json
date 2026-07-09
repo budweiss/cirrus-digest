@@ -184,6 +184,21 @@
       "name": "Google News: AI Coding Tools (Qoder, alternatives)",
       "type": "blog",
       "rss": "https://news.google.com/rss/search?q=Qoder%20OR%20%22AI%20coding%20tool%22%20OR%20%22coding%20agent%22&hl=en-US&gl=US&ceid=US:en"
+    },
+    {
+      "name": "Latent Space (AI Engineering)",
+      "rss": "https://www.latent.space/feed",
+      "type": "substack"
+    },
+    {
+      "name": "r/LocalLLaMA (top daily)",
+      "rss": "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day",
+      "type": "blog"
+    },
+    {
+      "name": "ExO Insight (OpenExO) [trial 2026-07-08]",
+      "rss": "https://openexo.com/insight/rss",
+      "type": "blog"
     }
   ],
   "digest": {
