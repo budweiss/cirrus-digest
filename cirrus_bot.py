@@ -910,7 +910,11 @@ def extract_recommendations(actions_file: Path) -> list:
 
     # Look for patterns indicating actionable items
     patterns = [
-        (r"(?:pull|download|install|upgrade|switch to)\s+(qwen[\w\.:]+|llama[\w\.:]+|mistral[\w\.:]+|gemma[\w\.:]+)", "PULL_MODEL"),
+        # Open-weights families runnable via Ollama — extended 2026-07-10 so
+        # model-upgrade suggestions from any major family get typed correctly.
+        (r"(?:pull|download|install|upgrade|switch to)\s+"
+         r"((?:qwen|llama|mistral|mixtral|gemma|deepseek|phi|glm|kimi|"
+         r"minimax|granite|command|olmo|nemotron|smollm)[\w\.\-:]*)", "PULL_MODEL"),
         (r"(?:add|subscribe|monitor|follow)\s+(?:source|feed|newsletter|podcast)?[:\s]+([^\n]+)", "ADD_SOURCE"),
         (r"pip\s+install\s+([\w\-]+)", "INSTALL_PACKAGE"),
         (r"→\s*CIRRUS NOTE:\s*([^\n]+)", "CIRRUS_NOTE"),

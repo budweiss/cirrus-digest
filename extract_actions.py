@@ -138,11 +138,21 @@ Read the following digest section and extract ALL of the following:
    If the change needs Buddy's permission, new hardware, new software, or new access,
    start the bullet with "CAPABILITY: ". A note without a concrete change and a WHY
    is worthless — omit it entirely.
-   WHAT CIRRUS IS: a Mac Studio running local Ollama models (qwen, llama), Python
-   scripts, and RSS/email digest pipelines. Valid improvements are ONLY things CIRRUS
-   can apply to this stack: add/remove an RSS, podcast, or email source; pull a new
-   LOCAL Ollama model when a better one is released (this keeps CIRRUS current — high
-   value); install a Python package or macOS tool; change a prompt or config.
+   WHAT CIRRUS IS: a Mac Studio (M4 Max, 64 GB unified memory) running local Ollama
+   models (currently qwen2.5:72b and qwen2.5:14b), Python scripts, and RSS/email
+   digest pipelines. Valid improvements are ONLY things CIRRUS can apply to this
+   stack: add/remove an RSS, podcast, or email source; pull a new LOCAL model (see
+   MODEL UPGRADES below); install a Python package or macOS tool; change a prompt
+   or config.
+   MODEL UPGRADES (highest-value note type — CIRRUS must stay current): when the
+   digest covers a newly released OPEN-WEIGHTS model (qwen, llama, deepseek, mistral,
+   gemma, phi, glm, kimi, or similar) that benchmarks at or above qwen2.5:72b class,
+   write: "Pull <model>:<size> to evaluate against qwen2.5 for digest work — WHY:
+   <the source's numbers>". Hardware fit rule: quantized size up to ~20 GB (≈32B
+   dense) fits easily; up to ~48 GB (≈70B dense at Q4) fits but runs alone — normal
+   note. Bigger than that, or a large MoE, or CUDA-only: still note it but start
+   with "CAPABILITY: " and state the hardware needed (e.g. 128 GB unified memory),
+   since Buddy tracks upgrade options (DGX Spark, M5 Studio).
    NEVER suggest installing or integrating hosted/proprietary AI products — GPT-x,
    ChatGPT, Codex, Claude, Cowork, Grok, Gemini, Copilot, Cursor — CIRRUS cannot run
    them. News about those products belongs in the digest, not here.
