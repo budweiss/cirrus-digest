@@ -229,6 +229,21 @@
       "name": "GitHub Trending daily (community feed) [todo 2026-06-26]",
       "rss": "https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml",
       "type": "blog"
+    },
+    {
+      "name": "Anthropic News (claude.com/blog, community mirror) [approved 2026-07-10]",
+      "rss": "https://tim-hilde.github.io/anthropic-rss/rss.xml",
+      "type": "blog"
+    },
+    {
+      "name": "PCMag Latest [approved 2026-07-10]",
+      "rss": "https://www.pcmag.com/feeds/rss/latest",
+      "type": "blog"
+    },
+    {
+      "name": "SCMP Tech [approved 2026-07-10]",
+      "rss": "https://www.scmp.com/rss/36/feed",
+      "type": "blog"
     }
   ],
   "digest": {
