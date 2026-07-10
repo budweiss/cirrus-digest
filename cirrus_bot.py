@@ -839,6 +839,38 @@ _PLACEHOLDER = re.compile(
     r'nothing\s+(actionable|new|specific|to\s+(do|report|add|note))|'
     r'^\W*(tbd|placeholder|see\s+above|as\s+above)\b', re.IGNORECASE)
 _TRACKING_URL = re.compile(r'grounding-api-redirect|vertexaisearch', re.IGNORECASE)
+# Hosted/proprietary AI products can't be installed on CIRRUS (local Ollama
+# only) — "Install GPT-5.6", "Implement Claude Cowork", "integrate Claude
+# Science" etc. are extraction noise, not applicable self-improvements
+# (added 2026-07-10 after 16 such items flooded the queue).
+_HOSTED_PRODUCT = re.compile(
+    r'\b(install|test|integrate|implement|adopt|deploy|use|try|run)\b'
+    r'.{0,60}\b(gpt[-\s]?[\d.]|chatgpt|codex|claude|cowork|grok|gemini|'
+    r'copilot|cursor|openai)', re.IGNORECASE)
+# Vague strategy/review musings have no concrete step approval would execute.
+_VAGUE_VERB = re.compile(
+    r'^\W*(review|consider|explore|evaluate|assess|understand|research|'
+    r'investigate|reevaluate|encourage|suggest|recommend)\b', re.IGNORECASE)
+# "Install a tool/framework" without naming one; "tools similar to X";
+# "include insights from <article>" — all noise shapes from 2026-07-10.
+_NO_SPECIFIC_TOOL = re.compile(
+    r'\b(install|add|build|implement|create)\b[^.]{0,30}'
+    r'\ban?\s+(new\s+)?(tool|framework|solution|system|platform|mechanism)s?\b'
+    r'|\b(tools?|features?|mechanisms?|solutions?)\s+similar\s+to\b'
+    r'|\b(include|incorporate)\b.{0,30}\binsights?\b', re.IGNORECASE)
+# Monitoring wishlist phrased mid-sentence ("add X to the list of tools to
+# monitor", "update config to include monitoring") — _MONITOR_ONLY only
+# matches at the start of the detail.
+_MONITOR_TAIL = re.compile(
+    r'\bto\s+(the\s+list\s+of\s+)?(tools\s+to\s+)?(monitor|watch|track)\b'
+    r'|\binclude\s+monitoring\b', re.IGNORECASE)
+
+def _non_english_ratio(text: str) -> float:
+    """Fraction of letters outside ASCII — catches qwen language drift."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for c in letters if ord(c) > 127) / len(letters)
 
 def _skip_reason(item: dict) -> str:
     """Why an extracted item should NOT enter the /approve queue ('' = keep)."""
@@ -852,6 +884,17 @@ def _skip_reason(item: dict) -> str:
         return "monitor-only"
     if _PLACEHOLDER.search(detail):
         return "placeholder"
+    if _HOSTED_PRODUCT.search(detail):
+        return "hosted product (CIRRUS runs local Ollama models only)"
+    if _VAGUE_VERB.match(detail):
+        return "vague verb — no concrete step"
+    if _NO_SPECIFIC_TOOL.search(detail):
+        return "no specific tool/source named"
+    if _MONITOR_TAIL.search(detail):
+        return "monitoring wishlist — news is not an action"
+    if (_non_english_ratio(detail) > 0.15
+            or _non_english_ratio(item.get("why", "")) > 0.3):
+        return "non-English output (model drift)"
     return ""
 
 def extract_recommendations(actions_file: Path) -> list:

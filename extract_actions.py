@@ -138,6 +138,14 @@ Read the following digest section and extract ALL of the following:
    If the change needs Buddy's permission, new hardware, new software, or new access,
    start the bullet with "CAPABILITY: ". A note without a concrete change and a WHY
    is worthless — omit it entirely.
+   WHAT CIRRUS IS: a Mac Studio running local Ollama models (qwen, llama), Python
+   scripts, and RSS/email digest pipelines. Valid improvements are ONLY things CIRRUS
+   can apply to this stack: add/remove an RSS, podcast, or email source; pull a new
+   LOCAL Ollama model when a better one is released (this keeps CIRRUS current — high
+   value); install a Python package or macOS tool; change a prompt or config.
+   NEVER suggest installing or integrating hosted/proprietary AI products — GPT-x,
+   ChatGPT, Codex, Claude, Cowork, Grok, Gemini, Copilot, Cursor — CIRRUS cannot run
+   them. News about those products belongs in the digest, not here.
 4. INTERESTING TOOLS/MODELS — any new AI tools, models, or services worth investigating
 5. FOLLOW-UP READING — articles, papers, or resources mentioned that are worth reading in full
 
@@ -153,6 +161,7 @@ Be specific and actionable — skip vague observations, stock-market items, and 
 NEVER write "Monitor X", "Track Y", "Watch for Z", or "Stay updated on..." bullets —
 news is not an action. Only include an item when there is a concrete step to take today.
 If a section has nothing, leave it EMPTY — do not write "None" or "N/A" bullets.
+Write ONLY in English. Never repeat an idea already listed — one bullet per distinct idea.
 
 DIGEST CONTENT:
 {chunk}
