@@ -820,6 +820,48 @@ def _split_why(text: str):
 def _is_junk_detail(detail: str) -> bool:
     return len(detail) < 15 or bool(_JUNK_DETAIL.match(detail))
 
+# Models CIRRUS already runs — never queue a "pull" for these (the digest
+# keeps suggesting "Pull qwen2.5:72b to evaluate against qwen2.5:14b", i.e.
+# pulling what we already have). Base names compared tag-insensitively.
+# Refreshed from `ollama list`; update when the resident set changes.
+_INSTALLED_MODELS = {
+    "qwen2.5:72b", "qwen2.5:14b", "qwen2.5-coder:14b", "nomic-embed-text",
+}
+_INSTALLED_BASES = {m.split(":")[0].lower() for m in _INSTALLED_MODELS}
+
+def _already_installed(model: str) -> bool:
+    """True if a PULL_MODEL suggestion names a model we already run.
+
+    Matches exact tag OR the base name when no better tag is offered, so
+    'qwen2.5:72b', 'qwen2.5', and the bogus 'qwen2.5:76b' (a version that
+    doesn't exist — treated as the qwen2.5 we already have) are all skipped.
+    """
+    m = model.strip().lower()
+    if m in {x.lower() for x in _INSTALLED_MODELS}:
+        return True
+    base = m.split(":")[0]
+    # Skip if it's just our resident family with no genuinely new variant.
+    return base in _INSTALLED_BASES
+
+def _pull_model_spec(line: str, match):
+    """From a PULL_MODEL line, return (full_model_spec, why).
+
+    group(1) truncates at the first space, dropping quant tags like
+    'UD-Q2_K_XL:70B'. Re-extract the model text from the pull verb up to
+    ' — WHY' / ' - WHY' / end, then split the WHY off the line.
+    Added 2026-07-11.
+    """
+    body, why = _split_why(line)
+    # Text after the pull verb (reuse the verb the pattern matched).
+    tail = body[match.start(1) - 0:] if match.start(1) else body
+    # From the model token onward, keep model-y chars, spaces, slashes.
+    m = re.search(
+        r"((?:qwen|llama|mistral|mixtral|gemma|deepseek|phi|glm|kimi|"
+        r"minimax|granite|command|olmo|nemotron|smollm)[\w./:\-]*"
+        r"(?:\s+[\w./:\-]*Q[\w./:\-]*|\s+UD[\w./:\-]*)?)", tail, re.IGNORECASE)
+    spec = (m.group(1) if m else match.group(1)).strip()
+    return spec, why
+
 # ── /approve actionability filter (added 2026-07-08) ─────────────────────────
 # Only escalate extracted notes that contain a concrete action approval would
 # execute. Monitor-only notes ("Monitor X for updates"), placeholders ("no
@@ -928,10 +970,20 @@ def extract_recommendations(actions_file: Path) -> list:
         for pattern, action_type in patterns:
             match = re.search(pattern, line, re.IGNORECASE)
             if match:
-                raw, why = _split_why(match.group(1).strip())
-                detail = _clean_detail(raw[:100])
-                if _is_junk_detail(detail):
-                    continue
+                if action_type == "PULL_MODEL":
+                    # Capture the FULL model spec (incl. quant tag after a
+                    # space, e.g. "DeepSeek-V4-Flash UD-Q2_K_XL:70B") and the
+                    # WHY from the whole line — group(1) stops at the space.
+                    # Added 2026-07-11.
+                    raw, why = _pull_model_spec(line, match)
+                    detail = _clean_detail(raw[:80])
+                    if _is_junk_detail(detail) or _already_installed(detail):
+                        continue
+                else:
+                    raw, why = _split_why(match.group(1).strip())
+                    detail = _clean_detail(raw[:100])
+                    if _is_junk_detail(detail):
+                        continue
                 key = f"{action_type}:{detail}"
                 if key not in seen:
                     seen.add(key)
