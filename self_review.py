@@ -92,6 +92,14 @@ def run(kind: str = "daily"):
     if not latest:
         B.log(f"self_review: no {prefix} file found")
         return
+    # Snapshot mutable config BEFORE any auto-change, so today's state is
+    # always restorable (14-day retention). Never blocks the review.
+    try:
+        from config_snapshot import take_snapshot
+        take_snapshot(tag=kind)
+    except Exception as e:
+        B.log(f"self_review: snapshot failed (continuing): {e}")
+
     items = B.extract_recommendations(latest)   # already filtered by the bot
     known = _existing_feed_urls()
     pending = B.load_pending()
