@@ -806,3 +806,11 @@ if __name__ == "__main__":
         send_email()
     except Exception as e:
         log(f"Post-run step error: {e}")
+
+    # Self-improvement pass (weekly) — see cirrus_daily.py. Isolated.
+    try:
+        from self_review import run as self_review_run
+        log("Running self-review (weekly)...")
+        self_review_run("weekly")
+    except Exception as e:
+        log(f"Self-review error: {e}")

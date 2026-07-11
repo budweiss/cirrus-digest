@@ -1217,3 +1217,13 @@ if __name__ == "__main__":
         send_email()
     except Exception as e:
         log(f"Post-run step error: {e}")
+
+    # Self-improvement pass — auto-add validated sources, propose the rest,
+    # Telegram the owner (added 2026-07-11). Isolated so it never breaks the
+    # digest.
+    try:
+        from self_review import run as self_review_run
+        log("Running self-review...")
+        self_review_run("daily")
+    except Exception as e:
+        log(f"Self-review error: {e}")
