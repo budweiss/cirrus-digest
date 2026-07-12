@@ -175,6 +175,110 @@ def approvals_reject():
     not_found = list(targets - set(rejected))
     return jsonify({"rejected": len(rejected), "items": rejected, "not_found": not_found})
 
+@app.route("/admin/approvals/approve")
+def approvals_approve():
+    """Approve pending approval items AND execute their action.
+
+    GET: /admin/approvals/approve?idx=2,4,5,6&token=<token>
+         1-based indices into the CURRENT pending list (matches /approve
+         numbering). Preferred — works even when a detail contains commas.
+    GET: /admin/approvals/approve?details=foo,bar&token=<token>
+         Exact detail-string match.
+
+    Flips matched items to status="approved" immediately, then runs the
+    action (PULL_MODEL pull / ADD_SOURCE feed add / CIRRUS_NOTE proposal
+    draft) in a BACKGROUND thread — CIRRUS_NOTE proposals go through
+    qwen2.5:72b and can take minutes, so the HTTP request returns right away.
+    Poll /admin/approvals/all for final status and /read/log/approve-exec
+    for per-item execution results.
+    """
+    require_token()
+    pending_file = PROJECT_DIR / "config/pending_approvals.json"
+    if not pending_file.exists():
+        return jsonify({"approved": 0, "items": [], "invalid": []})
+    with open(pending_file) as f:
+        all_items = json.load(f)
+
+    pending_items = [it for it in all_items if it.get("status") == "pending"]
+    to_approve = []
+    invalid = []
+
+    idx_raw = request.args.get("idx", "")
+    if idx_raw:
+        try:
+            idxs = {int(i) for i in idx_raw.split(",") if i.strip()}
+        except ValueError:
+            return jsonify({"error": "idx must be comma-separated integers"}), 400
+        for n, item in enumerate(pending_items, 1):
+            if n in idxs:
+                to_approve.append(item)
+        invalid = [str(i) for i in sorted(idxs - set(range(1, len(pending_items) + 1)))]
+    else:
+        raw = request.args.get("details", "")
+        targets = {d.strip() for d in raw.split(",") if d.strip()}
+        if not targets:
+            return jsonify({"error": "use ?idx=... or ?details=..."}), 400
+        matched = set()
+        for item in pending_items:
+            if item.get("detail", "") in targets:
+                to_approve.append(item)
+                matched.add(item.get("detail", ""))
+        invalid = list(targets - matched)
+
+    if not to_approve:
+        return jsonify({"approved": 0, "items": [], "invalid": invalid}), 404
+
+    for item in to_approve:
+        item["status"] = "approved"
+    with open(pending_file, "w") as f:
+        json.dump(all_items, f, indent=2)
+
+    _spawn_execute_approved(to_approve)
+
+    return jsonify({
+        "approved": len(to_approve),
+        "items": [it.get("detail", "")[:80] for it in to_approve],
+        "invalid": invalid,
+        "executing": True,
+        "note": "Actions running in background; poll /admin/approvals/all and /read/log/approve-exec",
+    })
+
+def _spawn_execute_approved(items):
+    """Run cirrus_bot.execute_action() for each approved item in a daemon
+    thread. Kept off the request path because CIRRUS_NOTE proposal drafting
+    (qwen2.5:72b) is slow. Per-item results are logged to logs/approve-exec.log.
+    Importing cirrus_bot is side-effect-free (its bot loop is guarded by
+    __main__), so this only pulls in execute_action + helpers."""
+    import threading
+
+    def _worker(job_items):
+        log_path = PROJECT_DIR / "logs" / "approve-exec.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _w(msg):
+            with open(log_path, "a") as lf:
+                lf.write(f"{datetime.now().isoformat()} {msg}\n")
+
+        try:
+            import sys
+            if str(PROJECT_DIR) not in sys.path:
+                sys.path.insert(0, str(PROJECT_DIR))
+            import cirrus_bot
+        except Exception as e:
+            _w(f"FATAL: could not import cirrus_bot: {e}")
+            return
+
+        for it in job_items:
+            detail = it.get("detail", "")[:80]
+            try:
+                _w(f"executing {it.get('type')}: {detail}")
+                res = cirrus_bot.execute_action(it)
+                _w(f"result: {res}")
+            except Exception as e:
+                _w(f"ERROR executing {detail}: {e}")
+
+    threading.Thread(target=_worker, args=(items,), daemon=True).start()
+
 # ── Run ────────────────────────────────────────────────────────────────────────
 
 @app.route("/run/daily", methods=["GET", "POST"])
@@ -236,7 +340,7 @@ def run_extract():
 @app.route("/read/log/<logname>")
 def read_log(logname):
     require_token()
-    allowed = ["daily", "daily-error", "daily-manual", "bot", "bot-error", "digest", "tool_calls", "paywalls"]
+    allowed = ["daily", "daily-error", "daily-manual", "bot", "bot-error", "digest", "tool_calls", "paywalls", "approve-exec"]
     if logname not in allowed:
         return jsonify({"error": "log not found"}), 404
     if logname == "tool_calls":
