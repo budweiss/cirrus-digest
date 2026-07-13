@@ -478,6 +478,68 @@ def is_article_url(url: str) -> bool:
     path = urlparse(url).path.rstrip("/")
     return len(path) > 5  # must have a non-trivial path, not just a homepage
 
+# ── Requested-research ingest + near-duplicate collapse (Session 33) ──────────
+# Emails from Buddy's own addresses, or with a "RESEARCH:" subject, are treated
+# as explicit "please look into this" requests: keyword gate bypassed, EVERY URL
+# extracted (plain-text too, trackers followed), fetched, and grouped in their
+# own digest section.
+SELF_ADDRESSES = [
+    "buddy.weiss@icloud.com", "weiss_buddy@yahoo.com",
+    "buddy.weiss@outlook.com", "cirrustask@gmail.com",
+]
+RESEARCH_SUBJECT_TAG = "research:"
+
+def is_research_request(from_lower: str, subject: str) -> bool:
+    if any(a in from_lower for a in SELF_ADDRESSES):
+        return True
+    return (subject or "").strip().lower().startswith(RESEARCH_SUBJECT_TAG)
+
+def research_candidate_urls(raw_body: str) -> list:
+    """Every real URL in an email (plain-text OR html), WITHOUT the article/skip
+    filter — trackers (open.*, ?utm) are kept and resolved by following redirects
+    at fetch time. Drops only images / unsubscribe / mailto."""
+    urls = re.findall(r'https?://[^\s"\'<>)\]]+', raw_body or "")
+    out = []
+    for u in dict.fromkeys(urls):
+        ul = u.lower()
+        if any(p in ul for p in (".png", ".jpg", ".jpeg", ".gif", ".svg",
+                                 "unsubscribe", "list-unsubscribe", "/privacy",
+                                 "mailto:", "/terms")):
+            continue
+        out.append(u)
+    return out[:5]
+
+def _norm_title(t: str) -> str:
+    t = re.sub(r'[^a-z0-9 ]', ' ', (t or "").lower())
+    t = re.sub(r'\b(the|a|an|and|to|of|for|in|on|is|are|as|with|how|why|s)\b', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+def dedupe_items(items: list) -> list:
+    """Collapse near-duplicate articles (same story, different sources) and drop
+    emoji-only / empty headlines. Research items are never dropped. A surviving
+    item accrues '_also_from' listing the sources it absorbed."""
+    kept, keys = [], []
+    for it in items:
+        if it.get("type") == "research":
+            kept.append(it); keys.append(None); continue
+        title = it.get("subject", "") or ""
+        if len(re.sub(r'[^A-Za-z0-9]', '', title)) < 4:
+            bump("dropped_junk_title"); continue
+        key = _norm_title(title); ktoks = set(key.split()); dup_idx = None
+        for idx, k in enumerate(keys):
+            if k is None:
+                continue
+            if k == key:
+                dup_idx = idx; break
+            otoks = set(k.split())
+            if ktoks and otoks and len(ktoks & otoks) / max(len(ktoks), len(otoks)) >= 0.8:
+                dup_idx = idx; break
+        if dup_idx is not None:
+            kept[dup_idx].setdefault("_also_from", []).append(it.get("source", ""))
+            bump("dropped_near_dup"); continue
+        kept.append(it); keys.append(key)
+    return kept
+
 def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
     """GET a URL and extract its main readable text.
 
@@ -872,14 +934,18 @@ def fetch_emails(credentials):
                 # match "email"/"paid") and matches_keywords() strips Unicode
                 # formatting chars spammers inject to fake word boundaries.
                 sender_match = any(s in from_lower for s in senders_lower)
+                is_research = is_research_request(from_lower, subject)
 
                 scan_raw = raw_body if sender_match else "\n".join(raw_body.splitlines()[:30])
                 scan_text = clean_text(scan_raw) if raw_is_html else scan_raw
-                if not matches_keywords(subject + " " + scan_text):
+                if not is_research and not matches_keywords(subject + " " + scan_text):
                     if sender_match:
                         log(f"  Skipping (trusted sender, no keyword match): {subject[:60]}")
                     bump("emails_dropped_keyword")
                     continue
+                if is_research:
+                    log(f"  Research request (self-sender/RESEARCH tag): {subject[:60]}")
+                    bump("research_requests")
 
                 body = clean_text(raw_body, MAX_ARTICLE)
 
@@ -890,7 +956,23 @@ def fetch_emails(credentials):
                 # Uses URL scoring to pick the best candidate link.
                 # Logs paywall hits to paywalls.log for Buddy to review.
                 fetched_url = ""
-                if raw_is_html:
+                if is_research:
+                    # Research request: follow EVERY link (plain-text too; trackers
+                    # resolve via redirects). Paywalls still logged; cookie-sync
+                    # (substack.com is watched) handles subscriber content.
+                    for article_url in research_candidate_urls(raw_body):
+                        log(f"    → Research link: {article_url[:80]}")
+                        fetched, paywalled = fetch_article_content(article_url)
+                        status = "paywalled" if paywalled else (
+                            "ok" if len(fetched) > 200 else "failed")
+                        record_link_visit(article_url, status, subject, len(fetched))
+                        if paywalled:
+                            log_paywall_hit(article_url, from_raw, subject)
+                        if len(fetched) > len(body):
+                            body = fetched
+                            fetched_url = article_url
+                            log(f"    ✓ Fetched {len(body):,} chars")
+                elif raw_is_html:
                     soup_links = BeautifulSoup(raw_body, "html.parser")
                     hrefs = [a.get("href", "") for a in soup_links.find_all("a", href=True)]
                     candidate_urls = [u for u in hrefs if is_article_url(u)]
@@ -944,7 +1026,7 @@ def fetch_emails(credentials):
                     "source": f"{from_raw} ({label})",
                     "subject": subject,
                     "content": body,
-                    "type": "email",
+                    "type": "research" if is_research else "email",
                     "published": published,
                     "fetched_url": fetched_url
                 })
@@ -1039,14 +1121,25 @@ def write_digest(items, summaries):
     medium_items = [(i, s) for i, s in zip(items, summaries) if i["type"] == "medium"]
     substack_items = [(i, s) for i, s in zip(items, summaries) if i["type"] == "substack"]
     email_items = [(i, s) for i, s in zip(items, summaries) if i["type"] == "email"]
+    research_items = [(i, s) for i, s in zip(items, summaries) if i["type"] == "research"]
     web_items = [(i, s) for i, s in zip(items, summaries)
-                 if i["type"] not in ("medium", "substack", "email")]
+                 if i["type"] not in ("medium", "substack", "email", "research")]
 
     with open(filename, "w") as f:
         f.write(f"# CIRRUS Daily Web Digest — {date_str}\n\n")
         f.write(f"Generated by CIRRUS using `{MODEL}`\n")
-        f.write(f"Items processed: {len(items)} ({len(medium_items)} Medium, {len(substack_items)} Substack, {len(web_items)} Blog/News, {len(email_items)} Email)\n\n")
+        f.write(f"Items processed: {len(items)} ({len(medium_items)} Medium, {len(substack_items)} Substack, {len(web_items)} Blog/News, {len(email_items)} Email, {len(research_items)} Requested Research)\n\n")
         f.write("---\n\n")
+
+        if research_items:
+            f.write("## 📌 Requested Research (you asked CIRRUS to look into these)\n\n")
+            for item, summary in research_items:
+                f.write(f"### {item['subject']}\n")
+                f.write(f"*From: {item['source']} — {item['published']}*\n\n")
+                if item.get("fetched_url"):
+                    f.write(f"🔗 *Fetched from:* {item['fetched_url']}\n\n")
+                f.write(f"{summary}\n\n")
+                f.write("---\n\n")
 
         if email_items:
             f.write("## 📰 Newsletters\n\n")
@@ -1083,6 +1176,10 @@ def write_digest(items, summaries):
             for item, summary in web_items:
                 f.write(f"### {item['subject']}\n")
                 f.write(f"*{item['source']} — {item['published']}*\n\n")
+                if item.get("_also_from"):
+                    others = ", ".join(s.split(" — ")[0][:40] for s in item["_also_from"][:6])
+                    more = f" +{len(item['_also_from']) - 6} more" if len(item["_also_from"]) > 6 else ""
+                    f.write(f"*Also covered by {len(item['_also_from'])} other source(s): {others}{more}*\n\n")
                 if item.get('url'):
                     f.write(f"[Read article]({item['url']})\n\n")
                 f.write(f"{summary}\n\n")
@@ -1178,6 +1275,13 @@ def main():
         log(f"Email fetch skipped: {e}")
 
     items = web_items + email_items
+
+    _before = len(items)
+    items = dedupe_items(items)
+    if len(items) != _before:
+        log(f"De-duplicated: {_before} → {len(items)} items "
+            f"({RUN_STATS.get('dropped_near_dup', 0)} near-dupes, "
+            f"{RUN_STATS.get('dropped_junk_title', 0)} junk titles removed)")
 
     if not items:
         log("No new articles or emails found. Exiting.")
