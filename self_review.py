@@ -89,6 +89,7 @@ def _add_source(url: str, name: str) -> bool:
 
 def run(kind: str = "daily"):
     prefix = "daily-actions" if kind == "daily" else "weekly-actions"
+    date = datetime.now().strftime("%Y-%m-%d")
     latest = B.find_latest_action(prefix)
     if not latest:
         B.log(f"self_review: no {prefix} file found")
@@ -111,12 +112,28 @@ def run(kind: str = "daily"):
     for it in items:
         blob = f"{it.get('detail','')} {it.get('source_line','')}"
         # Auto-add a validated NEW source (feeds only; needs a real URL).
+        # Tier-0 auto-apply (Phase 2): dev_loop.may_auto_apply gates this so ONLY
+        # Tier-0-classified proposals can ever self-apply (defense-in-depth), and
+        # every auto-apply is written to the self-changes ledger.
         if it["type"] == "ADD_SOURCE" or SOURCE_RX.search(blob):
             m = URL_RX.search(blob)
-            if m and m.group(0) not in known and _valid_feed(m.group(0)):
+            if (m and m.group(0) not in known
+                    and dev_loop.may_auto_apply(it["type"], it.get("detail", ""),
+                                                it.get("source_line", ""))
+                    and _valid_feed(m.group(0))):
                 if _add_source(m.group(0), it.get("detail", "")):
                     added.append((it.get("detail", ""), m.group(0)))
                     known.add(m.group(0))
+                    try:
+                        dev_loop.ledger_append(
+                            {"event": "auto-applied", "id": f"src-{date}-{len(added)}",
+                             "tier_name": dev_loop.TIER_NAME[dev_loop.TIER_AUTO],
+                             "detail": f"source: {it.get('detail','')[:60]} ({m.group(0)})",
+                             "result": "added to sources.local.json",
+                             "target_env": dev_loop.TARGET_ENV},
+                            B.PROJECT_DIR)
+                    except Exception as e:
+                        B.log(f"self_review: ledger(auto-applied) failed: {e}")
                     continue   # applied — don't also queue it
         # Flag hardware/env needs (note only; still propose the item).
         if it["type"] == "CAPABILITY_REQUEST" and HARDWARE_RX.search(blob):
@@ -143,16 +160,24 @@ def run(kind: str = "daily"):
         proposed.append(it)
 
     B.save_pending(pending)
+    # Phase 2: write the daily "what CIRRUS changed about itself" report from the
+    # ledger (auto-applied + proposed), derived + safe to regenerate.
+    try:
+        rpt, summary = dev_loop.write_self_changes_report(B.PROJECT_DIR, date)
+        B.log(f"self_review: self-changes report {rpt.name} {summary}")
+    except Exception as e:
+        B.log(f"self_review: self-changes report failed (continuing): {e}")
     _notify(kind, added, proposed, hardware)
     B.log(f"self_review ({kind}): +{len(added)} sources, "
-          f"{len(proposed)} proposed, {len(hardware)} hardware/env")
+          f"{len(proposed)} proposed, {len(hardware)} hardware/env "
+          f"[target={dev_loop.TARGET_ENV}]")
 
 
 def _notify(kind, added, proposed, hardware):
     d = datetime.now().strftime("%Y-%m-%d")
     lines = [f"🤖 *CIRRUS self-review* ({kind}) — {d}", ""]
     if added:
-        lines.append(f"✅ *Auto-added {len(added)} source(s)*:")
+        lines.append(f"✅ *Auto-added {len(added)} source(s)* → {dev_loop.TARGET_ENV}:")
         for name, url in added[:8]:
             lines.append(f"• {name[:50]} — {url}")
         lines.append("")

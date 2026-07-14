@@ -26,9 +26,16 @@ See docs/CIRRUS-Autonomous-Dev-Loop.md for the architecture.
 """
 
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
+
+# Which environment this box promotes changes to. Dev-loop auto-applies land here.
+# CIRRUS today = "cirrus-dev"; when CUMULUS is racked, set CIRRUS_TARGET_ENV=
+# "cumulus-beta" so the loop auto-deploys to beta instead of prod. Config flip,
+# not a rewrite. See docs/CIRRUS-CUMULUS-Environment-Plan.md.
+TARGET_ENV = os.environ.get("CIRRUS_TARGET_ENV", "cirrus-dev")
 
 # ── Risk tiers ────────────────────────────────────────────────────────────────
 TIER_AUTO   = 0   # reversible + additive + non-critical → may auto-apply
@@ -210,6 +217,68 @@ def ledger_append(entry: dict, project_dir):
     return jsonl
 
 
+# ── Tier gate + daily self-changes report ─────────────────────────────────────
+def may_auto_apply(ptype: str, detail: str, source_line: str = "") -> bool:
+    """Defense-in-depth gate: return True ONLY when a proposal is classified
+    Tier-0 (auto). Everything else must go through the /approve queue. Callers
+    that auto-apply should guard on this so a mis-routed non-Tier-0 item can
+    never silently self-apply."""
+    tier, _ = classify_risk(ptype, detail, source_line)
+    return tier == TIER_AUTO
+
+
+def ledger_today(project_dir, date: str = None):
+    """Return today's ledger rows (list of dicts). Empty if none/no ledger."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    jsonl, _ = _ledger_paths(project_dir)
+    if not jsonl.exists():
+        return []
+    rows = []
+    for line in jsonl.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if str(r.get("ts", "")).startswith(date):
+            rows.append(r)
+    return rows
+
+
+def write_self_changes_report(project_dir, date: str = None):
+    """Write a human-readable 'what CIRRUS changed about itself today' report from
+    the ledger and return (path, summary_dict). Purely derived from the ledger —
+    safe to regenerate. Groups by event (auto-applied vs proposal) and tier."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    rows = ledger_today(project_dir, date)
+    applied = [r for r in rows if r.get("event") == "auto-applied"]
+    proposed = [r for r in rows if r.get("event") == "proposal"]
+
+    base = Path(project_dir) / "logs" / "self-changes"
+    base.mkdir(parents=True, exist_ok=True)
+    report = base / f"report-{date}.md"
+
+    lines = [f"# CIRRUS self-changes — {date}", "",
+             f"Target environment: **{TARGET_ENV}**", ""]
+    lines.append(f"## Auto-applied ({len(applied)})")
+    if applied:
+        for r in applied:
+            lines.append(f"- {r.get('detail','')[:90]}  "
+                         f"_(→ {r.get('result','')[:40]})_")
+    else:
+        lines.append("- none")
+    lines.append("")
+    lines.append(f"## Proposed for /approve ({len(proposed)})")
+    if proposed:
+        for r in proposed:
+            lines.append(f"- [{r.get('tier_name','')}] {r.get('detail','')[:80]}")
+    else:
+        lines.append("- none")
+    lines.append("")
+    report.write_text("\n".join(lines) + "\n")
+    return report, {"auto_applied": len(applied), "proposed": len(proposed),
+                    "target_env": TARGET_ENV}
+
+
 # ── Self-test (no network, no LLM) ────────────────────────────────────────────
 def _selftest():
     import tempfile, os
@@ -248,16 +317,31 @@ def _selftest():
     assert nspec["tier"] == TIER_NEVER and not nspec["auto_eligible"]
     print("make_spec: never-auto guard OK ->", nspec["tier_name"])
 
-    # ledger round-trip in a temp project dir
+    # tier gate: only Tier-0 may auto-apply
+    assert may_auto_apply("ADD_SOURCE", "subscribe to MLQ.ai rss feed") is True
+    assert may_auto_apply("CIRRUS_NOTE", "improve digest dedupe") is False
+    assert may_auto_apply("CIRRUS_NOTE", "rotate the api token") is False
+    print("may_auto_apply: Tier-0-only gate OK")
+
+    # ledger round-trip + today filter + self-changes report in a temp project dir
     with tempfile.TemporaryDirectory() as td:
+        today = datetime.now().strftime("%Y-%m-%d")
         ledger_append({"event": "proposal", "id": spec["id"],
                        "tier_name": spec["tier_name"], "detail": "improve digest dedupe",
                        "result": "queued"}, td)
+        ledger_append({"event": "auto-applied", "id": "src-1",
+                       "tier_name": TIER_NAME[TIER_AUTO], "detail": "added MLQ.ai RSS",
+                       "result": "added to sources.local.json"}, td)
         jsonl, md = _ledger_paths(td)
         rows = [json.loads(l) for l in jsonl.read_text().splitlines()]
         assert rows and rows[0]["id"] == spec["id"]
         assert "self-changes ledger" in md.read_text()
-        print("ledger_append: JSONL + markdown OK ->", os.path.basename(str(jsonl)))
+        assert len(ledger_today(td, today)) == 2
+        rpt, summary = write_self_changes_report(td, today)
+        rtext = rpt.read_text()
+        assert summary["auto_applied"] == 1 and summary["proposed"] == 1
+        assert "MLQ.ai RSS" in rtext and TARGET_ENV in rtext
+        print("ledger + report: OK ->", os.path.basename(str(rpt)), summary)
 
     print("\nALL SELF-TESTS PASSED" if ok == len(cases) else "\nSOME CLASSIFIER CASES FAILED")
 
