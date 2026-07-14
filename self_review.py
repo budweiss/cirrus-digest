@@ -29,6 +29,7 @@ from pathlib import Path
 import requests
 
 import cirrus_bot as B   # reuse config + helpers (import does NOT start the bot)
+import dev_loop          # Autonomous Dev-Loop: spec + risk tier + ledger (Phase 1)
 
 # What looks like a "monitor this source" suggestion.
 SOURCE_RX = re.compile(
@@ -124,6 +125,18 @@ def run(kind: str = "daily"):
         key = f"{it['type']}:{it['detail']}"
         if key in existing_keys or B.is_duplicate_detail(it["detail"], existing_details):
             continue
+        # Dev-Loop Phase 1: attach a machine-actionable spec + risk tier, and
+        # record the proposal in the append-only self-changes ledger. Additive
+        # metadata — existing /approve consumers ignore the extra key.
+        it["dev_spec"] = dev_loop.make_spec(it, len(proposed) + 1)
+        try:
+            dev_loop.ledger_append(
+                {"event": "proposal", "id": it["dev_spec"]["id"],
+                 "tier_name": it["dev_spec"]["tier_name"],
+                 "detail": it.get("detail", ""), "result": "queued for /approve"},
+                B.PROJECT_DIR)
+        except Exception as e:
+            B.log(f"self_review: ledger append failed (continuing): {e}")
         pending.append(it)
         existing_keys.add(key)
         existing_details.append(it["detail"])
@@ -159,6 +172,14 @@ def _notify(kind, added, proposed, hardware):
             lines.append(f"  capabilities: {len(caps)}")
         if notes:
             lines.append(f"  notes/sources: {len(notes)}")
+        # Dev-Loop risk breakdown (Phase 1): how many are safe-to-automate.
+        tiers = {}
+        for i in proposed:
+            t = (i.get("dev_spec") or {}).get("tier_name", "unclassified")
+            tiers[t] = tiers.get(t, 0) + 1
+        if tiers:
+            lines.append("  risk: " + ", ".join(
+                f"{n}× {t.split('(')[0].strip()}" for t, n in sorted(tiers.items())))
         lines.append("Tap /approve to review.")
     if not (added or proposed or hardware):
         lines.append("Nothing new to review today.")
