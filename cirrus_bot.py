@@ -308,6 +308,7 @@ def cmd_help():
 /latest — show latest daily digest summary
 /actions — show latest action items
 /approve — review and approve pending recommendations
+/builds — Dev-Loop builds awaiting your ship/discard confirm
 /proposals — list generated implementation proposals
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
@@ -323,7 +324,11 @@ def cmd_help():
 `approve 1` — approve item 1
 `reject 2` — reject item 2
 `approve all` — approve everything
-`reject all` — reject everything"""
+`reject all` — reject everything
+
+*Dev-Loop replies:*
+`ship 1` — deploy tested build 1 (snapshot → push → verify → auto-rollback)
+`discard 1` — drop tested build 1"""
 
 STALE_PROPOSAL_DAYS = 7
 
@@ -1348,6 +1353,19 @@ def execute_action(item: dict) -> str:
                 f"Included in the next digest run. ({len(overlay)} overlay source(s) total.)")
 
     elif action_type == "CAPABILITY_REQUEST":
+        # Dev-Loop Phase 3: Tier-1 items go to the nightly build queue —
+        # the CIRRUS-hosted dev agent builds+tests them, then asks for a
+        # one-tap `ship N`. (Tier-2 / unclassified fall through to a ticket.)
+        if (item.get("dev_spec") or {}).get("tier") == 1:
+            try:
+                import dev_agent
+                dev_agent.queue_append(item)
+                log(f"CAPABILITY_REQUEST queued for dev-loop build: {detail[:80]}")
+                return (f"🔧 Queued for the *nightly Dev-Loop build* (Tier 1).\n"
+                        f"CIRRUS will build + dry-run test it tonight, then ask "
+                        f"you to `ship` or `discard`.")
+            except Exception as e:
+                log(f"dev-loop queue failed (falling back to ticket): {e}")
         # A change that needs Buddy's permission/hardware/software/access.
         # Approval = a build ticket for the next Claude Cowork session.
         tickets = ACTIONS_DIR / "capability-approved.md"
@@ -1361,6 +1379,18 @@ def execute_action(item: dict) -> str:
                 f"It will be designed and built with Claude in the next Cowork session.")
 
     elif action_type == "CIRRUS_NOTE":
+        # Dev-Loop Phase 3: Tier-1 notes are buildable code changes — queue
+        # them for the nightly dev agent instead of drafting a prose proposal.
+        if (item.get("dev_spec") or {}).get("tier") == 1:
+            try:
+                import dev_agent
+                dev_agent.queue_append(item)
+                log(f"CIRRUS_NOTE queued for dev-loop build: {detail[:80]}")
+                return (f"🔧 Queued for the *nightly Dev-Loop build* (Tier 1).\n"
+                        f"CIRRUS will build + dry-run test it tonight, then ask "
+                        f"you to `ship` or `discard`.")
+            except Exception as e:
+                log(f"dev-loop queue failed (falling back to proposal): {e}")
         try:
             path = generate_proposal(item)
             return (f"📝 Proposal drafted: `{path.name}`\n"
@@ -1610,6 +1640,12 @@ def handle_message(message, chat_id):
         return cmd_run_weekly(chat_id)
     elif cmd == "/approve" and len(text.split()) == 1:
         return cmd_approve(chat_id)
+    elif cmd == "/builds":
+        try:
+            import dev_agent
+            return dev_agent.list_builds_text()
+        except Exception as e:
+            return f"❌ dev-loop unavailable: {e}"
     elif cmd == "/proposals":
         return cmd_proposals()
     elif cmd == "/knowledge":
@@ -1638,6 +1674,18 @@ def handle_message(message, chat_id):
         return cmd_omitlist()
     elif re.match(r"^(approve|reject)(\s+(\d+|all))?$", normalized, re.IGNORECASE):
         return handle_approval_reply(normalized, chat_id)
+    elif re.match(r"^(ship|discard)\s+\d+$", normalized, re.IGNORECASE):
+        # Dev-Loop Phase 3 one-tap: deploy or drop a tested nightly build.
+        try:
+            import dev_agent
+            verb, num = normalized.split()
+            if verb.lower() == "ship":
+                send_message(chat_id, "🚀 Shipping — snapshot, rebase, push, "
+                                      "pull, verify. ~1 min...")
+                return dev_agent.ship(int(num))
+            return dev_agent.discard(int(num))
+        except Exception as e:
+            return f"❌ dev-loop error: {e}"
     else:
         return "Unknown command. Type /help to see available commands."
 
