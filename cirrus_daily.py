@@ -12,6 +12,14 @@ import re
 import unicodedata
 import requests
 import feedparser
+import sys
+
+# ── Dev-loop test harness (Session 34) ───────────────────────────────────────
+# `--dry-run` builds the digest to a daily-DRYRUN-*.md file and skips ALL side
+# effects (email send, self-review, RAG index, action extraction, space-monitor
+# cleanup, and email-UID-state persistence) so any cirrus_daily change can be
+# validated without touching the live 7am run or consuming real emails.
+DRY_RUN = "--dry-run" in sys.argv
 from datetime import datetime, timedelta
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -1047,7 +1055,10 @@ def fetch_emails(credentials):
         except Exception as e:
             log(f"Email fetch error ({label}): {e}")
 
-    save_email_state(state)
+    if not DRY_RUN:
+        save_email_state(state)
+    else:
+        log("  [dry-run] NOT persisting email UID state (no emails consumed)")
     log(f"Email: found {len(results)} relevant newsletter(s) total")
     return results
 
@@ -1113,7 +1124,11 @@ DO NOT add a CIRRUS NOTE for: general AI trend observations, content description
 def write_digest(items, summaries):
     """Write the daily digest file."""
     date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = OUTPUT_DIR / f"daily-{date_str}.md"
+    # Dry-run output is prefixed so it NEVER matches the daily-*.md glob that the
+    # live post-run + send_digest use to find "latest" — a stale dry-run file must
+    # not be mistaken for a real digest.
+    filename = OUTPUT_DIR / (f"DRYRUN-daily-{date_str}.md" if DRY_RUN
+                             else f"daily-{date_str}.md")
 
     # Group by source type. Anything that isn't medium/substack/email
     # (blog, newsletter, etc.) goes in the catch-all web section — previously
@@ -1300,6 +1315,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    if DRY_RUN:
+        log("=== DRY RUN complete — digest built to daily-DRYRUN-*.md. "
+            "Skipped: email send, self-review, RAG index, action extract, "
+            "space monitor, email-state persistence. No live side effects. ===")
+        sys.exit(0)
 
     # Post-run: index new digest, extract action items, check disk space, send email
     try:
