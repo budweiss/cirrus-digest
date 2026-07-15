@@ -87,7 +87,54 @@ def status():
     except Exception as e:
         result["stale_proposals_error"] = str(e)
 
+    # MacBook heartbeat freshness (Session 35 watchdog) — surfaced here so any
+    # health check shows it without a separate call.
+    try:
+        hb = json.loads((PROJECT_DIR / "logs/heartbeats.json").read_text())
+        mb = hb.get("macbook", {})
+        if mb:
+            age_min = int((datetime.now() -
+                           datetime.fromisoformat(mb["ts"])).total_seconds() // 60)
+            result["macbook_heartbeat"] = {"minutes_ago": age_min,
+                                           "status": mb.get("status", "?"),
+                                           "note": mb.get("note", "")[:120]}
+    except Exception:
+        pass
+
     return jsonify(result)
+
+# ── Heartbeat (Session 35: MacBook runner watchdog) ───────────────────────────
+
+@app.route("/admin/heartbeat")
+def heartbeat():
+    """Record a watchdog heartbeat from another machine (the MacBook).
+
+    GET /admin/heartbeat?src=macbook&status=ok|repaired|degraded&note=...&os=...&token=...
+
+    Written to logs/heartbeats.json (current state per src + last 20 history
+    rows). cirrus_bot alerts Buddy when a src goes stale (>90 min) or checks
+    in with a non-ok status (self-heal report).
+    """
+    require_token()
+    src    = re.sub(r"[^a-z0-9_-]", "", request.args.get("src", "macbook").lower()) or "macbook"
+    status = request.args.get("status", "ok")[:20]
+    note   = request.args.get("note", "")[:400]
+    osv    = request.args.get("os", "")[:40]
+
+    hb_path = PROJECT_DIR / "logs/heartbeats.json"
+    try:
+        hb = json.loads(hb_path.read_text())
+    except Exception:
+        hb = {}
+    now = datetime.now().isoformat(timespec="seconds")
+    entry = hb.get(src, {})
+    history = entry.get("history", [])
+    history.append({"ts": now, "status": status, "note": note[:120]})
+    hb[src] = {"ts": now, "status": status, "note": note, "os": osv,
+               "history": history[-20:]}
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_path.write_text(json.dumps(hb, indent=2) + "\n")
+    return jsonify({"ok": True, "src": src, "recorded": now, "status": status})
 
 # ── Approvals ──────────────────────────────────────────────────────────────────
 

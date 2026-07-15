@@ -379,7 +379,73 @@ def cmd_status():
         status_text += f"\n\n📋 {stale} proposal(s) pending review for " \
                         f"{STALE_PROPOSAL_DAYS}+ days — check /proposals"
 
+    # MacBook watchdog heartbeat (Session 35)
+    hb = _load_heartbeat("macbook")
+    if hb:
+        age = int((datetime.now() - datetime.fromisoformat(hb["ts"])).total_seconds() // 60)
+        icon = "🫀" if hb.get("status") == "ok" and age <= HB_STALE_MIN else "⚠️"
+        status_text += (f"\n\n{icon} MacBook runner heartbeat: {age} min ago "
+                        f"({hb.get('status','?')})")
+        if hb.get("status") != "ok":
+            status_text += f"\n_{hb.get('note','')[:150]}_"
+    else:
+        status_text += "\n\n🫀 MacBook runner heartbeat: none recorded yet"
+
     return status_text
+
+# ── MacBook heartbeat watchdog (Session 35) ──────────────────────────────────
+# The MacBook's com.cowork.heartbeat agent pings /admin/heartbeat every 30 min
+# (with self-heal reports). We alert Buddy when it goes stale (the runner /
+# cookie-sync are probably dead too — exactly the 2026-07-14 outage class) or
+# when it reports a repair/degradation. In-memory episode flags avoid spam.
+
+HB_FILE      = PROJECT_DIR / "logs/heartbeats.json"
+HB_STALE_MIN = 90            # alert when no ping for this many minutes
+HB_CHECK_SEC = 900           # how often the bot loop checks
+_hb_watch = {"last_check": 0.0, "stale_alerted": False, "last_reported_ts": ""}
+
+def _load_heartbeat(src="macbook"):
+    try:
+        return json.loads(HB_FILE.read_text()).get(src)
+    except Exception:
+        return None
+
+def check_heartbeats():
+    """Called from the bot loop every ~15 min; Telegrams on stale / non-ok."""
+    now = time.time()
+    if now - _hb_watch["last_check"] < HB_CHECK_SEC:
+        return
+    _hb_watch["last_check"] = now
+    hb = _load_heartbeat("macbook")
+    if not hb:
+        return   # never seen — don't alarm on a not-yet-installed watchdog
+    try:
+        age_min = (datetime.now() - datetime.fromisoformat(hb["ts"])).total_seconds() / 60
+    except Exception:
+        return
+
+    if age_min > HB_STALE_MIN:
+        if not _hb_watch["stale_alerted"]:
+            _hb_watch["stale_alerted"] = True
+            send_message(ALLOWED_ID,
+                f"⚠️ *MacBook watchdog is silent* — last heartbeat "
+                f"{int(age_min)} min ago (status: {hb.get('status','?')}).\n"
+                f"The Cowork runner + cookie-sync are likely down too.\n"
+                f"Check: `launchctl list | grep cowork` (78 = TCC/FDA issue; "
+                f"see COWORK-CONVENTIONS.md).")
+        return
+
+    if _hb_watch["stale_alerted"]:
+        _hb_watch["stale_alerted"] = False
+        send_message(ALLOWED_ID, "✅ MacBook watchdog heartbeat is back.")
+
+    # Fresh heartbeat with a self-heal / degradation report → surface it once.
+    if hb.get("status") != "ok" and hb.get("ts") != _hb_watch["last_reported_ts"]:
+        _hb_watch["last_reported_ts"] = hb.get("ts", "")
+        icon = "🔧" if hb.get("status") == "repaired" else "⚠️"
+        send_message(ALLOWED_ID,
+            f"{icon} *MacBook self-heal report* ({hb.get('status')}):\n"
+            f"{hb.get('note','')[:350]}")
 
 def cmd_disk():
     digest_gb  = folder_size_gb(OUTPUT_DIR)
@@ -1717,6 +1783,12 @@ def run_bot():
                 log(f"Command from {user_id}: {text}")
                 response = handle_message(message, chat_id)
                 send_message(chat_id, response)
+
+            # MacBook watchdog staleness check (Session 35) — cheap, ~15 min
+            try:
+                check_heartbeats()
+            except Exception as e:
+                log(f"heartbeat check error: {e}")
 
         except KeyboardInterrupt:
             log("Bot stopped.")
