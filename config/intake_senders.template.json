@@ -1,0 +1,13 @@
+{
+  "_comment": "TEMPLATE — copy to CIRRUS ~/projects/cirrus-digest/config/intake_senders.json via vi and fill in real addresses. Never commit the real file. See docs/END-USER-DIRECT-INTAKE.md.",
+  "bill": {
+    "emails": ["FILL-IN@example.com"],
+    "projects": ["snow", "property-management"],
+    "max_requests_per_day": 10
+  },
+  "aggie": {
+    "emails": ["FILL-IN@example.com"],
+    "projects": ["realestate"],
+    "max_requests_per_day": 10
+  }
+}
