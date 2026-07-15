@@ -401,6 +401,8 @@ def cmd_status():
 
 HB_FILE      = PROJECT_DIR / "logs/heartbeats.json"
 HB_STALE_MIN = 90            # alert when no ping for this many minutes
+HB_QUIET_START = 22          # no stale alerts from 22:00...
+HB_QUIET_END   = 8           # ...until 08:00 (MacBook sleep window)
 HB_CHECK_SEC = 900           # how often the bot loop checks
 _hb_watch = {"last_check": 0.0, "stale_alerted": False, "last_reported_ts": ""}
 
@@ -425,6 +427,13 @@ def check_heartbeats():
         return
 
     if age_min > HB_STALE_MIN:
+        # Quiet hours (22:00–08:00): the MacBook is usually just asleep —
+        # the runner being unavailable then is expected, not an incident.
+        # If it's still stale after 08:00, the next check alerts normally.
+        # (Standing-autonomy fix, Session 35 — Buddy OK'd unprompted minor fixes.)
+        hour = datetime.now().hour
+        if hour >= HB_QUIET_START or hour < HB_QUIET_END:
+            return
         if not _hb_watch["stale_alerted"]:
             _hb_watch["stale_alerted"] = True
             send_message(ALLOWED_ID,
@@ -1616,6 +1625,11 @@ def cmd_approve(chat_id):
         emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡",
                  "CIRRUS_NOTE": "💡", "CAPABILITY_REQUEST": "🔑"}.get(item["type"], "•")
         msg += f"{emoji} *{i}. {item['type']}*\n`{item['detail']}`\n"
+        # Dev-Loop: show the risk tier so Tier-1 (buildable tonight) items
+        # are recognizable at a glance in the morning review.
+        spec = item.get("dev_spec") or {}
+        if spec.get("tier_name"):
+            msg += f"_risk: {spec['tier_name']}_\n"
         if item.get("why"):
             msg += f"_why: {item['why']}_\n"
         src = item.get("source", "")
