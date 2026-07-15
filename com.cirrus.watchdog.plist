@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cirrus.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/buddy/projects/cirrus-digest/cirrus_watchdog.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/watchdog-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/watchdog-launchd.log</string>
+</dict>
+</plist>
