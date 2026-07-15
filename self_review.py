@@ -43,6 +43,85 @@ HARDWARE_RX = re.compile(
     r'dedicated\s+(server|machine|box|rig))\b', re.IGNORECASE)
 URL_RX = re.compile(r'https?://[^\s`\'")\]]+')
 
+# ── Mission-relevance gate (Session 35, 2026-07-15) ──────────────────────────
+# Buddy: "how can we only send requests that make sense to work on?" Every
+# candidate is scored against the mission by the local model BEFORE it can
+# auto-apply or enter /approve. Below-threshold items are kept in the pending
+# file with status="filtered" (so dedupe blocks re-entry via /approve merge)
+# and logged to logs/self-review-filtered.md for audit/tuning. FAIL-OPEN: if
+# the model is unavailable, items pass through — the gate must never eat a
+# real proposal. Override the mission text via config/mission.txt.
+RELEVANCE_MIN = 6
+MISSION_DEFAULT = """CIRRUS serves Buddy's projects and infrastructure:
+- Local AI infrastructure: CIRRUS (Mac Studio, Ollama/qwen), CUMULUS (DGX
+  Spark beta, coming), STRATUS (future prod). Model upgrades ONLY if they fit
+  local hardware and beat current qwen2.5 for digest/agent work.
+- The daily/weekly digest pipeline: better summaries, dedupe, sources about
+  AI engineering, agentic automation, local/open-weights models, Anthropic/
+  Claude ecosystem, self-hosted tooling.
+- Real-estate tooling (Aggie): PA agreements of sale, MLS, ZipForms.
+- Property management + snow business (Bill): Kent County DE HOAs, aerial
+  property measurement, bidding, lead research.
+NOT relevant: consumer/edtech products, crypto/trading, generic AI-ethics
+commentary, celebrity/business gossip, anything with no concrete benefit to
+the systems or businesses above."""
+
+
+def _mission() -> str:
+    p = B.PROJECT_DIR / "config/mission.txt"
+    try:
+        if p.exists():
+            return p.read_text().strip()
+    except Exception:
+        pass
+    return MISSION_DEFAULT
+
+
+def _relevance(item: dict):
+    """Score a candidate 0-10 against the mission via local Ollama.
+    Returns (score:int, why:str). Fail-open: (10, reason) on any error."""
+    prompt = (f"{_mission()}\n\n"
+              f"Candidate self-improvement proposal:\n"
+              f"TYPE: {item.get('type','')}\n"
+              f"PROPOSAL: {item.get('detail','')}\n"
+              f"WHY (from digest): {item.get('why','')}\n\n"
+              f"How relevant and worthwhile is this proposal to the mission "
+              f"above? Consider: does it concretely help one of the listed "
+              f"systems/businesses? Is it actionable on this infrastructure?\n"
+              f"Reply with EXACTLY one line: SCORE: <0-10> | WHY: <one short "
+              f"sentence>")
+    try:
+        r = requests.post(f"{B.OLLAMA_HOST}/api/generate",
+                          json={"model": B.MODEL, "prompt": prompt,
+                                "stream": False,
+                                "options": {"temperature": 0, "num_ctx": 2048}},
+                          timeout=90)
+        r.raise_for_status()
+        text = r.json().get("response", "")
+        m = re.search(r'SCORE:\s*(\d+)', text)
+        if not m:
+            return 10, "gate parse failure — fail-open"
+        why_m = re.search(r'WHY:\s*(.+)', text)
+        return min(int(m.group(1)), 10), (why_m.group(1).strip()[:120]
+                                          if why_m else "")
+    except Exception as e:
+        return 10, f"gate unavailable ({e}) — fail-open"
+
+
+def _log_filtered(item: dict, score: int, why: str):
+    p = B.PROJECT_DIR / "logs/self-review-filtered.md"
+    try:
+        if not p.exists():
+            p.write_text("# Self-review relevance-gate rejections\n\n"
+                         "Audit trail — tune RELEVANCE_MIN / config/mission.txt "
+                         "if good items land here.\n\n")
+        with open(p, "a") as f:
+            f.write(f"- {datetime.now().strftime('%Y-%m-%d %H:%M')} "
+                    f"[{score}/10] {item.get('type','')}: "
+                    f"{item.get('detail','')[:100]} — {why}\n")
+    except Exception as e:
+        B.log(f"self_review: filtered-log write failed: {e}")
+
 
 def _valid_feed(url: str) -> bool:
     try:
@@ -108,9 +187,25 @@ def run(kind: str = "daily"):
     existing_keys = {f"{p['type']}:{p['detail']}" for p in pending}
     existing_details = [p.get("detail", "") for p in pending]
 
-    added, proposed, hardware = [], [], []
+    added, proposed, hardware, filtered = [], [], [], []
     for it in items:
         blob = f"{it.get('detail','')} {it.get('source_line','')}"
+        # Mission-relevance gate — BEFORE auto-add and BEFORE proposing, so an
+        # off-mission feed can neither self-apply nor reach /approve. Dedupe
+        # first (cheap) so we don't spend model time re-scoring known items.
+        key0 = f"{it['type']}:{it['detail']}"
+        if key0 in existing_keys or B.is_duplicate_detail(it["detail"], existing_details):
+            continue
+        score, gate_why = _relevance(it)
+        if score < RELEVANCE_MIN:
+            it["status"] = "filtered"
+            it["filter_reason"] = f"relevance {score}/10: {gate_why}"
+            pending.append(it)              # tracked → dedupe blocks re-entry
+            existing_keys.add(key0)
+            existing_details.append(it["detail"])
+            _log_filtered(it, score, gate_why)
+            filtered.append(it)
+            continue
         # Auto-add a validated NEW source (feeds only; needs a real URL).
         # Tier-0 auto-apply (Phase 2): dev_loop.may_auto_apply gates this so ONLY
         # Tier-0-classified proposals can ever self-apply (defense-in-depth), and
@@ -167,13 +262,14 @@ def run(kind: str = "daily"):
         B.log(f"self_review: self-changes report {rpt.name} {summary}")
     except Exception as e:
         B.log(f"self_review: self-changes report failed (continuing): {e}")
-    _notify(kind, added, proposed, hardware)
+    _notify(kind, added, proposed, hardware, filtered)
     B.log(f"self_review ({kind}): +{len(added)} sources, "
-          f"{len(proposed)} proposed, {len(hardware)} hardware/env "
+          f"{len(proposed)} proposed, {len(hardware)} hardware/env, "
+          f"{len(filtered)} filtered off-mission "
           f"[target={dev_loop.TARGET_ENV}]")
 
 
-def _notify(kind, added, proposed, hardware):
+def _notify(kind, added, proposed, hardware, filtered=None):
     d = datetime.now().strftime("%Y-%m-%d")
     lines = [f"🤖 *CIRRUS self-review* ({kind}) — {d}", ""]
     if added:
@@ -206,7 +302,11 @@ def _notify(kind, added, proposed, hardware):
             lines.append("  risk: " + ", ".join(
                 f"{n}× {t.split('(')[0].strip()}" for t, n in sorted(tiers.items())))
         lines.append("Tap /approve to review.")
-    if not (added or proposed or hardware):
+    if filtered:
+        lines.append(f"🧹 _{len(filtered)} off-mission item(s) filtered by the "
+                     f"relevance gate (logs/self-review-filtered.md)_")
+        lines.append("")
+    if not (added or proposed or hardware or filtered):
         lines.append("Nothing new to review today.")
     try:
         B.send_message(B.ALLOWED_ID, "\n".join(lines))

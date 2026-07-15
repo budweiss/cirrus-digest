@@ -987,6 +987,14 @@ _MONITOR_TAIL = re.compile(
     r'\bto\s+(the\s+list\s+of\s+)?(tools\s+to\s+)?(monitor|watch|track)\b'
     r'|\binclude\s+monitoring\b', re.IGNORECASE)
 
+# Hallucinated/placeholder identifiers the summarizer invents when the source
+# was vague: "deepseek:model-x:size-y", "<name>", "example.com", "foo". A fake
+# tag can never be pulled/added, so these are pure queue noise (2026-07-15).
+_FAKE_IDENTIFIER = re.compile(
+    r'\bmodel-[a-z0-9]\b|\bsize-[a-z0-9]\b|:model-|:size-|<[a-z_ ]+>|'
+    r'\bexample\.(com|org|net)\b|\bfoo(bar)?\b|\bplaceholder\b|'
+    r'\byour[-_ ](model|feed|source|url)\b', re.IGNORECASE)
+
 def _non_english_ratio(text: str) -> float:
     """Fraction of letters outside ASCII — catches qwen language drift."""
     letters = [c for c in text if c.isalpha()]
@@ -1000,6 +1008,8 @@ def _skip_reason(item: dict) -> str:
     combined = f"{detail} {item.get('source_line', '')}"
     if _TRACKING_URL.search(combined):
         return "tracking-redirect URL"
+    if _FAKE_IDENTIFIER.search(combined):
+        return "placeholder/hallucinated identifier"
     # ^\W* in the regex skips leading bullets/arrows/bold markers, so the
     # check works on both the cleaned detail and the raw source line.
     if _MONITOR_ONLY.match(detail) or _MONITOR_ONLY.match(item.get("source_line", "")):
