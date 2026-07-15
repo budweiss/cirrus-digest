@@ -521,10 +521,21 @@ def cmd_todo(text: str) -> str:
         "source": f"manual:/todo ({date.today()})",
         "status": "pending"
     }
+    # Session 35: attach a dev_spec so /todo items ride the Dev-Loop —
+    # approving a Tier-1 /todo queues it for the nightly build; a Tier-0
+    # source-add with a URL applies immediately on approval.
+    try:
+        import dev_loop
+        new_item["dev_spec"] = dev_loop.make_spec(new_item, len(items) + 1)
+    except Exception as e:
+        log(f"/todo: make_spec failed (item still added): {e}")
     items.append(new_item)
     save_pending(items)
     log(f"/todo added: {text[:80]}")
-    return f"✅ Added to work queue:\n_{text}_\n\nView with /approve."
+    tier = (new_item.get("dev_spec") or {}).get("tier_name", "")
+    return (f"✅ Added to work queue:\n_{text}_\n"
+            + (f"_risk: {tier}_\n" if tier else "")
+            + "\nView with /approve.")
 
 
 def cmd_detail(arg: str) -> str:
@@ -1464,6 +1475,12 @@ def execute_action(item: dict) -> str:
                 f"It will be designed and built with Claude in the next Cowork session.")
 
     elif action_type == "CIRRUS_NOTE":
+        # Session 35: Tier-0 note WITH a feed URL = a source add in disguise —
+        # execute it directly through the validated ADD_SOURCE path instead of
+        # drafting a prose proposal (reversible: overlay, outside git).
+        if ((item.get("dev_spec") or {}).get("tier") == 0
+                and re.search(r'https?://', f"{detail} {item.get('source_line','')}")):
+            return execute_action({**item, "type": "ADD_SOURCE"})
         # Dev-Loop Phase 3: Tier-1 notes are buildable code changes — queue
         # them for the nightly dev agent instead of drafting a prose proposal.
         if (item.get("dev_spec") or {}).get("tier") == 1:
