@@ -155,7 +155,13 @@ def check_and_heal():
                 if d:
                     return f"process dead + {d}"
             return f"process not running (last exit {code})"
-        if code not in (0,):
+        # Only treat a non-zero LAST exit code as a problem when the process
+        # is NOT currently running. launchctl reports the previous exit
+        # status even while a healthy replacement runs — and kickstart -k
+        # itself leaves -15 (SIGTERM) behind, so checking it on a live pid
+        # created a self-perpetuating 30-min kill loop (bot+api restarted
+        # every pass, 2026-07-15/16 — Session 39 fix).
+        if pid is None and code not in (0,):
             return f"last exit code {code}"
         return ""
 
