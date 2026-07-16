@@ -100,6 +100,10 @@ def load_allowlist(path: Path = SENDERS_PATH):
                 "name": name,
                 "projects": entry.get("projects", []),
                 "limit": int(entry.get("max_requests_per_day", DEFAULT_DAILY_LIMIT)),
+                # If true, only subjects matching 'REQUEST:' enter intake —
+                # for senders whose mail ALSO feeds the digest (e.g. Buddy's
+                # research forwards). Default false: everything is a request.
+                "require_prefix": bool(entry.get("require_request_prefix", False)),
             }
     return allow
 
@@ -396,6 +400,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     processed, limited = [], []
     for uid, from_addr, subject, body, mid in messages:
         entry = allowlist[from_addr]
+        if entry["require_prefix"] and not REQUEST_RX.match(subject or ""):
+            log(f"  skipped (no REQUEST: prefix, sender requires it): "
+                f"{entry['name']} — '{(subject or '')[:60]}'")
+            continue
         if not under_limit(state, entry["name"], entry["limit"]):
             limited.append((entry["name"], subject))
             log(f"rate-limited: {entry['name']} over {entry['limit']}/day — skipping '{subject}'")
@@ -468,6 +476,17 @@ def selftest() -> int:
         check("projects routed", al["bill@knight.com"]["projects"] == ["snow"])
         check("custom limit kept", al["bill@knight.com"]["limit"] == 2)
         check("default limit", al["ag@re.com"]["limit"] == DEFAULT_DAILY_LIMIT)
+        check("prefix default false", al["bill@knight.com"]["require_prefix"] is False)
+        p.write_text(json.dumps({
+            "buddy": {"emails": ["b@y.com"], "projects": ["snow"],
+                       "require_request_prefix": True},
+        }))
+        al2 = load_allowlist(p)
+        check("prefix flag parsed", al2["b@y.com"]["require_prefix"] is True)
+        check("prefix gate: REQUEST passes", bool(REQUEST_RX.match("REQUEST: x")))
+        check("prefix gate: Re: REQUEST passes", bool(REQUEST_RX.match("Re: request: x")))
+        check("prefix gate: Fwd blocked", not REQUEST_RX.match("Fwd: research stuff"))
+        check("prefix gate: plain blocked", not REQUEST_RX.match("more salt data"))
 
     # subject parsing
     check("REQUEST: stripped", parse_request_title("REQUEST: faster bids") == "faster bids")

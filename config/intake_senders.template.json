@@ -1,5 +1,6 @@
 {
   "_comment": "TEMPLATE — copy to CIRRUS ~/projects/cirrus-digest/config/intake_senders.json via vi and fill in real addresses. Never commit the real file. See docs/END-USER-DIRECT-INTAKE.md.",
+  "_comment2": "Optional per-sender: require_request_prefix: true — only subjects starting with 'REQUEST:' enter intake. Use for senders whose mail also feeds the digest (e.g. Buddy's research forwards).",
   "bill": {
     "emails": ["FILL-IN@example.com"],
     "projects": ["snow", "property-management"],
