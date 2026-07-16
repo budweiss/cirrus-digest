@@ -104,6 +104,13 @@ def load_allowlist(path: Path = SENDERS_PATH):
                 # for senders whose mail ALSO feeds the digest (e.g. Buddy's
                 # research forwards). Default false: everything is a request.
                 "require_prefix": bool(entry.get("require_request_prefix", False)),
+                # "build" (default): backlog + dev ticket queue (Bill/Aggie).
+                # "research": requests are FOCUS TOPICS for that project's
+                # research digest (Alyssa/pedagogy) → config/topics-<project>.json,
+                # no dev ticket. See pedagogy/PEDAGOGY-SPEC.md.
+                "request_kind": (entry.get("request_kind") or "build")
+                                 if entry.get("request_kind") in (None, "build", "research")
+                                 else "build",
             }
     return allow
 
@@ -222,6 +229,24 @@ def append_backlog(rec: dict):
                 f"- Body: {rec['body_head'][:300]}\n")
 
 
+def append_topic(project: str, title: str, requester: str) -> Path:
+    """Add a focus topic to config/topics-<project>.json (research intake).
+    Dedupe: an identical active topic isn't added twice."""
+    safe = re.sub(r"[^a-z0-9_-]", "", (project or "general").lower()) or "general"
+    path = PROJECT_DIR / f"config/topics-{safe}.json"
+    data = load_json(path) or {"topics": []}
+    for t in data["topics"]:
+        if t.get("status") == "active" and t.get("topic", "").lower() == title.lower():
+            return path  # already queued
+    data["topics"].append({
+        "topic": title, "requested_by": requester, "status": "active",
+        "added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+    return path
+
+
 def ack_body(rec: dict) -> str:
     name = rec["requester"].capitalize()
     if rec["status"] == "refused":
@@ -231,6 +256,11 @@ def ack_body(rec: dict) -> str:
                 "(things like credentials, deletions, purchases, or access "
                 "changes are never automated). Buddy has been notified and "
                 "will follow up with you directly.\n\n— CIRRUS")
+    if rec.get("kind") == "research":
+        return (f"Hi {name},\n\nGot it — your topic has been added to the "
+                f"research queue:\n\n    {rec['title']}\n\n"
+                "It'll be covered in an upcoming digest. Send as many topics "
+                "as you like — one email per topic works best.\n\n— CIRRUS")
     if rec["tier"] >= dev_loop.TIER_DESIGN:
         eta = "It's been scheduled for an upcoming working session."
     else:
@@ -411,6 +441,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         rec = classify(entry["name"], entry["projects"], subject, body)
         rec["from"] = from_addr
         rec["message_id"] = mid
+        rec["kind"] = entry["request_kind"]
         log(f"request from {entry['name']}: '{rec['title']}' → tier {rec['tier']} "
             f"({rec['tier_name']}) [{rec['status']}]")
         if not dry_run:
@@ -421,17 +452,26 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 "title": rec["title"], "tier": rec["tier"],
                 "status": rec["status"], "spec_id": rec["dev_spec"]["id"],
             }, PROJECT_DIR)
-            # P2: non-refused requests also land in the ticket queue so the
-            # (future) dev-agent wiring and /admin/tickets can see them.
+            # Route by kind: research requests become focus topics for the
+            # project's research digest; build requests (default) also land
+            # in the ticket queue for the (future) dev-agent wiring.
             if rec["status"] != "refused":
-                try:
-                    ticket = dev_loop.ticket_create(
-                        entry["name"], entry["projects"], rec["title"],
-                        rec["body_head"][:400], origin="user-intake",
-                        project_dir=PROJECT_DIR)
-                    rec["ticket_id"] = ticket["id"]
-                except Exception as e:
-                    log(f"  ticket enqueue failed (backlog still recorded): {e}")
+                if rec["kind"] == "research":
+                    try:
+                        proj = (entry["projects"] or ["general"])[0]
+                        append_topic(proj, rec["title"], entry["name"])
+                        log(f"  → focus topic queued for '{proj}'")
+                    except Exception as e:
+                        log(f"  topic append failed (backlog still recorded): {e}")
+                else:
+                    try:
+                        ticket = dev_loop.ticket_create(
+                            entry["name"], entry["projects"], rec["title"],
+                            rec["body_head"][:400], origin="user-intake",
+                            project_dir=PROJECT_DIR)
+                        rec["ticket_id"] = ticket["id"]
+                    except Exception as e:
+                        log(f"  ticket enqueue failed (backlog still recorded): {e}")
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
         processed.append(rec)
 
@@ -498,6 +538,41 @@ def selftest() -> int:
         check("prefix gate: Re: REQUEST passes", bool(REQUEST_RX.match("Re: request: x")))
         check("prefix gate: Fwd blocked", not REQUEST_RX.match("Fwd: research stuff"))
         check("prefix gate: plain blocked", not REQUEST_RX.match("more salt data"))
+        p.write_text(json.dumps({
+            "alyssa": {"emails": ["a@school.org"], "projects": ["pedagogy"],
+                        "request_kind": "research"},
+            "bill": {"emails": ["b@k.com"], "projects": ["snow"]},
+            "bad": {"emails": ["x@y.com"], "request_kind": "banana"},
+        }))
+        al3 = load_allowlist(p)
+        check("research kind parsed", al3["a@school.org"]["request_kind"] == "research")
+        check("kind default build", al3["b@k.com"]["request_kind"] == "build")
+        check("invalid kind falls back to build", al3["x@y.com"]["request_kind"] == "build")
+
+    # research ack copy
+    rec_r = classify("alyssa", ["pedagogy"], "REQUEST: multisyllabic decoding strategies", "")
+    rec_r["kind"] = "research"
+    check("research ack mentions research queue", "research queue" in ack_body(rec_r))
+
+    # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
+    import tempfile as _tf
+    global PROJECT_DIR
+    _orig = PROJECT_DIR
+    with _tf.TemporaryDirectory() as td2:
+        PROJECT_DIR = Path(td2)
+        try:
+            path = append_topic("pedagogy", "fluency practice ideas", "alyssa")
+            append_topic("pedagogy", "Fluency Practice Ideas", "alyssa")  # dupe, case-insens
+            append_topic("pedagogy", "morphology", "alyssa")
+            data = json.loads(path.read_text())
+            check("topic file created", path.name == "topics-pedagogy.json")
+            check("topics appended", len(data["topics"]) == 2)
+            check("topic dedupe (case-insensitive)",
+                  sum(1 for t in data["topics"]
+                      if t["topic"].lower() == "fluency practice ideas") == 1)
+            check("topic active status", all(t["status"] == "active" for t in data["topics"]))
+        finally:
+            PROJECT_DIR = _orig
 
     # subject parsing
     check("REQUEST: stripped", parse_request_title("REQUEST: faster bids") == "faster bids")
