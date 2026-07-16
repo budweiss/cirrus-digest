@@ -273,6 +273,12 @@ def ack_body(rec: dict) -> str:
                 "(things like credentials, deletions, purchases, or access "
                 "changes are never automated). Buddy has been notified and "
                 "will follow up with you directly.\n\n— CIRRUS")
+    if rec.get("kind") == "feedback":
+        return (f"Hi {name},\n\nThanks for the note — Buddy and I have it "
+                "and will review. If you'd like a specific subject researched, "
+                "send a fresh email with the subject line "
+                "\"REQUEST: your topic\" and it goes straight into the "
+                "research queue.\n\n— CIRRUS")
     if rec.get("kind") == "research":
         return (f"Hi {name},\n\nGot it — your topic has been added to the "
                 f"research queue:\n\n    {rec['title']}\n\n"
@@ -485,6 +491,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         rec["from"] = from_addr
         rec["message_id"] = mid
         rec["kind"] = entry["request_kind"]
+        # Research senders: a REPLY without an explicit REQUEST: subject is
+        # feedback (e.g. Alyssa answering the intro email), not a topic —
+        # don't pollute the topic queue with "Re: ..." subjects.
+        if (rec["kind"] == "research"
+                and (subject or "").lower().lstrip().startswith("re:")
+                and not REQUEST_RX.match(subject or "")):
+            rec["kind"] = "feedback"
         log(f"request from {entry['name']}: '{rec['title']}' → tier {rec['tier']} "
             f"({rec['tier_name']}) [{rec['status']}]")
         if not dry_run:
@@ -499,7 +512,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             # project's research digest; build requests (default) also land
             # in the ticket queue for the (future) dev-agent wiring.
             if rec["status"] != "refused":
-                if rec["kind"] == "research":
+                if rec["kind"] == "feedback":
+                    log("  → feedback (reply) — backlogged for manual review, no topic")
+                elif rec["kind"] == "research":
                     try:
                         proj = (entry["projects"] or ["general"])[0]
                         append_topic(proj, rec["title"], entry["name"])
@@ -538,8 +553,12 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     if processed or limited:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
         for r in processed:
-            flag = "🚫 REFUSED (never-auto)" if r["status"] == "refused" else \
-                   f"tier {r['tier']} ({r['tier_name']})"
+            if r["status"] == "refused":
+                flag = "🚫 REFUSED (never-auto)"
+            elif r.get("kind") == "feedback":
+                flag = "💬 FEEDBACK reply — review in logs/intake/"
+            else:
+                flag = f"tier {r['tier']} ({r['tier_name']})"
             ack = "" if r.get("ack_sent", True) else " — ⚠️ ack FAILED"
             lines.append(f"• {r['requester']}: _{r['title']}_ — {flag}{ack}")
         for name, subj in limited:
@@ -610,6 +629,21 @@ def selftest() -> int:
     rec_r = classify("alyssa", ["pedagogy"], "REQUEST: multisyllabic decoding strategies", "")
     rec_r["kind"] = "research"
     check("research ack mentions research queue", "research queue" in ack_body(rec_r))
+
+    # reply-as-feedback routing (research senders)
+    def _route_kind(kind, subject):
+        if (kind == "research" and (subject or "").lower().lstrip().startswith("re:")
+                and not REQUEST_RX.match(subject or "")):
+            return "feedback"
+        return kind
+    check("reply → feedback", _route_kind("research", "Re: Introducing your literacy research assistant") == "feedback")
+    check("Re: REQUEST: stays research", _route_kind("research", "Re: REQUEST: fluency ideas") == "research")
+    check("fresh subject stays research", _route_kind("research", "phonics small groups") == "research")
+    check("build kind unaffected by Re:", _route_kind("build", "Re: bid spreadsheet") == "build")
+    rec_f = classify("alyssa", ["pedagogy"], "Re: Introducing your literacy research assistant", "looks great!")
+    rec_f["kind"] = "feedback"
+    check("feedback ack thanks, offers REQUEST:", "Thanks for the note" in ack_body(rec_f)
+          and "REQUEST:" in ack_body(rec_f))
 
     # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
     import tempfile as _tf
