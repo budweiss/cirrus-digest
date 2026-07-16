@@ -285,7 +285,8 @@ def find_account(config: dict):
     return None
 
 
-def scan_inbox(account: dict, password: str, allowlist: dict, state: dict):
+def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
+               rescan: bool = False):
     """Yields (uid, from_addr, subject, body, message_id) for new mail from
     allowlisted senders. Uses BODY.PEEK (no \\Seen flag) and its own UID
     cursor so the digest pipeline is untouched."""
@@ -307,6 +308,9 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict):
     last_uid = state.get("last_uid", 0)
     if uidvalidity is not None and state.get("uidvalidity") != uidvalidity:
         last_uid = 0
+    if rescan:
+        log("  rescan: ignoring last_uid (Message-ID dedupe still applies)")
+        last_uid = 0
     state["uidvalidity"] = uidvalidity
 
     since = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%d-%b-%Y")
@@ -323,6 +327,8 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict):
             msg = email.message_from_bytes(msg_data[0][1])
             from_addr = (email.utils.parseaddr(msg.get("From", ""))[1] or "").lower()
             if from_addr not in allowlist:
+                log(f"  skipped (not allowlisted): {from_addr} — "
+                    f"'{decode_hdr(msg.get('Subject', ''))[:60]}'")
                 continue
             mid = msg.get("Message-ID", f"uid-{uid}")
             if mid in seen_ids:
@@ -360,7 +366,7 @@ def bump_count(state: dict, sender_name: str):
 
 # ── Main run ──────────────────────────────────────────────────────────────────
 
-def run(dry_run: bool = False) -> int:
+def run(dry_run: bool = False, rescan: bool = False) -> int:
     allowlist = load_allowlist()
     if not allowlist:
         log("no configured senders in config/intake_senders.json — nothing to do "
@@ -380,7 +386,7 @@ def run(dry_run: bool = False) -> int:
 
     state = load_state()
     try:
-        messages = scan_inbox(account, password, allowlist, state)
+        messages = scan_inbox(account, password, allowlist, state, rescan=rescan)
     except Exception as e:
         log(f"ERROR: inbox scan failed: {e}")
         if not dry_run:
@@ -497,7 +503,7 @@ def selftest() -> int:
 
 
 if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else ""
-    if arg == "selftest":
+    args = sys.argv[1:]
+    if "selftest" in args:
         sys.exit(selftest())
-    sys.exit(run(dry_run=(arg == "--dry-run")))
+    sys.exit(run(dry_run="--dry-run" in args, rescan="--rescan" in args))
