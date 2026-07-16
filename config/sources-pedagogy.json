@@ -1,0 +1,48 @@
+{
+  "_comment": "Config for pedagogy_daily.py — deploys to CIRRUS config/sources-pedagogy.json. Podcast feeds resolved via iTunes lookup 2026-07-16; blog feeds validated where noted, Google News site-feeds used where direct RSS is dead.",
+  "digest": {
+    "output_dir": "/Users/buddy/projects/cirrus-digest/digests/pedagogy",
+    "ollama_host": "http://localhost:11434",
+    "ollama_model": "qwen2.5:14b",
+    "podcast_model": "llama3.2:3b",
+    "recipient": "Buddy.Weiss@outlook.com",
+    "cc": [],
+    "_recipient_note": "Phase A: Buddy reviews. Phase B: set recipient to Alyssa's address (on CIRRUS via vi) + cc Buddy — only on Buddy's explicit go."
+  },
+  "rss": [
+    { "name": "Shanahan on Literacy", "rss": "https://www.shanahanonliteracy.com/feed" },
+    { "name": "Cult of Pedagogy", "rss": "https://www.cultofpedagogy.com/feed/" },
+    { "name": "Reading Rockets (via Google News)", "rss": "https://news.google.com/rss/search?q=site:readingrockets.org&hl=en-US&gl=US&ceid=US:en" },
+    { "name": "The Reading League blog", "rss": "https://www.thereadingleague.org/feed/" },
+    { "name": "Edutopia literacy (via Google News)", "rss": "https://news.google.com/rss/search?q=site:edutopia.org%20(reading%20OR%20writing%20OR%20literacy)&hl=en-US&gl=US&ceid=US:en" },
+    { "name": "Science of reading news (via Google News)", "rss": "https://news.google.com/rss/search?q=%22science%20of%20reading%22%20OR%20%22structured%20literacy%22&hl=en-US&gl=US&ceid=US:en" },
+    { "name": "PA literacy policy (via Google News)", "rss": "https://news.google.com/rss/search?q=Pennsylvania%20(%22structured%20literacy%22%20OR%20%22reading%20curriculum%22%20OR%20%22Act%20135%22)&hl=en-US&gl=US&ceid=US:en" }
+  ],
+  "podcasts": [
+    { "name": "Science of Reading: The Podcast", "feed": "https://rss.buzzsprout.com/612361.rss" },
+    { "name": "Melissa & Lori Love Literacy", "feed": "https://rss.buzzsprout.com/287733.rss" },
+    { "name": "Literacy Talks", "feed": "https://rss.buzzsprout.com/1903769.rss" },
+    { "name": "Reach All Readers (formerly Triple R Teaching)", "feed": "https://rss.buzzsprout.com/861292.rss" },
+    { "name": "Together in Literacy", "feed": "https://app.kajabi.com/podcasts/2147491408/feed" },
+    { "name": "Sold a Story", "feed": "https://feeds.publicradio.org/public_feeds/sold-a-story" }
+  ],
+  "reference": [
+    "https://ies.ed.gov/ncee/wwc/PracticeGuides",
+    "https://fcrr.org",
+    "https://www.pa.gov/agencies/education/programs-and-services/instruction/elementary-and-secondary-education/act-55-summary"
+  ],
+  "technique_seeds": [
+    "Repeated reading for fluency (with partner reading)",
+    "Explicit morphology instruction (prefixes, suffixes, roots)",
+    "Sentence combining for writing instruction",
+    "Choral and echo reading",
+    "Elkonin boxes / phoneme-grapheme mapping",
+    "Retrieval practice for vocabulary",
+    "Text structure mapping for comprehension (narrative and informational)",
+    "Dictation as a spelling-to-writing bridge",
+    "Decodable text practice for struggling decoders",
+    "Peer-assisted learning strategies (PALS)",
+    "Writing about reading (brief constructed responses)",
+    "Scarborough's Rope as a diagnostic lens for reading difficulties"
+  ]
+}
