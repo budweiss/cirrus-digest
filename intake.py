@@ -421,6 +421,17 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 "title": rec["title"], "tier": rec["tier"],
                 "status": rec["status"], "spec_id": rec["dev_spec"]["id"],
             }, PROJECT_DIR)
+            # P2: non-refused requests also land in the ticket queue so the
+            # (future) dev-agent wiring and /admin/tickets can see them.
+            if rec["status"] != "refused":
+                try:
+                    ticket = dev_loop.ticket_create(
+                        entry["name"], entry["projects"], rec["title"],
+                        rec["body_head"][:400], origin="user-intake",
+                        project_dir=PROJECT_DIR)
+                    rec["ticket_id"] = ticket["id"]
+                except Exception as e:
+                    log(f"  ticket enqueue failed (backlog still recorded): {e}")
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
         processed.append(rec)
 

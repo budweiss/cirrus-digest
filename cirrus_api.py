@@ -136,6 +136,45 @@ def heartbeat():
     hb_path.write_text(json.dumps(hb, indent=2) + "\n")
     return jsonify({"ok": True, "src": src, "recorded": now, "status": status})
 
+# ── Tickets (Session 36: end-user direct intake P2) ──────────────────────────
+
+@app.route("/admin/ticket")
+def ticket_submit():
+    """Create an end-user ticket (classify via dev_loop → ticket-queue.jsonl).
+
+    GET /admin/ticket?requester=bill&project=snow&title=...&detail=...&token=...
+
+    Designed for CUMULUS (P3) to call when routing intake requests; usable
+    now by Cowork/Claude for testing. dev_agent does NOT read tickets yet —
+    that wiring (with per-project patch scopes) is the next P2 step.
+    Returns the ticket incl. tier + status (queued|session|refused)."""
+    require_token()
+    import dev_loop
+    requester = re.sub(r"[^a-zA-Z0-9_-]", "", request.args.get("requester", ""))[:40]
+    title = request.args.get("title", "").strip()[:200]
+    detail = request.args.get("detail", "").strip()[:1000]
+    projects = [p for p in re.split(r"[,\s]+", request.args.get("project", ""))
+                if re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", p)]
+    if not requester or not (title or detail):
+        return jsonify({"error": "requester and title (or detail) required"}), 400
+    ticket = dev_loop.ticket_create(requester, projects, title, detail,
+                                    origin="api-ticket", project_dir=PROJECT_DIR)
+    slim = {k: ticket[k] for k in ("id", "requester", "projects", "title",
+                                    "tier", "tier_name", "tier_reason", "status")}
+    return jsonify({"ok": True, "ticket": slim})
+
+@app.route("/admin/tickets")
+def ticket_list():
+    """List tickets. GET /admin/tickets?status=queued|session|refused&token=..."""
+    require_token()
+    import dev_loop
+    status = request.args.get("status", "")[:20]
+    tickets = dev_loop.ticket_load(PROJECT_DIR, status=status)
+    slim = [{k: t.get(k) for k in ("id", "created", "origin", "requester",
+                                    "projects", "title", "tier", "tier_name",
+                                    "status")} for t in tickets]
+    return jsonify({"tickets": slim, "total": len(slim)})
+
 # ── Approvals ──────────────────────────────────────────────────────────────────
 
 @app.route("/admin/approvals/pending")

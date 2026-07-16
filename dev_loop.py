@@ -217,6 +217,73 @@ def ledger_append(entry: dict, project_dir):
     return jsonl
 
 
+# ── Ticket queue (end-user direct intake P2 — see docs/END-USER-DIRECT-INTAKE.md)
+# Separate file from build-queue.jsonl ON PURPOSE: dev_agent does not read
+# tickets yet. Wiring tickets into the nightly sweep (with per-project patch
+# scopes) is the next P2 step, after the first live Tier-1 build is verified.
+
+def _ticket_path(project_dir):
+    base = Path(project_dir) / "logs" / "dev-loop"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "ticket-queue.jsonl"
+
+
+def ticket_create(requester: str, projects, title: str, detail: str = "",
+                  origin: str = "ticket", project_dir=None):
+    """Classify + append one end-user ticket. Returns the ticket dict.
+    status: queued (Tier 0/1 — awaits dev-agent pickup once P2 wiring lands),
+    session (Tier 2 — needs a working session), refused (NEVER pattern)."""
+    detail = (detail or title or "").strip()
+    title = (title or detail or "(untitled)").strip()
+    tier, reason = classify_risk("USER_REQUEST", detail, title)
+    spec = make_spec({"type": "USER_REQUEST", "detail": detail,
+                      "source_line": title},
+                     idx=int(datetime.now().strftime("%H%M%S")))
+    if tier == TIER_NEVER:
+        status = "refused"
+    elif tier >= TIER_DESIGN:
+        status = "session"
+    else:
+        status = "queued"
+    ticket = {
+        "id": f"ticket-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "origin": origin,
+        "requester": str(requester)[:40],
+        "projects": list(projects or []),
+        "title": title[:200],
+        "detail": detail[:1000],
+        "tier": tier,
+        "tier_name": TIER_NAME[tier],
+        "tier_reason": reason,
+        "dev_spec": spec,
+        "status": status,
+    }
+    pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
+    with open(_ticket_path(pd), "a") as f:
+        f.write(json.dumps(ticket) + "\n")
+    ledger_append({"event": "ticket", "id": ticket["id"],
+                   "tier_name": ticket["tier_name"],
+                   "detail": f"{requester}: {title}", "result": status}, pd)
+    return ticket
+
+
+def ticket_load(project_dir=None, status: str = ""):
+    """Read the ticket queue (optionally filtered by status). Newest last."""
+    pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
+    tf = _ticket_path(pd)
+    out = []
+    if tf.exists():
+        for line in tf.read_text().splitlines():
+            try:
+                t = json.loads(line)
+                if not status or t.get("status") == status:
+                    out.append(t)
+            except Exception:
+                continue
+    return out
+
+
 # ── Tier gate + daily self-changes report ─────────────────────────────────────
 def may_auto_apply(ptype: str, detail: str, source_line: str = "") -> bool:
     """Defense-in-depth gate: return True ONLY when a proposal is classified
@@ -342,6 +409,17 @@ def _selftest():
         assert summary["auto_applied"] == 1 and summary["proposed"] == 1
         assert "MLQ.ai RSS" in rtext and TARGET_ENV in rtext
         print("ledger + report: OK ->", os.path.basename(str(rpt)), summary)
+
+    # ticket queue round-trip (P2)
+    with tempfile.TemporaryDirectory() as td:
+        t1 = ticket_create("bill", ["snow"], "add per-inch column", project_dir=td)
+        assert t1["status"] == "queued" and t1["tier"] in (TIER_AUTO, TIER_CONFIRM)
+        t2 = ticket_create("bill", ["snow"], "delete all old bids", project_dir=td)
+        assert t2["status"] == "refused" and t2["tier"] == TIER_NEVER
+        assert len(ticket_load(td)) == 2
+        assert len(ticket_load(td, status="queued")) == 1
+        assert ticket_load(td, status="queued")[0]["id"] == t1["id"]
+        print("ticket queue: OK")
 
     print("\nALL SELF-TESTS PASSED" if ok == len(cases) else "\nSOME CLASSIFIER CASES FAILED")
 
