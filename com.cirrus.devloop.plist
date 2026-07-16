@@ -18,9 +18,9 @@
         <integer>30</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/buddy/projects/cirrus-digest/logs/devloop.log</string>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devloop-launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/buddy/projects/cirrus-digest/logs/devloop-error.log</string>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devloop-launchd.log</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>
