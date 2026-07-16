@@ -244,6 +244,11 @@
       "name": "SCMP Tech [approved 2026-07-10]",
       "rss": "https://www.scmp.com/rss/36/feed",
       "type": "blog"
+    },
+    {
+      "name": "Anthropic Official News (anthropic.com/news RSS) [approved 2026-07-15]",
+      "rss": "https://www.anthropic.com/news/rss.xml",
+      "type": "blog"
     }
   ],
   "digest": {
