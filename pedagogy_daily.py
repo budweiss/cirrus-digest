@@ -99,13 +99,17 @@ def ollama(prompt, cfg, timeout=180, model=None):
         return f"[Summarization error: {e}]"
 
 
-TEACHER_PROMPT = """You are writing for Alyssa, a 3rd-grade reading/writing/English
-teacher in Pennsylvania. Summarize the following {kind} in 4-8 sentences.
-Focus ONLY on what is practical and relevant for teaching 8-9 year olds:
-concrete techniques, research findings she can act on, things to try in her
-classroom. Skip publisher promotion, host chatter, and anything aimed at
-administrators. If there is truly nothing relevant for an elementary reading/
-writing teacher, reply exactly: NOT RELEVANT
+TEACHER_PROMPT = """You are writing for Alyssa, an EXPERIENCED 3rd-grade
+reading/writing/English teacher in Pennsylvania — over 10 years in the
+classroom. She knows the fundamentals; do NOT explain basic concepts or
+routine practices. Summarize the following {kind} in 4-8 sentences.
+Focus ONLY on what is genuinely new or useful to a veteran teacher of
+8-9 year olds: fresh research findings, advanced nuance or live debates,
+and emerging or innovative practices — including approaches educators
+outside the US are using — that she could take advantage of. Skip publisher
+promotion, host chatter, and anything aimed at administrators. If there is
+truly nothing new or useful for an experienced elementary reading/writing
+teacher, reply exactly: NOT RELEVANT
 
 Title: {title}
 Source: {source}
@@ -261,14 +265,19 @@ def fetch_podcasts(cfg, state):
 # ── Technique spotlight ───────────────────────────────────────────────────────
 
 SPOTLIGHT_PROMPT = """You are writing a short "Technique Spotlight" for Alyssa,
-a 3rd-grade reading/writing/English teacher. The technique is: {technique}
+an EXPERIENCED 3rd-grade reading/writing/English teacher (10+ years — assume
+she knows the basics). The technique is: {technique}
 
-Write 3 short sections in markdown (no top-level heading):
-**What it is** — 2-3 sentences, plain language.
+Write 4 short sections in markdown (no top-level heading):
+**What it is** — 1-2 sentences, plain language; she may already use it.
 **The evidence** — 2-3 sentences on why researchers recommend it (name the
 research base honestly; do not invent citations or statistics).
-**Try it this week** — 3-4 concrete bullet steps for a 3rd-grade classroom.
-Keep the whole thing under 250 words."""
+**The advanced angle** — 2-3 sentences: a refinement, extension, or emerging
+variation that experienced teachers — including educators outside the US —
+are using; be honest if the innovation is early-stage.
+**Try it this week** — 3-4 concrete bullet steps for a 3rd-grade classroom,
+pitched at a veteran teacher (skip setup she'd find obvious).
+Keep the whole thing under 300 words."""
 
 
 def technique_spotlight(cfg, state):
@@ -289,15 +298,17 @@ def technique_spotlight(cfg, state):
 
 # ── Focus topics (Alyssa's REQUEST: queue via intake) ────────────────────────
 
-TOPIC_PROMPT = """Alyssa, a 3rd-grade reading/writing/English teacher, asked for
-research on: {topic}
+TOPIC_PROMPT = """Alyssa, an experienced 3rd-grade reading/writing/English
+teacher (10+ years), asked for research on: {topic}
 
 Write a practical research brief in markdown (no top-level heading, under
-350 words): what the evidence says, what works in a 3rd-grade classroom, and
-2-3 concrete next steps she can take. Name the research base honestly; do
-not invent citations, statistics, or program names. If the topic is outside
-reading/writing/English instruction, say so briefly and give your best
-practical pointer."""
+350 words) pitched at a veteran teacher — skip the basics, emphasize the
+latest evidence, points of active debate, and emerging practices (including
+ways educators outside the US approach it): what the evidence says, what
+works in a 3rd-grade classroom, and 2-3 concrete next steps she can take.
+Name the research base honestly; do not invent citations, statistics, or
+program names. If the topic is outside reading/writing/English instruction,
+say so briefly and give your best practical pointer."""
 
 
 def cover_focus_topics(cfg, dry_run):
