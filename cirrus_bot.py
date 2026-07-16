@@ -379,15 +379,20 @@ def cmd_status():
         status_text += f"\n\n📋 {stale} proposal(s) pending review for " \
                         f"{STALE_PROPOSAL_DAYS}+ days — check /proposals"
 
-    # MacBook watchdog heartbeat (Session 35)
+    # MacBook watchdog heartbeat (Session 35; sleep-notice Session 39)
     hb = _load_heartbeat("macbook")
     if hb:
         age = int((datetime.now() - datetime.fromisoformat(hb["ts"])).total_seconds() // 60)
-        icon = "🫀" if hb.get("status") == "ok" and age <= HB_STALE_MIN else "⚠️"
-        status_text += (f"\n\n{icon} MacBook runner heartbeat: {age} min ago "
-                        f"({hb.get('status','?')})")
-        if hb.get("status") != "ok":
-            status_text += f"\n_{hb.get('note','')[:150]}_"
+        if hb.get("status") == "sleeping":
+            # Deliberate sleep (sleepwatcher notice) — expected quiet, not a fault.
+            slept_at = hb.get("ts", "")[11:16]
+            status_text += f"\n\n💤 MacBook: sleeping since {slept_at} ({age} min)"
+        else:
+            icon = "🫀" if hb.get("status") == "ok" and age <= HB_STALE_MIN else "⚠️"
+            status_text += (f"\n\n{icon} MacBook runner heartbeat: {age} min ago "
+                            f"({hb.get('status','?')})")
+            if hb.get("status") != "ok":
+                status_text += f"\n_{hb.get('note','')[:150]}_"
     else:
         status_text += "\n\n🫀 MacBook runner heartbeat: none recorded yet"
 
@@ -427,6 +432,12 @@ def check_heartbeats():
         return
 
     if age_min > HB_STALE_MIN:
+        # Deliberate sleep (Session 39): the MacBook's sleepwatcher pings
+        # status=sleeping on its way down. A stale-but-sleeping heartbeat is
+        # expected quiet — never alert. Wake resumes normal ok heartbeats.
+        if hb.get("status") == "sleeping":
+            _hb_watch["stale_alerted"] = False
+            return
         # Quiet hours (22:00–08:00): the MacBook is usually just asleep —
         # the runner being unavailable then is expected, not an incident.
         # If it's still stale after 08:00, the next check alerts normally.
@@ -449,7 +460,8 @@ def check_heartbeats():
         send_message(ALLOWED_ID, "✅ MacBook watchdog heartbeat is back.")
 
     # Fresh heartbeat with a self-heal / degradation report → surface it once.
-    if hb.get("status") != "ok" and hb.get("ts") != _hb_watch["last_reported_ts"]:
+    # ("sleeping" is a deliberate state, not a fault — never report it here.)
+    if hb.get("status") not in ("ok", "sleeping") and hb.get("ts") != _hb_watch["last_reported_ts"]:
         _hb_watch["last_reported_ts"] = hb.get("ts", "")
         icon = "🔧" if hb.get("status") == "repaired" else "⚠️"
         send_message(ALLOWED_ID,
