@@ -189,7 +189,13 @@ def transcribe(audio_url):
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-        urllib.request.urlretrieve(audio_url, tmp_path)
+        # requests with a real UA — Buzzsprout 403s urllib's default agent
+        with requests.get(audio_url, stream=True, timeout=120,
+                          headers={"User-Agent": "Mozilla/5.0 (CirrusPedagogy)"}) as r:
+            r.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 20):
+                    f.write(chunk)
         with tempfile.TemporaryDirectory() as outdir:
             subprocess.run([WHISPER_BIN, str(tmp_path), "--model", WHISPER_MODEL,
                             "--output_format", "txt", "--output_dir", outdir,
