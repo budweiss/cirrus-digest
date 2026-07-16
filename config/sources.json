@@ -10,6 +10,15 @@
         "enabled": true
       },
       {
+        "label": "gmail-research",
+        "address": "cirrustask@gmail.com",
+        "imap_server": "imap.gmail.com",
+        "imap_port": 993,
+        "credential_key": "gmail_research_password",
+        "enabled": true,
+        "_note": "Dedicated research inbox - send/forward links here to ingest into the daily run."
+      },
+      {
         "label": "outlook",
         "address": "buddy.weiss@outlook.com",
         "imap_server": "outlook.office365.com",
