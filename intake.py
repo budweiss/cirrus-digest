@@ -312,19 +312,34 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
 
 
 def telegram(text: str, creds: dict) -> bool:
+    """Send to Buddy. Tries Markdown first; on HTTP 400 (Telegram rejects
+    unbalanced _/*/` entities) retries as plain text — same pattern as
+    cirrus_bot.send_message. An alert must never be lost to formatting."""
     try:
         token, chat = creds["telegram_bot_token"], creds["telegram_user_id"]
-        data = json.dumps({"chat_id": int(chat), "text": text,
-                           "parse_mode": "Markdown"}).encode()
+    except Exception as e:
+        log(f"telegram unavailable (creds: {e})")
+        return False
+
+    def _post(payload: dict) -> bool:
+        data = json.dumps(payload).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data,
             headers={"Content-Type": "application/json",
                      "User-Agent": "CirrusIntake/1.0"})
         urllib.request.urlopen(req, timeout=30).read()
         return True
+
+    base = {"chat_id": int(chat), "text": text}
+    try:
+        return _post({**base, "parse_mode": "Markdown"})
     except Exception as e:
-        log(f"telegram send failed: {e}")
-        return False
+        log(f"telegram markdown send failed ({e}) — retrying plain")
+        try:
+            return _post(base)
+        except Exception as e2:
+            log(f"telegram send failed: {e2}")
+            return False
 
 
 # ── IMAP scan ─────────────────────────────────────────────────────────────────
