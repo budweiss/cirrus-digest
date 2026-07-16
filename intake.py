@@ -60,6 +60,8 @@ BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
 DEFAULT_DAILY_LIMIT  = 10
 
 REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\s*:\s*", re.IGNORECASE)
+BOUNCE_FROM_RX = re.compile(r"^(mailer-daemon|postmaster)@", re.IGNORECASE)
+EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def log(msg: str):
@@ -175,6 +177,21 @@ def body_text(msg) -> str:
 def parse_request_title(subject: str) -> str:
     """'REQUEST: faster bids' → 'faster bids'; otherwise the subject as-is."""
     return REQUEST_RX.sub("", subject or "").strip() or "(no subject)"
+
+
+def extract_bounced_recipient(msg, own_address: str) -> str:
+    """Best-effort: who did our email fail to reach? Checks the
+    X-Failed-Recipients header, then the first email address in the bounce
+    body that isn't our own sender. Returns '' if none found."""
+    failed = msg.get("X-Failed-Recipients", "")
+    if failed and "@" in failed:
+        return failed.strip()
+    own = (own_address or "").lower()
+    for addr in EMAIL_RX.findall(body_text(msg)):
+        a = addr.lower()
+        if a != own and not BOUNCE_FROM_RX.match(a):
+            return addr
+    return ""
 
 
 # ── Classification (wraps dev_loop) ───────────────────────────────────────────
@@ -354,12 +371,22 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
     log(f"inbox: {len(uids)} in window, {len(new_uids)} new (last_uid={last_uid})")
 
     out = []
+    bounces = []
     seen_ids = set(state.get("seen_message_ids", [])[-500:])
     for uid in new_uids:
         try:
             _, msg_data = mail.uid("fetch", str(uid), "(BODY.PEEK[])")
             msg = email.message_from_bytes(msg_data[0][1])
             from_addr = (email.utils.parseaddr(msg.get("From", ""))[1] or "").lower()
+            if BOUNCE_FROM_RX.match(from_addr):
+                mid = msg.get("Message-ID", f"uid-{uid}")
+                if mid not in seen_ids:
+                    seen_ids.add(mid)
+                    rcpt = extract_bounced_recipient(msg, account.get("address", ""))
+                    subj = decode_hdr(msg.get("Subject", ""))[:80]
+                    log(f"  BOUNCE detected: to={rcpt or 'unknown'} — '{subj}'")
+                    bounces.append({"recipient": rcpt or "unknown", "subject": subj})
+                continue
             if from_addr not in allowlist:
                 log(f"  skipped (not allowlisted): {from_addr} — "
                     f"'{decode_hdr(msg.get('Subject', ''))[:60]}'")
@@ -379,7 +406,7 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
 
     state["last_uid"] = max([state.get("last_uid", 0)] + new_uids) if new_uids else last_uid
     state["seen_message_ids"] = list(seen_ids)[-500:]
-    return out
+    return out, bounces
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -420,7 +447,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
 
     state = load_state()
     try:
-        messages = scan_inbox(account, password, allowlist, state, rescan=rescan)
+        messages, bounces = scan_inbox(account, password, allowlist, state,
+                                       rescan=rescan)
     except Exception as e:
         log(f"ERROR: inbox scan failed: {e}")
         if not dry_run:
@@ -477,6 +505,20 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
 
     if not dry_run:
         save_state(state)
+
+    # Delivery-failure alert: any outgoing mail from this inbox that bounced
+    # (client acks, digests, intro emails) — tell Buddy who it failed to reach.
+    if bounces:
+        blines = [f"⚠️ *Intake*: {len(bounces)} delivery failure(s) in "
+                  f"{account['address']}:"]
+        for b in bounces:
+            blines.append(f"• bounced: `{b['recipient']}` — _{b['subject']}_")
+        blines.append("Check the address (intake_senders.json / recipient "
+                      "config) and resend.")
+        if dry_run:
+            log("DRY RUN — would telegram:\n" + "\n".join(blines))
+        else:
+            telegram("\n".join(blines), creds)
 
     if processed or limited:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
@@ -595,6 +637,29 @@ def selftest() -> int:
     check("refused ack mentions human", "human decision" in ack_body(rec2))
     check("minor ack mentions build",
           "build cycle" in ack_body(rec) or "scheduled" in ack_body(rec))
+
+    # bounce detection
+    check("mailer-daemon matches", bool(BOUNCE_FROM_RX.match("mailer-daemon@googlemail.com")))
+    check("postmaster matches", bool(BOUNCE_FROM_RX.match("POSTMASTER@outlook.com")))
+    check("normal sender no match", not BOUNCE_FROM_RX.match("bill@knight.com"))
+    from email.message import EmailMessage
+    bm = EmailMessage()
+    bm["From"] = "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"
+    bm["Subject"] = "Delivery Status Notification (Failure)"
+    bm["X-Failed-Recipients"] = "alyssa.wrong@avonworth.k12.pa.us"
+    bm.set_content("Your message wasn't delivered to alyssa.wrong@avonworth.k12.pa.us "
+                   "because the address couldn't be found.")
+    check("bounce rcpt via header",
+          extract_bounced_recipient(bm, "cirrustask@gmail.com")
+          == "alyssa.wrong@avonworth.k12.pa.us")
+    bm2 = EmailMessage()
+    bm2["From"] = "mailer-daemon@googlemail.com"
+    bm2["Subject"] = "Delivery Status Notification (Failure)"
+    bm2.set_content("Sorry, delivery failed permanently.\n"
+                    "Final-Recipient: rfc822; teacher@school.org\n"
+                    "From: cirrustask@gmail.com")
+    check("bounce rcpt via body (skips own address)",
+          extract_bounced_recipient(bm2, "cirrustask@gmail.com") == "teacher@school.org")
 
     # rate limiting
     st = {}
