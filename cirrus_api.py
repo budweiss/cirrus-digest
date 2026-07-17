@@ -45,9 +45,17 @@ def require_token():
 
 @app.after_request
 def no_cache(response):
-    """Tell Cloudflare and all intermediate caches never to cache API responses."""
+    """Never cache API responses (Cloudflare) + allow browser calls (S40).
+
+    CORS: the Buddy Daily Dashboard artifact fetches this API straight from
+    its page (its tool bridge is unreliable when opened standalone). Allowing
+    cross-origin GETs is safe here — every endpoint still requires the API
+    token, so foreign pages without the token only ever see 403s.
+    """
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
 # ── Health ─────────────────────────────────────────────────────────────────────
