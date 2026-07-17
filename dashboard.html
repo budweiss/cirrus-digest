@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buddy's Daily Dashboard</title>
+<style>
+  :root { color-scheme: light;
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1f2b; --muted:#6b7280;
+    --line:#e5e7eb; --accent:#2563eb; --ok:#059669; --warn:#d97706;
+    --bad:#dc2626; --sample:#9333ea;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--ink);
+    font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0; }
+  .pill { font-size:12px; padding:2px 10px; border-radius:999px; font-weight:600; }
+  .pill.ok  { background:#d1fae5; color:var(--ok); }
+  .pill.bad { background:#fee2e2; color:var(--bad); }
+  .pill.wait{ background:#e5e7eb; color:var(--muted); }
+  #updated { font-size:12px; color:var(--muted); margin-left:auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .card h2 { font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  .count { background:var(--accent); color:#fff; font-size:12px; border-radius:999px; padding:1px 9px; }
+  .count.zero { background:#d1fae5; color:var(--ok); }
+  .empty { color:var(--muted); font-style:italic; padding:8px 0; }
+  ul.items { list-style:none; margin:0; padding:0; }
+  ul.items li { padding:8px 0; border-top:1px solid var(--line); display:flex; gap:8px; align-items:flex-start; }
+  ul.items li:first-child { border-top:none; }
+  .tag { flex:none; font-size:10px; font-weight:700; letter-spacing:.4px; padding:2px 6px;
+    border-radius:4px; background:#eff6ff; color:var(--accent); margin-top:2px; }
+  .tag.minor { background:#d1fae5; color:var(--ok); }
+  .tag.major { background:#ede9fe; color:#7c3aed; }
+  .tag.sched { background:#fef3c7; color:var(--warn); }
+  .why { color:var(--muted); }
+  input[type=checkbox] { margin-top:3px; accent-color:var(--accent); }
+  li.done label { text-decoration:line-through; color:var(--muted); }
+  details { border-top:1px solid var(--line); padding:8px 0; }
+  details summary { cursor:pointer; font-weight:600; font-size:13px; color:var(--muted); }
+  details ul { margin:6px 0 0; padding-left:18px; color:var(--ink); }
+  details ul li { margin:4px 0; }
+  .sample-badge { font-size:10px; font-weight:700; letter-spacing:.5px; padding:2px 7px;
+    border-radius:4px; background:#f3e8ff; color:var(--sample); }
+  .banner { border:1px solid #fca5a5; background:#fef2f2; color:var(--bad);
+    border-radius:10px; padding:10px 14px; margin-bottom:14px; display:none; }
+  .note { font-size:12px; color:var(--muted); margin-top:14px; }
+  .cal-time { flex:none; font-variant-numeric:tabular-nums; color:var(--muted); width:72px; }
+  .digest-date { font-size:12px; color:var(--muted); font-weight:400; margin-left:auto; }
+  .up-date { flex:none; font-size:11px; font-variant-numeric:tabular-nums; color:var(--muted); width:44px; margin-top:2px; }
+  /* Projects panel */
+  .proj-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+  .proj { border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .proj h3 { font-size:13px; margin:0 0 2px; }
+  .client { font-size:11px; font-weight:700; letter-spacing:.4px; padding:1px 7px;
+    border-radius:999px; background:#eff6ff; color:var(--accent); margin-left:6px; }
+  .client.internal { background:#f3f4f6; color:var(--muted); }
+  .proj .st { font-size:12px; color:var(--ink); margin:6px 0 8px; }
+  .proj ul { margin:0; padding-left:16px; font-size:12px; color:var(--muted); }
+  .proj ul li { margin:3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Buddy's Daily Dashboard</h1>
+  <span id="cirrus-pill" class="pill wait">CIRRUS: checking…</span>
+  <span id="updated"></span>
+</header>
+<div id="err" class="banner"></div>
+
+<div class="grid">
+  <div class="card">
+    <h2>CIRRUS approvals queue <span id="pending-count" class="count">…</span></h2>
+    <div id="pending-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Daily digest — action items <span id="digest-date" class="digest-date"></span></h2>
+    <div id="digest-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Applied updates <span id="upd-updated" class="digest-date"></span></h2>
+    <div id="upd-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Inbox — unread <span id="inbox-count" class="count">…</span></h2>
+    <div id="inbox-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Calendar — next 7 days <span id="cal-note" class="digest-date"></span></h2>
+    <div id="cal-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <h2>Projects <span id="proj-updated" class="digest-date"></span></h2>
+    <div id="proj-body"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+<div class="note">Data refreshes every time this page opens (Reload button up top re-pulls).
+  Live feeds: CIRRUS admin API (approvals, digest, inbox) + Outlook ICS + docs/projects-status.json + docs/updates-log.json. Config comes from this browser’s private storage (one-time token setup); nothing is stored in the page file itself.</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function textOf(r){
+  if(!r) return '';
+  const sc = r.structuredContent;
+  if(sc){
+    if(typeof sc === 'string') return sc;
+    if(typeof sc.output === 'string') return sc.output;
+    return JSON.stringify(sc);
+  }
+  return (r.content||[]).map(c => c.text||'').join('\n');
+}
+function extractJson(text){
+  const i = text.indexOf('{'); const j = text.lastIndexOf('}');
+  if(i < 0 || j < i) throw new Error('no JSON found in response');
+  return JSON.parse(text.slice(i, j+1));
+}
+async function call(name, args){
+  const r = await window.cowork.callMcpTool(name, args);
+  const t = textOf(r);
+  if(r.isError) throw new Error(t.slice(0,300));
+  return t;
+}
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function fail(msg){
+  const b = $('err'); b.style.display='block'; b.textContent = msg;
+}
+
+async function getConfig(){
+  // Priority: fresh read from the Cowork folder → cached copy in this
+  // dashboard's private storage → one-time manual setup box.
+  let out = '';
+  try {
+    out = await call('mcp__workspace__bash',
+      { command: "cat /sessions/*/mnt/Cowork/cirrus/config/local.json 2>/dev/null || echo NOFOLDER" });
+  } catch(e){ out = 'NOFOLDER'; }
+  if(!out.includes('NOFOLDER')){
+    try {
+      const cfg = extractJson(out);
+      if(cfg.cirrus_api_token){
+        const slim = { token: cfg.cirrus_api_token,
+                       api: cfg.cirrus_api_url || 'https://cirrus.cirrustask.com',
+                       ics: cfg.outlook_ics_url || '' };
+        localStorage.setItem('dash-cfg', JSON.stringify(slim));  // stays on this Mac
+        return slim;
+      }
+    } catch(e){}
+  }
+  const cached = localStorage.getItem('dash-cfg');
+  if(cached){ try { const c = JSON.parse(cached); c.fromCache = true; return c; } catch(e){} }
+  throw new Error('NEEDS_SETUP');
+}
+function showSetup(){
+  const b = $('err'); b.style.display = 'block'; b.style.color = 'var(--ink)';
+  b.style.background = '#fffbeb'; b.style.borderColor = '#fcd34d';
+  b.innerHTML = '<b>One-time setup:</b> this window could not reach the Cowork folder, so paste the CIRRUS API token once and it will be kept in this dashboard\'s private storage on this Mac only. Find it in Terminal: <code>cat ~/Documents/Cowork/cirrus/config/local.json</code> (the <code>cirrus_api_token</code> value).<br><br>'+
+    '<input id="setup-token" type="password" placeholder="API token" style="width:60%;padding:6px 8px;border:1px solid var(--line);border-radius:6px"> '+
+    '<button id="setup-save" style="padding:6px 14px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer">Save</button>';
+  (async () => {
+    const d = document.createElement('div');
+    d.style.cssText = 'margin-top:10px;font-size:12px;color:var(--muted)';
+    d.textContent = 'Running diagnostics\u2026';
+    $('err').appendChild(d);
+    let bashR = 'ok', webR = 'ok', dirR = 'ok';
+    try { const r = await fetch('https://cirrus.cirrustask.com/robots.txt'); dirR = 'reachable (HTTP ' + r.status + ')'; }
+    catch(e){ dirR = 'FAILED: ' + String(e.message||e).slice(0,100); }
+    try { const t = await call('mcp__workspace__bash', { command: 'echo dash-ping' });
+          if(!t.includes('dash-ping')) bashR = 'unexpected output: ' + t.slice(0,80); }
+    catch(e){ bashR = 'FAILED: ' + String(e.message||e).slice(0,120); }
+    try { const t = await call('mcp__workspace__web_fetch', { url: 'https://cirrus.cirrustask.com/robots.txt' });
+          webR = 'reachable (' + t.length + ' chars)'; }
+    catch(e){ webR = 'FAILED: ' + String(e.message||e).slice(0,120); }
+    d.innerHTML = 'Diagnostics \u2014 direct fetch \u2192 CIRRUS: <b>' + dirR + '</b> \u00b7 shell tool: <b>' + bashR + '</b> \u00b7 web tool: <b>' + webR + '</b>';
+  })();
+  $('setup-save').addEventListener('click', async () => {
+    const t = $('setup-token').value.trim().replace(/^["']|["',]+$/g, '');
+    if(!t) return;
+    const btn = $('setup-save'); btn.textContent = 'Checking…'; btn.disabled = true;
+    try {
+      let ok = false;
+      try {
+        const r = await fetch('https://cirrus.cirrustask.com/status?token=' + t + '&cb=' + Date.now());
+        ok = r.ok && (await r.text()).includes('"ok"');
+        if(!ok && r.status === 403) throw new Error('403 \u2014 CIRRUS rejected the token (incomplete paste?)');
+      } catch(e){ if(String(e.message).startsWith('403')) throw e; }
+      if(!ok){
+        const chk = await call('mcp__workspace__web_fetch',
+          { url: 'https://cirrus.cirrustask.com/status?token=' + t + '&cb=' + Date.now() });
+        if(!chk.includes('"ok"')) throw new Error('rejected by CIRRUS');
+      }
+      localStorage.setItem('dash-cfg', JSON.stringify({ token: t, api: 'https://cirrus.cirrustask.com', ics: '' }));
+      btn.textContent = 'Saved ✓';
+      location.reload();
+    } catch(e){
+      btn.textContent = 'Save'; btn.disabled = false;
+      alert('Token check failed. Reason: ' + String(e.message||e).slice(0,300) + '\n\nIf this mentions permissions, network, or tool errors (rather than 403/invalid token), the problem is this window\u2019s tool access, not your token — tell Claude the exact text above.');
+    }
+  });
+}
+async function fetchApi(cfg, path){
+  const sep = path.includes('?') ? '&' : '?';
+  const url = cfg.api + path + sep + 'token=' + cfg.token + '&cb=' + Date.now();
+  try {
+    const r = await fetch(url);                     // direct from the page (CORS enabled on CIRRUS)
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } catch(e){
+    return extractJson(await call('mcp__workspace__web_fetch', { url }));  // tool fallback
+  }
+}
+
+function renderPending(data){
+  const n = data.total ?? (data.pending||[]).length;
+  const c = $('pending-count'); c.textContent = n; c.className = 'count' + (n===0?' zero':'');
+  const body = $('pending-body');
+  if(!n){ body.innerHTML = '<div class="empty">Nothing waiting on you — queue is clear.</div>'; return; }
+  body.innerHTML = '<ul class="items">' + (data.pending||[]).map(p =>
+    '<li><span class="tag">'+esc(p.type||'ITEM')+'</span><span>'+esc(p.detail||p.source_line||JSON.stringify(p))+'</span></li>'
+  ).join('') + '</ul>';
+}
+
+function parseSections(md){
+  const secs = {}; let cur = null;
+  for(const line of md.split('\n')){
+    const h = line.match(/^##\s+(.+)/);
+    if(h){ cur = h[1].trim(); secs[cur] = []; continue; }
+    const b = line.match(/^-\s+(.+)/);
+    if(b && cur) secs[cur].push(b[1].trim());
+  }
+  const title = (md.match(/^#\s+(.+)$/m)||[])[1] || '';
+  return { title, secs };
+}
+function itemHtml(raw){
+  const parts = raw.split(/\s+—\s+WHY:\s*/i);
+  const main = parts[0].replace(/\*\*/g,'');
+  const why = parts[1] ? ' <span class="why">— '+esc(parts[1].replace(/\*\*/g,''))+'</span>' : '';
+  return esc(main) + why;
+}
+function renderDigest(data){
+  const { title, secs } = parseSections(data.content||'');
+  const dateM = title.match(/\d{4}-\d{2}-\d{2}/);
+  $('digest-date').textContent = dateM ? dateM[0] : (data.name||'');
+  const body = $('digest-body');
+  const actions = secs['ACTION ITEMS'] || [];
+  const doneKey = 'digest-done-' + ($('digest-date').textContent||'x');
+  const done = new Set(JSON.parse(localStorage.getItem(doneKey)||'[]'));
+  let html = '';
+  if(actions.length){
+    html += '<ul class="items">' + actions.map((a,i) =>
+      '<li'+(done.has(i)?' class="done"':'')+'><input type="checkbox" data-i="'+i+'"'+(done.has(i)?' checked':'')+
+      '><label>'+itemHtml(a)+'</label></li>').join('') + '</ul>';
+  } else {
+    html += '<div class="empty">No action items in today\'s digest.</div>';
+  }
+  for(const [name, items] of Object.entries(secs)){
+    if(name === 'ACTION ITEMS' || !items.length) continue;
+    const open = localStorage.getItem('sec-'+name)==='1' ? ' open' : '';
+    html += '<details'+open+' data-sec="'+esc(name)+'"><summary>'+esc(name)+' ('+items.length+')</summary><ul>'+
+      items.map(x=>'<li>'+itemHtml(x)+'</li>').join('')+'</ul></details>';
+  }
+  body.innerHTML = html;
+  body.querySelectorAll('input[type=checkbox]').forEach(cb => cb.addEventListener('change', () => {
+    const i = +cb.dataset.i;
+    cb.checked ? done.add(i) : done.delete(i);
+    cb.closest('li').classList.toggle('done', cb.checked);
+    localStorage.setItem(doneKey, JSON.stringify([...done]));
+  }));
+  body.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () =>
+    localStorage.setItem('sec-'+d.dataset.sec, d.open ? '1' : '0')));
+}
+
+async function loadProjects(){
+  const body = $('proj-body');
+  try {
+    const out = await call('mcp__workspace__bash',
+      { command: "cat /sessions/*/mnt/Cowork/docs/projects-status.json 2>/dev/null || echo NOFOLDER" });
+    const data = extractJson(out);
+    $('proj-updated').textContent = 'as of ' + (data.updated || '?');
+    body.innerHTML = '<div class="proj-grid">' + (data.projects||[]).map(p =>
+      '<div class="proj"><h3>'+esc(p.name)+
+      '<span class="client'+(p.client==='internal'?' internal':'')+'">'+esc(p.client)+'</span></h3>'+
+      '<div class="st">'+esc(p.status)+'</div>'+
+      '<ul>'+(p.open||[]).map(o=>'<li>'+esc(o)+'</li>').join('')+'</ul></div>'
+    ).join('') + '</div>';
+  } catch(e){
+    body.innerHTML = '<div class="empty">Could not load docs/projects-status.json — connect the Cowork folder and Reload. ('+esc(String(e.message||e).slice(0,120))+')</div>';
+  }
+}
+
+async function loadUpdates(){
+  const body = $('upd-body');
+  try {
+    const out = await call('mcp__workspace__bash',
+      { command: "cat /sessions/*/mnt/Cowork/docs/updates-log.json 2>/dev/null || echo NOFOLDER" });
+    const data = extractJson(out);
+    $('upd-updated').textContent = 'as of ' + (data.updated || '?');
+    const entries = (data.entries||[]).slice(0, 12);
+    if(!entries.length){ body.innerHTML = '<div class="empty">No updates logged yet.</div>'; return; }
+    body.innerHTML = '<ul class="items">' + entries.map(e => {
+      const sched = e.status === 'scheduled';
+      const cls = sched ? 'sched' : (e.scope === 'major' ? 'major' : 'minor');
+      const label = sched ? 'SCHEDULED' : (e.scope === 'major' ? 'MAJOR' : 'MINOR');
+      const tip = e.backout && e.backout !== 'n/a (not built yet)' ? ' title="Back out: '+esc(e.backout)+'"' : '';
+      return '<li'+tip+'><span class="up-date">'+esc((e.date||'').slice(5))+'</span>'+
+        '<span class="tag '+cls+'">'+label+'</span><span>'+esc(e.what||'')+'</span></li>';
+    }).join('') + '</ul>';
+  } catch(e){
+    body.innerHTML = '<div class="empty">Could not load docs/updates-log.json — connect the Cowork folder and Reload. ('+esc(String(e.message||e).slice(0,120))+')</div>';
+  }
+}
+
+function renderInbox(data){
+  const accs = data.accounts || [];
+  const total = accs.reduce((n,a)=>n+(a.unread_total||0),0);
+  const c = $('inbox-count'); c.textContent = total>999 ? (Math.round(total/100)/10)+'k' : total;
+  c.className = 'count' + (total===0?' zero':'');
+  let html = '';
+  for(const a of accs){
+    html += '<details open data-sec="inbox-'+esc(a.account)+'"><summary>'+esc(a.account)+
+      ' — '+(a.unread_total||0)+' unread'+(a.error?' (error)':'')+'</summary>';
+    if(a.error){ html += '<div class="empty">'+esc(a.error)+'</div>'; }
+    else if(!(a.messages||[]).length){ html += '<div class="empty">Nothing unread.</div>'; }
+    else {
+      html += '<ul class="items">' + a.messages.map(m =>
+        '<li><span class="tag">MAIL</span><span><b>'+esc((m.from||'').replace(/<[^>]*>/,'').trim())+
+        '</b> — '+esc(m.subject||'')+' <span class="why">'+esc(m.date||'')+'</span></span></li>').join('') + '</ul>';
+    }
+    html += '</details>';
+  }
+  $('inbox-body').innerHTML = html || '<div class="empty">No accounts configured.</div>';
+}
+
+function parseIcs(text){
+  const events = [];
+  const blocks = text.split('BEGIN:VEVENT').slice(1);
+  for(const b of blocks){
+    const body = b.split('END:VEVENT')[0];
+    const sm = body.match(/\r?\nSUMMARY[^:]*:(.*)/);
+    const dm = body.match(/\r?\nDTSTART[^:]*:(\d{8})(T(\d{6}))?/);
+    if(!sm || !dm) continue;
+    const d = dm[1]; const t = dm[3] || '';
+    const dt = new Date(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6,8),
+                        t ? +t.slice(0,2) : 0, t ? +t.slice(2,4) : 0);
+    events.push({ when: dt, allday: !t, summary: sm[1].replace(/\\,/g,',').trim() });
+  }
+  return events;
+}
+async function loadCalendar(cfg){
+  const body = $('cal-body');
+  const url = cfg.ics;
+  if(!url){
+    $('cal-note').textContent = 'not linked';
+    body.innerHTML = '<div class="empty">No calendar link yet. In Outlook web: Settings → Calendar → Shared calendars → Publish a calendar → copy the ICS link, then add it to cirrus/config/local.json as "outlook_ics_url". It shows up here on the next Reload.</div>';
+    return;
+  }
+  try {
+    let text = '';
+    const u = url.replace(/^webcal:/,'https:');
+    try { const r = await fetch(u); if(!r.ok) throw new Error('HTTP '+r.status); text = await r.text(); }
+    catch(e){ text = await call('mcp__workspace__web_fetch', { url: u }); }
+    const now = new Date(); const end = new Date(now.getTime() + 7*864e5);
+    const evs = parseIcs(text).filter(e => e.when >= new Date(now.getFullYear(), now.getMonth(), now.getDate()) && e.when <= end)
+      .sort((a,b)=>a.when-b.when).slice(0,8);
+    if(!evs.length){ body.innerHTML = '<div class="empty">Nothing scheduled in the next 7 days.</div>'; return; }
+    body.innerHTML = '<ul class="items">' + evs.map(e =>
+      '<li><span class="cal-time">'+e.when.toLocaleDateString([], {weekday:'short'})+' '+
+      (e.allday ? 'all day' : e.when.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}))+
+      '</span><span>'+esc(e.summary)+'</span></li>').join('') + '</ul>';
+  } catch(e){
+    body.innerHTML = '<div class="empty">Calendar fetch failed: '+esc(String(e.message||e).slice(0,120))+'</div>';
+  }
+}
+
+(async () => {
+  const pill = $('cirrus-pill');
+  loadProjects();  // independent of CIRRUS availability
+  loadUpdates();   // independent of CIRRUS availability
+  try {
+    const cfg = await getConfig();
+    loadCalendar(cfg);
+    const [pending, digest, inbox] = await Promise.allSettled([
+      fetchApi(cfg, '/admin/approvals/pending'),
+      fetchApi(cfg, '/read/digest/daily-actions-latest.md'),
+      fetchApi(cfg, '/read/inbox?limit=8')
+    ]);
+    if(inbox.status === 'fulfilled'){ renderInbox(inbox.value); }
+    else { $('inbox-body').innerHTML = '<div class="empty">Could not load: '+esc(String(inbox.reason).slice(0,140))+'</div>'; $('inbox-count').textContent='—'; }
+    let live = false;
+    if(pending.status === 'fulfilled'){ renderPending(pending.value); live = true; }
+    else { $('pending-body').innerHTML = '<div class="empty">Could not load: '+esc(String(pending.reason).slice(0,160))+'</div>'; $('pending-count').textContent='—'; }
+    if(digest.status === 'fulfilled'){ renderDigest(digest.value); live = true; }
+    else { $('digest-body').innerHTML = '<div class="empty">Could not load: '+esc(String(digest.reason).slice(0,160))+'</div>'; }
+    pill.textContent = live ? 'CIRRUS: live' : 'CIRRUS: unreachable';
+    pill.className = 'pill ' + (live ? 'ok' : 'bad');
+    if(!live && cfg.fromCache){
+      localStorage.removeItem('dash-cfg');
+      showSetup();
+      pill.textContent = 'CIRRUS: setup needed'; pill.className = 'pill wait';
+    }
+    $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  } catch(e){
+    pill.textContent = 'CIRRUS: setup needed'; pill.className = 'pill wait';
+    if(String(e.message).includes('NEEDS_SETUP')) showSetup();
+    else fail('Could not load config: '+String(e.message||e).slice(0,160));
+    $('pending-body').innerHTML = $('digest-body').innerHTML = $('inbox-body').innerHTML = $('cal-body').innerHTML = '<div class="empty">Waiting for config…</div>';
+    $('pending-count').textContent = '—';
+  }
+})();
+</script>
+</body>
+</html>

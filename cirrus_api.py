@@ -448,6 +448,21 @@ def read_log(logname):
     lines = log_path.read_text().splitlines()[-50:]
     return jsonify({"log": logname, "lines": lines})
 
+@app.route("/dashboard")
+def dashboard():
+    """Serve the Buddy Daily Dashboard as a plain web page (S40).
+
+    Deliberately NO token gate: this is static UI only — zero data, zero
+    credentials in the file. Every data call it makes still requires the
+    API token, which the user pastes once into the page's browser-local
+    storage. Exists because the Claude app's artifact window is fully
+    sandboxed (no tools, no network) when opened standalone.
+    """
+    page = PROJECT_DIR / "dashboard.html"
+    if not page.exists():
+        return jsonify({"error": "dashboard.html not deployed"}), 404
+    return page.read_text(), 200, {"Content-Type": "text/html; charset=utf-8"}
+
 @app.route("/read/inbox")
 def read_inbox():
     """Unread-message headers from the enabled IMAP accounts (S40, 2026-07-17).
