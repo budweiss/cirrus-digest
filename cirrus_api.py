@@ -440,6 +440,81 @@ def read_log(logname):
     lines = log_path.read_text().splitlines()[-50:]
     return jsonify({"log": logname, "lines": lines})
 
+@app.route("/read/inbox")
+def read_inbox():
+    """Unread-message headers from the enabled IMAP accounts (S40, 2026-07-17).
+
+    Read-only: mailbox opened readonly + BODY.PEEK, so nothing gets marked
+    as read. Headers only (from/subject/date) — bodies never leave CIRRUS.
+    Feeds the dashboard's inbox panel. Outlook.com is NOT included (basic-
+    auth IMAP retired by Microsoft; would need OAuth2 — future major item).
+    """
+    require_token()
+    import imaplib as _imaplib
+    import email as _email
+    from email.header import decode_header as _dh
+    from email.utils import parsedate_to_datetime as _pd
+
+    def _dec(s):
+        if not s:
+            return ""
+        out = []
+        for part, enc in _dh(s):
+            if isinstance(part, bytes):
+                out.append(part.decode(enc or "utf-8", errors="replace"))
+            else:
+                out.append(part)
+        return "".join(out).strip()
+
+    limit = min(int(request.args.get("limit", 10)), 25)
+    try:
+        with open(PROJECT_DIR / "config/sources.json") as f:
+            accounts = json.load(f).get("email", {}).get("accounts", [])
+    except Exception as e:
+        return jsonify({"error": f"sources.json: {e}"}), 500
+
+    result = []
+    for account in accounts:
+        if not account.get("enabled", True):
+            continue
+        label = account.get("label", account.get("address", "?"))
+        password = _creds.get(account.get("credential_key", ""), "")
+        entry = {"account": label, "address": account.get("address", ""),
+                 "unread_total": 0, "messages": []}
+        if not password:
+            entry["error"] = "no credential"
+            result.append(entry)
+            continue
+        try:
+            m = _imaplib.IMAP4_SSL(account["imap_server"],
+                                   account.get("imap_port", 993), timeout=20)
+            m.login(account["address"], password)
+            m.select("inbox", readonly=True)
+            _, data = m.uid("search", None, "UNSEEN")
+            uids = data[0].split() if data and data[0] else []
+            entry["unread_total"] = len(uids)
+            for uid in reversed(uids[-limit:]):
+                try:
+                    _, md = m.uid("fetch", uid,
+                                  "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    msg = _email.message_from_bytes(md[0][1])
+                    try:
+                        dt = _pd(msg.get("Date", "")).strftime("%m-%d %H:%M")
+                    except Exception:
+                        dt = ""
+                    entry["messages"].append({
+                        "from": _dec(msg.get("From", ""))[:80],
+                        "subject": _dec(msg.get("Subject", ""))[:120],
+                        "date": dt,
+                    })
+                except Exception:
+                    continue
+            m.logout()
+        except Exception as e:
+            entry["error"] = str(e)[:120]
+        result.append(entry)
+    return jsonify({"accounts": result, "time": datetime.now().isoformat()})
+
 @app.route("/read/file/<filename>")
 def read_file(filename):
     require_token()
