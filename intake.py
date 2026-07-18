@@ -59,7 +59,7 @@ DAYS_BACK            = 3                  # IMAP search window (state bounds rea
 BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
 DEFAULT_DAILY_LIMIT  = 10
 
-REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\s*:\s*", re.IGNORECASE)
+REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\b\s*:?\s*", re.IGNORECASE)
 BOUNCE_FROM_RX = re.compile(r"^(mailer-daemon|postmaster)@", re.IGNORECASE)
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -175,8 +175,29 @@ def body_text(msg) -> str:
 
 
 def parse_request_title(subject: str) -> str:
-    """'REQUEST: faster bids' → 'faster bids'; otherwise the subject as-is."""
+    """'REQUEST: faster bids' → 'faster bids'; otherwise the subject as-is.
+    Prefix match is case-insensitive and the colon is optional
+    ('REQUEST morphology' works the same as 'request: morphology')."""
     return REQUEST_RX.sub("", subject or "").strip() or "(no subject)"
+
+
+def research_topic_title(subject: str, body: str) -> str:
+    """Topic title for a research-intake sender.
+
+    If the subject carries a REQUEST prefix, use the cleaned subject. But a
+    research sender often mails a bare keyword subject (e.g. 'RESEARCH') with
+    the real ask in the body — in that case derive the topic from the first
+    meaningful line/sentence of the body so the focus-topic queue isn't
+    polluted with junk titles like 'RESEARCH'."""
+    if REQUEST_RX.match(subject or ""):
+        return parse_request_title(subject)
+    cleaned = (subject or "").strip()
+    # Bare/short/keyword subject → prefer the body's first sentence.
+    if len(cleaned) < 12 or cleaned.lower() in ("research", "request", "topic", "(no subject)"):
+        first = re.split(r"(?<=[.!?])\s+|\n", (body or "").strip())[0].strip()
+        if len(first) >= 8:
+            return first[:140]
+    return cleaned or "(no subject)"
 
 
 def extract_bounced_recipient(msg, own_address: str) -> str:
@@ -498,6 +519,11 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 and (subject or "").lower().lstrip().startswith("re:")
                 and not REQUEST_RX.match(subject or "")):
             rec["kind"] = "feedback"
+        # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
+        # with no REQUEST prefix, title the topic from the body instead of the
+        # useless subject so the focus-topic queue stays meaningful.
+        if rec["kind"] == "research":
+            rec["title"] = research_topic_title(subject, body)
         log(f"request from {entry['name']}: '{rec['title']}' → tier {rec['tier']} "
             f"({rec['tier_name']}) [{rec['status']}]")
         if not dry_run:
@@ -721,8 +747,59 @@ def selftest() -> int:
     return 1 if failures else 0
 
 
+def peek(name_filter: str = "") -> int:
+    """READ-ONLY operator view: print the latest allowlisted intake emails
+    (full body head) without sending acks, writing state, or marking mail
+    read. Mailbox is opened readonly + BODY.PEEK; the scan state is a
+    throwaway dict that is never saved. Optional name_filter narrows to one
+    sender (case-insensitive substring of the allowlist name)."""
+    allowlist = load_allowlist()
+    if not allowlist:
+        log("no allowlist configured — nothing to peek")
+        return 0
+    config = load_json(CONFIG_PATH) or {}
+    creds = load_json(CREDS_PATH) or {}
+    account = next((a for a in config.get("email", {}).get("accounts", [])
+                    if a.get("label") == INTAKE_ACCOUNT_LABEL), None)
+    if not account:
+        log(f"ERROR: no '{INTAKE_ACCOUNT_LABEL}' account in sources.json")
+        return 1
+    password = creds.get(account.get("credential_key", ""), "")
+    if not password:
+        log("ERROR: no credential for intake account")
+        return 1
+    throwaway = {}  # never saved — no cursor/seen-id writes
+    try:
+        messages, _bounces = scan_inbox(account, password, allowlist,
+                                        throwaway, rescan=True)
+    except Exception as e:
+        log(f"peek scan failed: {e}")
+        return 1
+    shown = 0
+    for _uid, from_addr, subject, body, _mid in messages:
+        entry = allowlist[from_addr]
+        if name_filter and name_filter.lower() not in entry["name"].lower():
+            continue
+        shown += 1
+        print("=" * 70)
+        print(f"FROM   : {entry['name']} <{from_addr}>")
+        print(f"SUBJECT: {subject}")
+        print(f"KIND   : {entry['request_kind']}")
+        print(f"WOULD-QUEUE-AS: {research_topic_title(subject, body)}")
+        print("-" * 70)
+        print(body or "(empty body)")
+    print("=" * 70)
+    print(f"peek: {shown} allowlisted message(s)"
+          f"{' matching ' + name_filter if name_filter else ''}"
+          " — read-only, no acks/state writes")
+    return 0
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "selftest" in args:
         sys.exit(selftest())
+    if "--peek" in args:
+        rest = [a for a in args if not a.startswith("-")]
+        sys.exit(peek(rest[0] if rest else ""))
     sys.exit(run(dry_run="--dry-run" in args, rescan="--rescan" in args))
