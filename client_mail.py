@@ -8,31 +8,47 @@ EXTERNAL SEND: only ever invoked via the runner on Buddy's explicit ask
   address itself never appears in Cowork/git/chat.
 - Buddy is ALWAYS cc'd.
 - Body comes from a file already deployed to CIRRUS (reviewable in git).
+- Optional attachment must also live inside the project dir (reviewable).
 
-Usage:  python3 client_mail.py <sender_name> <body_file> [subject]
+Usage:  python3 client_mail.py <sender_name> <body_file> [attachment]
   sender_name: key in intake_senders.json (e.g. alyssa)
   body_file:   path relative to ~/projects/cirrus-digest (e.g.
                mail/Alyssa-intro.md). First line "Subject: ..." is used as
-               the subject (and stripped) unless [subject] is given.
+               the subject (and stripped).
+  attachment:  optional path relative to the project dir (e.g.
+               mail/Guide.docx) to attach to the message.
 """
 
 import json
+import mimetypes
 import smtplib
 import sys
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders
 from pathlib import Path
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 CC_ADDR = "Buddy.Weiss@outlook.com"
 
 
+def _safe_in_project(rel: str) -> Path:
+    p = (PROJECT_DIR / rel).resolve()
+    if not str(p).startswith(str(PROJECT_DIR.resolve())):
+        raise SystemExit("ERROR: file must be inside the project dir")
+    if not p.exists():
+        raise SystemExit(f"ERROR: file not found: {rel}")
+    return p
+
+
 def main() -> int:
     if len(sys.argv) < 3:
-        print("usage: client_mail.py <sender_name> <body_file> [subject]")
+        print("usage: client_mail.py <sender_name> <body_file> [attachment]")
         return 2
 
     name, body_rel = sys.argv[1].strip().lower(), sys.argv[2]
-    subject = sys.argv[3] if len(sys.argv) > 3 else ""
+    attach_rel = sys.argv[3].strip() if len(sys.argv) > 3 and sys.argv[3].strip() else ""
 
     senders = json.loads((PROJECT_DIR / "config/intake_senders.json").read_text())
     entry = senders.get(name)
@@ -41,16 +57,11 @@ def main() -> int:
         return 1
     to_addr = entry["emails"][0]
 
-    body_path = (PROJECT_DIR / body_rel).resolve()
-    if not str(body_path).startswith(str(PROJECT_DIR.resolve())):
-        print("ERROR: body file must be inside the project dir")
-        return 1
-    body = body_path.read_text()
-
+    body = _safe_in_project(body_rel).read_text()
+    subject = ""
     if body.lower().startswith("subject:"):
         first, _, rest = body.partition("\n")
-        if not subject:
-            subject = first.split(":", 1)[1].strip()
+        subject = first.split(":", 1)[1].strip()
         body = rest.lstrip("\n")
     subject = subject or "A note from CIRRUS"
 
@@ -58,7 +69,20 @@ def main() -> int:
     from_email = creds["outlook_email"]   # legacy-misnamed: the Gmail sender
     password = creds["outlook_password"]
 
-    msg = MIMEText(body)
+    if attach_rel:
+        msg = MIMEMultipart("mixed")
+        msg.attach(MIMEText(body))
+        apath = _safe_in_project(attach_rel)
+        ctype, _ = mimetypes.guess_type(apath.name)
+        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+        part = MIMEBase(maintype, subtype or "octet-stream")
+        part.set_payload(apath.read_bytes())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=apath.name)
+        msg.attach(part)
+    else:
+        msg = MIMEText(body)
+
     msg["Subject"] = subject
     msg["From"] = from_email
     msg["To"] = to_addr
@@ -69,7 +93,8 @@ def main() -> int:
         server.login(from_email, password)
         server.sendmail(from_email, [to_addr, CC_ADDR], msg.as_string())
 
-    print(f"sent '{subject}' to {name} (cc Buddy)")
+    print(f"sent '{subject}' to {name} (cc Buddy)"
+          + (f" with attachment {Path(attach_rel).name}" if attach_rel else ""))
     return 0
 
 
