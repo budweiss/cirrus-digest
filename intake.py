@@ -60,6 +60,12 @@ BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
 DEFAULT_DAILY_LIMIT  = 10
 
 REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\b\s*:?\s*", re.IGNORECASE)
+
+# Projects that are research-only (a request from these senders is ALWAYS a
+# focus topic for the project's research digest, never a build/dev ticket).
+# This is a safety net: even if a sender's request_kind is mis-set to 'build'
+# in intake_senders.json, their requests still reach the research topic queue.
+RESEARCH_PROJECTS = {"pedagogy"}
 BOUNCE_FROM_RX = re.compile(r"^(mailer-daemon|postmaster)@", re.IGNORECASE)
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -519,6 +525,16 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 and (subject or "").lower().lstrip().startswith("re:")
                 and not REQUEST_RX.match(subject or "")):
             rec["kind"] = "feedback"
+        # Safety net: a sender on a research-only project (e.g. pedagogy)
+        # ALWAYS routes as research, even if their request_kind is mis-set to
+        # 'build'. Guarantees literacy requests reach the topic queue instead
+        # of silently landing in the dev-ticket queue.
+        if (rec["kind"] != "feedback"
+                and any(p in RESEARCH_PROJECTS for p in entry["projects"])):
+            if rec["kind"] != "research":
+                log(f"  routing override: {entry['name']} is on a research-only "
+                    f"project → treating as research (was '{rec['kind']}')")
+            rec["kind"] = "research"
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -795,11 +811,68 @@ def peek(name_filter: str = "") -> int:
     return 0
 
 
+def requeue(name_filter: str) -> int:
+    """Recover a mis-routed request: re-queue the LATEST allowlisted message
+    from <name_filter> as a research focus topic (topics-<project>.json).
+
+    Mailbox is opened readonly + BODY.PEEK; the ONLY write is the topic
+    append (which itself dedupes). No ack email, no dev ticket, no state or
+    cursor write. Use after a routing fix to land a request that was
+    previously mis-classified as 'build'."""
+    if not name_filter:
+        log("requeue: a sender name is required (e.g. --requeue alyssa)")
+        return 1
+    allowlist = load_allowlist()
+    if not allowlist:
+        log("no allowlist configured")
+        return 1
+    config = load_json(CONFIG_PATH) or {}
+    creds = load_json(CREDS_PATH) or {}
+    account = next((a for a in config.get("email", {}).get("accounts", [])
+                    if a.get("label") == INTAKE_ACCOUNT_LABEL), None)
+    if not account:
+        log(f"ERROR: no '{INTAKE_ACCOUNT_LABEL}' account in sources.json")
+        return 1
+    password = creds.get(account.get("credential_key", ""), "")
+    if not password:
+        log("ERROR: no credential for intake account")
+        return 1
+    throwaway = {}  # never saved
+    try:
+        messages, _bounces = scan_inbox(account, password, allowlist,
+                                        throwaway, rescan=True)
+    except Exception as e:
+        log(f"requeue scan failed: {e}")
+        return 1
+    latest = None
+    for m in messages:  # scan_inbox yields ascending UID → last match = newest
+        entry = allowlist[m[1]]
+        if name_filter.lower() in entry["name"].lower():
+            latest = (m, entry)
+    if not latest:
+        log(f"requeue: no allowlisted message from '{name_filter}' in window")
+        return 1
+    (_uid, _from, subject, body, _mid), entry = latest
+    title = research_topic_title(subject, body)
+    proj = (entry["projects"] or ["general"])[0]
+    try:
+        path = append_topic(proj, title, entry["name"])
+    except Exception as e:
+        log(f"requeue: topic append failed: {e}")
+        return 1
+    log(f"requeue: queued research topic for '{entry['name']}' → {proj}")
+    log(f"  topic: {title}")
+    log(f"  file : {path}")
+    return 0
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
+    names = [a for a in args if not a.startswith("-")]
     if "selftest" in args:
         sys.exit(selftest())
     if "--peek" in args:
-        rest = [a for a in args if not a.startswith("-")]
-        sys.exit(peek(rest[0] if rest else ""))
+        sys.exit(peek(names[0] if names else ""))
+    if "--requeue" in args:
+        sys.exit(requeue(names[0] if names else ""))
     sys.exit(run(dry_run="--dry-run" in args, rescan="--rescan" in args))
