@@ -677,8 +677,10 @@ def cmd_actions():
     return f"📋 *{latest.name}*\n\n{preview}"
 
 def _open_proposals():
-    """Open (not rejected/implemented) proposal Paths, newest first — the SAME
-    ordering cmd_proposals displays, so `/accept N` lines up with the list."""
+    """Proposals still AWAITING A DECISION — newest first, the SAME ordering
+    cmd_proposals shows so `/accept N` lines up. Excludes anything already
+    rejected, implemented, OR approved for implementation (a proposal whose
+    Status has moved on no longer needs review), so the list stays actionable."""
     if not PROPOSALS_DIR.exists():
         return []
     open_ = []
@@ -686,6 +688,10 @@ def _open_proposals():
         content = f.read_text()
         if ("[x] Rejected" in content or
                 "[x] Implemented and deployed" in content):
+            continue
+        m = re.search(r"\*\*Status:\*\*\s*(.+)", content)
+        status = m.group(1).strip().lower() if m else ""
+        if any(k in status for k in ("approved", "rejected", "implemented")):
             continue
         open_.append(f)
     return open_
@@ -702,12 +708,12 @@ def cmd_proposals():
     done = len(files) - len(pending)
 
     if not pending:
-        return (f"✅ No open proposals — all {done} proposal(s) are "
-                f"implemented or rejected.")
+        return (f"✅ No proposals awaiting review — all {done} proposal(s) are "
+                f"handled (approved, implemented, or rejected).")
 
-    msg = f"📝 *{len(pending)} Open Proposal(s)*"
+    msg = f"📝 *{len(pending)} Proposal(s) Awaiting Review*"
     if done:
-        msg += f" _(+{done} closed)_"
+        msg += f" _(+{done} handled)_"
     msg += "\n\n"
     for i, f in enumerate(pending[:10], 1):
         content = f.read_text()
