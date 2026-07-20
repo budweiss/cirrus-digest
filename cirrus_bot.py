@@ -1213,6 +1213,70 @@ def defer_reason(item: dict) -> str:
             return "source add — needs a feed URL"
     return ""
 
+# ── Hallucination guard (verify_reason) ───────────────────────────────────────
+# The local model periodically invents plausible-sounding package/model names
+# ("asciitermdraw-bench", "Kimi:frontier-level", "ATSInfer software") or
+# re-suggests things already installed. This second pass verifies install/pull
+# suggestions before they reach /approve. PyPI checks FAIL OPEN (network error →
+# keep) so a real item is never dropped on a blip.
+_PKG_INSTALL_RX = re.compile(
+    r'install\b[^.]*?[`"\']([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})[`"\']'
+    r'|install\b[^.]*?\b([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})\s+(?:python\s+)?'
+    r'(?:package|module|library)\b'
+    r'|pip\s+install\s+([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})',
+    re.IGNORECASE)
+_VAGUE_INSTALL_RX = re.compile(
+    r'\binstall\b[^.]*\b(tools?|plugins?|software|solutions?)\b', re.IGNORECASE)
+_MODEL_MARKETING_RX = re.compile(
+    r'\b(frontier|level|advanced|best|sota|cutting|next-?gen|flagship|state-of)\b',
+    re.IGNORECASE)
+
+def _pypi_exists(pkg: str):
+    """True/False if pkg is on PyPI; None on network error (fail OPEN)."""
+    try:
+        r = requests.get(f"https://pypi.org/pypi/{pkg}/json",
+                         timeout=6, headers={"User-Agent": "CIRRUS-digest/1.0"})
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:
+            return False
+        return None
+    except Exception:
+        return None
+
+def _pkg_name(item: dict) -> str:
+    m = _PKG_INSTALL_RX.search(item.get("detail", ""))
+    if not m:
+        return ""
+    name = next((g for g in m.groups() if g), "")
+    return re.sub(r'[`"\']', "", name).strip().lower()
+
+def verify_reason(item: dict) -> str:
+    """Second-pass guard: '' = keep, else the drop reason."""
+    detail = item.get("detail", "")
+    itype = item.get("type", "")
+    # 1) PULL_MODEL with a marketing/adjective tag → not a real Ollama ref.
+    if itype == "PULL_MODEL":
+        tag = detail.split(":", 1)[1] if ":" in detail else ""
+        if _MODEL_MARKETING_RX.search(tag) or (tag.strip() and " " in tag.strip()):
+            return "PULL_MODEL: marketing tag, not a real Ollama ref"
+    # 2) Package install → must exist on PyPI and not already be installed.
+    pkg = _pkg_name(item)
+    if pkg:
+        try:
+            import importlib.util
+            if importlib.util.find_spec(pkg.replace("-", "_")) is not None:
+                return f"package '{pkg}' already installed"
+        except Exception:
+            pass
+        if _pypi_exists(pkg) is False:
+            return f"package '{pkg}' not found on PyPI (likely hallucinated)"
+    # 3) Generic 'install tools/plugins/software' with no specific named product.
+    if (_VAGUE_INSTALL_RX.search(detail) and not pkg
+            and not re.search(r'[`"\'][A-Za-z0-9._-]{2,}[`"\']', detail)):
+        return "vague install — no specific tool/package named"
+    return ""
+
 def extract_recommendations(actions_file: Path) -> list:
     """Parse action items file and extract actionable recommendations.
 
@@ -1343,7 +1407,7 @@ def extract_recommendations(actions_file: Path) -> list:
     # they never reach the /approve queue (see _skip_reason above).
     actionable = []
     for item in recommendations:
-        reason = _skip_reason(item)
+        reason = _skip_reason(item) or verify_reason(item)
         if reason:
             log(f"/approve filter: dropped ({reason}): {item['detail'][:80]}")
         else:
