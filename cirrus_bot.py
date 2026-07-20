@@ -309,7 +309,8 @@ def cmd_help():
 /actions — show latest action items
 /approve — review and approve pending recommendations
 /builds — Dev-Loop builds awaiting your ship/discard confirm
-/proposals — list generated implementation proposals
+/proposals — list generated implementation proposals (numbered)
+/accept <N|name> — approve an open proposal (from /proposals)
 /knowledge — show RAG knowledge base stats
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
 /research <topic> — search the web, fetch ~5 sources, and reply with a research brief (runs in background)
@@ -675,6 +676,21 @@ def cmd_actions():
         preview += "\n\n_...truncated. Check your email for the full list._"
     return f"📋 *{latest.name}*\n\n{preview}"
 
+def _open_proposals():
+    """Open (not rejected/implemented) proposal Paths, newest first — the SAME
+    ordering cmd_proposals displays, so `/accept N` lines up with the list."""
+    if not PROPOSALS_DIR.exists():
+        return []
+    open_ = []
+    for f in sorted(PROPOSALS_DIR.glob("proposal-*.md"), reverse=True):
+        content = f.read_text()
+        if ("[x] Rejected" in content or
+                "[x] Implemented and deployed" in content):
+            continue
+        open_.append(f)
+    return open_
+
+
 def cmd_proposals():
     if not PROPOSALS_DIR.exists():
         return "No proposals generated yet."
@@ -682,35 +698,82 @@ def cmd_proposals():
     if not files:
         return "No proposals generated yet."
 
-    pending, done = [], []
-    for f in files:
-        content = f.read_text()
-        if ("[x] Rejected" in content or
-                "[x] Implemented and deployed" in content):
-            done.append(f)
-        else:
-            pending.append(f)
+    pending = _open_proposals()
+    done = len(files) - len(pending)
 
     if not pending:
-        return (f"✅ No open proposals — all {len(done)} proposal(s) are "
+        return (f"✅ No open proposals — all {done} proposal(s) are "
                 f"implemented or rejected.")
 
     msg = f"📝 *{len(pending)} Open Proposal(s)*"
     if done:
-        msg += f" _(+{len(done)} closed)_"
+        msg += f" _(+{done} closed)_"
     msg += "\n\n"
-    for f in pending[:10]:
+    for i, f in enumerate(pending[:10], 1):
         content = f.read_text()
         status_match = re.search(r"\*\*Status:\*\*\s*(.+)", content)
         status = status_match.group(1).strip() if status_match else "unknown"
         title_match = re.search(r"^#\s*Proposal:\s*(.+)", content, re.MULTILINE)
         title = title_match.group(1).strip() if title_match else f.stem
-        msg += f"• `{f.name}` — _{status}_\n  {title[:90]}\n\n"
+        msg += f"*{i}.* `{f.name}` — _{status}_\n  {title[:90]}\n\n"
     if len(pending) > 10:
-        msg += f"_...and {len(pending) - 10} more. Check digests/proposals/ on CIRRUS._"
-    else:
-        msg += "_Review these with Claude in your next Cowork session._"
+        msg += f"_...and {len(pending) - 10} more. Check digests/proposals/ on CIRRUS._\n\n"
+    msg += "_Accept one with_ `/accept <number>` _(e.g. `/accept 1`)._"
     return msg
+
+
+def cmd_accept(arg: str) -> str:
+    """Approve an open implementation proposal from Telegram — mirrors the
+    admin API /admin/proposals/approve (Status -> 'approved for implementation')
+    and checks the 'Reviewed by Buddy' box.
+    Usage: `/accept <N>` (index from /proposals) or `/accept <proposal-name>`."""
+    arg = (arg or "").strip()
+    if not arg:
+        return ("Usage: `/accept <number>` (from /proposals) or "
+                "`/accept <proposal-name>`.")
+
+    open_ = _open_proposals()
+    if not open_:
+        return "✅ No open proposals to accept."
+
+    target = None
+    if arg.isdigit():
+        idx = int(arg)
+        if 1 <= idx <= len(open_):
+            target = open_[idx - 1]
+        else:
+            return (f"❌ No open proposal #{idx} — there are {len(open_)}. "
+                    f"Use /proposals to see the list.")
+    else:
+        name = arg if arg.endswith(".md") else arg + ".md"
+        exact = [f for f in open_ if f.name == name]
+        if exact:
+            target = exact[0]
+        else:
+            subs = [f for f in open_ if arg.lower() in f.name.lower()]
+            if len(subs) == 1:
+                target = subs[0]
+            elif len(subs) > 1:
+                return ("❌ Ambiguous — matches: "
+                        + ", ".join(f.name for f in subs[:5])
+                        + ". Use the number from /proposals instead.")
+
+    if target is None:
+        return (f"❌ No open proposal matches `{arg}`. "
+                f"Use /proposals to list open ones.")
+
+    content = target.read_text()
+    if not re.search(r"\*\*Status:\*\*", content):
+        return f"❌ `{target.name}` has no Status field — not accepting it blindly."
+    updated = re.sub(r"\*\*Status:\*\*\s*.+",
+                     "**Status:** approved for implementation", content, count=1)
+    updated = updated.replace("- [ ] Reviewed by Buddy", "- [x] Reviewed by Buddy")
+    target.write_text(updated)
+
+    title_match = re.search(r"^#\s*Proposal:\s*(.+)", updated, re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else target.stem
+    return (f"✅ Accepted `{target.name}`\n{title[:120]}\n\n"
+            f"_Status → approved for implementation._")
 
 def cmd_run_daily(chat_id):
     send_message(chat_id, "⏳ Running daily digest now... This may take a few minutes.")
@@ -1767,6 +1830,9 @@ def handle_message(message, chat_id):
             return f"❌ dev-loop unavailable: {e}"
     elif cmd == "/proposals":
         return cmd_proposals()
+    elif cmd == "/accept":
+        arg = " ".join(text.split()[1:])
+        return cmd_accept(arg)
     elif cmd == "/knowledge":
         return cmd_knowledge()
     elif cmd == "/todo":
