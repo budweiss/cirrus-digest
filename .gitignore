@@ -12,3 +12,5 @@ config/email_state.json
 __pycache__/
 config/sources.local.json
 config/snapshots/
+config/cookies.json
+config/intake_senders.json
