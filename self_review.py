@@ -230,6 +230,30 @@ def run(kind: str = "daily"):
                     except Exception as e:
                         B.log(f"self_review: ledger(auto-applied) failed: {e}")
                     continue   # applied — don't also queue it
+        # Park items that can't be acted on yet as 'deferred' (accepted-but-
+        # pending): CUMULUS/hardware-blocked, conditional ("if/once it fits"),
+        # or a source add with no feed URL. Tracked so dedupe blocks re-entry,
+        # but kept OUT of /approve. Revive via the bot's /revive. Shared
+        # classifier lives in cirrus_bot (B) so /approve and self_review agree.
+        dr = B.defer_reason(it)
+        if dr:
+            key = f"{it['type']}:{it['detail']}"
+            if (key not in existing_keys
+                    and not B.is_duplicate_detail(it["detail"], existing_details)):
+                it["status"] = "deferred"
+                it["defer_reason"] = dr
+                pending.append(it)
+                existing_keys.add(key)
+                existing_details.append(it["detail"])
+                try:
+                    dev_loop.ledger_append(
+                        {"event": "deferred", "id": f"defer-{date}-{it['type']}",
+                         "detail": it.get("detail", ""), "result": dr,
+                         "target_env": dev_loop.TARGET_ENV},
+                        B.PROJECT_DIR)
+                except Exception as e:
+                    B.log(f"self_review: ledger(deferred) failed (continuing): {e}")
+            continue
         # Flag hardware/env needs (note only; still propose the item).
         if it["type"] == "CAPABILITY_REQUEST" and HARDWARE_RX.search(blob):
             hardware.append(it)

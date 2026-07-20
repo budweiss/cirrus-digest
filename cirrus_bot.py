@@ -308,6 +308,8 @@ def cmd_help():
 /latest — show latest daily digest summary
 /actions — show latest action items
 /approve — review and approve pending recommendations
+/deferred — parked items (blocked on CUMULUS/hardware or missing info)
+/revive <N|cumulus> — un-park a deferred item (or all hardware items)
 /builds — Dev-Loop builds awaiting your ship/discard confirm
 /proposals — list generated implementation proposals (numbered)
 /accept <N|name> — approve an open proposal (from /proposals)
@@ -781,6 +783,67 @@ def cmd_accept(arg: str) -> str:
     return (f"✅ Accepted `{target.name}`\n{title[:120]}\n\n"
             f"_Status → approved for implementation._")
 
+
+def _deferred_items(pending=None):
+    """Parked items, in stable file order (so /revive N lines up with /deferred)."""
+    if pending is None:
+        pending = load_pending()
+    return [p for p in pending if p.get("status") == "deferred"]
+
+
+def cmd_deferred():
+    deferred = _deferred_items()
+    if not deferred:
+        return "✅ No deferred (parked) items."
+    msg = (f"🅿️ *{len(deferred)} Deferred / Parked Item(s)*\n"
+           f"_Accepted-but-pending — not actionable yet, kept out of /approve._\n\n")
+    for i, p in enumerate(deferred, 1):
+        emoji = {"PULL_MODEL": "🤖", "INSTALL_PACKAGE": "📦", "ADD_SOURCE": "📡",
+                 "CIRRUS_NOTE": "💡", "CAPABILITY_REQUEST": "🔑"}.get(p.get("type"), "•")
+        msg += (f"{emoji} *{i}.* {p.get('detail', '')[:80]}\n"
+                f"  _parked: {p.get('defer_reason', 'deferred')}_\n\n")
+    msg += "_Revive with_ `/revive <N>` _or_ `/revive cumulus` _(all hardware)._"
+    return msg
+
+
+def cmd_revive(arg: str) -> str:
+    """Un-park a deferred item back into /approve.
+    `/revive <N>` (index from /deferred) or `/revive cumulus` (all
+    hardware/CUMULUS-blocked items — e.g. once CUMULUS is live)."""
+    arg = (arg or "").strip().lower()
+    pending = load_pending()
+    deferred = _deferred_items(pending)
+    if not deferred:
+        return "No deferred (parked) items to revive."
+
+    if arg in ("cumulus", "hardware"):
+        revived = [p for p in deferred
+                   if "hardware" in p.get("defer_reason", "").lower()
+                   or "cumulus" in p.get("defer_reason", "").lower()]
+        if not revived:
+            return "No CUMULUS/hardware items are parked."
+        for p in revived:
+            p["status"] = "pending"
+            p.pop("defer_reason", None)
+        save_pending(pending)
+        return (f"♻️ Revived {len(revived)} CUMULUS/hardware item(s) — "
+                f"they're back in /approve.")
+
+    if arg.isdigit():
+        idx = int(arg)
+        if 1 <= idx <= len(deferred):
+            p = deferred[idx - 1]
+            p["status"] = "pending"
+            p.pop("defer_reason", None)
+            save_pending(pending)
+            return f"♻️ Revived — back in /approve:\n{p.get('detail', '')[:90]}"
+        return (f"❌ No deferred item #{idx} — there are {len(deferred)}. "
+                f"See /deferred.")
+
+    return ("Usage: `/revive <N>` (from /deferred) or "
+            "`/revive cumulus` (all hardware/CUMULUS items).")
+
+
 def cmd_run_daily(chat_id):
     send_message(chat_id, "⏳ Running daily digest now... This may take a few minutes.")
     try:
@@ -1119,6 +1182,35 @@ def _skip_reason(item: dict) -> str:
     if (_non_english_ratio(detail) > 0.15
             or _non_english_ratio(item.get("why", "")) > 0.3):
         return "non-English output (model drift)"
+    return ""
+
+# ── Deferred / parked items (accepted-but-pending) ────────────────────────────
+# Items that pass the quality filter but can't be ACTED ON yet: blocked on
+# CUMULUS/hardware, hedged behind a condition, or a source add with no feed URL
+# to apply. These are parked as status="deferred" so they drop out of /approve
+# without being lost — see /deferred and /revive.
+_DEFER_HARDWARE = re.compile(
+    r'\b(\d+\s*gb\b|\d+\s*tb\b|unified memory|memory to\b|larger[- ]cap|'
+    r'\bssd\b|\bnvme\b|disk space|storage capacity|\bdgx\b|cumulus)\b',
+    re.IGNORECASE)
+_DEFER_CONDITIONAL = re.compile(
+    r'\b(if needed|if necessary|if available|if it (becomes|requires|fits)|'
+    r'once it fits|once available|when (available|it fits)|as needed)\b',
+    re.IGNORECASE)
+
+def defer_reason(item: dict) -> str:
+    """Why an item can't be acted on yet → park as 'deferred' rather than
+    clutter /approve. '' = actionable now."""
+    detail = item.get("detail", "")
+    blob = f"{detail} {item.get('source_line', '')}"
+    if _DEFER_HARDWARE.search(blob):
+        return "hardware / CUMULUS-blocked"
+    if _DEFER_CONDITIONAL.search(blob):
+        return "conditional — not needed yet"
+    if (item.get("type") == "ADD_SOURCE"
+            or re.search(r'\b(rss|feed|source)\b', detail, re.IGNORECASE)):
+        if not re.search(r'https?://', blob):
+            return "source add — needs a feed URL"
     return ""
 
 def extract_recommendations(actions_file: Path) -> list:
@@ -1715,6 +1807,13 @@ def cmd_approve(chat_id):
                     skipped_dupes += 1
                     log(f"Skipping near-duplicate recommendation: {item['detail'][:70]}")
                     continue
+                # Park items that can't be acted on yet (CUMULUS/hardware,
+                # conditional, or a source add with no URL) so they never
+                # clutter the active /approve list — see /deferred, /revive.
+                dr = defer_reason(item)
+                if dr:
+                    item["status"] = "deferred"
+                    item["defer_reason"] = dr
                 pending.append(item)
                 existing_keys.add(key)
                 existing_details.append(item["detail"])
@@ -1839,6 +1938,11 @@ def handle_message(message, chat_id):
     elif cmd == "/accept":
         arg = " ".join(text.split()[1:])
         return cmd_accept(arg)
+    elif cmd == "/deferred":
+        return cmd_deferred()
+    elif cmd == "/revive":
+        arg = " ".join(text.split()[1:])
+        return cmd_revive(arg)
     elif cmd == "/knowledge":
         return cmd_knowledge()
     elif cmd == "/todo":
