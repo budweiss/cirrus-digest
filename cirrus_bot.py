@@ -1230,6 +1230,15 @@ _VAGUE_INSTALL_RX = re.compile(
 _MODEL_MARKETING_RX = re.compile(
     r'\b(frontier|level|advanced|best|sota|cutting|next-?gen|flagship|state-of)\b',
     re.IGNORECASE)
+# x86 / non-ARM CPU hardware — never applicable: CIRRUS is Apple Silicon (M4 Max,
+# ARM) and CUMULUS is a DGX Spark (ARM). NVIDIA/CUDA/GPU are deliberately NOT
+# matched here (CUMULUS is CUDA-capable, so those may be relevant). Catches items
+# like "Install Intel Xeon 6 family support updates".
+_X86_HARDWARE_RX = re.compile(
+    r'\b(intel|xeon|pentium|celeron|core\s+i[3579]|'
+    r'x86[-_ ]?64|x86|amd64|ryzen|epyc|threadripper|'
+    r'sapphire\s+rapids|granite\s+rapids|emerald\s+rapids|raptor\s+lake)\b',
+    re.IGNORECASE)
 
 def _pypi_exists(pkg: str):
     """True/False if pkg is on PyPI; None on network error (fail OPEN)."""
@@ -1255,8 +1264,19 @@ def verify_reason(item: dict) -> str:
     """Second-pass guard: '' = keep, else the drop reason."""
     detail = item.get("detail", "")
     itype = item.get("type", "")
-    # 1) PULL_MODEL with a marketing/adjective tag → not a real Ollama ref.
+    # 0) x86 / foreign-CPU hardware notes — never applicable (CIRRUS = Apple
+    #    Silicon/ARM, CUMULUS = DGX Spark/ARM). Catches "Install Intel Xeon 6 …",
+    #    AMD/Ryzen/EPYC, x86 updates, etc. (NVIDIA/CUDA are NOT matched.) Scoped to
+    #    exclude PULL_MODEL/ADD_SOURCE so a legit Intel-published model
+    #    (hf.co/intel/…) or news source is never dropped by mistake.
+    if itype not in ("PULL_MODEL", "ADD_SOURCE") and _X86_HARDWARE_RX.search(detail):
+        return "x86/foreign hardware — CIRRUS is Apple Silicon (ARM), CUMULUS is ARM"
+    # 1) PULL_MODEL with a bad namespace or marketing/adjective tag → not a real
+    #    Ollama ref. Real refs are 'family[:tag]' (no slash) or 'hf.co/user/repo'.
     if itype == "PULL_MODEL":
+        name = detail.split(":", 1)[0]
+        if "/" in name and not name.lower().startswith("hf.co/"):
+            return "PULL_MODEL: unrecognized namespace, not an Ollama library tag"
         tag = detail.split(":", 1)[1] if ":" in detail else ""
         if _MODEL_MARKETING_RX.search(tag) or (tag.strip() and " " in tag.strip()):
             return "PULL_MODEL: marketing tag, not a real Ollama ref"
