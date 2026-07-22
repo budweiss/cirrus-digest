@@ -1195,7 +1195,9 @@ _DEFER_HARDWARE = re.compile(
     re.IGNORECASE)
 _DEFER_CONDITIONAL = re.compile(
     r'\b(if needed|if necessary|if available|if it (becomes|requires|fits)|'
-    r'once it fits|once available|when (available|it fits)|as needed)\b',
+    r'once it fits|once available|once (fully )?(open[- ]?sourced?|released|public|out)|'
+    r'when (available|it fits|released|(fully )?open[- ]?sourced?|public)|'
+    r'after (its |the )?(public )?release|as needed)\b',
     re.IGNORECASE)
 
 def defer_reason(item: dict) -> str:
@@ -1239,6 +1241,16 @@ _X86_HARDWARE_RX = re.compile(
     r'x86[-_ ]?64|x86|amd64|ryzen|epyc|threadripper|'
     r'sapphire\s+rapids|granite\s+rapids|emerald\s+rapids|raptor\s+lake)\b',
     re.IGNORECASE)
+# Closed / API-only models — CANNOT be pulled into local Ollama (Anthropic, OpenAI,
+# Google, xAI). Only fires alongside a pull/download/self-host intent, so it won't
+# drop legit tool items (e.g. "Claude Code usage tips"). Catches category errors
+# like "Pull Fable 5 from Anthropic".
+_CLOSED_MODEL_RX = re.compile(
+    r'\b(claude|fable\s*\d|chatgpt|gpt-?[0-9]|gemini|bard|grok|copilot|'
+    r'dall-?e|anthropic|openai)\b', re.IGNORECASE)
+_PULL_INTENT_RX = re.compile(
+    r'\b(pull|download|self-host|host (it |them )?locally|'
+    r'run (it |them )?locally|deploy (it |them )?locally|weights)\b', re.IGNORECASE)
 
 def _pypi_exists(pkg: str):
     """True/False if pkg is on PyPI; None on network error (fail OPEN)."""
@@ -1271,6 +1283,11 @@ def verify_reason(item: dict) -> str:
     #    (hf.co/intel/…) or news source is never dropped by mistake.
     if itype not in ("PULL_MODEL", "ADD_SOURCE") and _X86_HARDWARE_RX.search(detail):
         return "x86/foreign hardware — CIRRUS is Apple Silicon (ARM), CUMULUS is ARM"
+    # 0b) Closed/API-only models (Anthropic/OpenAI/Google/xAI) can't be pulled into
+    #     Ollama. Only drops when paired with a pull/download/self-host intent, so
+    #     legit Claude-tool items survive. Catches "Pull Fable 5 from Anthropic".
+    if _CLOSED_MODEL_RX.search(detail) and _PULL_INTENT_RX.search(detail):
+        return "API-only model — Anthropic/OpenAI/etc. can't be pulled into Ollama"
     # 1) PULL_MODEL with a bad namespace or marketing/adjective tag → not a real
     #    Ollama ref. Real refs are 'family[:tag]' (no slash) or 'hf.co/user/repo'.
     if itype == "PULL_MODEL":
