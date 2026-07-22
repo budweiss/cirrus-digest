@@ -2,13 +2,13 @@
 """
 PEDAGOGY Daily — literacy research digest for Alyssa
 ====================================================
-3rd-grade reading/writing/English teacher, Avonworth Elementary (PA).
+4th-grade reading/writing/English teacher, Avonworth Elementary (PA).
 Design: pedagogy/PEDAGOGY-SPEC.md (Cowork repo). Session 37 build.
 
 Pipeline (runs 6am via com.cirrus.pedagogy, before the 7am AI digest so the
 two never contend for Ollama):
   articles (RSS) + podcasts (RSS → Whisper transcribe) → Ollama summaries
-  written FOR a 3rd-grade teacher → technique spotlight (one evidence-based
+  written FOR a 4th-grade teacher → technique spotlight (one evidence-based
   practice, rotating) → focus topics (Alyssa's REQUEST: queue from intake)
   → markdown digest → email (Phase A: Buddy reviews; Phase B: flip
   config recipient to Alyssa) → Telegram note to Buddy.
@@ -99,14 +99,17 @@ def ollama(prompt, cfg, timeout=180, model=None):
         return f"[Summarization error: {e}]"
 
 
-TEACHER_PROMPT = """You are writing for Alyssa, an EXPERIENCED 3rd-grade
+TEACHER_PROMPT = """You are writing for Alyssa, an EXPERIENCED 4th-grade
 reading/writing/English teacher in Pennsylvania — over 10 years in the
-classroom. She knows the fundamentals; do NOT explain basic concepts or
-routine practices. Summarize the following {kind} in 4-8 sentences.
+classroom. She knows the fundamentals cold; do NOT explain basic concepts,
+definitions, or routine practices — beginner-level content is useless to her
+and must be omitted. Summarize the following {kind} in 4-8 sentences.
 Focus ONLY on what is genuinely new or useful to a veteran teacher of
-8-9 year olds: fresh research findings, advanced nuance or live debates,
+9-10 year olds: fresh research findings, advanced nuance or live debates,
 and emerging or innovative practices — including approaches educators
-outside the US are using — that she could take advantage of. Skip publisher
+outside the US are using — that she could take advantage of. Be specific:
+when applicable, include concrete detail and a brief, real classroom example
+of how it looks in practice — not vague generalities. Skip publisher
 promotion, host chatter, and anything aimed at administrators. If there is
 truly nothing new or useful for an experienced elementary reading/writing
 teacher, reply exactly: NOT RELEVANT
@@ -265,8 +268,9 @@ def fetch_podcasts(cfg, state):
 # ── Technique spotlight ───────────────────────────────────────────────────────
 
 SPOTLIGHT_PROMPT = """You are writing a short "Technique Spotlight" for Alyssa,
-an EXPERIENCED 3rd-grade reading/writing/English teacher (10+ years — assume
-she knows the basics). The technique is: {technique}
+an EXPERIENCED 4th-grade reading/writing/English teacher (10+ years — assume
+she knows the basics; do NOT include any beginner-level explanation). The
+technique is: {technique}
 
 Write 4 short sections in markdown (no top-level heading):
 **What it is** — 1-2 sentences, plain language; she may already use it.
@@ -275,9 +279,10 @@ research base honestly; do not invent citations or statistics).
 **The advanced angle** — 2-3 sentences: a refinement, extension, or emerging
 variation that experienced teachers — including educators outside the US —
 are using; be honest if the innovation is early-stage.
-**Try it this week** — 3-4 concrete bullet steps for a 3rd-grade classroom,
-pitched at a veteran teacher (skip setup she'd find obvious).
-Keep the whole thing under 300 words."""
+**Try it this week** — 3-4 concrete bullet steps for a 4th-grade classroom,
+pitched at a veteran teacher (skip setup she'd find obvious), and include ONE
+specific worked example (e.g. a sample prompt, short text, or student exchange).
+Keep the whole thing under 350 words."""
 
 
 def technique_spotlight(cfg, state):
@@ -298,16 +303,18 @@ def technique_spotlight(cfg, state):
 
 # ── Focus topics (Alyssa's REQUEST: queue via intake) ────────────────────────
 
-TOPIC_PROMPT = """Alyssa, an experienced 3rd-grade reading/writing/English
+TOPIC_PROMPT = """Alyssa, an experienced 4th-grade reading/writing/English
 teacher (10+ years), asked for research on: {topic}
 
 Write a practical research brief in markdown (no top-level heading, under
-350 words) pitched at a veteran teacher — skip the basics, emphasize the
-latest evidence, points of active debate, and emerging practices (including
-ways educators outside the US approach it): what the evidence says, what
-works in a 3rd-grade classroom, and 2-3 concrete next steps she can take.
-Name the research base honestly; do not invent citations, statistics, or
-program names. If the topic is outside reading/writing/English instruction,
+450 words) pitched at a veteran teacher — skip the basics and any beginner
+explanation, emphasize the latest evidence, points of active debate, and
+emerging practices (including ways educators outside the US approach it):
+what the evidence says, what works in a 4th-grade classroom, and 2-3 concrete
+next steps she can take. Include at least one specific, detailed example (a
+sample activity, short text, or piece of student work) so it is immediately
+usable. Name the research base honestly; do not invent citations, statistics,
+or program names. If the topic is outside reading/writing/English instruction,
 say so briefly and give your best practical pointer."""
 
 
@@ -335,7 +342,7 @@ def cover_focus_topics(cfg, dry_run):
 def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
                  is_friday):
     lines = [f"# Literacy Research Digest — {date_str}",
-             "*Prepared for Alyssa — 3rd-grade reading, writing & English*", ""]
+             "*Prepared for Alyssa — 4th-grade reading, writing & English*", ""]
     if topics:
         lines.append("## Your requested topics\n")
         for t in topics:
@@ -483,7 +490,7 @@ def selftest():
         fails += 0 if cond else 1
 
     check("strip_html", strip_html("<p>Hello <b>world</b></p>") == "Hello world")
-    check("teacher prompt renders", "3rd-grade" in TEACHER_PROMPT and
+    check("teacher prompt renders", "4th-grade" in TEACHER_PROMPT and
           "{content}" in TEACHER_PROMPT)
     check("spotlight prompt honest", "do not invent" in SPOTLIGHT_PROMPT)
     check("topic prompt honest", "not invent" in TOPIC_PROMPT)
