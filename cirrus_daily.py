@@ -1352,3 +1352,12 @@ if __name__ == "__main__":
         self_review_run("daily")
     except Exception as e:
         log(f"Self-review error: {e}")
+
+    # LLM routing watch — collect how others choose/route between LLMs into a
+    # growing playbook + a digest note (S44). Isolated; never breaks the digest.
+    try:
+        from routing_watch import watch_latest as routing_watch_latest
+        log("Running LLM routing watch...")
+        routing_watch_latest("daily")
+    except Exception as e:
+        log(f"Routing-watch error: {e}")

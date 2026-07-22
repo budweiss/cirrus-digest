@@ -835,3 +835,11 @@ if __name__ == "__main__":
         self_review_run("weekly")
     except Exception as e:
         log(f"Self-review error: {e}")
+
+    # LLM routing watch (weekly) — see cirrus_daily.py. Isolated; never breaks digest.
+    try:
+        from routing_watch import watch_latest as routing_watch_latest
+        log("Running LLM routing watch (weekly)...")
+        routing_watch_latest("digest")
+    except Exception as e:
+        log(f"Routing-watch error: {e}")
