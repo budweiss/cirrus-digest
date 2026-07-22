@@ -420,7 +420,7 @@ def telegram(text, creds):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(dry_run=False):
+def main(dry_run=False, force=False):
     cfg = load_config()
     creds = load_json(CREDS_PATH, {})
     state = load_json(STATE_PATH, {})
@@ -431,8 +431,8 @@ def main(dry_run=False):
     podcasts = fetch_podcasts(cfg, state)
     topics = cover_focus_topics(cfg, dry_run)
 
-    # Send policy: skip quiet days unless a topic is active or it's Friday.
-    if not (articles or podcasts or topics or is_friday):
+    # Send policy: skip quiet days unless a topic is active, it's Friday, or forced.
+    if not (articles or podcasts or topics or is_friday or force):
         log("nothing new + no active topics + not Friday — skipping send")
         if not dry_run:
             STATE_PATH.write_text(json.dumps(state, indent=2))
@@ -452,7 +452,7 @@ def main(dry_run=False):
             pod_summaries.append({**p, "summary": s})
 
     spotlight = (None, None)
-    if summaries or pod_summaries or topics or is_friday:
+    if summaries or pod_summaries or topics or is_friday or force:
         spotlight = technique_spotlight(cfg, state)
 
     digest = build_digest(date_str, summaries, pod_summaries,
@@ -530,4 +530,4 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if "selftest" in args:
         sys.exit(selftest())
-    sys.exit(main(dry_run="--dry-run" in args))
+    sys.exit(main(dry_run="--dry-run" in args, force="--force" in args))
