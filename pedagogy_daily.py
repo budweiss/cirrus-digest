@@ -38,6 +38,11 @@ from pathlib import Path
 import feedparser
 import requests
 
+try:
+    import llm_providers            # multi-provider (Claude/Gemini/...) — dormant until keyed
+except Exception:                   # never let a missing module break the 6am digest
+    llm_providers = None
+
 # ── Paths & config ────────────────────────────────────────────────────────────
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
@@ -54,6 +59,11 @@ MAX_ARTICLE_CHARS   = 6000
 MAX_TRANSCRIPT_CHARS = 20000
 MAX_EPISODES_PER_RUN = 2      # daily cadence: keep transcription time bounded
 DAYS_BACK = 3
+
+# ── Source discovery (dry-spell → ask a foundation model for new sources) ──────
+DRY_STREAK_TRIGGER   = 3      # consecutive dry runs before we go looking for sources
+DISCOVERY_COOLDOWN_D = 7      # don't run discovery more than ~weekly
+MAX_NEW_SOURCES      = 6      # cap how many validated sources we add per discovery
 
 
 def log(msg):
@@ -265,6 +275,159 @@ def fetch_podcasts(cfg, state):
     return out
 
 
+# ── Source discovery via foundation models (dry-spell recovery) ───────────────
+
+DISCOVERY_SYSTEM = (
+    "You are a research librarian building a literacy-instruction news feed for "
+    "Alyssa, an experienced (10+ yr) 4th-grade reading/writing/English teacher in "
+    "the US. You only recommend ACTIVE, high-quality sources that publish regularly.")
+
+
+def _discovery_user_prompt(existing_names):
+    have = "; ".join(sorted(n for n in existing_names if n))[:1500] or "(none yet)"
+    return (
+        "Recommend NEW sources we do NOT already have, covering evidence-based and "
+        "emerging literacy instruction (reading, writing, English) useful to a veteran "
+        "elementary teacher. Include high-quality options from ANYWHERE in the world "
+        "(UK, Ireland, Australia, New Zealand, Canada, etc.), not just the US.\n\n"
+        "Return ONLY a JSON array (no prose, no code fence) of up to 8 objects:\n"
+        '  {"name":"...", "type":"blog|podcast|youtube", '
+        '"url":"<direct RSS/Atom feed URL for a blog/podcast, OR the YouTube channel '
+        'URL or UC… channel_id for youtube>", "region":"...", "why":"one line"}\n'
+        "Rules: prefer sources with a real RSS/Atom feed; for youtube give the channel "
+        "URL or UC… id; do NOT invent URLs — only include sources you are confident "
+        "exist and are active; exclude anything already in this list:\n" + have)
+
+
+_UC_RX = re.compile(r"(UC[0-9A-Za-z_-]{20,})")
+
+
+def youtube_to_rss(url_or_id):
+    """Best-effort YouTube channel -> RSS feed URL. Handles a bare UC… id, a
+    /channel/UC… URL, or an existing feeds/videos.xml URL. Returns '' for
+    @handle / c/ / user/ forms that need an online lookup we skip here."""
+    s = (url_or_id or "").strip()
+    if "feeds/videos.xml" in s:
+        return s
+    m = _UC_RX.search(s)
+    return f"https://www.youtube.com/feeds/videos.xml?channel_id={m.group(1)}" if m else ""
+
+
+def validate_feed(url):
+    """True if the URL parses as a feed with at least one entry."""
+    try:
+        return bool(getattr(feedparser.parse(url), "entries", None))
+    except Exception:
+        return False
+
+
+def _extract_json_array(text):
+    """Pull the first JSON array out of a model reply (may be wrapped in prose)."""
+    if not text:
+        return []
+    i, j = text.find("["), text.rfind("]")
+    if i == -1 or j == -1 or j < i:
+        return []
+    try:
+        data = json.loads(text[i:j + 1])
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def existing_source_index(cfg):
+    idx = set()
+    for s in cfg.get("rss", []):
+        idx.add((s.get("name", "")).strip().lower())
+        idx.add((s.get("rss") or s.get("url", "")).strip().lower())
+    for p in cfg.get("podcasts", []):
+        idx.add((p.get("name", "")).strip().lower())
+        idx.add((p.get("feed", "")).strip().lower())
+    idx.discard("")
+    return idx
+
+
+def vet_candidates(cands, cfg, validate=True):
+    """Normalize + validate + dedupe model candidates. Returns (accepted, rejected)."""
+    have = existing_source_index(cfg)
+    accepted, rejected = [], []
+    for c in cands:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        typ = (c.get("type") or "").strip().lower()
+        url = (c.get("url") or c.get("rss") or c.get("feed") or "").strip()
+        if not name or not url:
+            continue
+        feed = youtube_to_rss(url) if typ == "youtube" else url
+        reason = ""
+        if typ == "youtube" and not feed:
+            reason = "youtube handle needs online lookup"
+        elif name.lower() in have or feed.lower() in have:
+            reason = "already have it"
+        elif len(accepted) >= MAX_NEW_SOURCES:
+            reason = "over per-run cap"
+        elif validate and not validate_feed(feed):
+            reason = "feed did not validate (no entries)"
+        if reason:
+            rejected.append({"name": name, "type": typ, "url": url, "reason": reason})
+            continue
+        accepted.append({"name": name, "type": typ or "blog", "feed": feed,
+                         "region": (c.get("region") or "").strip(),
+                         "why": (c.get("why") or "").strip()})
+        have.add(name.lower()); have.add(feed.lower())
+    return accepted, rejected
+
+
+def add_sources(cfg, accepted):
+    """Append accepted sources: podcasts -> podcasts[] (transcribe path);
+    blogs + youtube -> rss[] (article path)."""
+    for a in accepted:
+        if a["type"] == "podcast":
+            cfg.setdefault("podcasts", []).append({"name": a["name"], "feed": a["feed"]})
+        else:
+            cfg.setdefault("rss", []).append({"name": a["name"], "rss": a["feed"]})
+    return cfg
+
+
+def discover_sources(cfg, creds, state, dry=False):
+    """Ask a foundation model for new literacy sources, validate their feeds, and
+    (unless dry) add them to sources-pedagogy.json. Returns a human summary.
+    NEVER raises — the 6am digest must not break because discovery failed."""
+    try:
+        if llm_providers is None:
+            return "discovery skipped: llm_providers unavailable"
+        avail = llm_providers.available(creds)
+        if not avail:
+            return "discovery skipped: no foundation-model key in credentials.json"
+        names = ([s.get("name", "") for s in cfg.get("rss", [])]
+                 + [p.get("name", "") for p in cfg.get("podcasts", [])])
+        provider, reply = llm_providers.escalate(
+            DISCOVERY_SYSTEM, _discovery_user_prompt(names), creds, max_tokens=2000)
+        cands = _extract_json_array(reply)
+        accepted, rejected = vet_candidates(cands, cfg)
+        log(f"discovery via {provider}: {len(cands)} proposed, {len(accepted)} "
+            f"validated, {len(rejected)} rejected" + (" (DRY)" if dry else ""))
+        for a in accepted:
+            log(f"  + [{a['type']}] {a['name']} ({a['region']}) {a['feed']}")
+        for r in rejected:
+            log(f"  - {r['name']}: {r['reason']}")
+        if accepted and not dry:
+            add_sources(cfg, accepted)
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=1, ensure_ascii=False))
+            state["last_discovery"] = datetime.now().strftime("%Y-%m-%d")
+            state["dry_streak"] = 0
+        if not accepted:
+            return (f"discovery via {provider}: 0 new valid sources "
+                    f"({len(cands)} proposed, all duplicate/invalid)")
+        head = f"{'would add' if dry else 'ADDED'} {len(accepted)} source(s) via {provider}:"
+        return "\n".join([head] + [f"• [{a['type']}] {a['name']} — "
+                                   f"{a['region']}: {a['feed']}" for a in accepted])
+    except Exception as e:
+        log(f"discovery error (non-fatal): {e}")
+        return f"discovery error: {e}"
+
+
 # ── Technique spotlight ───────────────────────────────────────────────────────
 
 SPOTLIGHT_PROMPT = """You are writing a short "Technique Spotlight" for Alyssa,
@@ -431,6 +594,28 @@ def main(dry_run=False, force=False):
     podcasts = fetch_podcasts(cfg, state)
     topics = cover_focus_topics(cfg, dry_run)
 
+    # Dry-spell source discovery (Buddy 2026-07-23): if the FEEDS produce nothing
+    # for several days running, ask a foundation model for fresh literacy sources
+    # (blogs/podcasts/YouTube, anywhere in the world), validate their feeds, and add
+    # them — so the pipeline finds material again instead of going quiet. Rate-limited
+    # by a cooldown; never blocks the digest (discover_sources never raises).
+    streak = 0 if (articles or podcasts) else int(state.get("dry_streak", 0)) + 1
+    state["dry_streak"] = streak
+    last_disc = state.get("last_discovery")
+    cooldown_ok = True
+    if last_disc:
+        try:
+            cooldown_ok = (datetime.now()
+                           - datetime.strptime(last_disc, "%Y-%m-%d")).days >= DISCOVERY_COOLDOWN_D
+        except Exception:
+            cooldown_ok = True
+    if streak >= DRY_STREAK_TRIGGER and cooldown_ok and not dry_run:
+        summary = discover_sources(cfg, creds, state, dry=False)
+        state["last_discovery"] = date_str          # respect cooldown even if 0 added
+        log("source-discovery: " + summary.replace("\n", " | "))
+        telegram(f"\U0001F50E *Pedagogy source discovery* (dry spell {streak} days):\n"
+                 + summary, creds)
+
     # Cheap early-out ONLY when nothing was even fetched (saves summarize cost).
     # NOTE: a non-empty raw fetch is NOT sufficient to send — articles can all be
     # filtered out as NOT RELEVANT below. The real send decision is made after
@@ -556,6 +741,42 @@ def selftest():
     remaining2 = [s for s in cfg2["technique_seeds"] if s not in ["a", "b"]]
     check("rotation exhausts then resets", remaining2 == [])
 
+    # ── source discovery (offline: parsing / youtube-map / dedupe, no network) ──
+    check("json array extracted from prose",
+          _extract_json_array('here you go: [{"a":1}] thanks') == [{"a": 1}])
+    check("json array: none -> []", _extract_json_array("no json here") == [])
+    check("youtube UC id -> feed",
+          youtube_to_rss("UC1234567890abcdefghijkl")
+          == "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdefghijkl")
+    check("youtube /channel/ URL -> feed",
+          "channel_id=UCabcdefghij0123456789" in
+          youtube_to_rss("https://youtube.com/channel/UCabcdefghij0123456789"))
+    check("youtube existing feed passthrough",
+          youtube_to_rss("https://www.youtube.com/feeds/videos.xml?channel_id=UCx")
+          == "https://www.youtube.com/feeds/videos.xml?channel_id=UCx")
+    check("youtube @handle -> '' (needs lookup)", youtube_to_rss("https://youtube.com/@someteacher") == "")
+    # vet: dedupe against existing + youtube handle rejection (validate off = offline)
+    cfg3 = {"rss": [{"name": "Shanahan on Literacy", "rss": "https://x/feed"}],
+            "podcasts": [{"name": "Sold a Story", "feed": "https://y/feed"}]}
+    cands = [
+        {"name": "Shanahan on Literacy", "type": "blog", "url": "https://x/feed"},   # dup name
+        {"name": "New UK Blog", "type": "blog", "url": "https://uk/feed"},           # ok
+        {"name": "Handle Channel", "type": "youtube", "url": "https://youtube.com/@h"},  # reject
+        {"name": "", "type": "blog", "url": "https://z/feed"},                       # no name
+    ]
+    acc, rej = vet_candidates(cands, cfg3, validate=False)
+    check("vet accepts the new unique blog", any(a["name"] == "New UK Blog" for a in acc))
+    check("vet rejects duplicate by name", any(r["name"] == "Shanahan on Literacy" for r in rej))
+    check("vet rejects youtube @handle", any(r["name"] == "Handle Channel" for r in rej))
+    check("vet skips nameless candidate", all(a["name"] for a in acc))
+    # add_sources routes types correctly
+    cfg4 = {"rss": [], "podcasts": []}
+    add_sources(cfg4, [{"name": "B", "type": "blog", "feed": "http://b"},
+                       {"name": "P", "type": "podcast", "feed": "http://p"},
+                       {"name": "Y", "type": "youtube", "feed": "http://y"}])
+    check("add_sources: blog+youtube -> rss[]", len(cfg4["rss"]) == 2)
+    check("add_sources: podcast -> podcasts[]", len(cfg4["podcasts"]) == 1)
+
     print(f"selftest: {'OK' if fails == 0 else f'{fails} FAILURE(S)'}")
     return 1 if fails else 0
 
@@ -564,4 +785,14 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if "selftest" in args:
         sys.exit(selftest())
+    if "--discover" in args:
+        # On-demand source discovery. Default is a DRY report (proposes + validates,
+        # writes nothing). Add --apply to actually add validated sources + persist.
+        _cfg = load_config(); _creds = load_json(CREDS_PATH, {}); _state = load_json(STATE_PATH, {})
+        _dry = "--apply" not in args
+        print(discover_sources(_cfg, _creds, _state, dry=_dry))
+        if not _dry:
+            _state["last_discovery"] = datetime.now().strftime("%Y-%m-%d")
+            STATE_PATH.write_text(json.dumps(_state, indent=2))
+        sys.exit(0)
     sys.exit(main(dry_run="--dry-run" in args, force="--force" in args))
