@@ -322,17 +322,37 @@ def validate_feed(url):
 
 
 def _extract_json_array(text):
-    """Pull the first JSON array out of a model reply (may be wrapped in prose)."""
+    """Pull JSON objects out of a model reply. Tolerant of code fences, leading
+    prose, and TRUNCATION (max_tokens cut-off) — salvages each complete {...}
+    object even when the enclosing array was never closed."""
     if not text:
         return []
-    i, j = text.find("["), text.rfind("]")
-    if i == -1 or j == -1 or j < i:
-        return []
-    try:
-        data = json.loads(text[i:j + 1])
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    t = re.sub(r"```(?:json)?", "", text)      # drop code fences
+    i = t.find("[")
+    frag = t[i:] if i != -1 else t
+    j = frag.rfind("]")
+    if j != -1:                                 # try a clean full-array parse first
+        try:
+            data = json.loads(frag[:j + 1])
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    objs, depth, start = [], 0, None            # salvage object-by-object
+    for k, ch in enumerate(frag):
+        if ch == "{":
+            if depth == 0:
+                start = k
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    objs.append(json.loads(frag[start:k + 1]))
+                except Exception:
+                    pass
+                start = None
+    return objs
 
 
 def existing_source_index(cfg):
@@ -403,8 +423,11 @@ def discover_sources(cfg, creds, state, dry=False):
         names = ([s.get("name", "") for s in cfg.get("rss", [])]
                  + [p.get("name", "") for p in cfg.get("podcasts", [])])
         provider, reply = llm_providers.escalate(
-            DISCOVERY_SYSTEM, _discovery_user_prompt(names), creds, max_tokens=2000)
+            DISCOVERY_SYSTEM, _discovery_user_prompt(names), creds, max_tokens=4000)
         cands = _extract_json_array(reply)
+        if not cands:
+            log(f"  discovery: {provider} reply {len(reply or '')} chars, 0 parsed; "
+                f"head={ (reply or '')[:200]!r}")
         accepted, rejected = vet_candidates(cands, cfg)
         log(f"discovery via {provider}: {len(cands)} proposed, {len(accepted)} "
             f"validated, {len(rejected)} rejected" + (" (DRY)" if dry else ""))
