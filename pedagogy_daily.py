@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -313,12 +314,72 @@ def youtube_to_rss(url_or_id):
     return f"https://www.youtube.com/feeds/videos.xml?channel_id={m.group(1)}" if m else ""
 
 
-def validate_feed(url):
-    """True if the URL parses as a feed with at least one entry."""
+_FEED_LINK_RX = re.compile(
+    r'<link[^>]+type=["\']application/(?:rss|atom)\+xml["\'][^>]*>', re.I)
+_HREF_RX  = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+_YT_ID_RX = re.compile(r'"(?:channelId|externalId)":"(UC[0-9A-Za-z_-]{20,})"')
+_YT_CAN_RX = re.compile(r'/channel/(UC[0-9A-Za-z_-]{20,})')
+_FEED_PATHS = ["/feed", "/feed/", "/rss", "/atom.xml", "/index.xml", "/feed.xml"]
+
+
+def _http_get(url, timeout=15):
     try:
+        r = requests.get(url, timeout=timeout,
+                         headers={"User-Agent": "Mozilla/5.0 (CirrusPedagogy)"})
+        return r.text if r.status_code == 200 else ""
+    except Exception:
+        return ""
+
+
+def validate_feed(url):
+    """True if the URL yields a parseable feed with >=1 entry. Fetches with a real
+    User-Agent first (many feeds 403 feedparser's default UA), then falls back to
+    letting feedparser fetch it directly."""
+    if not url:
+        return False
+    try:
+        raw = _http_get(url)
+        if raw and getattr(feedparser.parse(raw), "entries", None):
+            return True
         return bool(getattr(feedparser.parse(url), "entries", None))
     except Exception:
         return False
+
+
+def resolve_feed(url, typ):
+    """Turn a candidate URL into a VALIDATED feed URL, or '' if none works.
+    Models are unreliable at exact feed URLs, so we DISCOVER the feed:
+      youtube  -> UC… channel_id -> feeds/videos.xml (resolve @handle via page)
+      blog/pod -> use it if it's already a feed; else read the homepage's
+                  <link rel=alternate type=rss+xml>; else try common feed paths."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if typ == "youtube":
+        feed = youtube_to_rss(url)
+        if not feed:
+            m = _YT_ID_RX.search(_http_get(url)) or _YT_CAN_RX.search(_http_get(url))
+            if m:
+                feed = f"https://www.youtube.com/feeds/videos.xml?channel_id={m.group(1)}"
+        return feed if (feed and validate_feed(feed)) else ""
+    if validate_feed(url):
+        return url
+    html = _http_get(url)
+    if html:
+        m = _FEED_LINK_RX.search(html)
+        if m:
+            h = _HREF_RX.search(m.group(0))
+            if h:
+                cand = urljoin(url, h.group(1))
+                if validate_feed(cand):
+                    return cand
+    p = urlparse(url)
+    base = f"{p.scheme}://{p.netloc}" if p.scheme else url
+    for path in _FEED_PATHS:
+        cand = urljoin(base + "/", path.lstrip("/"))
+        if validate_feed(cand):
+            return cand
+    return ""
 
 
 def _extract_json_array(text):
@@ -368,31 +429,36 @@ def existing_source_index(cfg):
 
 
 def vet_candidates(cands, cfg, validate=True):
-    """Normalize + validate + dedupe model candidates. Returns (accepted, rejected)."""
+    """Normalize + resolve-a-working-feed + dedupe model candidates.
+    Returns (accepted, rejected). When validate=False (offline selftest) the
+    model's URL is used as-is (no network feed resolution)."""
     have = existing_source_index(cfg)
     accepted, rejected = [], []
     for c in cands:
         if not isinstance(c, dict):
             continue
         name = (c.get("name") or "").strip()
-        typ = (c.get("type") or "").strip().lower()
+        typ = (c.get("type") or "blog").strip().lower()
         url = (c.get("url") or c.get("rss") or c.get("feed") or "").strip()
         if not name or not url:
             continue
-        feed = youtube_to_rss(url) if typ == "youtube" else url
-        reason = ""
-        if typ == "youtube" and not feed:
-            reason = "youtube handle needs online lookup"
-        elif name.lower() in have or feed.lower() in have:
-            reason = "already have it"
-        elif len(accepted) >= MAX_NEW_SOURCES:
-            reason = "over per-run cap"
-        elif validate and not validate_feed(feed):
-            reason = "feed did not validate (no entries)"
-        if reason:
-            rejected.append({"name": name, "type": typ, "url": url, "reason": reason})
+        if name.lower() in have:
+            rejected.append({"name": name, "reason": "already have (name)"})
             continue
-        accepted.append({"name": name, "type": typ or "blog", "feed": feed,
+        if len(accepted) >= MAX_NEW_SOURCES:
+            rejected.append({"name": name, "reason": "over per-run cap"})
+            continue
+        if validate:
+            feed = resolve_feed(url, typ)
+        else:
+            feed = youtube_to_rss(url) if typ == "youtube" else url
+        if not feed:
+            rejected.append({"name": name, "reason": "no working feed found"})
+            continue
+        if feed.lower() in have:
+            rejected.append({"name": name, "reason": "already have (feed)"})
+            continue
+        accepted.append({"name": name, "type": typ, "feed": feed,
                          "region": (c.get("region") or "").strip(),
                          "why": (c.get("why") or "").strip()})
         have.add(name.lower()); have.add(feed.lower())
