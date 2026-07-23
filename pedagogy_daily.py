@@ -431,7 +431,10 @@ def main(dry_run=False, force=False):
     podcasts = fetch_podcasts(cfg, state)
     topics = cover_focus_topics(cfg, dry_run)
 
-    # Send policy: skip quiet days unless a topic is active, it's Friday, or forced.
+    # Cheap early-out ONLY when nothing was even fetched (saves summarize cost).
+    # NOTE: a non-empty raw fetch is NOT sufficient to send — articles can all be
+    # filtered out as NOT RELEVANT below. The real send decision is made after
+    # filtering (see the hard guard) so we never mail an empty shell.
     if not (articles or podcasts or topics or is_friday or force):
         log("nothing new + no active topics + not Friday — skipping send")
         if not dry_run:
@@ -451,9 +454,28 @@ def main(dry_run=False, force=False):
         if s and "NOT RELEVANT" not in s and not s.startswith("[Summarization"):
             pod_summaries.append({**p, "summary": s})
 
+    has_sourced = bool(summaries or pod_summaries or topics)
+
+    # Technique spotlight = the guaranteed local-model fallback so a send day
+    # always carries one genuinely useful item instead of an empty shell.
     spotlight = (None, None)
-    if summaries or pod_summaries or topics or is_friday or force:
+    if has_sourced or is_friday or force:
         spotlight = technique_spotlight(cfg, state)
+
+    # HARD GUARD (Buddy 2026-07-23): never email an empty digest. If nothing
+    # survived the relevance filter AND the spotlight didn't render, skip the
+    # send instead of mailing Alyssa a title-and-footer shell. (This is the bug
+    # that sent an empty 2026-07-23 digest: 1 article fetched, filtered out as
+    # NOT RELEVANT, spotlight not rendered → empty email.)
+    if not has_sourced and not (spotlight and spotlight[0]):
+        log("empty digest (no relevant content, no spotlight) — skipping send")
+        if not dry_run:
+            STATE_PATH.write_text(json.dumps(state, indent=2))
+            telegram("\U0001F4ED *Pedagogy*: dry day and no spotlight rendered "
+                     "(Ollama?) — skipped the send so no empty email goes to "
+                     "Alyssa. Sources were dry; the model-fallback task covers "
+                     "generating content on days like this.", creds)
+        return 0
 
     digest = build_digest(date_str, summaries, pod_summaries,
                           spotlight if spotlight[0] else None, topics, cfg,
@@ -511,6 +533,18 @@ def selftest():
            "REQUEST:"]))
     d2 = build_digest("2026-07-17", [], [], None, [], cfg, is_friday=True)
     check("friday roundup renders", "This week" in d2)
+
+    # empty-send guard (mirrors main): skip iff NO sourced content AND NO spotlight.
+    def _skip_empty(has_sourced, spot_ok):
+        return (not has_sourced) and (not spot_ok)
+    check("guard: dry + no spotlight -> SKIP", _skip_empty(False, False) is True)
+    check("guard: dry + spotlight -> send", _skip_empty(False, True) is False)
+    check("guard: has content -> send", _skip_empty(True, False) is False)
+    # a title/footer-only digest must be detectable as empty
+    empty = build_digest("2026-07-23", [], [], None, [], cfg, is_friday=False)
+    check("empty digest has no content sections", not any(
+        k in empty for k in ["Technique spotlight", "Worth your time",
+                             "Podcast recaps", "requested topics"]))
 
     # spotlight rotation
     st = {}
