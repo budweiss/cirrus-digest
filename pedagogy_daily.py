@@ -639,7 +639,7 @@ def send_email(subject, body_md, cfg, creds):
     from_email = creds["outlook_email"]     # legacy-misnamed Gmail sender
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = from_email
+    msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
     msg["To"] = to_addr
     if cc:
         msg["Cc"] = ", ".join(cc)

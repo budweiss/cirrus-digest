@@ -35,6 +35,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT   = 587
 FROM_EMAIL  = CREDS["outlook_email"]
 FROM_PASS   = CREDS["outlook_password"]
+FROM_NAME   = CREDS.get("mail_from_name", "CIRRUS")   # email From display name; per box (CIRRUS/CUMULUS)
 TO_EMAIL    = "Buddy.Weiss@outlook.com"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -197,7 +198,7 @@ def send_email(subject: str, body: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = FROM_EMAIL
+    msg["From"]    = f"{FROM_NAME} <{FROM_EMAIL}>"
     msg["To"]      = TO_EMAIL
 
     # Plain text version

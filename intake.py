@@ -332,7 +332,7 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
         msg = MIMEText(ack_body(rec))
         subj = orig_subject or rec["title"]
         msg["Subject"] = subj if subj.lower().startswith("re:") else f"Re: {subj}"
-        msg["From"] = from_email
+        msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
         msg["To"] = to_addr
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
             server.ehlo(); server.starttls(); server.ehlo()

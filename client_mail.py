@@ -84,7 +84,7 @@ def main() -> int:
         msg = MIMEText(body)
 
     msg["Subject"] = subject
-    msg["From"] = from_email
+    msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
     msg["To"] = to_addr
     msg["Cc"] = CC_ADDR
 
