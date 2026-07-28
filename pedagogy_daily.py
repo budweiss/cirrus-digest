@@ -64,6 +64,7 @@ DAYS_BACK = 3
 # ── Source discovery (dry-spell → ask a foundation model for new sources) ──────
 DRY_STREAK_TRIGGER   = 3      # consecutive dry runs before we go looking for sources
 DISCOVERY_COOLDOWN_D = 7      # don't run discovery more than ~weekly
+MODEL_BRIEF_COOLDOWN_D = 2    # on dry days, ask a foundation model for a brief at most every N days
 MAX_NEW_SOURCES      = 6      # cap how many validated sources we add per discovery
 
 
@@ -517,6 +518,81 @@ def discover_sources(cfg, creds, state, dry=False):
         return f"discovery error: {e}"
 
 
+# ── Dry-day foundation-model brief ────────────────────────────────────────────
+# Buddy 2026-07-28: when the feeds are quiet, reach out to a foundation model
+# (Claude/Gemini, via llm_providers) for a veteran-level worldwide literacy brief so
+# Alyssa still gets fresh research instead of a skipped day. Honest sourcing only;
+# cooldown-limited; never raises (must not break the 6am send).
+
+MODEL_BRIEF_SYSTEM = (
+    "You are a literacy research librarian briefing Alyssa, an experienced (10+ yr) "
+    "4th-grade reading/writing/English teacher in the US. Her regular feeds are quiet "
+    "today, so you are surfacing genuinely useful, current literacy research and "
+    "practice from ANYWHERE in the world. Assume she knows the fundamentals — skip the "
+    "basics; focus on new evidence, active debates, and emerging/innovative classroom "
+    "practice. Be rigorously honest: name the researchers, organizations, countries, or "
+    "specific sources behind each point, and NEVER invent citations, statistics, study "
+    "titles, or program names. If you are not confident something is real and current, "
+    "say so or leave it out.")
+
+
+def _model_brief_user_prompt(recent):
+    avoid = ("; ".join(recent))[:400]
+    return (
+        "Write a markdown 'Global Literacy Brief' (no top-level heading) of about "
+        "450-550 words for a veteran 4th-grade teacher, with these sections:\n"
+        "**What's new** — 2-3 recent or emerging evidence-based developments in "
+        "reading/writing/English instruction (worldwide is welcome), each 2-3 sentences, "
+        "naming the source/researcher/country.\n"
+        "**Try this** — one concrete, classroom-ready technique for 4th grade with a "
+        "specific worked example (a prompt, short text, or student exchange).\n"
+        "**Go deeper** — 3-4 specific sources she can follow (blog, podcast, YouTube "
+        "channel, paper, or organization), each with a one-line why.\n\n"
+        "Rules: honest sourcing only — no invented citations/statistics/program names; "
+        "prefer things a US 4th-grade teacher can actually use."
+        + (f"\nAvoid repeating these recent lead topics: {avoid}" if avoid else ""))
+
+
+def model_brief(cfg, creds, state, force=False):
+    """Foundation-model dry-day brief. Returns (title, text) or (None, None).
+    NEVER raises — the 6am digest must not break because a model call failed."""
+    try:
+        mb = cfg.get("model_brief", {}) or {}
+        if not mb.get("enabled", True):
+            return None, None
+        if llm_providers is None:
+            log("model-brief: llm_providers unavailable"); return None, None
+        if not llm_providers.available(creds):
+            log("model-brief: no foundation-model key in credentials.json")
+            return None, None
+        cd = int(mb.get("cooldown_days", MODEL_BRIEF_COOLDOWN_D))
+        last = state.get("model_brief_last")
+        if last and not force:
+            try:
+                if (datetime.now() - datetime.strptime(last, "%Y-%m-%d")).days < cd:
+                    log(f"model-brief: within {cd}d cooldown — skipping")
+                    return None, None
+            except Exception:
+                pass
+        recent = state.get("model_brief_topics", [])[-8:]
+        provider, reply = llm_providers.escalate(
+            MODEL_BRIEF_SYSTEM, _model_brief_user_prompt(recent), creds, max_tokens=1600)
+        text = (reply or "").strip()
+        if len(text) < 200:
+            log(f"model-brief: {provider} reply too short ({len(text)} chars) — skipping")
+            return None, None
+        title = f"Global literacy brief (via {provider})"
+        # record for cooldown + light anti-repeat (persisted by caller on real runs)
+        state["model_brief_last"] = datetime.now().strftime("%Y-%m-%d")
+        lead = text.lstrip("* ").split("\n", 1)[0][:80]
+        state["model_brief_topics"] = (state.get("model_brief_topics", []) + [lead])[-8:]
+        log(f"model-brief: built via {provider} ({len(text)} chars)")
+        return title, text
+    except Exception as e:
+        log(f"model-brief error (non-fatal): {e}")
+        return None, None
+
+
 # ── Technique spotlight ───────────────────────────────────────────────────────
 
 SPOTLIGHT_PROMPT = """You are writing a short "Technique Spotlight" for Alyssa,
@@ -592,13 +668,21 @@ def cover_focus_topics(cfg, dry_run):
 # ── Digest build ──────────────────────────────────────────────────────────────
 
 def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
-                 is_friday):
+                 is_friday, mbrief=None):
     lines = [f"# Literacy Research Digest — {date_str}",
              "*Prepared for Alyssa — 4th-grade reading, writing & English*", ""]
     if topics:
         lines.append("## Your requested topics\n")
         for t in topics:
             lines.append(f"### {t['topic']}\n\n{t['brief']}\n")
+    if mbrief:
+        mb_name, mb_text = mbrief
+        lines.append(
+            f"## {mb_name}\n\n"
+            "*Your feeds were quiet today, so this was surfaced by a foundation model "
+            "(worldwide literacy research). Please sanity-check the links/claims before "
+            "relying on them.*\n\n"
+            f"{mb_text}\n")
     if spotlight:
         name, text = spotlight
         lines.append(f"## Technique spotlight: {name}\n\n{text}\n")
@@ -705,11 +789,19 @@ def main(dry_run=False, force=False):
         telegram(f"\U0001F50E *Pedagogy source discovery* (dry spell {streak} days):\n"
                  + summary, creds)
 
+    # Dry-day foundation-model brief (Buddy 2026-07-28): when the feeds are quiet,
+    # ask a foundation model (Claude/Gemini) for a veteran-level worldwide literacy
+    # brief so Alyssa still gets fresh research instead of a skipped day. Cooldown-
+    # limited on normal runs; --force and --dry-run bypass the cooldown for testing.
+    mbrief = (None, None)
+    if not (articles or podcasts or topics):
+        mbrief = model_brief(cfg, creds, state, force=(force or dry_run))
+
     # Cheap early-out ONLY when nothing was even fetched (saves summarize cost).
     # NOTE: a non-empty raw fetch is NOT sufficient to send — articles can all be
     # filtered out as NOT RELEVANT below. The real send decision is made after
     # filtering (see the hard guard) so we never mail an empty shell.
-    if not (articles or podcasts or topics or is_friday or force):
+    if not (articles or podcasts or topics or is_friday or force or mbrief[0]):
         log("nothing new + no active topics + not Friday — skipping send")
         if not dry_run:
             STATE_PATH.write_text(json.dumps(state, indent=2))
@@ -728,7 +820,7 @@ def main(dry_run=False, force=False):
         if s and "NOT RELEVANT" not in s and not s.startswith("[Summarization"):
             pod_summaries.append({**p, "summary": s})
 
-    has_sourced = bool(summaries or pod_summaries or topics)
+    has_sourced = bool(summaries or pod_summaries or topics or mbrief[0])
 
     # Technique spotlight = the guaranteed local-model fallback so a send day
     # always carries one genuinely useful item instead of an empty shell.
@@ -753,7 +845,7 @@ def main(dry_run=False, force=False):
 
     digest = build_digest(date_str, summaries, pod_summaries,
                           spotlight if spotlight[0] else None, topics, cfg,
-                          is_friday)
+                          is_friday, mbrief=mbrief if mbrief[0] else None)
 
     outdir = Path(cfg["digest"]["output_dir"])
     outdir.mkdir(parents=True, exist_ok=True)
@@ -771,6 +863,7 @@ def main(dry_run=False, force=False):
     telegram(f"📚 *Pedagogy digest sent* ({date_str}): "
              f"{len(summaries)} article(s), {len(pod_summaries)} podcast(s), "
              f"{len(topics)} topic(s)"
+             + (", +model brief" if mbrief[0] else "")
              + (f", spotlight: {spotlight[0]}" if spotlight[0] else ""), creds)
     return 0
 
@@ -790,6 +883,7 @@ def selftest():
           "{content}" in TEACHER_PROMPT)
     check("spotlight prompt honest", "do not invent" in SPOTLIGHT_PROMPT)
     check("topic prompt honest", "not invent" in TOPIC_PROMPT)
+    check("model-brief prompt honest", "invent" in MODEL_BRIEF_SYSTEM)
 
     # digest assembly with all sections
     cfg = {"digest": {"output_dir": tempfile.mkdtemp()}}
@@ -807,6 +901,13 @@ def selftest():
            "REQUEST:"]))
     d2 = build_digest("2026-07-17", [], [], None, [], cfg, is_friday=True)
     check("friday roundup renders", "This week" in d2)
+
+    # dry-day model brief: renders its own labeled section and makes a dry day sendable
+    dmb = build_digest("2026-07-18", [], [], None, [], cfg, is_friday=False,
+                       mbrief=("Global literacy brief (via anthropic)",
+                               "**What's new** — worldwide literacy research body text."))
+    check("digest: model-brief section renders",
+          "Global literacy brief" in dmb and "foundation model" in dmb)
 
     # empty-send guard (mirrors main): skip iff NO sourced content AND NO spotlight.
     def _skip_empty(has_sourced, spot_ok):
