@@ -997,4 +997,24 @@ if __name__ == "__main__":
             _state["last_discovery"] = datetime.now().strftime("%Y-%m-%d")
             STATE_PATH.write_text(json.dumps(_state, indent=2))
         sys.exit(0)
+    if "--add-file" in args:
+        # Manually add CURATED sources from a JSON file (list of {name,type,url}),
+        # reusing the discovery feed-validator so only sources with a working feed
+        # (>=1 entry) are added. Lets us inject specific Google-News/YouTube proxies
+        # the model-driven discovery won't propose. Idempotent (dedupes by name).
+        _p = args[args.index("--add-file") + 1]
+        _cfg = load_config()
+        _cands = json.loads(Path(_p).read_text())
+        _acc, _rej = vet_candidates(_cands, _cfg)
+        for a in _acc:
+            log(f"  + [{a['type']}] {a['name']} {a['feed']}")
+        for r in _rej:
+            log(f"  - {r['name']}: {r['reason']}")
+        if _acc:
+            add_sources(_cfg, _acc)
+            CONFIG_PATH.write_text(json.dumps(_cfg, indent=1, ensure_ascii=False))
+        print(f"manual add: {len(_acc)} added, {len(_rej)} rejected "
+              f"(now {len(_cfg.get('rss', []))} rss, "
+              f"{len(_cfg.get('podcasts', []))} podcasts)")
+        sys.exit(0)
     sys.exit(main(dry_run="--dry-run" in args, force="--force" in args))

@@ -1,0 +1,17 @@
+[
+  {"name": "Reading Simplified (YouTube)", "type": "youtube", "region": "US",
+   "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC5h-NoX_bV2SmPC1NsPwWvg",
+   "why": "Dr. Marnie Ginsberg — streamlined SoR decoding strategies, video demos"},
+  {"name": "researchED (YouTube)", "type": "youtube", "region": "UK",
+   "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCjsOv_C0n8kXbJJQXyAHw9A",
+   "why": "evidence-in-education conference talks, incl. literacy"},
+  {"name": "The Learning Spy (David Didau)", "type": "blog", "region": "UK",
+   "url": "https://news.google.com/rss/search?q=site:learningspy.co.uk&hl=en-US&gl=US&ceid=US:en",
+   "why": "influential UK writing/literacy thinker (Google-News proxy — no direct feed)"},
+  {"name": "The Confident Teacher (Alex Quigley)", "type": "blog", "region": "UK",
+   "url": "https://news.google.com/rss/search?q=site:theconfidentteacher.com&hl=en-US&gl=US&ceid=US:en",
+   "why": "EEF author on vocabulary/reading/writing (Google-News proxy)"},
+  {"name": "Five from Five (AU)", "type": "blog", "region": "Australia",
+   "url": "https://news.google.com/rss/search?q=site:fivefromfive.org.au&hl=en-US&gl=US&ceid=US:en",
+   "why": "Centre for Independent Studies reading program (Google-News proxy)"}
+]
