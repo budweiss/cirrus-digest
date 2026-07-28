@@ -679,10 +679,25 @@ def cover_focus_topics(cfg, dry_run):
 
 # ── Digest build ──────────────────────────────────────────────────────────────
 
+# One-time announcement shown on the NEXT digest that sends, then retired (keyed by
+# ANNOUNCE_ID in state["announce_id"]). Bump the ID to announce something new.
+ANNOUNCE_ID = "2026-07-28-newfeeds"
+ANNOUNCE_TEXT = (
+    "We've expanded the sources we monitor for you. Newly added: **Reading Simplified** "
+    "and **researchED** (YouTube), plus **David Didau / The Learning Spy**, **Alex "
+    "Quigley / The Confident Teacher**, and **Five from Five** (Australia) — and recently "
+    "**Sounds-Write** (UK), **Learning Difficulties Australia**, **UKLA** and **SPELD NZ**. "
+    "On quiet news days we'll also include a short brief of worldwide literacy research so "
+    "there's always something useful. As always, reply with \"REQUEST: <your topic>\" to "
+    "steer what we dig into.")
+
+
 def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
-                 is_friday, mbrief=None):
+                 is_friday, mbrief=None, announce=None):
     lines = [f"# Literacy Research Digest — {date_str}",
              "*Prepared for Alyssa — 4th-grade reading, writing & English*", ""]
+    if announce:
+        lines.append(f"## What's new in your digest\n\n{announce}\n")
     if topics:
         lines.append("## Your requested topics\n")
         for t in topics:
@@ -855,9 +870,11 @@ def main(dry_run=False, force=False):
                      "generating content on days like this.", creds)
         return 0
 
+    announce = ANNOUNCE_TEXT if state.get("announce_id") != ANNOUNCE_ID else None
     digest = build_digest(date_str, summaries, pod_summaries,
                           spotlight if spotlight[0] else None, topics, cfg,
-                          is_friday, mbrief=mbrief if mbrief[0] else None)
+                          is_friday, mbrief=mbrief if mbrief[0] else None,
+                          announce=announce)
 
     outdir = Path(cfg["digest"]["output_dir"])
     outdir.mkdir(parents=True, exist_ok=True)
@@ -871,6 +888,8 @@ def main(dry_run=False, force=False):
         return 0
 
     send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds)
+    if announce:                       # one-time note delivered — retire it
+        state["announce_id"] = ANNOUNCE_ID
     STATE_PATH.write_text(json.dumps(state, indent=2))
     telegram(f"📚 *Pedagogy digest sent* ({date_str}): "
              f"{len(summaries)} article(s), {len(pod_summaries)} podcast(s), "
@@ -920,6 +939,14 @@ def selftest():
                                "**What's new** — worldwide literacy research body text."))
     check("digest: model-brief section renders",
           "Global literacy brief" in dmb and "foundation model" in dmb)
+
+    # one-time announcement renders when passed, absent otherwise
+    dann = build_digest("2026-07-29", [], [], None, [], cfg, is_friday=False,
+                        announce=ANNOUNCE_TEXT)
+    check("digest: announcement renders", "What's new in your digest" in dann
+          and "Reading Simplified" in dann)
+    dnoann = build_digest("2026-07-29", [], [], None, [], cfg, is_friday=False)
+    check("digest: no announcement when None", "What's new in your digest" not in dnoann)
 
     # empty-send guard (mirrors main): skip iff NO sourced content AND NO spotlight.
     def _skip_empty(has_sourced, spot_ok):
