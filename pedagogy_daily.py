@@ -575,11 +575,23 @@ def model_brief(cfg, creds, state, force=False):
             except Exception:
                 pass
         recent = state.get("model_brief_topics", [])[-8:]
-        provider, reply = llm_providers.escalate(
-            MODEL_BRIEF_SYSTEM, _model_brief_user_prompt(recent), creds, max_tokens=1600)
-        text = (reply or "").strip()
-        if len(text) < 200:
-            log(f"model-brief: {provider} reply too short ({len(text)} chars) — skipping")
+        user = _model_brief_user_prompt(recent)
+        # Try each keyed provider (anthropic → gemini → …) until one returns a usable
+        # brief. A short/empty reply is NOT an exception, so escalate()'s failover
+        # wouldn't catch it — hence the explicit loop (saw a 0-char anthropic reply
+        # on 2026-07-28; without failover the brief was silently skipped).
+        text, provider = "", None
+        for p in llm_providers.available(creds):
+            try:
+                r = (llm_providers.call(p, MODEL_BRIEF_SYSTEM, user, creds,
+                                        max_tokens=1600) or "").strip()
+            except Exception as e:
+                log(f"model-brief: {p} error ({e}) — trying next"); continue
+            if len(r) >= 200:
+                text, provider = r, p; break
+            log(f"model-brief: {p} reply too short ({len(r)} chars) — trying next")
+        if not text:
+            log("model-brief: no provider returned a usable brief — skipping")
             return None, None
         title = f"Global literacy brief (via {provider})"
         # record for cooldown + light anti-repeat (persisted by caller on real runs)
