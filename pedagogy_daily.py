@@ -65,6 +65,7 @@ DAYS_BACK = 3
 DRY_STREAK_TRIGGER   = 3      # consecutive dry runs before we go looking for sources
 DISCOVERY_COOLDOWN_D = 7      # don't run discovery more than ~weekly
 MODEL_BRIEF_COOLDOWN_D = 2    # on dry days, ask a foundation model for a brief at most every N days
+MODEL_BRIEF_MIN_CHARS  = 800  # a reply must be at least this long to count as a real brief (filters truncated intros)
 MAX_NEW_SOURCES      = 6      # cap how many validated sources we add per discovery
 
 
@@ -604,7 +605,7 @@ def model_brief(cfg, creds, state, force=False):
         # every version side-by-side — so OpenAI/Gemini each get a real at-bat and we
         # can compare quality (Buddy 2026-07-28). A short/empty reply isn't an
         # exception, so this explicit loop also serves as failover.
-        text, provider, results = "", None, []
+        results = []
         for p in llm_providers.available(creds):
             try:
                 r = (llm_providers.call(p, MODEL_BRIEF_SYSTEM, user, creds,
@@ -613,12 +614,23 @@ def model_brief(cfg, creds, state, force=False):
                 results.append((p, f"ERROR: {e}"))
                 log(f"model-brief: {p} error ({e})"); continue
             results.append((p, r))
-            if not text and len(r) >= 200:
-                text, provider = r, p          # first usable = delivered
-                if not compare:
-                    break                       # cost-saving when compare is off
-            elif len(r) < 200:
-                log(f"model-brief: {p} reply too short ({len(r)} chars)")
+            if len(r) < MODEL_BRIEF_MIN_CHARS:
+                log(f"model-brief: {p} reply thin ({len(r)} chars)")
+            # cost-saving when compare is OFF: stop once anything is clearly adequate
+            if not compare and len(r) >= MODEL_BRIEF_MIN_CHARS:
+                break
+        # Delivery choice: keep Claude primary WHEN it returns a real brief; otherwise
+        # deliver the STRONGEST adequate reply (length as a quality proxy) — so a weak
+        # first reply can't beat a richer OpenAI/Gemini one. (2026-07-28: Claude came
+        # back empty and a 302-char Gemini intro was delivered over a full OpenAI brief.)
+        good = [(p, r) for p, r in results
+                if r and not r.startswith("ERROR") and len(r) >= MODEL_BRIEF_MIN_CHARS]
+        provider, text = None, ""
+        for p, r in good:                       # Claude first if it's adequate
+            if p == "anthropic":
+                provider, text = p, r; break
+        if not provider and good:               # else the longest adequate reply
+            provider, text = max(good, key=lambda pr: len(pr[1]))
         if not text:
             log("model-brief: no provider returned a usable brief — skipping")
             return None, None
