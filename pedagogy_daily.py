@@ -553,6 +553,27 @@ def _model_brief_user_prompt(recent):
         + (f"\nAvoid repeating these recent lead topics: {avoid}" if avoid else ""))
 
 
+def _write_brief_compare(cfg, results, delivered):
+    """Save every provider's brief side-by-side for quality review. Claude's is what
+    Alyssa receives; the others (OpenAI/Gemini) are captured so we can see what each
+    returns and compare over time. Best-effort; never raises."""
+    try:
+        outdir = Path(cfg["digest"]["output_dir"])
+        outdir.mkdir(parents=True, exist_ok=True)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        lines = [f"# Dry-day brief — provider comparison ({date_str})",
+                 f"*Delivered to Alyssa: **{delivered}**. Others are for review only "
+                 f"(Claude stays primary; each keyed model still gets a run).*", ""]
+        for p, r in results:
+            tag = "  ← DELIVERED" if p == delivered else ""
+            lines.append(f"## {p}{tag}\n\n{r}\n")
+        path = outdir / f"brief-compare-{date_str}.md"
+        path.write_text("\n".join(lines))
+        log(f"model-brief: compare file written ({len(results)} providers) -> {path.name}")
+    except Exception as e:
+        log(f"model-brief: compare write failed (non-fatal): {e}")
+
+
 def model_brief(cfg, creds, state, force=False):
     """Foundation-model dry-day brief. Returns (title, text) or (None, None).
     NEVER raises — the 6am digest must not break because a model call failed."""
@@ -576,23 +597,34 @@ def model_brief(cfg, creds, state, force=False):
                 pass
         recent = state.get("model_brief_topics", [])[-8:]
         user = _model_brief_user_prompt(recent)
-        # Try each keyed provider (anthropic → gemini → …) until one returns a usable
-        # brief. A short/empty reply is NOT an exception, so escalate()'s failover
-        # wouldn't catch it — hence the explicit loop (saw a 0-char anthropic reply
-        # on 2026-07-28; without failover the brief was silently skipped).
-        text, provider = "", None
+        compare = mb.get("compare", True)
+        # Call keyed providers in order (anthropic → gemini → openai → …). The FIRST
+        # usable reply (>=200 chars) is what we DELIVER to Alyssa (Claude stays
+        # primary). When compare is on we ALSO run the remaining providers and save
+        # every version side-by-side — so OpenAI/Gemini each get a real at-bat and we
+        # can compare quality (Buddy 2026-07-28). A short/empty reply isn't an
+        # exception, so this explicit loop also serves as failover.
+        text, provider, results = "", None, []
         for p in llm_providers.available(creds):
             try:
                 r = (llm_providers.call(p, MODEL_BRIEF_SYSTEM, user, creds,
                                         max_tokens=1600) or "").strip()
             except Exception as e:
-                log(f"model-brief: {p} error ({e}) — trying next"); continue
-            if len(r) >= 200:
-                text, provider = r, p; break
-            log(f"model-brief: {p} reply too short ({len(r)} chars) — trying next")
+                results.append((p, f"ERROR: {e}"))
+                log(f"model-brief: {p} error ({e})"); continue
+            results.append((p, r))
+            if not text and len(r) >= 200:
+                text, provider = r, p          # first usable = delivered
+                if not compare:
+                    break                       # cost-saving when compare is off
+            elif len(r) < 200:
+                log(f"model-brief: {p} reply too short ({len(r)} chars)")
         if not text:
             log("model-brief: no provider returned a usable brief — skipping")
             return None, None
+        if compare and sum(1 for _, r in results
+                           if r and not r.startswith("ERROR")) > 1:
+            _write_brief_compare(cfg, results, provider)
         title = f"Global literacy brief (via {provider})"
         # record for cooldown + light anti-repeat (persisted by caller on real runs)
         state["model_brief_last"] = datetime.now().strftime("%Y-%m-%d")
