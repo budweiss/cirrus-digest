@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Instant Estimate | Knight Property Services</title>
+<style>
+  :root{
+    --navy:#0f2b46; --navy2:#16395c; --steel:#3a6ea5; --ice:#eaf1f8;
+    --gold:#c9a24b; --gold-d:#b08d38; --ink:#1c2733; --muted:#5d6b7a;
+    --line:#dce3ea; --ok:#2e7d54; --bg:#f4f7fa; --white:#fff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.5}
+  a{color:var(--steel)}
+  .wrap{max-width:1060px;margin:0 auto;padding:0 20px}
+
+  /* header */
+  header{background:var(--navy);color:#fff}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;max-width:1060px;margin:0 auto;flex-wrap:wrap;gap:8px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .shield{width:40px;height:44px;background:linear-gradient(#1d456c,#0f2b46);border:2px solid var(--gold);
+    border-radius:6px 6px 22px 22px;display:flex;align-items:center;justify-content:center;color:var(--gold);
+    font-weight:800;font-size:20px;font-family:Georgia,serif}
+  .brand h1{font-size:17px;margin:0;letter-spacing:.5px;font-weight:700}
+  .brand .vet{font-size:11px;color:var(--gold);letter-spacing:1.5px;text-transform:uppercase}
+  .contact{font-size:13px;text-align:right;opacity:.95}
+  .contact b{font-size:16px}
+
+  /* hero */
+  .hero{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;padding:34px 0 30px}
+  .hero h2{font-size:30px;margin:0 0 8px;font-weight:800;letter-spacing:.3px}
+  .hero p{margin:0;opacity:.9;font-size:16px;max-width:640px}
+  .badge{display:inline-block;background:rgba(201,162,75,.16);color:var(--gold);border:1px solid var(--gold);
+    padding:3px 10px;border-radius:20px;font-size:12px;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+
+  /* estimator card */
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 26px rgba(15,43,70,.08);
+    padding:22px;margin:-26px 0 0}
+  .toggle{display:flex;gap:8px;background:var(--ice);padding:6px;border-radius:12px;margin-bottom:18px}
+  .toggle button{flex:1;border:0;background:transparent;padding:12px;border-radius:9px;font-size:15px;font-weight:700;
+    color:var(--navy);cursor:pointer;transition:.15s}
+  .toggle button.on{background:var(--navy);color:#fff;box-shadow:0 2px 8px rgba(15,43,70,.25)}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .field{flex:1;min-width:180px;margin-bottom:12px}
+  label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:5px}
+  input[type=text],input[type=number],input[type=email],input[type=tel]{width:100%;padding:11px 12px;border:1px solid var(--line);
+    border-radius:9px;font-size:15px;color:var(--ink)}
+  input:focus{outline:2px solid var(--steel);border-color:var(--steel)}
+  .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .autofill{font-size:12px;color:var(--steel);font-weight:600}
+
+  /* tiers */
+  .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:6px}
+  .tier{border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center;position:relative;background:#fff;transition:.15s}
+  .tier.mid{border-color:var(--gold);box-shadow:0 6px 18px rgba(201,162,75,.18)}
+  .tier .pop{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--gold);color:#33270a;
+    font-size:11px;font-weight:800;letter-spacing:.5px;padding:2px 10px;border-radius:20px;text-transform:uppercase}
+  .tier h4{margin:2px 0 2px;font-size:16px;color:var(--navy)}
+  .tier .sub{font-size:12px;color:var(--muted);min-height:32px}
+  .tier .price{font-size:24px;font-weight:800;color:var(--ink);margin:10px 0 2px}
+  .tier .per{font-size:12px;color:var(--muted)}
+  .tier ul{list-style:none;padding:0;margin:12px 0 0;text-align:left;font-size:13px}
+  .tier li{padding:4px 0 4px 20px;position:relative;color:#33414f}
+  .tier li:before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
+  .tier li.off{color:#aab4be}
+  .tier li.off:before{content:"–";color:#c3ccd4}
+
+  .disclaimer{background:var(--ice);border-left:4px solid var(--steel);padding:12px 14px;border-radius:8px;
+    font-size:13px;color:#33414f;margin-top:18px}
+
+  /* section blocks */
+  section.blk{padding:34px 0}
+  section.blk h3{font-size:22px;color:var(--navy);margin:0 0 6px}
+  section.blk .lead{color:var(--muted);margin:0 0 18px}
+  .snowstats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
+  .stat .n{font-size:26px;font-weight:800;color:var(--steel)}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:2px}
+  .svcs{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .svc{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+  .svc h5{margin:0 0 4px;color:var(--navy);font-size:15px}
+  .svc p{margin:0;font-size:13px;color:var(--muted)}
+
+  /* CTA / lead form */
+  .cta{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;border-radius:16px;padding:26px;margin:8px 0 0}
+  .cta h3{color:#fff;margin:0 0 4px;font-size:22px}
+  .cta p{opacity:.9;margin:0 0 16px}
+  .btn{background:var(--gold);color:#2a2205;border:0;padding:13px 22px;font-size:16px;font-weight:800;border-radius:10px;
+    cursor:pointer;transition:.15s}
+  .btn:hover{background:var(--gold-d)}
+  .cta .row input{background:#fff}
+  .thanks{background:#123;border:1px solid var(--gold);border-radius:12px;padding:20px;color:#fff;display:none}
+  .thanks.show{display:block}
+
+  footer{background:#0b2237;color:#9fb2c4;font-size:13px;padding:22px 0;margin-top:30px;text-align:center}
+  .est-num{color:var(--navy);font-weight:800}
+  @media(max-width:720px){.tiers,.snowstats,.svcs{grid-template-columns:1fr}.hero h2{font-size:24px}}
+  .demo-flag{background:#fff4d6;border:1px solid var(--gold);color:#6b5410;font-size:12px;text-align:center;padding:6px}
+</style>
+</head>
+<body>
+<div class="demo-flag">PROTOTYPE / DEMO — numbers use working default rates; layout &amp; branding to be tuned to Knight’s site.</div>
+
+<header>
+  <div class="topbar">
+    <div class="brand">
+      <div class="shield">K</div>
+      <div>
+        <h1>KNIGHT PROPERTY SERVICES</h1>
+        <div class="vet">Veteran Owned &amp; Operated</div>
+      </div>
+    </div>
+    <div class="contact">
+      <div><b>302-508-2638</b></div>
+      <div>info@KnightPropertySvs.com</div>
+    </div>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <span class="badge">Free Instant Estimate</span>
+    <h2>What will it cost to care for your property?</h2>
+    <p>Enter your property and get an instant ballpark for snow removal or property management — then let Knight put together your full, exact offering.</p>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="toggle">
+      <button id="tab-snow" class="on" onclick="setService('snow')">❄  Snow Removal</button>
+      <button id="tab-pm" onclick="setService('pm')">🏢  Property Management</button>
+    </div>
+
+    <div class="row">
+      <div class="field" style="flex:2">
+        <label>Property address</label>
+        <input type="text" id="addr" placeholder="e.g. 123 Commerce Blvd, Dover, DE" value="200 Commerce Way, Dover, DE">
+        <div class="hint">In the live version we auto-detect your lot size, building area and unit count from aerial imagery + county records.</div>
+      </div>
+      <div class="field" id="snowInputs">
+        <label>Paved area to plow (sq ft) <span class="autofill">· auto-detected</span></label>
+        <input type="number" id="sqft" value="20000" oninput="recalc()">
+      </div>
+      <div class="field" id="walkInput">
+        <label>Walkways (linear ft)</label>
+        <input type="number" id="walk" value="500" oninput="recalc()">
+      </div>
+      <div class="field" id="pmInputs" style="display:none">
+        <label>Number of units <span class="autofill">· auto-detected</span></label>
+        <input type="number" id="units" value="120" oninput="recalc()">
+      </div>
+    </div>
+
+    <div class="tiers" id="tiers"></div>
+
+    <div class="disclaimer" id="disc"></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- Snow history (data differentiator) -->
+  <section class="blk" id="snowHistory">
+    <h3>What winters look like where you are</h3>
+    <p class="lead">Central Delaware, last 10 winters (illustrative — live version pulls your exact location from NOAA/Open-Meteo).</p>
+    <div class="snowstats">
+      <div class="stat"><div class="n">~18"</div><div class="l">Avg. seasonal snowfall</div></div>
+      <div class="stat"><div class="n">~5</div><div class="l">Plowable events / winter (≥1")</div></div>
+      <div class="stat"><div class="n">~80%</div><div class="l">Events in the 1–3" range</div></div>
+      <div class="stat"><div class="n">Dec–Feb</div><div class="l">Peak window</div></div>
+    </div>
+  </section>
+
+  <!-- Optional services -->
+  <section class="blk">
+    <h3>More that Knight can take off your plate</h3>
+    <p class="lead">Commercial property care, all from one veteran-owned team.</p>
+    <div class="svcs">
+      <div class="svc"><h5>Landscaping &amp; Grounds</h5><p>Worry-free maintenance for any size commercial property.</p></div>
+      <div class="svc"><h5>Salting &amp; De-Icing</h5><p>Keep entrances, lots and walkways safe and accessible all winter.</p></div>
+      <div class="svc"><h5>HOA / Community Management</h5><p>Financials, dues, vendors and board support for your association.</p></div>
+      <div class="svc"><h5>Cemetery Maintenance</h5><p>Respectful, reliable grounds care.</p></div>
+      <div class="svc"><h5>Commercial Property Care</h5><p>Distribution centers, offices, retail and HOAs.</p></div>
+      <div class="svc"><h5>Seasonal Readiness</h5><p>Get your property prepped before the weather turns.</p></div>
+    </div>
+  </section>
+
+  <!-- Lead capture -->
+  <section class="blk">
+    <div class="cta" id="ctaBox">
+      <h3>Want the real number?</h3>
+      <p>This is a ballpark. Tell us where to reach you and Knight will follow up with a full, no-obligation offering for your property.</p>
+      <div class="row">
+        <div class="field"><input type="text" id="lname" placeholder="Your name"></div>
+        <div class="field"><input type="email" id="email" placeholder="Email"></div>
+        <div class="field"><input type="tel" id="phone" placeholder="Phone"></div>
+      </div>
+      <button class="btn" onclick="submitLead()">Request my free follow-up →</button>
+    </div>
+    <div class="thanks" id="thanks">
+      <b>Thanks — you’re on Knight’s list.</b><br>
+      In the live version this drops your details straight into Knight’s leads (a shared Google Sheet + an email to the office), so they can reach out with a full quote. No obligation.
+    </div>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap">
+    Knight Property Services · Veteran Owned &amp; Operated · 302-508-2638 · info@KnightPropertySvs.com<br>
+    Estimates shown are ballpark figures for planning only and are not a quote or contract.
+  </div>
+</footer>
+
+<script>
+  let service = 'snow';
+
+  function money(n){ // round to nearest $50 for a clean range
+    n = Math.round(n/50)*50;
+    return '$' + n.toLocaleString();
+  }
+
+  // ---- estimator (mirrors portal/estimators defaults) ----
+  function snowSeason(sqft, walk, tier){
+    const base=0.02, mult=1.1, salt=250, walkRate=0.60, events=5, minSeason=2000;
+    const acres = sqft/43560;
+    const plow = sqft*base*mult*events;
+    const saltC = acres*salt*events;
+    const walkC = walk*walkRate*events;
+    let season;
+    if(tier==='basic')      season = plow;
+    else if(tier==='std')   season = plow + saltC;
+    else                    season = (plow + saltC + walkC) * 1.15; // premium: +priority response
+    return Math.max(season, minSeason);
+  }
+  function pmAnnual(units, tier){
+    const perUnit = tier==='basic'?12 : tier==='std'?15 : 18;
+    const monthly = Math.max(units*perUnit, 500);
+    return monthly*12;
+  }
+
+  const snowTiers = [
+    {key:'basic', name:'Basic',    sub:'Plowing only, billed per push',       feats:['Plow paved lots &amp; drives','Per-event billing','—Salt / de-icing','—Walkways &amp; sidewalks']},
+    {key:'std',   name:'Standard', sub:'Plow + salt, seasonal pricing',        feats:['Plow paved lots &amp; drives','Salt / de-icing each event','Seasonal pricing','—Walkways &amp; sidewalks'], pop:true},
+    {key:'prem',  name:'Premium',  sub:'Full-service + priority response',     feats:['Plow paved lots &amp; drives','Salt / de-icing each event','Walkways &amp; sidewalks cleared','Priority response']}
+  ];
+  const pmTiers = [
+    {key:'basic', name:'Essential', sub:'Financials + core admin',            feats:['Dues collection &amp; financials','Owner / board reporting','—Maintenance coordination','—Inspections']},
+    {key:'std',   name:'Full',      sub:'Management + maintenance',           feats:['Everything in Essential','Maintenance coordination','Vendor management','Routine inspections'], pop:true},
+    {key:'prem',  name:'Premium',   sub:'Enhanced, hands-on service',         feats:['Everything in Full','Enhanced / on-site presence','Reserve &amp; capital planning','Priority support']}
+  ];
+
+  function setService(s){
+    service = s;
+    document.getElementById('tab-snow').classList.toggle('on', s==='snow');
+    document.getElementById('tab-pm').classList.toggle('on', s==='pm');
+    document.getElementById('snowInputs').style.display = s==='snow'?'':'none';
+    document.getElementById('walkInput').style.display  = s==='snow'?'':'none';
+    document.getElementById('pmInputs').style.display   = s==='pm'?'':'none';
+    document.getElementById('snowHistory').style.display = s==='snow'?'':'none';
+    recalc();
+  }
+
+  function recalc(){
+    const tiersEl = document.getElementById('tiers');
+    const disc = document.getElementById('disc');
+    let defs, priceFn, per, unitNote;
+    if(service==='snow'){
+      const sqft = +document.getElementById('sqft').value||0;
+      const walk = +document.getElementById('walk').value||0;
+      defs = snowTiers; per='per season'; unitNote='seasonal estimate';
+      priceFn = t => snowSeason(sqft, walk, t);
+    } else {
+      const units = +document.getElementById('units').value||0;
+      defs = pmTiers; per='per year'; unitNote='annual management fee';
+      priceFn = t => pmAnnual(units, t);
+    }
+    tiersEl.innerHTML = defs.map(t=>{
+      const mid = t.pop ? ' mid':'';
+      const p = priceFn(t.key);
+      const lo = money(p*0.88), hi = money(p*1.12);
+      const feats = t.feats.map(f=> f.startsWith('—')
+        ? '<li class="off">'+f.slice(1)+'</li>'
+        : '<li>'+f+'</li>').join('');
+      return `<div class="tier${mid}">${t.pop?'<div class="pop">Most popular</div>':''}
+        <h4>${t.name}</h4><div class="sub">${t.sub}</div>
+        <div class="price">${lo}–${hi}</div><div class="per">${per} · ${unitNote}</div>
+        <ul>${feats}</ul></div>`;
+    }).join('');
+    disc.innerHTML = service==='snow'
+      ? 'These are <b>ballpark seasonal ranges</b> based on your paved area and typical Delaware winters (~5 events). Your exact price depends on an on-site look — <b>Knight confirms it free</b>.'
+      : 'These are <b>ballpark annual ranges</b> based on unit count and typical management scope. Final pricing depends on services and a quick review — <b>Knight confirms it free</b>.';
+  }
+
+  function submitLead(){
+    document.getElementById('ctaBox').style.display='none';
+    document.getElementById('thanks').classList.add('show');
+  }
+
+  setService('snow');
+</script>
+</body>
+</html>

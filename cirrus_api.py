@@ -463,6 +463,21 @@ def dashboard():
         return jsonify({"error": "dashboard.html not deployed"}), 404
     return page.read_text(), 200, {"Content-Type": "text/html; charset=utf-8"}
 
+@app.route("/estimate")
+def estimate_demo():
+    """Serve the Knight Property Services instant-estimate prototype (S48).
+
+    Deliberately NO token gate: a public, prospect-facing marketing page — a
+    static HTML file with zero data and zero credentials. Meant to be linked
+    from Knight's Wix site as a 'Get an Instant Estimate' button. This is the
+    shareable preview; a branded subdomain (estimate.cirrustask.com) or a
+    Knight-owned domain can front it later.
+    """
+    page = PROJECT_DIR / "estimate.html"
+    if not page.exists():
+        return jsonify({"error": "estimate.html not deployed"}), 404
+    return page.read_text(), 200, {"Content-Type": "text/html; charset=utf-8"}
+
 @app.route("/read/inbox")
 def read_inbox():
     """Unread-message headers from the enabled IMAP accounts (S40, 2026-07-17).
