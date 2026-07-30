@@ -158,11 +158,23 @@ def available(creds):
     return [p for p in DEFAULT_ORDER if creds.get(_KEY_FIELD[p])]
 
 
-def call(provider, system, user, creds, max_tokens=16384):
-    """Call ONE provider by name. Returns reply text. Raises ProviderError."""
+def call(provider, system, user, creds, max_tokens=16384, retries=1):
+    """Call ONE provider by name. Returns reply text. Raises ProviderError.
+
+    Retries once (retries=1) on an EMPTY/whitespace reply. Guards the S47 #8
+    case where Claude returned 0 chars on a live call — a transient empty reply
+    shouldn't silently cede the primary provider to failover. Transport/config
+    failures still raise immediately (ProviderError, no retry); the caller
+    handles those. Returns the (possibly still-empty) reply after the retries.
+    """
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
-    return _PROVIDERS[provider](creds, system, user, max_tokens)
+    reply = ""
+    for _ in range(retries + 1):
+        reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""
+        if reply.strip():
+            return reply
+    return reply
 
 
 def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
@@ -202,3 +214,38 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
     # "single" (default)
     p = avail[0]
     return (p, call(p, system, user, creds, max_tokens))
+
+
+# ── self-test (python3 llm_providers.py selftest) ─────────────────────────────
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        _ok = True
+
+        def check(name, cond):
+            global _ok
+            print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+            _ok = _ok and cond
+
+        # retry-on-empty: provider returns '' then '  ' then a real reply
+        _seq = iter(["", "  ", "real answer"])
+        _PROVIDERS["anthropic"] = lambda c, s, u, m: next(_seq)
+        got = call("anthropic", "sys", "usr", {"anthropic_api_key": "x"}, retries=2)
+        check("call: retries past empty/whitespace to a real reply", got == "real answer")
+
+        # retry exhausted -> returns the empty reply (caller fails over), no raise
+        _PROVIDERS["anthropic"] = lambda c, s, u, m: ""
+        check("call: returns '' after retries exhausted (no raise)",
+              call("anthropic", "s", "u", {"anthropic_api_key": "x"}, retries=1) == "")
+
+        # available() reflects only keyed providers, in DEFAULT_ORDER
+        check("available: only keyed", available({"openai_api_key": "y"}) == ["openai"])
+        try:
+            call("nope", "s", "u", {})
+            _unknown_raised = False
+        except ProviderError:
+            _unknown_raised = True
+        check("call: unknown provider raises", _unknown_raised)
+
+        print("PASS" if _ok else "FAIL")
+        sys.exit(0 if _ok else 1)
