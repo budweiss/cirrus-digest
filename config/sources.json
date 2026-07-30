@@ -76,6 +76,10 @@
     {
       "name": "All-In Podcast",
       "rss": "https://allinchamathjason.libsyn.com/rss"
+    },
+    {
+      "name": "The Startup Ideas Podcast - Greg Isenberg",
+      "rss": "https://rss2.flightcast.com/ordbkg8yojpehffas7vr7qpc.xml"
     }
   ],
   "web_sources": [

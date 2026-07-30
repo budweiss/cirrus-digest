@@ -1,13 +1,15 @@
 {
- "_comment": "Config for pedagogy_daily.py \u2014 deploys to CIRRUS config/sources-pedagogy.json. Podcast feeds resolved via iTunes lookup 2026-07-16; blog feeds validated where noted, Google News site-feeds used where direct RSS is dead.",
+ "_comment": "Config for pedagogy_daily.py — deploys to CIRRUS config/sources-pedagogy.json. Podcast feeds resolved via iTunes lookup 2026-07-16; blog feeds validated where noted, Google News site-feeds used where direct RSS is dead.",
  "digest": {
   "output_dir": "/Users/buddy/projects/cirrus-digest/digests/pedagogy",
   "ollama_host": "http://localhost:11434",
   "ollama_model": "qwen2.5:14b",
   "podcast_model": "llama3.2:3b",
-  "recipient": "Buddy.Weiss@outlook.com",
-  "cc": [],
-  "_recipient_note": "Phase A: Buddy reviews. Phase B: set recipient to Alyssa's address (on CIRRUS via vi) + cc Buddy \u2014 only on Buddy's explicit go."
+  "recipient": "alyssanicolee@hotmail.com",
+  "cc": [
+   "Buddy.Weiss@outlook.com"
+  ],
+  "_recipient_note": "Phase A: Buddy reviews. Phase B: set recipient to Alyssa's address (on CIRRUS via vi) + cc Buddy — only on Buddy's explicit go."
  },
  "rss": [
   {
@@ -45,6 +47,46 @@
   {
    "name": "EEF UK evidence (via Google News)",
    "rss": "https://news.google.com/rss/search?q=site:educationendowmentfoundation.org.uk%20OR%20(%22Education%20Endowment%20Foundation%22%20literacy)&hl=en-US&gl=US&ceid=US:en"
+  },
+  {
+   "name": "The Snow Report (Pamela Snow)",
+   "rss": "https://pamelasnow.blogspot.com/feeds/posts/default"
+  },
+  {
+   "name": "UKLA News & Views",
+   "rss": "https://ukla.org/feed"
+  },
+  {
+   "name": "SPELD NZ Literacy Blog",
+   "rss": "https://www.speld.org.nz/feed"
+  },
+  {
+   "name": "Sounds-Write",
+   "rss": "https://www.sounds-write.co.uk/feed/"
+  },
+  {
+   "name": "Learning Difficulties Australia",
+   "rss": "https://www.ldaustralia.org/feed/"
+  },
+  {
+   "name": "Reading Simplified (YouTube)",
+   "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC5h-NoX_bV2SmPC1NsPwWvg"
+  },
+  {
+   "name": "researchED (YouTube)",
+   "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCjsOv_C0n8kXbJJQXyAHw9A"
+  },
+  {
+   "name": "The Learning Spy (David Didau)",
+   "rss": "https://news.google.com/rss/search?q=site:learningspy.co.uk&hl=en-US&gl=US&ceid=US:en"
+  },
+  {
+   "name": "The Confident Teacher (Alex Quigley)",
+   "rss": "https://news.google.com/rss/search?q=site:theconfidentteacher.com&hl=en-US&gl=US&ceid=US:en"
+  },
+  {
+   "name": "Five from Five (AU)",
+   "rss": "https://news.google.com/rss"
   }
  ],
  "podcasts": [
@@ -71,6 +113,10 @@
   {
    "name": "Sold a Story",
    "feed": "https://feeds.publicradio.org/public_feeds/sold-a-story"
+  },
+  {
+   "name": "Education Research Reading Room (Ollie Lovell)",
+   "feed": "https://www.ollielovell.com/podcast/feed/"
   }
  ],
  "reference": [
@@ -91,7 +137,7 @@
   "Peer-assisted learning strategies (PALS)",
   "Writing about reading (brief constructed responses)",
   "Scarborough's Rope as a diagnostic lens for reading difficulties",
-  "AI-assisted writing feedback and revision cycles (emerging practice \u2014 honest about limits)",
+  "AI-assisted writing feedback and revision cycles (emerging practice — honest about limits)",
   "Structured Word Inquiry / morphology matrices and word sums (used in UK, Canada, Australia)",
   "Disciplinary literacy: reading like a scientist/historian in grade 3",
   "Sentence-level syntax instruction (The Writing Revolution approach)",
@@ -100,5 +146,5 @@
   "Culturally responsive and knowledge-building text sets",
   "Handwriting-fluency links to composition quality (international evidence)"
  ],
- "_comment_experience": "2026-07-16 (S38, Buddy): Alyssa is an EXPERIENCED teacher (10+ yrs). Digest pitched at veteran level \u2014 skip basics, surface emerging/innovative practices worldwide. Prompts in pedagogy_daily.py updated to match."
+ "_comment_experience": "2026-07-16 (S38, Buddy): Alyssa is an EXPERIENCED teacher (10+ yrs). Digest pitched at veteran level — skip basics, surface emerging/innovative practices worldwide. Prompts in pedagogy_daily.py updated to match."
 }
