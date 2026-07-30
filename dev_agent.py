@@ -177,14 +177,20 @@ def builds_save(builds: list, project_dir=None):
 
 def find_buildable(project_dir=None):
     """Queue entries that are Tier-1 and have no build record yet."""
-    built = {b.get("id") for b in builds_load(project_dir)}
+    # Ids with a build record are skipped — EXCEPT a transient "build-error"
+    # (truncated/flaky model reply). Those retry now that build_model_patch
+    # adds an in-call retry; run_nightly replaces the old record so re-attempts
+    # don't pile up. Terminal/in-flight states (shipped/discarded/cannot-build/
+    # blocked/test-failed/awaiting-confirm/refused/building) stay skipped.
+    done_ids = {b.get("id") for b in builds_load(project_dir)
+                if b.get("status") != "build-error"}
     out = []
     for r in queue_load(project_dir):
         item = r.get("item") or {}
         spec = item.get("dev_spec") or {}
         if not spec or spec.get("tier") != dev_loop.TIER_CONFIRM:
             continue
-        if spec.get("id") in built:
+        if spec.get("id") in done_ids:
             continue
         if not may_build(item):
             continue
@@ -590,6 +596,8 @@ def run_nightly():
     done = []
     for item in picked:
         rec = build_item(item)
+        bid = rec.get("id")
+        builds = [b for b in builds if b.get("id") != bid]   # replace any prior record (e.g. a retried build-error)
         builds.append(rec)
         builds_save(builds)
         done.append(rec)
@@ -676,7 +684,7 @@ def _selftest():
     # queue + builds round-trip in a temp dir
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        item = {"type": "CIRRUS_NOTE", "detail": "improve dedupe",
+        item = {"type": "CIRRUS_NOTE", "detail": "improve article dedupe in the digest",
                 "dev_spec": {"id": "prop-t-1", "tier": dev_loop.TIER_CONFIRM}}
         queue_append(item, td)
         queue_append(item, td)   # duplicate — must dedupe on load
@@ -684,6 +692,13 @@ def _selftest():
         check("queue: append + dedupe by spec id", len(rows) == 1)
         builds_save([{"id": "prop-t-1", "status": "awaiting-confirm"}], td)
         check("builds: round-trip", builds_load(td)[0]["id"] == "prop-t-1")
+        # a settled build is not re-attempted...
+        check("find_buildable: skips settled id",
+              not any(i["dev_spec"]["id"] == "prop-t-1" for i in find_buildable(td)))
+        # ...but a transient build-error is retried
+        builds_save([{"id": "prop-t-1", "status": "build-error"}], td)
+        check("find_buildable: retries build-error id",
+              any(i["dev_spec"]["id"] == "prop-t-1" for i in find_buildable(td)))
 
     # prompt shape
     sys_p, usr_p = build_prompt(
