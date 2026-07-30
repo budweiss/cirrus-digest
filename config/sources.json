@@ -59,7 +59,12 @@
       "GPU server",
       "LLM training",
       "inference server",
-      "AI infrastructure"
+      "AI infrastructure",
+      "AI regulation",
+      "AI policy",
+      "AI Act",
+      "AI safety",
+      "AI governance"
     ],
     "days_back": 7,
     "daily_days_back": 3
@@ -257,6 +262,11 @@
       "name": "SCMP Tech [approved 2026-07-10]",
       "rss": "https://www.scmp.com/rss/36/feed",
       "type": "blog"
+    },
+    {
+      "name": "Google News: AI Regulation (OpenAI/Anthropic policy) [added 2026-07-30]",
+      "type": "blog",
+      "rss": "https://news.google.com/rss/search?q=%28%22AI%20regulation%22%20OR%20%22AI%20policy%22%20OR%20%22AI%20Act%22%20OR%20%22AI%20safety%22%20OR%20%22AI%20executive%20order%22%20OR%20%22AI%20governance%22%29%20%28OpenAI%20OR%20Anthropic%29&hl=en-US&gl=US&ceid=US:en"
     }
   ],
   "digest": {
