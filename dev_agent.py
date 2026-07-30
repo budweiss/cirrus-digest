@@ -256,6 +256,27 @@ def call_claude_build(system: str, user: str):
     raise RuntimeError(f"no text in model reply (stop_reason={data.get('stop_reason')})")
 
 
+def build_model_patch(system: str, user: str, attempts: int = 2):
+    """Call the model and parse its JSON patch, retrying once on a truncated
+    or empty reply. A single flaky model response (empty text, or an
+    unterminated-string JSONDecodeError from parse_model_json) no longer burns
+    the nightly build slot — see Session-47 carry-over #8. Raises the last
+    error if every attempt fails, so build_item still records a build-error."""
+    last = None
+    for n in range(1, attempts + 1):
+        try:
+            reply = call_claude_build(system, user)
+            if not (reply and reply.strip()):
+                raise ValueError("empty model reply")
+            return parse_model_json(reply)
+        except (ValueError, RuntimeError) as e:
+            # ValueError covers json.JSONDecodeError (truncated/unterminated);
+            # RuntimeError covers the "no text in model reply" 0-char case.
+            last = e
+            _log(f"model patch attempt {n}/{attempts} failed: {e}")
+    raise last
+
+
 # ── git / shell helpers ───────────────────────────────────────────────────────
 def _run(args, cwd=None, timeout=120):
     r = subprocess.run(args, cwd=str(cwd) if cwd else None,
@@ -343,8 +364,7 @@ def build_item(item: dict):
             conventions = conv.read_text()
 
         system, user = build_prompt(item, blobs, conventions)
-        reply = call_claude_build(system, user)
-        patch = parse_model_json(reply)
+        patch = build_model_patch(system, user)
 
         if patch.get("summary") == "CANNOT_BUILD" or not patch.get("files"):
             rec.update(status="cannot-build",
@@ -631,6 +651,17 @@ def _selftest():
     check("parse_model_json: fenced", j["summary"] == "s")
     j = parse_model_json('Sure!\n{"summary":"s2","files":[{"path":"a.py","content":"c"}],"notes":""} thanks')
     check("parse_model_json: prose-wrapped", j["files"][0]["path"] == "a.py")
+
+    # build_model_patch: a truncated/empty first reply is retried, not fatal (S47 #8)
+    _orig_call = call_claude_build
+    _replies = iter(['{"summary":"s","files":[',                    # truncated -> ValueError
+                     '{"summary":"ok","files":[],"notes":""}'])     # valid on retry
+    globals()["call_claude_build"] = lambda s, u: next(_replies)
+    try:
+        _jj = build_model_patch("sys", "usr", attempts=2)
+        check("build_model_patch: retries then parses", _jj["summary"] == "ok")
+    finally:
+        globals()["call_claude_build"] = _orig_call
 
     # tier gate
     check("may_build: Tier-1 dedupe note builds",
