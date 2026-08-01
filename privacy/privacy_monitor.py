@@ -478,6 +478,8 @@ def compose_report(items, breaches, council_note, hibp_keyed, new_items, high_ne
         lines.append("## Breach exposure (HIBP)")
         for em, names in breaches.items():
             lines.append(f"- **{em}** — {len(names)} breach(es): {', '.join(names)}")
+            lines.append("  → **ACTION:** change this account's password now and turn on "
+                         "2-factor authentication; make sure it isn't reused on other sites.")
         lines.append("")
 
     lines.append("---")
