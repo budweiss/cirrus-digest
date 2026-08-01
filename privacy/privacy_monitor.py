@@ -119,18 +119,64 @@ def categories_for(scope):
 
 
 # ── web gathering ───────────────────────────────────────────────────────────
-def gather(wl, queries, verbose=True):
+# S50 dry-run finding: DuckDuckGo (cirrus_daily.search_web) times out from CIRRUS
+# and the Gemini fallback returns opaque grounding-redirect URLs, not real pages —
+# useless for detecting an actual indexed share link. So we search via the Brave
+# Search API when brave_api_key is present (real URLs, fast), and only fall back to
+# search_web when it is not. Artifact URLs are filtered out either way.
+
+_ARTIFACT_HOSTS = (
+    "vertexaisearch.cloud.google.com",   # Gemini grounding redirects
+    "duckduckgo.com", "www.google.com/search", "www.bing.com/search",
+)
+
+
+def _is_real_url(u):
+    if not isinstance(u, str) or not u.startswith("http"):
+        return False
+    return not any(h in u for h in _ARTIFACT_HOSTS)
+
+
+def _brave_search(query, api_key, count=6):
+    """Brave Search API → list of real result URLs. Raises on transport error."""
+    params = urllib.parse.urlencode({"q": query, "count": count})
+    url = "https://api.search.brave.com/res/v1/web/search?" + params
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "X-Subscription-Token": api_key,
+        "User-Agent": "CIRRUS-PrivacyMonitor/1.0",
+    })
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return [item.get("url") for item in
+            (data.get("web", {}) or {}).get("results", []) if item.get("url")]
+
+
+def gather(wl, queries, creds=None, verbose=True):
     """Run the dork/search catalog against every target. Returns list of hit dicts."""
-    try:
-        from cirrus_daily import search_web
-    except Exception as e:
-        print("!! search_web import failed:", e)
-        return []
+    creds = creds or {}
+    brave_key = creds.get("brave_api_key")
+    search_web = None
+    if not brave_key:
+        try:
+            from cirrus_daily import search_web as _sw
+            search_web = _sw
+        except Exception as e:
+            print("!! no brave_api_key AND search_web import failed:", e)
+            return []
+    print(f"   search backend: {'Brave API' if brave_key else 'DuckDuckGo/Gemini fallback'}")
 
     settings = wl.get("settings", {})
     max_results = int(settings.get("max_results_per_query", 6))
     targets = build_targets(wl)
     hits, seen = [], set()
+    # Brave free tier is ~1 query/sec; DDG we throttle lighter.
+    pause = 1.1 if brave_key else 0.4
+
+    def do_search(q):
+        if brave_key:
+            return _brave_search(q, brave_key, count=max_results)
+        return search_web(q, max_results=max_results) or []
 
     for t in targets:
         v, kind, scope = t["value"], t["kind"], t["scope"]
@@ -139,12 +185,14 @@ def gather(wl, queries, verbose=True):
             for tmpl in queries.get(cat, []):
                 query = tmpl.replace("{v}", qv)
                 try:
-                    urls = search_web(query, max_results=max_results) or []
+                    urls = do_search(query) or []
                 except Exception as e:
                     if verbose:
-                        print(f"   search error [{cat}] {query!r}: {e}")
+                        print(f"   search error [{cat}] {query[:60]!r}: {e}")
                     urls = []
                 for u in urls:
+                    if not _is_real_url(u):
+                        continue
                     key = (v, u)
                     if key in seen:
                         continue
@@ -154,10 +202,9 @@ def gather(wl, queries, verbose=True):
                         "source": t["source"], "category": cat,
                         "query": query, "url": u,
                     })
-                # be polite to the search backend
-                time.sleep(0.4)
+                time.sleep(pause)
         if verbose:
-            print(f"   scanned {kind}: {v}  (scope={scope})")
+            print(f"   scanned {kind}: {v}  (scope={scope}) — {len(hits)} hits so far")
     return hits
 
 
@@ -220,51 +267,86 @@ TRIAGE_SYSTEM = (
 )
 
 
+def _extract_json_obj(text):
+    """Pull a JSON object out of a model reply, tolerating ```json fences/prose."""
+    if not text:
+        return None
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = re.sub(r"\n?```$", "", t).strip()
+    m = re.search(r"\{.*\}", t, flags=re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
+
+
 def triage(hits, breaches, creds, no_llm=False):
-    """Return (assessed_items, council_note). Falls back to raw hits if no LLM."""
-    if no_llm or not hits and not breaches:
+    """Return (assessed_items, council_note). Falls back to raw hits if no LLM.
+
+    S50: batch bounded to 80 hits and max_tokens lowered so a provider can finish
+    inside the 120s transport timeout; tolerant JSON extraction; if the council
+    yields nothing parseable we retry once in failover (single provider) before
+    dropping to raw hits.
+    """
+    if no_llm or (not hits and not breaches):
         return _raw_items(hits, breaches), "LLM triage skipped."
     try:
         import llm_providers as L
     except Exception as e:
         return _raw_items(hits, breaches), f"llm_providers import failed: {e}"
 
-    payload = {
-        "hits": hits[:120],   # keep the prompt bounded
-        "breaches": breaches,
-    }
+    payload = {"hits": hits[:80], "breaches": breaches}
     user = (
-        "Assess these exposure candidates. Return ONLY a JSON object:\n"
-        '{ "items": [ { "target": "...", "url": "...", "category": "...", '
-        '"verdict": "real"|"false_positive", "severity": "high"|"medium"|"low", '
-        '"why": "<short>" } ], "summary": "<2-3 sentence overview>" }\n'
-        "Include breach findings as items with category='breach' and url=''.\n\n"
-        "CANDIDATES:\n" + json.dumps(payload)[:60000]
+        "Assess these exposure candidates for Buddy. Return ONLY minified JSON on a "
+        "single line — NO markdown, NO code fences, NO prose:\n"
+        '{"items":[{"target":"...","url":"...","category":"...",'
+        '"verdict":"real"|"false_positive","severity":"high"|"medium"|"low",'
+        '"why":"<short>"}],"summary":"<2-3 sentences>"}\n'
+        "Include each breached email as an item with category='breach', url='', "
+        "verdict='real', severity='high'.\n\n"
+        "CANDIDATES:\n" + json.dumps(payload)[:45000]
     )
-    try:
-        result = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=8000, mode="council")
-    except Exception as e:
-        return _raw_items(hits, breaches), f"council failed ({e}); reporting raw hits."
 
-    # council -> list of (provider, text). Merge: prefer the first that parses;
-    # note where providers disagree on count.
-    parsed, notes = None, []
-    for provider, text in result:
-        if text.startswith("ERROR:"):
-            notes.append(f"{provider}: {text[:80]}")
-            continue
-        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not m:
-            notes.append(f"{provider}: unparseable")
-            continue
-        try:
-            data = json.loads(m.group(0))
+    def _first_parsed(result):
+        parsed, notes = None, []
+        for provider, text in result:
+            if text.startswith("ERROR:"):
+                notes.append(f"{provider}: {text[:60]}")
+                continue
+            data = _extract_json_obj(text)
+            if data is None:
+                notes.append(f"{provider}: unparseable")
+                continue
             if parsed is None:
                 parsed = data
                 parsed["_provider"] = provider
             notes.append(f"{provider}: {len(data.get('items', []))} items")
-        except Exception:
-            notes.append(f"{provider}: bad JSON")
+        return parsed, notes
+
+    # Pass 1: council (compare across providers).
+    try:
+        result = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=4000, mode="council")
+    except Exception as e:
+        return _raw_items(hits, breaches), f"council failed ({e}); reporting raw hits."
+    parsed, notes = _first_parsed(result)
+
+    # Pass 2: if nobody parsed, try a single failover call.
+    if parsed is None:
+        try:
+            prov, text = L.escalate(TRIAGE_SYSTEM, user, creds,
+                                    max_tokens=4000, mode="failover")
+            data = _extract_json_obj(text)
+            if data is not None:
+                data["_provider"] = prov + "(failover)"
+                parsed = data
+                notes.append(f"{prov}(failover): {len(data.get('items', []))} items")
+        except Exception as e:
+            notes.append(f"failover: {e}")
+
     council_note = "Council: " + "; ".join(notes) if notes else "Council: no replies."
     if parsed is None:
         return _raw_items(hits, breaches), council_note + " — reporting raw hits."
@@ -389,6 +471,8 @@ def main():
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] privacy_monitor "
           f"({'dry-run' if dry else 'live'}{' no-llm' if no_llm else ''})")
 
+    precheck = "--precheck" in sys.argv
+
     wl = load_watchlist()
     if wl is None:
         print("!! No watchlist at", WATCHLIST)
@@ -400,8 +484,29 @@ def main():
     queries = load_queries()
     creds   = load_creds()
 
+    if precheck:
+        # Fast config check — no web searches, no LLM. Confirms the run will be
+        # meaningful before committing to a full sweep.
+        targets = build_targets(wl)
+        n_full = sum(1 for t in targets if t["scope"] == "full")
+        est = sum(len(categories_for(t["scope"])) for t in targets)
+        est_q = sum(sum(len(queries.get(c, [])) for c in categories_for(t["scope"]))
+                    for t in targets)
+        try:
+            import llm_providers as L
+            provs = L.available(creds)
+        except Exception:
+            provs = []
+        print("PRECHECK:")
+        print(f"  targets: {len(targets)}  (full-scope: {n_full})")
+        print(f"  approx queries this sweep: {est_q}")
+        print(f"  brave_api_key: {'YES' if creds.get('brave_api_key') else 'NO (would use dead DDG path)'}")
+        print(f"  hibp_api_key:  {'YES' if creds.get('hibp_api_key') else 'NO (breach check dormant)'}")
+        print(f"  LLM providers keyed: {provs or 'none'}")
+        return
+
     print("→ gathering web/search hits…")
-    hits = gather(wl, queries)
+    hits = gather(wl, queries, creds=creds)
     print(f"   {len(hits)} raw hits")
 
     print("→ checking breaches (HIBP)…")
