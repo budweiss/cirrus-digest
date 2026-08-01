@@ -99,8 +99,16 @@ def gather_digest():
     skip = ("run stats", "links visited", "access needed", "action item",
             "disk status", "cirrus", "today", "digest", "improvement",
             "recommendation", "follow-up", "interesting tools")
-    titles = [t.strip() for t in re.findall(r"^#{2,3}\s+(.+)$", txt, flags=re.MULTILINE)]
-    titles = [t for t in titles if t and not any(s in t.lower() for s in skip)]
+    raw = [t.strip() for t in re.findall(r"^#{2,3}\s+(.+)$", txt, flags=re.MULTILINE)]
+    # digest headings often join several headlines with " / " — split + flatten
+    titles, seen = [], set()
+    for t in raw:
+        for part in t.split(" / "):
+            p = part.strip()
+            key = p.lower()
+            if p and key not in seen and not any(s in key for s in skip):
+                seen.add(key)
+                titles.append(p if len(p) <= 90 else p[:87] + "…")
     kw = ("claude", "anthropic", "llama", "qwen", "deepseek", "local", "ollama",
           "open-weight", "open weight", "gpt", "mistral", "gemma", "model")
     fav = [t for t in titles if any(k in t.lower() for k in kw)]
@@ -137,12 +145,15 @@ def gather_attention():
     # bot.log: real errors, ignoring the benign getUpdates long-poll timeouts
     bl = _read(LOG_DIR / "bot.log")
     if bl:
-        tail = bl.splitlines()[-400:]
+        tail = bl.splitlines()[-600:]
+        # Only flag errors logged TODAY — stale lines shouldn't keep the
+        # verdict red forever. bot.log lines are stamped "[YYYY-MM-DD ...]".
         errs = [l for l in tail
-                if ("error" in l.lower() or "traceback" in l.lower())
+                if TODAY in l
+                and ("error" in l.lower() or "traceback" in l.lower())
                 and "getupdates" not in l.lower()]
         if errs:
-            flags.append(f"bot.log: {len(errs)} recent error line(s) — e.g. {errs[-1][-120:].strip()}")
+            flags.append(f"bot.log: {len(errs)} error line(s) today — e.g. {errs[-1][-120:].strip()}")
     # paywalls: any hits logged today
     pw = _read(LOG_DIR / "paywalls.log")
     if pw:
