@@ -137,6 +137,25 @@ def _is_real_url(u):
     return not any(h in u for h in _ARTIFACT_HOSTS)
 
 
+def _own_domain(value):
+    """Return a bare domain if `value` looks like one (else None)."""
+    v = (value or "").strip().lower()
+    if "@" in v or "." not in v or " " in v:
+        return None
+    return v
+
+
+def _is_own_site(url, domain):
+    """True if url is on the project's OWN domain (its own site, not an exposure)."""
+    if not domain:
+        return False
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+    except Exception:
+        return False
+    return host == domain or host.endswith("." + domain)
+
+
 def _brave_search(query, api_key, count=6):
     """Brave Search API → list of real result URLs. Raises on transport error."""
     params = urllib.parse.urlencode({"q": query, "count": count})
@@ -178,9 +197,11 @@ def gather(wl, queries, creds=None, verbose=True):
             return _brave_search(q, brave_key, count=max_results)
         return search_web(q, max_results=max_results) or []
 
+    dropped_own = 0
     for t in targets:
         v, kind, scope = t["value"], t["kind"], t["scope"]
         qv = _quote(v, kind)
+        own = _own_domain(v) if kind == "project" else None
         for cat in categories_for(scope):
             for tmpl in queries.get(cat, []):
                 query = tmpl.replace("{v}", qv)
@@ -192,6 +213,9 @@ def gather(wl, queries, creds=None, verbose=True):
                     urls = []
                 for u in urls:
                     if not _is_real_url(u):
+                        continue
+                    if own and _is_own_site(u, own):
+                        dropped_own += 1        # project's own site ≠ exposure
                         continue
                     key = (v, u)
                     if key in seen:
@@ -205,6 +229,8 @@ def gather(wl, queries, creds=None, verbose=True):
                 time.sleep(pause)
         if verbose:
             print(f"   scanned {kind}: {v}  (scope={scope}) — {len(hits)} hits so far")
+    if verbose and dropped_own:
+        print(f"   ({dropped_own} own-site results dropped as non-exposure)")
     return hits
 
 
@@ -290,21 +316,9 @@ def _parse_jsonl_items(text):
     return items
 
 
-def triage(hits, breaches, creds, no_llm=False):
-    """Return (assessed_items, council_note). Falls back to raw hits if no LLM.
-
-    S50: model returns JSONL (one item per line) so truncation can't break the
-    whole parse; council compared across providers, failover if none produced
-    items, raw hits as the last resort. Batch bounded to keep the prompt small."""
-    if no_llm or (not hits and not breaches):
-        return _raw_items(hits, breaches), "LLM triage skipped."
-    try:
-        import llm_providers as L
-    except Exception as e:
-        return _raw_items(hits, breaches), f"llm_providers import failed: {e}"
-
-    payload = {"hits": hits[:80], "breaches": breaches}
-    user = (
+def _triage_prompt(batch, breaches):
+    payload = {"hits": batch, "breaches": breaches}
+    return (
         "Assess these exposure candidates for Buddy Weiss (Buddy.Weiss@outlook.com, "
         "buddy.weiss@icloud.com, cirrustask@gmail.com; projects: CIRRUS/cirrustask.com, "
         "CUMULUS, STRATUS). Many candidates are a DIFFERENT person named Weiss, a generic "
@@ -320,41 +334,65 @@ def triage(hits, breaches, creds, no_llm=False):
         "CANDIDATES:\n" + json.dumps(payload)[:45000]
     )
 
+
+def triage(hits, breaches, creds, no_llm=False):
+    """Return (assessed_items, council_note). Falls back to raw hits if no LLM.
+
+    S50: candidates are triaged in BOUNDED BATCHES (was first-80-only) so every
+    hit gets judged — council on the first batch (compare providers), failover on
+    the rest (cheaper). Each provider returns JSONL (one item per line) so a
+    truncated reply only loses its last line. Raw hits are the last resort."""
+    if no_llm or (not hits and not breaches):
+        return _raw_items(hits, breaches), "LLM triage skipped."
+    try:
+        import llm_providers as L
+    except Exception as e:
+        return _raw_items(hits, breaches), f"llm_providers import failed: {e}"
+
+    BATCH, MAX_BATCHES = 70, 8
+    batches = [hits[i:i + BATCH] for i in range(0, len(hits), BATCH)]
+    truncated = len(batches) > MAX_BATCHES
+    batches = batches[:MAX_BATCHES] or [[]]
+
     def _best(result):
         best_items, best_prov, notes = [], None, []
         for provider, text in result:
             if text.startswith("ERROR:"):
-                notes.append(f"{provider}: {text[:50]}")
+                notes.append(f"{provider}:ERR")
                 continue
             got = _parse_jsonl_items(text)
-            notes.append(f"{provider}: {len(got)} items")
+            notes.append(f"{provider}:{len(got)}")
             if len(got) > len(best_items):
                 best_items, best_prov = got, provider
         return best_items, best_prov, notes
 
-    # Pass 1: council.
-    try:
-        result = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=6000, mode="council")
-    except Exception as e:
-        return _raw_items(hits, breaches), f"council failed ({e}); reporting raw hits."
-    items, prov, notes = _best(result)
-
-    # Pass 2: failover if the council produced nothing.
-    if not items:
+    all_items, notes = [], []
+    for bi, batch in enumerate(batches):
+        br = breaches if bi == 0 else {}
+        if not batch and not br:
+            continue
+        user = _triage_prompt(batch, br)
+        mode = "council" if bi == 0 else "failover"   # council once, then cheap
         try:
-            p, text = L.escalate(TRIAGE_SYSTEM, user, creds,
-                                 max_tokens=6000, mode="failover")
-            got = _parse_jsonl_items(text)
-            notes.append(f"{p}(failover): {len(got)} items")
-            if got:
-                items, prov = got, f"{p}(failover)"
+            res = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=6000, mode=mode)
         except Exception as e:
-            notes.append(f"failover: {e}")
+            notes.append(f"b{bi}:{e}")
+            continue
+        if mode == "council":
+            got, prov, ns = _best(res)
+            notes.append(f"b{bi}[council {prov}: {','.join(ns)}]")
+        else:
+            prov, text = res
+            got = _parse_jsonl_items(text)
+            notes.append(f"b{bi}[{prov}:{len(got)}]")
+        all_items.extend(got)
 
-    council_note = "Council: " + "; ".join(notes) if notes else "Council: no replies."
-    if not items:
-        return _raw_items(hits, breaches), council_note + " — reporting raw hits."
-    return items, council_note + f" | using {prov}"
+    note = "Council: " + "; ".join(notes)
+    if truncated:
+        note += f" | NOTE: {len(hits)} candidates exceed {BATCH * MAX_BATCHES} cap; remainder untriaged"
+    if not all_items:
+        return _raw_items(hits, breaches), note + " — reporting raw hits."
+    return all_items, note
 
 
 def _raw_items(hits, breaches):
