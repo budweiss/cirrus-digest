@@ -152,12 +152,23 @@ def git_push_log():
     return "\n".join(out)
 
 
+def _rec(dry, ok, note=""):
+    if dry:
+        return
+    try:
+        import job_status
+        job_status.record("stratusreview", ok, note)
+    except Exception:
+        pass
+
+
 def main():
     dry = "--dry-run" in sys.argv
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] stratus_monthly ({'dry-run' if dry else 'live'})")
     entry, urls, err = synthesize()
     if err:
         print("ERROR:", err, "— nothing written or sent.")
+        _rec(dry, False, err[:120])
         return
     print("=" * 70)
     print(entry)
@@ -187,6 +198,7 @@ def main():
         print("emailed Buddy.")
     except Exception as e:
         print("email error:", e)
+    _rec(dry, True, "logged + emailed")
 
 
 if __name__ == "__main__":

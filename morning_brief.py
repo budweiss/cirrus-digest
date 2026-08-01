@@ -200,6 +200,17 @@ def compose():
     lines += ([f"- {a}" for a in att] if att else ["- Nothing flagged"])
     lines.append("")
 
+    # scheduled-jobs status (did the CIRRUS jobs run & succeed) — from job_status ledger
+    try:
+        import job_status
+        jlines, _jok = job_status.summarize()
+    except Exception:
+        jlines = []
+    if jlines:
+        lines.append("**Scheduled jobs**")
+        lines += jlines
+        lines.append("")
+
     # one suggested next action
     if not dig["dated_today"]:
         nxt = "Investigate the 7am digest — today's file is missing or misdated."
@@ -264,6 +275,11 @@ def main():
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] sending morning brief…")
     for r in send_all(subject, body):
         print("  ", r)
+    try:
+        import job_status
+        job_status.record("morningbrief", True)
+    except Exception:
+        pass
     print("done.")
 
 if __name__ == "__main__":

@@ -199,6 +199,22 @@ def decide():
     return data, urls
 
 
+def _rec(dry, ok, note=""):
+    if dry:
+        return
+    try:
+        import job_status
+        job_status.record("billsnow", ok, note)
+    except Exception:
+        pass
+
+
+def _is_error_reason(reason):
+    r = (reason or "").lower()
+    return any(k in r for k in ("failed", "import", "parseable", "parse",
+                                "no web sources"))
+
+
 def main():
     dry = "--dry-run" in sys.argv
     OUT.mkdir(parents=True, exist_ok=True)
@@ -226,7 +242,9 @@ def main():
         return
 
     if not material:
-        print(f"no material change this week — {data.get('reason','')}. Nothing sent.")
+        reason = data.get("reason", "")
+        print(f"no material change this week — {reason}. Nothing sent.")
+        _rec(dry, not _is_error_reason(reason), reason[:120] or "no material change")
         return
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
@@ -242,6 +260,7 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode, "| refresh:", refresh_path.name)
+    _rec(dry, r.returncode == 0, "sent material update" if r.returncode == 0 else "send failed")
 
 
 if __name__ == "__main__":

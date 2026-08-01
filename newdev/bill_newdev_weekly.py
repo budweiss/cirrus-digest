@@ -33,6 +33,7 @@ from pathlib import Path
 
 HERE       = Path(__file__).resolve().parent      # ~/projects/cirrus-digest/newdev
 DIGEST_DIR = HERE.parent                           # ~/projects/cirrus-digest
+sys.path.insert(0, str(DIGEST_DIR))                # for job_status
 OUT        = HERE / "out"
 NEW_FILE   = OUT / "plus_new.json"
 LEADS_FILE = OUT / "plus_leads.json"
@@ -103,6 +104,16 @@ def compose(new):
     ])
 
 
+def _rec(dry, ok, note=""):
+    if dry:
+        return
+    try:
+        import job_status
+        job_status.record("billnewdev", ok, note)
+    except Exception:
+        pass
+
+
 def main():
     dry = "--dry-run" in sys.argv
     OUT.mkdir(parents=True, exist_ok=True)
@@ -110,6 +121,7 @@ def main():
 
     if not _run("plus_pull.py"):
         print("plus_pull failed — aborting, nothing sent.")
+        _rec(dry, False, "plus_pull failed")
         return
 
     new = json.loads(NEW_FILE.read_text()) if NEW_FILE.exists() else []
@@ -117,6 +129,7 @@ def main():
 
     if not new and not dry:
         print("No new leads this week — no email sent.")
+        _rec(dry, True, "no new leads")
         return
 
     # Build the attachment (needed whenever we would send, and useful to verify in dry-run)
@@ -149,6 +162,7 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode)
+    _rec(dry, r.returncode == 0, "sent" if r.returncode == 0 else "send failed")
 
 
 if __name__ == "__main__":

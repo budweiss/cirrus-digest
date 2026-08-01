@@ -46,6 +46,13 @@ LOG_PATH    = PROJECT_DIR / "logs/watchdog.log"
 
 PERSISTENT = {"com.cirrus.bot", "com.cirrus.api", "com.cirrus.tunnel"}
 SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
+# MONITOR_ONLY (S49): scheduled agents we watch for loaded + clean-exit and ALERT
+# on trouble, but NEVER kickstart — several of these send client email, and a
+# repair kickstart would fire an off-schedule send. Loaded/exit monitoring only;
+# run-success is tracked separately by job_status.py / jobs_check.py.
+MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.billnewdev",
+                "com.cirrus.billsnow", "com.cirrus.stratusreview",
+                "com.cirrus.pedagogy"}
 MAX_REPAIRS = 3
 
 
@@ -165,7 +172,7 @@ def check_and_heal():
             return f"last exit code {code}"
         return ""
 
-    for svc in sorted(PERSISTENT | SCHEDULED):
+    for svc in sorted(PERSISTENT | SCHEDULED | MONITOR_ONLY):
         problem = svc_problem(svc)
         # deeper functional checks even when launchctl looks fine
         if not problem and svc == "com.cirrus.api" and not api_ok():
@@ -180,6 +187,12 @@ def check_and_heal():
         findings.append(f"{svc}: {problem}")
         if "credentials.json INVALID" in problem:
             # unrepairable by us — human must fix the file (vi). Don't loop.
+            state[svc] = {"fails": fails + 1}
+            continue
+        if svc in MONITOR_ONLY:
+            # Alert only — NEVER kickstart (a repair would fire an off-schedule
+            # client send). Buddy checks the job log / job_status for the cause.
+            findings.append(f"{svc}: monitor-only, not auto-repaired — check the job log")
             state[svc] = {"fails": fails + 1}
             continue
         if fails >= MAX_REPAIRS:
@@ -201,7 +214,8 @@ def check_and_heal():
 
     if not findings:
         return "ok", []
-    bad = any("HUMAN NEEDED" in f or "INVALID" in f for f in findings) or \
+    bad = any("HUMAN NEEDED" in f or "INVALID" in f or "monitor-only" in f
+              for f in findings) or \
           any("did not stick" in r for r in repairs)
     return ("degraded" if bad else "repaired"), findings + repairs
 
