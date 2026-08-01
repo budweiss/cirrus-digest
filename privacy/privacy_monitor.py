@@ -267,31 +267,35 @@ TRIAGE_SYSTEM = (
 )
 
 
-def _extract_json_obj(text):
-    """Pull a JSON object out of a model reply, tolerating ```json fences/prose."""
+def _parse_jsonl_items(text):
+    """Parse JSONL (one JSON object per line) from a model reply, tolerating
+    ```fences/prose and truncation. Returns a list of item dicts (possibly empty).
+
+    JSONL is used deliberately: if the reply is cut off at the token limit, only
+    the final line is lost instead of the whole object failing to parse (the S50
+    failure mode when we asked for one big JSON object)."""
+    items = []
     if not text:
-        return None
-    t = text.strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
-        t = re.sub(r"\n?```$", "", t).strip()
-    m = re.search(r"\{.*\}", t, flags=re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
+        return items
+    for line in text.splitlines():
+        line = line.strip().strip(",")
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("target"):
+            items.append(obj)
+    return items
 
 
 def triage(hits, breaches, creds, no_llm=False):
     """Return (assessed_items, council_note). Falls back to raw hits if no LLM.
 
-    S50: batch bounded to 80 hits and max_tokens lowered so a provider can finish
-    inside the 120s transport timeout; tolerant JSON extraction; if the council
-    yields nothing parseable we retry once in failover (single provider) before
-    dropping to raw hits.
-    """
+    S50: model returns JSONL (one item per line) so truncation can't break the
+    whole parse; council compared across providers, failover if none produced
+    items, raw hits as the last resort. Batch bounded to keep the prompt small."""
     if no_llm or (not hits and not breaches):
         return _raw_items(hits, breaches), "LLM triage skipped."
     try:
@@ -301,56 +305,56 @@ def triage(hits, breaches, creds, no_llm=False):
 
     payload = {"hits": hits[:80], "breaches": breaches}
     user = (
-        "Assess these exposure candidates for Buddy. Return ONLY minified JSON on a "
-        "single line — NO markdown, NO code fences, NO prose:\n"
-        '{"items":[{"target":"...","url":"...","category":"...",'
-        '"verdict":"real"|"false_positive","severity":"high"|"medium"|"low",'
-        '"why":"<short>"}],"summary":"<2-3 sentences>"}\n'
-        "Include each breached email as an item with category='breach', url='', "
-        "verdict='real', severity='high'.\n\n"
+        "Assess these exposure candidates for Buddy Weiss (Buddy.Weiss@outlook.com, "
+        "buddy.weiss@icloud.com, cirrustask@gmail.com; projects: CIRRUS/cirrustask.com, "
+        "CUMULUS, STRATUS). Many candidates are a DIFFERENT person named Weiss, a generic "
+        "support/homepage, or a breach NEWS article that does not name Buddy — mark those "
+        "verdict='false_positive'. Mark verdict='real' only when the page plausibly exposes "
+        "one of Buddy's specific values.\n\n"
+        "Return ONE JSON object per line (JSONL) — NO markdown, NO code fences, NO prose, "
+        "no wrapping array. One line per candidate you assessed:\n"
+        '{"target":"<value>","url":"<url>","category":"<category>",'
+        '"verdict":"real|false_positive","severity":"high|medium|low","why":"<short>"}\n'
+        "Also emit one line per breached email with category=\"breach\", url=\"\", "
+        "verdict=\"real\", severity=\"high\".\n\n"
         "CANDIDATES:\n" + json.dumps(payload)[:45000]
     )
 
-    def _first_parsed(result):
-        parsed, notes = None, []
+    def _best(result):
+        best_items, best_prov, notes = [], None, []
         for provider, text in result:
             if text.startswith("ERROR:"):
-                notes.append(f"{provider}: {text[:60]}")
+                notes.append(f"{provider}: {text[:50]}")
                 continue
-            data = _extract_json_obj(text)
-            if data is None:
-                notes.append(f"{provider}: unparseable")
-                continue
-            if parsed is None:
-                parsed = data
-                parsed["_provider"] = provider
-            notes.append(f"{provider}: {len(data.get('items', []))} items")
-        return parsed, notes
+            got = _parse_jsonl_items(text)
+            notes.append(f"{provider}: {len(got)} items")
+            if len(got) > len(best_items):
+                best_items, best_prov = got, provider
+        return best_items, best_prov, notes
 
-    # Pass 1: council (compare across providers).
+    # Pass 1: council.
     try:
-        result = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=4000, mode="council")
+        result = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=6000, mode="council")
     except Exception as e:
         return _raw_items(hits, breaches), f"council failed ({e}); reporting raw hits."
-    parsed, notes = _first_parsed(result)
+    items, prov, notes = _best(result)
 
-    # Pass 2: if nobody parsed, try a single failover call.
-    if parsed is None:
+    # Pass 2: failover if the council produced nothing.
+    if not items:
         try:
-            prov, text = L.escalate(TRIAGE_SYSTEM, user, creds,
-                                    max_tokens=4000, mode="failover")
-            data = _extract_json_obj(text)
-            if data is not None:
-                data["_provider"] = prov + "(failover)"
-                parsed = data
-                notes.append(f"{prov}(failover): {len(data.get('items', []))} items")
+            p, text = L.escalate(TRIAGE_SYSTEM, user, creds,
+                                 max_tokens=6000, mode="failover")
+            got = _parse_jsonl_items(text)
+            notes.append(f"{p}(failover): {len(got)} items")
+            if got:
+                items, prov = got, f"{p}(failover)"
         except Exception as e:
             notes.append(f"failover: {e}")
 
     council_note = "Council: " + "; ".join(notes) if notes else "Council: no replies."
-    if parsed is None:
+    if not items:
         return _raw_items(hits, breaches), council_note + " — reporting raw hits."
-    return parsed.get("items", []), council_note + f" | using {parsed.get('_provider')}"
+    return items, council_note + f" | using {prov}"
 
 
 def _raw_items(hits, breaches):
