@@ -52,7 +52,7 @@ SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
 # run-success is tracked separately by job_status.py / jobs_check.py.
 MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.billnewdev",
                 "com.cirrus.billsnow", "com.cirrus.stratusreview",
-                "com.cirrus.pedagogy"}
+                "com.cirrus.pedagogy", "com.cirrus.privacymon"}
 MAX_REPAIRS = 3
 
 

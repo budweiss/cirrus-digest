@@ -14,3 +14,4 @@ config/sources.local.json
 config/snapshots/
 config/cookies.json
 config/intake_senders.json
+config/watchlist.json

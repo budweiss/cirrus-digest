@@ -1,0 +1,50 @@
+{
+  "_README": [
+    "Query / source catalog for the Privacy Exposure Monitor (P1).",
+    "Committable — contains NO PII, only query TEMPLATES. {v} is substituted with a",
+    "watchlist value at run time. The P4 recursive loop appends validated new",
+    "templates here (dev-loop style: propose -> Buddy approves -> apply, reversible).",
+    "",
+    "Categories:",
+    "  share_link  — indexed LLM shared-chat exposure (the incident that started this).",
+    "  own_footprint — pages Buddy himself put out (repos, pastes, his domains).",
+    "  general     — open web mentions of a name/email/identifier.",
+    "  people_search — data-broker / people-search listings (ONLY run for scope=full).",
+    "Placeholders: {v} = the value (quoted automatically for emails/names)."
+  ],
+  "share_link": [
+    "site:claude.ai/share {v}",
+    "site:chatgpt.com/share {v}",
+    "site:chat.openai.com/share {v}",
+    "site:g.co/gemini/share {v}",
+    "site:grok.com/share {v}",
+    "site:x.com/i/grok/share {v}",
+    "site:poe.com {v}",
+    "site:perplexity.ai/search {v}"
+  ],
+  "own_footprint": [
+    "site:github.com {v}",
+    "site:gist.github.com {v}",
+    "site:pastebin.com {v}",
+    "site:trello.com {v}",
+    "site:docs.google.com {v}",
+    "{v} filetype:env OR filetype:json OR filetype:log"
+  ],
+  "general": [
+    "{v}",
+    "\"{v}\" contact OR email OR phone",
+    "\"{v}\" leaked OR breach OR dump"
+  ],
+  "people_search": [
+    "site:spokeo.com {v}",
+    "site:whitepages.com {v}",
+    "site:beenverified.com {v}",
+    "site:truepeoplesearch.com {v}",
+    "site:fastpeoplesearch.com {v}",
+    "site:radaris.com {v}",
+    "site:intelius.com {v}",
+    "site:mylife.com {v}",
+    "site:peoplefinders.com {v}"
+  ],
+  "breach_note": "Emails are additionally checked against Have I Been Pwned (api/v3) when hibp_api_key is set in credentials.json (dormant until keyed)."
+}

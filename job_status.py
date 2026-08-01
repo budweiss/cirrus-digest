@@ -26,6 +26,7 @@ CADENCE_H = {
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
     "stratusreview": 24 * 33,   # monthly + grace
+    "privacymon":    24 * 8,    # weekly Sunday + grace
 }
 
 

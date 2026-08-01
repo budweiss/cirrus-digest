@@ -1,0 +1,45 @@
+{
+  "_README": [
+    "CIRRUS-ONLY. Copy to config/watchlist.json (chmod 600) and fill in the",
+    "sensitive values there. config/watchlist.json is gitignored and MUST NEVER",
+    "be committed or copied to the Cowork repo — it holds Buddy's PII.",
+    "Scaffold with the runner: {\"cmd\":\"privacy-scaffold\"} (copies this file to",
+    "config/watchlist.json if absent, chmod 600). Then edit real values via vi.",
+    "",
+    "scope per entry: 'own'  = only check Buddy's OWN exposure surface for this",
+    "                          value (share-link dorks Buddy created, Buddy's",
+    "                          repos/leaks, breach of Buddy's own accounts).",
+    "                 'full' = ALSO run people-search / data-broker dorks",
+    "                          (Spokeo/Whitepages/BeenVerified, etc.).",
+    "GUARDRAIL: for CLIENTS (third parties) 'full' builds a persistent PII profile",
+    "of someone who has not consented. Default is 'own'. Only flip a client to",
+    "'full' once they are aware. Buddy's own identities may be 'full'."
+  ],
+  "identities": [
+    {"type": "name",  "value": "Buddy Weiss",               "scope": "full", "label": "primary name"},
+    {"type": "name",  "value": "",                          "scope": "full", "label": "alias/legal-name variant (fill if any)"},
+    {"type": "email", "value": "Buddy.Weiss@outlook.com",   "scope": "full"},
+    {"type": "email", "value": "buddy.weiss@icloud.com",    "scope": "full"},
+    {"type": "email", "value": "cirrustask@gmail.com",      "scope": "full"},
+    {"type": "phone", "value": "",                          "scope": "full", "label": "fill on CIRRUS via vi"},
+    {"type": "address", "value": "",                        "scope": "full", "label": "fill on CIRRUS via vi (city/state ok to start)"}
+  ],
+  "projects": [
+    {"name": "CIRRUS",           "identifiers": ["cirrustask.com", "cirrus.cirrustask.com", "cirrustask@gmail.com"], "scope": "full"},
+    {"name": "CUMULUS",          "identifiers": ["cumulustask.com"],                                                 "scope": "full"},
+    {"name": "STRATUS",          "identifiers": ["stratustask.com", "stratustask@gmail.com"],                        "scope": "full"},
+    {"name": "Knight portal",    "identifiers": [],                                                                  "scope": "full", "_note": "add the portal domain/URL + any public app name"},
+    {"name": "SNOW/Pennrose",    "identifiers": [],                                                                  "scope": "full", "_note": "add any public bid/estimator identifiers"}
+  ],
+  "clients": [
+    {"name": "Bill (Knight Property Svs)", "email": "whutchins@knightpropertysvs.com", "scope": "own", "_note": "Buddy asked for full; recommend confirming Bill is aware before flipping to 'full'."},
+    {"name": "Alyssa (Avonworth)",         "email": "",                                "scope": "own", "_note": "fill Alyssa's email on CIRRUS; keep 'own' until she's aware."},
+    {"name": "Aggie",                      "email": "",                                "scope": "own", "_note": "fill Aggie's email on CIRRUS; keep 'own' until she's aware."}
+  ],
+  "settings": {
+    "council_mode": true,
+    "immediate_alert_on": ["live_share_link", "fresh_breach"],
+    "max_results_per_query": 6,
+    "max_fetch_per_run": 8
+  }
+}
