@@ -58,6 +58,9 @@ BOT_TOKEN     = CREDS["telegram_bot_token"]
 ALLOWED_ID    = int(CREDS["telegram_user_id"])
 API_URL       = f"https://api.telegram.org/bot{BOT_TOKEN}"
 OLLAMA_HOST   = DIGEST_CFG["ollama_host"]
+# Per-node display name so beta (CUMULUS) messages are distinct from prod (CIRRUS).
+# Defaults to CIRRUS for backward-compat; overridable via NODE_NAME env or mail_from_name.
+NODE_NAME     = os.environ.get("NODE_NAME") or CREDS.get("mail_from_name") or "CIRRUS"
 MODEL         = DIGEST_CFG["ollama_model"]
 
 # ── External LLM fallback (added 2026-06-14) ────────────────────────────────
@@ -367,16 +370,16 @@ def cmd_status():
     free_gb      = free_disk_gb()
     stale        = stale_proposal_count()
 
-    status_text = f"""🖥 *CIRRUS Status*
+    status_text = f"""🖥 *{NODE_NAME} Status*
 
 *Last daily digest:* {daily_time}
 *Last weekly digest:* {weekly_time}
 
 *Files stored:* {weekly_count} weekly, {daily_count} daily
 *Free disk:* {free_gb:.1f} GB
-*Time on CIRRUS:* {datetime.now().strftime("%Y-%m-%d %H:%M")}
+*Time on {NODE_NAME}:* {datetime.now().strftime("%Y-%m-%d %H:%M")}
 
-✅ CIRRUS is running"""
+✅ {NODE_NAME} is running"""
 
     if stale:
         status_text += f"\n\n📋 {stale} proposal(s) pending review for " \
