@@ -123,6 +123,18 @@ step_services(){
   if [[ "$TARGET_ENV" == "prod" && ! -f "$APP_DIR/logs/self-changes/cumulus-soak-PASS" ]]; then
     gate "TARGET_ENV=prod but no CUMULUS soak PASS record. No direct-to-prod (change-mgmt gate)."; fi
 
+  # Services must run as the app owner (not root) so Path.home() resolves to the
+  # user's home. The app code hardcodes ~/projects/cirrus-digest (CIRRUS layout);
+  # if APP_DIR differs, symlink the expected path to it so the code finds config/.
+  local run_user run_home expected
+  run_user=$(stat -c '%U' "$APP_DIR" 2>/dev/null || echo buddy)
+  run_home=$(getent passwd "$run_user" | cut -d: -f6); [[ -z "$run_home" ]] && run_home="/home/$run_user"
+  expected="$run_home/projects/cirrus-digest"
+  if [[ "$(readlink -f "$expected" 2>/dev/null)" != "$(readlink -f "$APP_DIR")" ]]; then
+    log "  linking code-expected path $expected -> $APP_DIR (run as $run_user)"
+    run "mkdir -p '$run_home/projects' && ln -sfn '$APP_DIR' '$expected'"
+  fi
+
   local unit_dir="/etc/systemd/system"
   for row in "${SERVICES[@]}"; do
     IFS='|' read -r name script kind sched <<<"$row"
@@ -141,7 +153,10 @@ Wants=network-online.target
 
 [Service]
 Type=$([[ $kind == daemon ]] && echo simple || echo oneshot)
+User=$run_user
+Group=$run_user
 WorkingDirectory=$APP_DIR
+Environment=HOME=$run_home
 Environment=TARGET_ENV=$TARGET_ENV MODEL_BACKEND=$MODEL_BACKEND
 ExecStart=$exec
 $([[ $kind == daemon ]] && echo 'Restart=on-failure' || true)
