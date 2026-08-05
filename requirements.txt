@@ -4,7 +4,7 @@
 #     python3 -m venv .venv && . .venv/bin/activate
 #     pip install -r requirements.txt
 #
-# Scope: these 5 are the ONLY third-party imports across the app
+# Scope: these are the third-party imports across the app
 # (cirrus_*.py, dev_*.py, intake.py, pedagogy_daily.py, self_review.py,
 # tools/*.py). Everything else the pipeline uses is Python stdlib.
 # Ollama + models are installed separately (ollama pull qwen2.5:72b …),
@@ -22,6 +22,9 @@ feedparser==6.0.12       # RSS/Atom feed parsing (cirrus_daily, cirrus_digest)
 Flask==3.1.3             # cirrus_api admin API (port 5001)
 numpy==2.2.6             # cirrus_rag vector store (nomic-embed-text embeddings)
 requests==2.34.2         # everywhere — HTTP for feeds, Telegram, Ollama, Claude API
+openpyxl                 # xlsx builders (newdev/build_report.py, snow workbooks) — S56: was
+                         # missing here; pip-installed ad-hoc on CIRRUS, absent on CUMULUS.
+                         # Unpinned so ARM64/CUDA + macOS both resolve a native wheel.
 
 # --- Tested transitive set (captured 2026-07-17; informational) ---
 # If you need a fully-locked build, pin these too. Left unpinned by
