@@ -12,6 +12,7 @@ fetch_podcasts() for its own lookback window.
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import requests
@@ -351,7 +352,12 @@ def enrich_with_references(content: str, source: str, title: str) -> str:
 
 # ── Whisper Transcription ─────────────────────────────────────────────────────
 
-WHISPER_BIN = "/Users/buddy/Library/Python/3.9/bin/whisper"
+# Portable resolution: env override → PATH lookup → CIRRUS (macOS) fallback.
+# On CUMULUS/Linux the macOS path won't exist; shutil.which finds an installed
+# whisper, and transcribe_audio() already degrades gracefully if none is found.
+WHISPER_BIN = (os.environ.get("WHISPER_BIN")
+               or shutil.which("whisper")
+               or "/Users/buddy/Library/Python/3.9/bin/whisper")
 WHISPER_MODEL = "small"  # small = fast + accurate enough; upgrade to medium/large if needed
 
 def download_audio(url, dest_path):

@@ -25,7 +25,9 @@ Modes:
 """
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,7 +55,10 @@ TOPICS_PATH = PROJECT_DIR / "config/topics-pedagogy.json"
 STATE_PATH  = PROJECT_DIR / "config/pedagogy_state.json"
 LOG_PATH    = PROJECT_DIR / "logs/pedagogy.log"
 
-WHISPER_BIN = "/Users/buddy/Library/Python/3.9/bin/whisper"
+# Portable: env override → PATH lookup → CIRRUS (macOS) fallback (see cirrus_digest.py).
+WHISPER_BIN = (os.environ.get("WHISPER_BIN")
+               or shutil.which("whisper")
+               or "/Users/buddy/Library/Python/3.9/bin/whisper")
 WHISPER_MODEL = "small"
 
 MAX_ARTICLE_CHARS   = 6000
