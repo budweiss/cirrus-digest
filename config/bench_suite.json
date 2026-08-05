@@ -1,0 +1,25 @@
+{
+  "_comment": "Standardized model-bench prompt suite. Each task maps to a real CUMULUS workload lane so we can compare candidate LLMs before adopting one. Keep prompts self-contained (no external fetch) so runs are repeatable. Add tasks over time.",
+  "tasks": [
+    {
+      "name": "summarize",
+      "desc": "Digest lane — concise, faithful summarization (email/podcast/YouTube).",
+      "prompt": "Summarize the following article in 2-3 sentences for a technical daily digest, then on a new line rate its AI-relevance as HIGH, MEDIUM, or LOW with a 6-word reason.\n\nArticle: A startup called Laguna today released Laguna XS 2.1, a 2.6-billion-parameter open-weight model that supports tool calling and a 128K context window. On a single consumer GPU it runs at roughly 60 tokens per second in Q4_K_M. The team says it targets on-device agents and edge deployments, and published GGUF weights under an Apache-2.0 license. Benchmarks show it trailing frontier models on reasoning but competitive on structured function-calling tasks."
+    },
+    {
+      "name": "code_website",
+      "desc": "Website lane — build/maintain sites; small self-contained coding task.",
+      "prompt": "Write a single self-contained HTML file with inline CSS (no external libraries) for a responsive pricing section with three cards (Basic, Pro, Enterprise). It must use CSS grid, collapse to one column under 640px, and highlight the Pro card. Output only the code."
+    },
+    {
+      "name": "reason_plan",
+      "desc": "Reasoning/planning — instruction following over a multi-step task.",
+      "prompt": "You run a nightly job that (a) fetches 80 articles, (b) summarizes each with a local LLM, (c) emails a digest at 7am. Summarization is the bottleneck at 8s/article. List the 3 highest-impact changes to cut total wall-clock time, each with a one-sentence justification and the expected risk. Be specific and concise."
+    },
+    {
+      "name": "tool_json",
+      "desc": "Voice/agent lane — strict structured output for tool calls.",
+      "prompt": "Extract the action from this request and return ONLY valid minified JSON with keys action, target, datetime_iso, notes. Request: 'Call Bill's office tomorrow at 2:30pm to confirm the snow contract and mention the salt price change.' Assume today is 2026-08-04. No prose, JSON only."
+    }
+  ]
+}
