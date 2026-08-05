@@ -23,6 +23,7 @@ STATUS_PATH = Path.home() / "projects/cirrus-digest/logs/jobs-status.json"
 # successful run is older than this is "overdue".
 CADENCE_H = {
     "morningbrief":  26,        # daily 07:30
+    "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
     "stratusreview": 24 * 33,   # monthly + grace
