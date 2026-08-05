@@ -48,6 +48,9 @@ CREDS_PATH = DIGEST_DIR / "config/credentials.json"
 
 sys.path.insert(0, str(DIGEST_DIR))               # for cirrus_daily + llm_providers
 
+import node_info                                   # S56: sign as the running node
+NODE = node_info.node_name()                       # CIRRUS (dev) / CUMULUS (beta)
+
 TO      = "whutchins@knightpropertysvs.com"
 CC      = "Buddy.Weiss@outlook.com"
 TODAY   = datetime.now().strftime("%Y-%m-%d")
@@ -102,12 +105,12 @@ def gather_web():
 
 
 SYSTEM = (
-    "You are CIRRUS, preparing a weekly winter snow-outlook check for Buddy's client "
+    f"You are {NODE}, preparing a weekly winter snow-outlook check for Buddy's client "
     "Bill (Knight Property Services), corridor Baltimore-Philadelphia-South NJ-Delaware. "
     "You are careful and honest. You NEVER fabricate numbers. You anchor to the provided "
     "climatology and drivers analysis (blocking, not ENSO alone, drives our snow), give "
     "scenario odds rather than a single number, and keep the directional-estimate + "
-    "placeholder-rate caveats. Emails are signed and sent as CIRRUS on behalf of Knight "
+    f"placeholder-rate caveats. Emails are signed and sent as {NODE} on behalf of Knight "
     "Property Services, and frame the numbers as our best estimate for Bill (the expert) "
     "to review and correct."
 )
@@ -142,7 +145,7 @@ significant corridor storm. Essentially-the-same numbers = NOT material.
 === DEFAULT WORKING RATES (placeholders until Bill confirms) ===
 {rates}
 
-=== VOICE SAMPLE (match this warm, plain, honest tone; sign as CIRRUS) ===
+=== VOICE SAMPLE (match this warm, plain, honest tone; sign as {NODE}) ===
 {voice}
 
 === CURRENT WEB FINDINGS (fetched just now; cite as [1],[2]… mapping to the URL list) ===
@@ -159,7 +162,7 @@ Return ONLY a JSON object, no prose around it, with EXACTLY these keys:
      odds not a single number; else empty string>",
   "email_subject": "<if material: 'Pennrose Snow Package — Winter 2026-27 Outlook Update ({TODAY})'; else empty>",
   "email_body": "<if material: the full Bill email body — warm, plain, honest caveats,
-     framed as a request for his expert review of the rates/assumptions, signed 'CIRRUS';
+     framed as a request for his expert review of the rates/assumptions, signed '{NODE}';
      else empty string>"
 }}
 If the web findings are missing or too thin to judge a real change, set material_change=false

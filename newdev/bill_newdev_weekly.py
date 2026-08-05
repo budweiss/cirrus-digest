@@ -34,6 +34,8 @@ from pathlib import Path
 HERE       = Path(__file__).resolve().parent      # ~/projects/cirrus-digest/newdev
 DIGEST_DIR = HERE.parent                           # ~/projects/cirrus-digest
 sys.path.insert(0, str(DIGEST_DIR))                # for job_status
+import node_info                                   # S56: sign as the running node
+NODE = node_info.node_name()                       # CIRRUS (dev) / CUMULUS (beta)
 OUT        = HERE / "out"
 NEW_FILE   = OUT / "plus_new.json"
 LEADS_FILE = OUT / "plus_leads.json"
@@ -100,7 +102,7 @@ def compose(new):
         "",
         PRICING_NOTE,
         "",
-        "— CIRRUS (Buddy's assistant)",
+        f"— {NODE} (Buddy's assistant)",
     ])
 
 

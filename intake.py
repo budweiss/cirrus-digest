@@ -39,6 +39,7 @@ import socket
 import sys
 import time
 import urllib.request
+import node_info                                    # S56: sign as the running node
 from datetime import datetime, timedelta
 from email.header import decode_header
 from email.mime.text import MIMEText
@@ -297,24 +298,25 @@ def append_topic(project: str, title: str, requester: str) -> Path:
 
 def ack_body(rec: dict) -> str:
     name = rec["requester"].capitalize()
+    node = node_info.node_name()                    # S56: sign as the running box
     if rec["status"] == "refused":
         return (f"Hi {name},\n\nThanks for your request:\n\n"
                 f"    {rec['title']}\n\n"
                 "This one falls in a category that needs a human decision "
                 "(things like credentials, deletions, purchases, or access "
                 "changes are never automated). Buddy has been notified and "
-                "will follow up with you directly.\n\n— CIRRUS")
+                f"will follow up with you directly.\n\n— {node}")
     if rec.get("kind") == "feedback":
         return (f"Hi {name},\n\nThanks for the note — Buddy and I have it "
                 "and will review. If you'd like a specific subject researched, "
                 "send a fresh email with the subject line "
                 "\"REQUEST: your topic\" and it goes straight into the "
-                "research queue.\n\n— CIRRUS")
+                f"research queue.\n\n— {node}")
     if rec.get("kind") == "research":
         return (f"Hi {name},\n\nGot it — your topic has been added to the "
                 f"research queue:\n\n    {rec['title']}\n\n"
                 "It'll be covered in an upcoming digest. Send as many topics "
-                "as you like — one email per topic works best.\n\n— CIRRUS")
+                f"as you like — one email per topic works best.\n\n— {node}")
     if rec["tier"] >= dev_loop.TIER_DESIGN:
         eta = "It's been scheduled for an upcoming working session."
     else:
@@ -323,7 +325,7 @@ def ack_body(rec: dict) -> str:
     return (f"Hi {name},\n\nGot it — your request has been received and logged:\n\n"
             f"    {rec['title']}\n\n{eta}\n"
             "You'll get another email when it ships. If anything about it is "
-            "wrong, just reply to this email.\n\n— CIRRUS")
+            f"wrong, just reply to this email.\n\n— {node}")
 
 
 def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
