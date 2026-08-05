@@ -60,8 +60,9 @@ LOG_PATH     = PROJECT_DIR / "logs/intake.log"
 INTAKE_ACCOUNT_LABEL = "gmail-research"   # sources.json email.accounts[].label
 DAYS_BACK            = 3                  # IMAP search window (state bounds real work)
 BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
-SCAN_ATTEMPTS        = 3                  # retry the IMAP scan this many times before alerting
-SCAN_BACKOFF         = [5, 15]            # seconds to wait between attempts (transient net/DNS blips)
+SCAN_ATTEMPTS        = 4                  # retry the IMAP scan this many times before alerting
+SCAN_BACKOFF         = [5, 15, 30]        # seconds between attempts (~50s window; S56 widened from
+                                          # [5,15]/20s after a 2nd transient CIRRUS DNS blip outlasted it)
 DEFAULT_DAILY_LIMIT  = 10
 
 REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\b\s*:?\s*", re.IGNORECASE)
