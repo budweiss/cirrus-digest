@@ -172,11 +172,13 @@ def decide():
     try:
         import llm_providers as L
     except Exception as e:
-        return {"material_change": False, "reason": f"llm_providers import failed: {e}"}, []
+        return {"material_change": False, "error": True,
+                "reason": f"llm_providers import failed: {e}"}, []
     web_block, urls = gather_web()
     if not web_block:
-        # Fail-safe: no fresh evidence -> do not send.
-        return {"material_change": False,
+        # Fail-safe: no fresh evidence -> do not send. This IS a real failure of
+        # the run (we couldn't gather evidence), so flag it for the status ledger.
+        return {"material_change": False, "error": True,
                 "reason": "no web sources retrieved this run; not sending on stale data.",
                 "urls": urls}, urls
     prompt = build_prompt(web_block, urls)
@@ -184,17 +186,20 @@ def decide():
         provider, text = L.escalate(SYSTEM, prompt, creds, max_tokens=8000)
         print(f"[llm] provider={provider}, {len(text)} chars")
     except Exception as e:
-        return {"material_change": False, "reason": f"LLM call failed: {e}"}, urls
+        return {"material_change": False, "error": True,
+                "reason": f"LLM call failed: {e}"}, urls
     # Extract the JSON object (be tolerant of surrounding text / code fences)
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not m:
-        return {"material_change": False,
+        return {"material_change": False, "error": True,
                 "reason": "model reply was not parseable JSON; not sending."}, urls
     try:
         data = json.loads(m.group(0))
     except Exception as e:
-        return {"material_change": False,
+        return {"material_change": False, "error": True,
                 "reason": f"JSON parse failed ({e}); not sending."}, urls
+    # Clean model decision — NOT an error, even if the reason prose happens to
+    # contain a word like "failed"/"parse". error stays falsy on this path.
     data["urls"] = urls
     return data, urls
 
@@ -209,10 +214,14 @@ def _rec(dry, ok, note=""):
         pass
 
 
-def _is_error_reason(reason):
-    r = (reason or "").lower()
-    return any(k in r for k in ("failed", "import", "parseable", "parse",
-                                "no web sources"))
+def _run_failed(data):
+    """True only when the run itself errored (import/LLM/JSON/no-web-sources).
+
+    We rely on the explicit data["error"] flag set by decide(), NOT on keyword-
+    matching the model's free-text reason. A clean 'no material change' verdict
+    is a SUCCESS even when its prose contains words like 'failed' or 'parse'
+    (that false-positive is exactly what tripped the S49 status ledger)."""
+    return bool(data.get("error"))
 
 
 def main():
@@ -244,7 +253,7 @@ def main():
     if not material:
         reason = data.get("reason", "")
         print(f"no material change this week — {reason}. Nothing sent.")
-        _rec(dry, not _is_error_reason(reason), reason[:120] or "no material change")
+        _rec(dry, not _run_failed(data), reason[:120] or "no material change")
         return
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
