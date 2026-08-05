@@ -138,11 +138,25 @@ def candidates_gemini(creds):
     return alias + specific
 
 
+def candidates_grok(creds):
+    try:
+        d = _get("https://api.x.ai/v1/models",
+                 {"Authorization": f"Bearer {creds['grok_api_key']}"})
+        ids = [m["id"] for m in d.get("data", [])]
+    except Exception:
+        return []
+    bad = ("image", "vision", "embed", "audio", "tts")
+    chat = [i for i in ids if "grok" in i and not any(b in i for b in bad)]
+    mini = sorted([i for i in chat if "mini" in i or "fast" in i], reverse=True)
+    rest = sorted([i for i in chat if i not in mini], reverse=True)
+    return mini + rest
+
+
 CANDIDATES = {
     "anthropic": candidates_anthropic,
     "gemini":    candidates_gemini,
     "openai":    candidates_openai,
-    "grok":      lambda c: [],
+    "grok":      candidates_grok,
     "deepseek":  lambda c: [],
 }
 
