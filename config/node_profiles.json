@@ -1,0 +1,21 @@
+{
+  "_comment": "Per-node model + inference profiles. The active profile is chosen by the TARGET_ENV env var set in the systemd units / provision/platform.env (dev=CIRRUS, beta=CUMULUS, prod=STRATUS). Code falls back to sources.json digest.ollama_model + num_ctx 8192 when TARGET_ENV is unset or the profile is missing, so CIRRUS and any pre-existing setup are unaffected. Git-tracked (NOT skip-worktree) so it flows to every node; the per-box discriminator is TARGET_ENV, not this file.",
+  "dev": {
+    "node": "CIRRUS",
+    "digest_model": "qwen2.5:14b",
+    "num_ctx": 8192,
+    "note": "Mac Studio 64GB. Small/fast for high-volume summarization."
+  },
+  "beta": {
+    "node": "CUMULUS",
+    "digest_model": "qwen3-coder:30b",
+    "num_ctx": 32768,
+    "note": "DGX Spark 128GB (256GB pooled w/ #2). Qwen3-Coder 30B-A3B MoE, 256K-capable; larger ctx for long articles/transcripts + codebases."
+  },
+  "prod": {
+    "node": "STRATUS",
+    "digest_model": "qwen3-coder:480b",
+    "num_ctx": 65536,
+    "note": "Production (future). 480B MoE needs the 256GB pooled tier + vLLM. Placeholder until STRATUS is provisioned."
+  }
+}
