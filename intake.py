@@ -35,7 +35,9 @@ import imaplib
 import json
 import re
 import smtplib
+import socket
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta
 from email.header import decode_header
@@ -57,6 +59,8 @@ LOG_PATH     = PROJECT_DIR / "logs/intake.log"
 INTAKE_ACCOUNT_LABEL = "gmail-research"   # sources.json email.accounts[].label
 DAYS_BACK            = 3                  # IMAP search window (state bounds real work)
 BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
+SCAN_ATTEMPTS        = 3                  # retry the IMAP scan this many times before alerting
+SCAN_BACKOFF         = [5, 15]            # seconds to wait between attempts (transient net/DNS blips)
 DEFAULT_DAILY_LIMIT  = 10
 
 REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\b\s*:?\s*", re.IGNORECASE)
@@ -332,7 +336,7 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
         msg = MIMEText(ack_body(rec))
         subj = orig_subject or rec["title"]
         msg["Subject"] = subj if subj.lower().startswith("re:") else f"Re: {subj}"
-        msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
+        msg["From"] = from_email
         msg["To"] = to_addr
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
             server.ehlo(); server.starttls(); server.ehlo()
@@ -494,13 +498,35 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         return 1
 
     state = load_state()
-    try:
-        messages, bounces = scan_inbox(account, password, allowlist, state,
-                                       rescan=rescan)
-    except Exception as e:
-        log(f"ERROR: inbox scan failed: {e}")
+    messages = bounces = None
+    last_err = None
+    attempt = 0
+    for attempt in range(1, SCAN_ATTEMPTS + 1):
+        try:
+            messages, bounces = scan_inbox(account, password, allowlist, state,
+                                           rescan=rescan)
+            last_err = None
+            break
+        except OSError as e:
+            # Transient network/DNS blip (e.g. [Errno 8] nodename nor servname —
+            # a momentary getaddrinfo failure). Retry with backoff before alerting
+            # so a brief hiccup doesn't page Buddy. socket.gaierror/timeout and
+            # ConnectionError are all OSError subclasses.
+            last_err = e
+            if attempt < SCAN_ATTEMPTS:
+                wait = SCAN_BACKOFF[min(attempt - 1, len(SCAN_BACKOFF) - 1)]
+                log(f"  scan attempt {attempt}/{SCAN_ATTEMPTS} failed "
+                    f"({e}); retrying in {wait}s")
+                time.sleep(wait)
+        except Exception as e:
+            # Non-transient (auth/protocol) — don't hammer the server; alert now.
+            last_err = e
+            break
+    if last_err is not None:
+        log(f"ERROR: inbox scan failed after {attempt} attempt(s): {last_err}")
         if not dry_run:
-            telegram(f"⚠️ *Intake*: inbox scan failed: `{e}`", creds)
+            telegram(f"⚠️ *Intake*: inbox scan failed after {attempt} "
+                     f"attempt(s): `{last_err}`", creds)
         return 1
 
     processed, limited = [], []
