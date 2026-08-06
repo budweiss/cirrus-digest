@@ -62,6 +62,28 @@ CIRRUS morning brief / jobs_check
 - `job_status.REMOTE_JOBS` is the list the CIRRUS brief pulls from CUMULUS — **keep it in
   sync with the "Runs on = CUMULUS" rows above whenever a job is cut over.**
 
+## Change-tier promotion rules (Buddy, S57)
+
+- **Tier 1 & 2 changes ALWAYS start on CIRRUS (dev).** Develop + dry-run on CIRRUS,
+  then promote to CUMULUS, then (later) STRATUS. Never edit code directly on a
+  prod box.
+- **Tier 0 changes may auto-apply on CUMULUS (prod)** — e.g. self_review adding an
+  RSS/source. Because CUMULUS's configs are localized + `skip-worktree`, those
+  auto-applied changes do **not** flow to git on their own, so **they must be carried
+  BACK to CIRRUS/git** or dev will silently drift from prod.
+  → **TODO (build next):** a `cumulus-tier0-carryback` step that diffs CUMULUS's
+  Tier-0 config changes vs git and merges the source/omit additions back into the
+  tracked configs (so CIRRUS and the repo stay in sync). Until it exists, check
+  CUMULUS's self-change ledger manually when reconciling.
+
+## Local models per box (live inventory 2026-08-06)
+
+| Box | Active digest model | Also installed |
+|:--|:--|:--|
+| CIRRUS | qwen2.5:14b | qwen2.5:72b, qwen2.5-coder:14b, llama3.2:3b (podcast), nomic-embed-text |
+| CUMULUS | qwen3-coder:30b | qwen2.5:72b, qwen2.5:14b, nomic-embed-text *(no llama3.2:3b — podcast falls back to main model)* |
+| STRATUS | qwen3-coder:480b (planned) | vLLM-served on the 256GB pooled tier; chosen via model-bench v2 before promotion |
+
 ## When STRATUS comes online
 
 Add a `prod` column / rows here, extend the monitoring pull to STRATUS (mirror the
