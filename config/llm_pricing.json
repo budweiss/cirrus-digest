@@ -1,6 +1,6 @@
 {
   "_comment": "LLM API pricing + spend caps for the budget guard (llm_budget.py). Rates in USD per 1,000,000 tokens. Confirm against https://docs.claude.com pricing at wire time. Discount multipliers: batch=0.5, cache_read=0.1 (cached input only), cache_write=1.25.",
-  "_updated": "2026-07-27",
+  "_updated": "2026-08-06",
 
   "models": {
     "claude-opus-5":        {"in": 5.0,  "out": 25.0},
@@ -8,6 +8,9 @@
     "claude-sonnet-5":      {"in": 3.0,  "out": 15.0},
     "claude-haiku-4-5-20251001": {"in": 0.8, "out": 4.0},
     "gemini-2.0-flash":     {"in": 0.15, "out": 0.60},
+    "gemini-flash-latest":  {"in": 0.30, "out": 2.50},
+    "gemini-2.5-flash":     {"in": 0.30, "out": 2.50},
+    "gemini-flash-lite-latest": {"in": 0.10, "out": 0.40},
     "grok-3-mini":          {"in": 0.30, "out": 0.50},
     "gpt-4o-mini":          {"in": 0.15, "out": 0.60},
     "deepseek-chat":        {"in": 0.27, "out": 1.10}

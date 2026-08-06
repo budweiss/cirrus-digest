@@ -128,15 +128,21 @@ def _model_for(provider, creds):
 
 def _estimate_cost(providers, judge, in_chars, max_tokens, cfg, creds):
     """Rough USD estimate for the council + judge calls. ~4 chars/token in;
-    assume replies up to max_tokens out. Raises if any model is unpriced
-    (caller treats that as 'not affordable' -> degrade)."""
+    assume replies up to max_tokens out. A model missing from llm_pricing.json
+    (e.g. a name the model-health self-heal swapped in) is estimated at the
+    CONSERVATIVE unknown-model rate rather than aborting — a pricing gap must
+    never silently disable the council. Raises only if a provider has NO model."""
     in_tok = max(1, in_chars // 4)
+    unknown = float((cfg or {}).get("unknown_model_out_per_m", 25.0))
     total = 0.0
     for p in list(providers) + [judge]:
         model = _model_for(p, creds)
         if not model:
             raise ValueError(f"no model for {p}")
-        total += B.cost_usd(model, in_tok, max_tokens, cfg)
+        try:
+            total += B.cost_usd(model, in_tok, max_tokens, cfg)
+        except Exception:
+            total += (in_tok + max_tokens) * unknown / 1_000_000
     return total
 
 
@@ -343,6 +349,20 @@ if __name__ == "__main__":
         check("judge prompt includes members", "MEMBER 1: anthropic" in jp and "MEMBER 2: gemini" in jp)
         check("judge prompt includes local draft", "draftfoo" in jp)
         check("judge prompt demands same format", "JSON in = JSON out" in jp)
+
+        # budget estimate must TOLERATE an unpriced model (conservative fallback,
+        # never abort) — this is the S57 Phase-A finding (gemini-flash-latest gap).
+        import llm_budget as _RB
+        _cfg = {"models": {"claude-sonnet-5": {"in": 3.0, "out": 15.0}},
+                "unknown_model_out_per_m": 25.0,
+                "caps_usd": {"per_call": 100, "per_session": 100, "per_day": 200}}
+        _creds = {"claude_model": "claude-sonnet-5", "gemini_model": "brand-new-unpriced"}
+        _saveB, B = B, _RB
+        try:
+            est = _estimate_cost(["anthropic", "gemini"], "anthropic", 400, 100, _cfg, _creds)
+            check("estimate tolerates unpriced model (no raise, >0)", est > 0)
+        finally:
+            B = _saveB
 
         print("PASS" if ok else "FAIL")
         sys.exit(0 if ok else 1)
