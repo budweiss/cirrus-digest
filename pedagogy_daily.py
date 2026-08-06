@@ -46,6 +46,21 @@ try:
 except Exception:                   # never let a missing module break the 6am digest
     llm_providers = None
 
+try:
+    import job_status               # S57: report run status so the CIRRUS brief can watch pedagogy
+except Exception:
+    job_status = None
+
+
+def _jrec(ok, note, dry):
+    """Best-effort pedagogy run-status record (skipped on dry-run). Never raises."""
+    if dry or job_status is None:
+        return
+    try:
+        job_status.record("pedagogy", ok, note)
+    except Exception:
+        pass
+
 # ── Paths & config ────────────────────────────────────────────────────────────
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
@@ -881,6 +896,7 @@ def main(dry_run=False, force=False):
         log("nothing new + no active topics + not Friday — skipping send")
         if not dry_run:
             STATE_PATH.write_text(json.dumps(state, indent=2))
+        _jrec(True, "no new content — nothing to send", dry_run)
         return 0
 
     summaries = []
@@ -917,6 +933,7 @@ def main(dry_run=False, force=False):
                      "(Ollama?) — skipped the send so no empty email goes to "
                      "Alyssa. Sources were dry; the model-fallback task covers "
                      "generating content on days like this.", creds)
+        _jrec(True, "empty digest — skipped (no content/spotlight)", dry_run)
         return 0
 
     announce = ANNOUNCE_TEXT if state.get("announce_id") != ANNOUNCE_ID else None
@@ -936,7 +953,11 @@ def main(dry_run=False, force=False):
         log("DRY RUN — no email, no telegram, no state writes")
         return 0
 
-    send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds)
+    try:
+        send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds)
+    except Exception as e:
+        _jrec(False, f"send failed: {e}", dry_run)
+        raise
     if announce:                       # one-time note delivered — retire it
         state["announce_id"] = ANNOUNCE_ID
     STATE_PATH.write_text(json.dumps(state, indent=2))
@@ -945,6 +966,7 @@ def main(dry_run=False, force=False):
              f"{len(topics)} topic(s)"
              + (", +model brief" if mbrief[0] else "")
              + (f", spotlight: {spotlight[0]}" if spotlight[0] else ""), creds)
+    _jrec(True, f"sent: {len(summaries)} art, {len(pod_summaries)} pod, {len(topics)} topic", dry_run)
     return 0
 
 

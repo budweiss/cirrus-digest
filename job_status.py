@@ -13,6 +13,8 @@ Stdlib only. Never raises to the caller — a monitoring write must not break th
 job it is monitoring.
 """
 import json
+import os
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,11 +26,20 @@ STATUS_PATH = Path.home() / "projects/cirrus-digest/logs/jobs-status.json"
 CADENCE_H = {
     "morningbrief":  26,        # daily 07:30
     "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
+    "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
     "stratusreview": 24 * 33,   # monthly + grace
     "privacymon":    24 * 8,    # weekly Sunday + grace
 }
+
+# S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
+# CIRRUS (dev), it reads their status from CUMULUS's ledger over the read-only SSH
+# link instead of the (now-stale) local ledger — so a moved job is reported from
+# where it actually runs, not falsely flagged OVERDUE here.
+REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy"}
+REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
+REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 
 
 def record(name, ok, note=""):
@@ -50,34 +61,108 @@ def record(name, ok, note=""):
         pass
 
 
+def _here():
+    """Display name of the node this is running on (CIRRUS/CUMULUS/STRATUS)."""
+    try:
+        env = os.environ.get("TARGET_ENV", "dev")
+        prof = json.loads((Path.home() / "projects/cirrus-digest/config/node_profiles.json").read_text())
+        return prof.get(env, {}).get("node", "CIRRUS")
+    except Exception:
+        return "CIRRUS"
+
+
+def _load_local():
+    try:
+        return json.loads(STATUS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _fetch_remote():
+    """Read CUMULUS's jobs-status.json over the read-only SSH link (S57). Returns
+    the parsed dict, or None if the box is unreachable (never raises)."""
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+             REMOTE_HOST, f"cat {REMOTE_STATUS}"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode == 0 and r.stdout.strip():
+            return json.loads(r.stdout)
+    except Exception:
+        pass
+    return None
+
+
+def _row(name, cad_h, rec, now, tag=""):
+    """Pure evaluation of one job's record -> (line, good). Testable offline."""
+    if not rec:
+        return f"• {name}{tag}: no run recorded yet", None
+    age_h = (now - rec.get("epoch", 0)) / 3600.0
+    overdue = age_h > cad_h
+    good = bool(rec.get("ok")) and not overdue
+    mark = "✅" if good else "⚠️"
+    state = " OVERDUE" if overdue else (" FAILED" if not rec.get("ok") else "")
+    note = f" — {rec['note']}" if (rec.get("note") and not good) else ""
+    return f"{mark} {name}{tag}: {rec.get('last_run', '?')[:16]}{state}{note}", good
+
+
 def summarize():
     """Return (lines, all_ok).
 
-    all_ok is False only if a KNOWN job is overdue or its last run failed.
-    A job with no record yet (freshly deployed, not due) is shown neutrally and
-    does NOT flip all_ok — the watchdog covers a never-loaded agent separately.
+    Node-aware (S57): jobs in REMOTE_JOBS now run on CUMULUS, so when this runs on
+    CIRRUS their status is read from CUMULUS's ledger over the SSH link and tagged
+    "(CUMULUS)". If CUMULUS is unreachable, those jobs are reported neutrally
+    ("can't confirm") rather than falsely OVERDUE. On CUMULUS itself, everything is
+    read locally. all_ok is False only if a KNOWN job is overdue or last-run failed;
+    a not-yet-recorded or unconfirmable job is neutral.
     """
-    try:
-        data = json.loads(STATUS_PATH.read_text())
-    except Exception:
-        data = {}
+    local = _load_local()
+    node = _here()
+    use_remote = node == "CIRRUS"
+    remote = _fetch_remote() if use_remote else None
     now = int(time.time())
     lines, all_ok = [], True
     for name, cad_h in CADENCE_H.items():
-        rec = data.get(name)
-        if not rec:
-            lines.append(f"• {name}: no run recorded yet")
+        is_remote = use_remote and name in REMOTE_JOBS
+        if is_remote and remote is None:
+            lines.append(f"• {name} (CUMULUS): unreachable — can't confirm")
             continue
-        age_h = (now - rec.get("epoch", 0)) / 3600.0
-        overdue = age_h > cad_h
-        good = bool(rec.get("ok")) and not overdue
-        all_ok = all_ok and good
-        mark = "✅" if good else "⚠️"
-        state = ""
-        if overdue:
-            state = " OVERDUE"
-        elif not rec.get("ok"):
-            state = " FAILED"
-        note = f" — {rec['note']}" if (rec.get("note") and not good) else ""
-        lines.append(f"{mark} {name}: {rec.get('last_run', '?')[:16]}{state}{note}")
+        src = remote if is_remote else local
+        line, good = _row(name, cad_h, (src or {}).get(name), now,
+                          tag=" (CUMULUS)" if is_remote else "")
+        if good is False:
+            all_ok = False
+        lines.append(line)
     return lines, all_ok
+
+
+def selftest():
+    """Offline: verify _row's overdue/failed/ok/neutral evaluation."""
+    now = 1_000_000
+    hr = 3600
+    fails = 0
+
+    def ck(label, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] {label}")
+        fails += 0 if cond else 1
+
+    _, g = _row("j", 26, {"epoch": now - 2 * hr, "ok": True, "last_run": "x"}, now)
+    ck("fresh + ok -> good", g is True)
+    _, g = _row("j", 26, {"epoch": now - 48 * hr, "ok": True, "last_run": "x"}, now)
+    ck("stale beyond cadence -> overdue (not good)", g is False)
+    _, g = _row("j", 26, {"epoch": now - 2 * hr, "ok": False, "last_run": "x"}, now)
+    ck("recent but failed -> not good", g is False)
+    line, g = _row("j", 26, None, now)
+    ck("no record -> neutral (None)", g is None and "no run recorded" in line)
+    line, _ = _row("billsnow", 999, {"epoch": now, "ok": True, "last_run": "x"}, now,
+                   tag=" (CUMULUS)")
+    ck("remote tag renders", "(CUMULUS)" in line)
+    print("PASS" if not fails else f"{fails} FAILURE(S)")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    import sys
+    if "selftest" in sys.argv:
+        sys.exit(selftest())
