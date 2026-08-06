@@ -50,9 +50,13 @@ SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
 # on trouble, but NEVER kickstart — several of these send client email, and a
 # repair kickstart would fire an off-schedule send. Loaded/exit monitoring only;
 # run-success is tracked separately by job_status.py / jobs_check.py.
-MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.billnewdev",
-                "com.cirrus.billsnow", "com.cirrus.stratusreview",
-                "com.cirrus.pedagogy", "com.cirrus.privacymon"}
+# S57: billsnow / billnewdev / pedagogy were CUT OVER to CUMULUS and intentionally
+# unloaded on CIRRUS — dropped from this set so the watchdog doesn't false-alarm
+# "not loaded" for jobs that no longer live here. Their run-success is now watched
+# from CUMULUS's ledger via the morning brief (job_status node-aware pull); their
+# service health on CUMULUS is managed by systemd (see the CUMULUS-watchdog TODO).
+MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.stratusreview",
+                "com.cirrus.privacymon"}
 MAX_REPAIRS = 3
 
 
@@ -283,6 +287,10 @@ def _selftest():
         nonlocal ok, fail
         ok, fail = (ok + 1, fail) if cond else (ok, fail + 1)
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+
+    # S57: the cut-over jobs must NOT be watched on CIRRUS (they moved to CUMULUS).
+    moved = {"com.cirrus.billsnow", "com.cirrus.billnewdev", "com.cirrus.pedagogy"}
+    check("moved jobs dropped from MONITOR_ONLY", not (MONITOR_ONLY & moved))
 
     import tempfile
     global PROJECT_DIR, CREDS_PATH, STATE_PATH, HB_PATH, LOG_PATH
