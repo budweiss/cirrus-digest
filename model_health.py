@@ -55,6 +55,14 @@ MODEL_ERR = re.compile(
     r"(no longer available|not found|does not exist|deprecated|model_not_found|"
     r"not supported|invalid model|unknown model|404|decommission)", re.I)
 
+# Billing / out-of-credits / quota-exhausted failures. These are NOT self-healable
+# (you can't swap your way out of an unfunded account) — they need Buddy to add
+# funds / confirm auto-refill, so they get their own distinct Telegram alert.
+BILLING_ERR = re.compile(
+    r"(insufficient[_ ]?(quota|balance|funds|credit)|no credits|credit balance|"
+    r"out of (credits|balance)|billing|payment required|add (funds|credits)|"
+    r"purchase|top ?up|402|quota exceeded|exceeded your current quota)", re.I)
+
 
 def load():
     return json.loads(CREDS_PATH.read_text())
@@ -188,7 +196,7 @@ def node_name():
 def main():
     creds = load()
     providers = L.available(creds)
-    healthy, healed, broken, errored = [], [], [], []
+    healthy, healed, broken, errored, needs_funding = [], [], [], [], []
 
     for p in providers:
         field = MODEL_FIELD.get(p)
@@ -200,7 +208,12 @@ def main():
             healthy.append(f"{p}={model}")
             continue
         if not MODEL_ERR.search(err):
-            errored.append(f"{p}={model}: {err[:120]}")   # auth/network — no change
+            # billing/credits exhaustion is distinct from a transient auth/network
+            # blip — flag it so Buddy knows to check funding / auto-refill.
+            if BILLING_ERR.search(err):
+                needs_funding.append(f"{p}={model}: {err[:140]}")
+            else:
+                errored.append(f"{p}={model}: {err[:120]}")   # auth/network — no change
             continue
         # model-availability failure -> try to self-heal
         chosen = None
@@ -222,15 +235,22 @@ def main():
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     for label, items in (("healthy", healthy), ("healed", healed),
-                         ("broken", broken), ("errored", errored)):
+                         ("broken", broken), ("needs_funding", needs_funding),
+                         ("errored", errored)):
         for it in items:
             print(f"  {label}: {it}")
 
     # Notify only when something needs attention or changed.
-    if healed or broken or errored:
+    if healed or broken or errored or needs_funding:
         lines = [f"🩺 *{node_name()} model-health*"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
+        if needs_funding:
+            lines += ["*💳 NEEDS FUNDING — check auto-refill:*"] + \
+                     [f"• {n}" for n in needs_funding] + \
+                     ["_These accounts appear out of credits. Auto-refill/auto-recharge "
+                      "is a per-provider billing setting I can't toggle remotely — log in "
+                      "and I'll walk you through turning it on so this doesn't recur._"]
         if broken:
             lines += ["*BROKEN (needs you):*"] + [f"• {b}" for b in broken]
         if errored:
@@ -240,14 +260,42 @@ def main():
     # Run-status ledger (best-effort).
     try:
         import job_status
-        note = (f"{len(healthy)} ok, {len(healed)} healed, "
-                f"{len(broken)} broken, {len(errored)} err")
-        job_status.record("modelhealth", ok=(not broken and not errored), note=note)
+        note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
+                f"{len(needs_funding)} needs-funding, {len(errored)} err")
+        job_status.record("modelhealth",
+                          ok=(not broken and not errored and not needs_funding),
+                          note=note)
     except Exception:
         pass
 
-    sys.exit(1 if (broken or errored) else 0)
+    sys.exit(1 if (broken or errored or needs_funding) else 0)
+
+
+def selftest():
+    """Offline: verify error classification routes correctly."""
+    cases = [
+        # (sample provider error text, expect_model_heal, expect_needs_funding)
+        ("HTTP 404: model_not_found: claude-x is not found", True, False),
+        ("HTTP 400: model 'gpt-x' has been deprecated", True, False),
+        ("HTTP 429: You exceeded your current quota, please check your billing", False, True),
+        ("HTTP 402: insufficient_quota", False, True),
+        ("error: Your credit balance is too low to access the API", False, True),
+        ("xAI 403: no credits — add funds to continue", False, True),
+        ("HTTP 401: invalid x-api-key", False, False),          # auth -> plain error
+        ("read operation timed out", False, False),             # network -> plain error
+    ]
+    fails = 0
+    for txt, exp_model, exp_fund in cases:
+        m = bool(MODEL_ERR.search(txt))
+        f = bool(BILLING_ERR.search(txt)) and not m
+        ok = (m == exp_model) and (f == exp_fund)
+        print(f"  [{'OK ' if ok else 'FAIL'}] model={m} funding={f} :: {txt[:50]}")
+        fails += 0 if ok else 1
+    print("PASS" if not fails else f"{fails} FAILURE(S)")
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":
+    if "selftest" in sys.argv:
+        sys.exit(selftest())
     main()
