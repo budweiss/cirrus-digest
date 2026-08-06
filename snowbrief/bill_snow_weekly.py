@@ -49,7 +49,30 @@ CREDS_PATH = DIGEST_DIR / "config/credentials.json"
 sys.path.insert(0, str(DIGEST_DIR))               # for cirrus_daily + llm_providers
 
 import node_info                                   # S56: sign as the running node
+import ensemble                                     # S57: council cross-check + Claude synthesis
 NODE = node_info.node_name()                       # CIRRUS (dev) / CUMULUS (beta)
+
+
+def _local_hint():
+    """Best-effort {host,model,num_ctx,timeout} for the ensemble's local-draft
+    pass on the RUNNING node (from node_profiles.json + sources.json). Returns
+    None if unavailable, in which case the draft is simply skipped. Never raises."""
+    try:
+        env = os.environ.get("TARGET_ENV", "dev")
+        prof = json.loads((DIGEST_DIR / "config/node_profiles.json").read_text()).get(env, {})
+        model = prof.get("digest_model")
+        if not model:
+            return None
+        host = "http://localhost:11434"
+        try:
+            src = json.loads((DIGEST_DIR / "config/sources.json").read_text())
+            host = src.get("digest", {}).get("ollama_host", host)
+        except Exception:
+            pass
+        return {"host": host, "model": model,
+                "num_ctx": prof.get("num_ctx", 8192), "timeout": 120}
+    except Exception:
+        return None
 
 TO      = "whutchins@knightpropertysvs.com"
 CC      = "Buddy.Weiss@outlook.com"
@@ -186,8 +209,18 @@ def decide():
                 "urls": urls}, urls
     prompt = build_prompt(web_block, urls)
     try:
-        provider, text = L.escalate(SYSTEM, prompt, creds, max_tokens=8000)
-        print(f"[llm] provider={provider}, {len(text)} chars")
+        # S57: council cross-check + Claude synthesis when dev_escalation.mode=council;
+        # gracefully degrades to the prior single/failover escalate() otherwise. The
+        # judge preserves the JSON schema below, so parsing is unchanged either way.
+        # --council forces ensemble mode for A/B dry-runs without editing stored
+        # creds (Phase A). Scheduled/live runs use the box's dev_escalation.mode.
+        mode_override = "council" if "--council" in sys.argv else None
+        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=8000,
+                                          task="billsnow", local=_local_hint(),
+                                          app_dir=str(DIGEST_DIR), mode=mode_override)
+        print(f"[llm] mode={meta['mode']} members={meta['members']} judge={meta['judge']} "
+              f"degraded={meta['degraded']} est=${meta.get('est_cost_usd')} "
+              f"({meta['reason']}); {len(text)} chars")
     except Exception as e:
         return {"material_change": False, "error": True,
                 "reason": f"LLM call failed: {e}"}, urls
