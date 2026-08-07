@@ -77,35 +77,99 @@ def _mission() -> str:
     return MISSION_DEFAULT
 
 
-def _relevance(item: dict):
-    """Score a candidate 0-10 against the mission via local Ollama.
-    Returns (score:int, why:str). Fail-open: (10, reason) on any error."""
-    prompt = (f"{_mission()}\n\n"
-              f"Candidate self-improvement proposal:\n"
-              f"TYPE: {item.get('type','')}\n"
-              f"PROPOSAL: {item.get('detail','')}\n"
-              f"WHY (from digest): {item.get('why','')}\n\n"
-              f"How relevant and worthwhile is this proposal to the mission "
-              f"above? Consider: does it concretely help one of the listed "
-              f"systems/businesses? Is it actionable on this infrastructure?\n"
-              f"Reply with EXACTLY one line: SCORE: <0-10> | WHY: <one short "
-              f"sentence>")
+# ── Multi-LLM council gate (S57) ──────────────────────────────────────────────
+# Buddy: self-improvement should be judged by ALL the LLMs we have, not the local
+# model alone. Every candidate self-change is scored by the keyed panel in COUNCIL
+# mode and synthesized by Claude. Falls back to the local model, and is ALWAYS
+# fail-open (a gate error must never eat a real proposal). Disable per box with
+# credentials.json "self_review_council": false.
+try:
+    import ensemble  # council cross-check + Claude synthesis over the keyed panel
+except Exception:
+    ensemble = None
+
+_CREDS_CACHE = None
+
+
+def _creds() -> dict:
+    global _CREDS_CACHE
+    if _CREDS_CACHE is None:
+        try:
+            _CREDS_CACHE = json.loads((B.PROJECT_DIR / "config/credentials.json").read_text())
+        except Exception:
+            _CREDS_CACHE = {}
+    return _CREDS_CACHE
+
+
+def _gate_prompt(item: dict) -> str:
+    return (f"{_mission()}\n\n"
+            f"Candidate self-improvement proposal:\n"
+            f"TYPE: {item.get('type','')}\n"
+            f"PROPOSAL: {item.get('detail','')}\n"
+            f"WHY (from digest): {item.get('why','')}\n\n"
+            f"How relevant and worthwhile is this proposal to the mission "
+            f"above? Consider: does it concretely help one of the listed "
+            f"systems/businesses? Is it actionable on this infrastructure?\n"
+            f"Reply with EXACTLY one line: SCORE: <0-10> | WHY: <one short sentence>")
+
+
+def _parse_score(text: str):
+    m = re.search(r'SCORE:\s*(\d+)', text or "")
+    if not m:
+        return None
+    why_m = re.search(r'WHY:\s*(.+)', text)
+    return min(int(m.group(1)), 10), (why_m.group(1).strip()[:120] if why_m else "")
+
+
+def _relevance_local(item: dict):
+    """Score 0-10 against the mission via local Ollama. Fail-open: (10, ...)."""
     try:
         r = requests.post(f"{B.OLLAMA_HOST}/api/generate",
-                          json={"model": B.MODEL, "prompt": prompt,
+                          json={"model": B.MODEL, "prompt": _gate_prompt(item),
                                 "stream": False,
                                 "options": {"temperature": 0, "num_ctx": 2048}},
                           timeout=90)
         r.raise_for_status()
-        text = r.json().get("response", "")
-        m = re.search(r'SCORE:\s*(\d+)', text)
-        if not m:
-            return 10, "gate parse failure — fail-open"
-        why_m = re.search(r'WHY:\s*(.+)', text)
-        return min(int(m.group(1)), 10), (why_m.group(1).strip()[:120]
-                                          if why_m else "")
+        return _parse_score(r.json().get("response", "")) or \
+            (10, "gate parse failure — fail-open")
     except Exception as e:
         return 10, f"gate unavailable ({e}) — fail-open"
+
+
+_COUNCIL_SYSTEM = (
+    "You are one of several AI models on a review council scoring a proposed "
+    "self-improvement to Buddy's CIRRUS/CUMULUS system against its mission. Judge "
+    "strictly whether it concretely helps the listed systems/businesses and is "
+    "actionable on this local infrastructure. Reply with EXACTLY one line: "
+    "SCORE: <0-10> | WHY: <one short sentence>.")
+
+
+def _relevance_council(item: dict, creds: dict):
+    """All keyed LLMs score the proposal; Claude synthesizes one SCORE/WHY.
+    Raises on any failure so the caller falls back to the local model."""
+    meta, text = ensemble.best_answer(_COUNCIL_SYSTEM, _gate_prompt(item), creds,
+                                      max_tokens=256, task="self-review-gate",
+                                      mode="council")
+    parsed = _parse_score(text)
+    if not parsed:
+        raise ValueError("no SCORE in council reply")
+    score, why = parsed
+    who = "/".join(meta.get("members", [])) or "?"
+    tag = "council" if not meta.get("degraded") else "council-degraded"
+    return score, f"[{tag} {who}→{meta.get('judge')}] {why}"
+
+
+def _relevance(item: dict):
+    """Score a candidate 0-10 against the mission. Uses the full LLM council when
+    available (all keyed models + Claude synthesis), else the local model.
+    ALWAYS fail-open — a gate failure must never eat a real proposal."""
+    creds = _creds()
+    if ensemble is not None and creds.get("self_review_council", True):
+        try:
+            return _relevance_council(item, creds)
+        except Exception as e:
+            B.log(f"self_review: council gate fell back to local ({e})")
+    return _relevance_local(item)
 
 
 def _log_filtered(item: dict, score: int, why: str):
@@ -338,5 +402,36 @@ def _notify(kind, added, proposed, hardware, filtered=None):
         B.log(f"self_review notify failed: {e}")
 
 
+def _gate_test():
+    """No-side-effect check: score an on-mission and an off-mission candidate with
+    BOTH the local model and the council, and print. Touches no queue/ledger/telegram."""
+    samples = [
+        {"type": "CIRRUS_NOTE",
+         "detail": "Add automated tok/s + quality benchmarks to the CUMULUS ollama "
+                   "setup so we can compare qwen3-coder releases before promoting one",
+         "why": "streamlines picking the best local model for the digest/agent work"},
+        {"type": "CIRRUS_NOTE",
+         "detail": "Write a guide to the best celebrity crypto trading strategies of 2026",
+         "why": "trending topic in the newsletters"},
+    ]
+    creds = _creds()
+    print(f"council enabled: {ensemble is not None and creds.get('self_review_council', True)} | "
+          f"keyed providers: {ensemble.L.available(creds) if ensemble else '(no ensemble)'}")
+    for i, s in enumerate(samples, 1):
+        print(f"\n--- sample {i} ({'on' if i == 1 else 'off'}-mission): {s['detail'][:60]}...")
+        ls, lw = _relevance_local(s)
+        print(f"  LOCAL   : {ls}/10 — {lw}")
+        if ensemble is not None:
+            try:
+                cs, cw = _relevance_council(s, creds)
+                print(f"  COUNCIL : {cs}/10 — {cw}")
+            except Exception as e:
+                print(f"  COUNCIL : failed ({e})")
+
+
 if __name__ == "__main__":
-    run(sys.argv[1] if len(sys.argv) > 1 else "daily")
+    arg = sys.argv[1] if len(sys.argv) > 1 else "daily"
+    if arg == "gatetest":
+        _gate_test()
+    else:
+        run(arg)
