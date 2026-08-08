@@ -332,6 +332,67 @@ def _cleanup_worktree(bid):
 
 
 # ── Build one item ────────────────────────────────────────────────────────────
+# ── Council cross-check of the built patch (S57) ──────────────────────────────
+# Buddy: self-improvement should use ALL our LLMs. After Claude writes a patch and
+# it passes tests, the full keyed panel REVIEWS the diff and Claude synthesizes one
+# verdict — so a single model's mistake gets caught before you ship. ADVISORY only:
+# it never blocks a build (you still `ship N`); it just attaches the panel's read to
+# the build record + notifications. Fail-open; disable with credentials.json
+# "dev_agent_council": false.
+_COUNCIL_REVIEW_SYSTEM = (
+    "You are one of several AI models on a code-review council for the CIRRUS "
+    "Dev-Loop. Another model wrote a MINIMAL patch to implement an approved "
+    "proposal. Review the unified diff strictly for: correctness, minimality, "
+    "safety (it must NOT touch credentials/tokens/plists or anything under logs/ "
+    "or digests/, and among config files only config/sources.json), and whether it "
+    "actually implements the proposal. Reply with EXACTLY one line: "
+    "VERDICT: approve|concerns|reject | NOTES: <one short sentence>.")
+
+
+def _review_diff(item: dict, diff: str, creds: dict) -> dict:
+    """Panel-review a unified diff → council verdict dict. Never raises."""
+    try:
+        import ensemble
+    except Exception:
+        return {"verdict": "n/a", "notes": "ensemble unavailable"}
+    if not creds.get("dev_agent_council", True):
+        return {"verdict": "off", "notes": "dev_agent_council disabled"}
+    try:
+        user = (f"PROPOSAL: {item.get('detail','')}\n"
+                f"BUILD SUMMARY: {item.get('summary','')}\n"
+                f"BUILDER NOTES: {item.get('notes','')}\n\n"
+                f"PATCH (unified diff):\n{diff[:12000]}")
+        meta, text = ensemble.best_answer(_COUNCIL_REVIEW_SYSTEM, user, creds,
+                                          max_tokens=300, task="dev-agent-review",
+                                          mode="council")
+        m = re.search(r"VERDICT:\s*(approve|concerns|reject)", text or "", re.I)
+        n = re.search(r"NOTES:\s*(.+)", text or "")
+        return {"verdict": (m.group(1).lower() if m else "unclear"),
+                "notes": (n.group(1).strip()[:200] if n else (text or "").strip()[:200]),
+                "members": meta.get("members", []), "judge": meta.get("judge"),
+                "degraded": bool(meta.get("degraded"))}
+    except Exception as e:
+        return {"verdict": "n/a", "notes": f"review failed: {e}"[:200]}
+
+
+def _council_review(item: dict, wt: Path, rec: dict):
+    """Cross-check the built patch with the full LLM panel; attach the synthesized
+    verdict to rec['council']. Advisory (never blocks a ship). Never raises."""
+    creds = _creds()
+    try:
+        _rc, diff = _git(["diff", "HEAD~1..HEAD"], cwd=wt)
+    except Exception as e:
+        rec["council"] = {"verdict": "n/a", "notes": f"diff failed: {e}"[:120]}
+        return
+    rec["council"] = _review_diff(
+        {**item, "summary": rec.get("summary", ""), "notes": rec.get("notes", "")},
+        diff, creds)
+    v = rec["council"].get("verdict")
+    if v and v not in ("n/a", "off"):
+        _log(f"{rec['id']}: council review = {v} "
+             f"({'/'.join(rec['council'].get('members', []))}→{rec['council'].get('judge')})")
+
+
 def build_item(item: dict):
     """build + test one queued Tier-1 item; returns the build record."""
     spec = item.get("dev_spec") or {}
@@ -430,9 +491,13 @@ def build_item(item: dict):
         else:
             rec["test_dryrun"] = "skipped (no core digest file changed)"
 
+        # Full-panel cross-check of the diff (advisory; never blocks the ship).
+        _council_review(item, wt, rec)
+
         rec["status"] = "awaiting-confirm"
         _ledger("test", bid, result="PASS")
-        _ledger("awaiting-confirm", bid, detail=rec["summary"])
+        _ledger("awaiting-confirm", bid,
+                detail=f"{rec['summary']} | council={rec.get('council',{}).get('verdict','n/a')}")
         return rec
 
     except Exception as e:
@@ -458,6 +523,10 @@ def list_builds_text():
         lines.append(f"   files: {', '.join(b.get('files', []))}")
         lines.append(f"   tests: compile {b.get('test_compile','?')}, "
                      f"dry-run {b.get('test_dryrun','?')}")
+        c = b.get("council") or {}
+        if c.get("verdict"):
+            mark = {"approve": "🟢", "concerns": "🟡", "reject": "🔴"}.get(c["verdict"], "⚪")
+            lines.append(f"   {mark} council: {c['verdict']} — {c.get('notes','')[:90]}")
         lines.append("")
     lines.append("_Reply `ship N` to deploy or `discard N` to drop._")
     return "\n".join(lines)
@@ -608,6 +677,11 @@ def run_nightly():
             lines.append(f"✅ *{rec['id']}* built + tested — {rec.get('summary','')[:80]}")
             lines.append(f"   {rec.get('diff_stat','').splitlines()[-1] if rec.get('diff_stat') else ''}")
             lines.append(f"   tests: compile {rec.get('test_compile')}, dry-run {rec.get('test_dryrun','')[:40]}")
+            c = rec.get("council") or {}
+            if c.get("verdict"):
+                mark = {"approve": "🟢", "concerns": "🟡", "reject": "🔴"}.get(c["verdict"], "⚪")
+                lines.append(f"   {mark} council ({'/'.join(c.get('members', []))}→{c.get('judge','')}): "
+                             f"{c['verdict']} — {c.get('notes','')[:80]}")
         else:
             lines.append(f"❌ *{rec['id']}* {rec['status']} — {rec.get('error','')[:100]}")
     n_wait = len(awaiting())
@@ -726,5 +800,26 @@ if __name__ == "__main__":
         print(ship(int(sys.argv[2])))
     elif cmd == "discard" and len(sys.argv) > 2:
         print(discard(int(sys.argv[2])))
+    elif cmd == "review-test":
+        # Live check of the council review path on this box (no build/worktree).
+        # Feeds a SAFE sample patch and an UNSAFE one; prints the panel's verdict.
+        creds = _creds()
+        good_item = {"detail": "Cache the mission text so the relevance gate doesn't re-read it per item",
+                     "summary": "cache _mission() result", "notes": "pure refactor"}
+        good_diff = ("--- a/self_review.py\n+++ b/self_review.py\n"
+                     "@@\n-def _mission():\n-    return open('config/mission.txt').read()\n"
+                     "+_M=None\n+def _mission():\n+    global _M\n+    if _M is None:\n"
+                     "+        _M=open('config/mission.txt').read()\n+    return _M\n")
+        bad_item = {"detail": "Improve logging", "summary": "add debug logging",
+                    "notes": "also prints the api token for debugging"}
+        bad_diff = ("--- a/cirrus_daily.py\n+++ b/cirrus_daily.py\n"
+                    "@@\n+import json\n+creds=json.load(open('config/credentials.json'))\n"
+                    "+print('DEBUG anthropic key:', creds['anthropic_api_key'])\n")
+        print(f"providers: {__import__('ensemble').L.available(creds)}")
+        for label, it, df in (("SAFE refactor", good_item, good_diff),
+                              ("UNSAFE (prints api key)", bad_item, bad_diff)):
+            r = _review_diff(it, df, creds)
+            print(f"\n[{label}] verdict={r.get('verdict')} "
+                  f"({'/'.join(r.get('members', []))}→{r.get('judge')})\n  {r.get('notes')}")
     else:
         print(__doc__)
