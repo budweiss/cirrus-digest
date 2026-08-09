@@ -713,18 +713,31 @@ def technique_spotlight(cfg, state):
 # ── Focus topics (Alyssa's REQUEST: queue via intake) ────────────────────────
 
 TOPIC_PROMPT = """Alyssa, an experienced 4th-grade reading/writing/English
-teacher (10+ years), asked for research on: {topic}
+teacher (10+ years), asked for help with: {topic}
 
-Write a practical research brief in markdown (no top-level heading, under
-450 words) pitched at a veteran teacher — skip the basics and any beginner
-explanation, emphasize the latest evidence, points of active debate, and
-emerging practices (including ways educators outside the US approach it):
-what the evidence says, what works in a 4th-grade classroom, and 2-3 concrete
-next steps she can take. Include at least one specific, detailed example (a
-sample activity, short text, or piece of student work) so it is immediately
-usable. Name the research base honestly; do not invent citations, statistics,
-or program names. If the topic is outside reading/writing/English instruction,
-say so briefly and give your best practical pointer."""
+First decide what she is actually asking for:
+
+• If she wants a RECAP, OUTLINE, SUMMARY, or REVIEW of a specific book,
+  chapter, or text (e.g. getting ready to teach or revisit it), give exactly
+  that — a clear recap and/or a structured, usable outline (key points, themes,
+  and how it maps to 4th-grade instruction) — but ONLY from what you reliably
+  know about that specific work. If you are NOT confident you know the exact
+  book/edition well enough to be accurate, SAY SO plainly in the first line and
+  ask her to reply with the text or a link so we can do it properly. NEVER guess
+  at or invent a book's contents, plot, or page details.
+
+• Otherwise, treat it as a request for a practical research brief: markdown (no
+  top-level heading, under 450 words), pitched at a veteran teacher — skip the
+  basics, emphasize the latest evidence, active debates, and emerging practices
+  (including how educators outside the US approach it): what the evidence says,
+  what works in a 4th-grade classroom, and 2-3 concrete next steps. Include one
+  specific, detailed example so it is immediately usable.
+
+In all cases: name the research base honestly; do not invent citations,
+statistics, program names, or book contents. If the request is outside
+reading/writing/English instruction, say so briefly and give your best
+practical pointer. If anything about the request is unclear or you can't do it
+accurately, tell her that directly at the top so she knows right away."""
 
 
 _TOPIC_COUNCIL_SYSTEM = (
