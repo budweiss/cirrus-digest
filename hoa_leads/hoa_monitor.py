@@ -158,7 +158,7 @@ def gather_web():
                     snippet = (content or "")[:600]
             except Exception:
                 pass
-            out.append({"source": "web", "url": _resolve_url(u),
+            out.append({"source": "web", "url": u,
                         "text": snippet.replace("\n", " ") or "(no snippet retrieved)"})
             if len(out) >= MAX_CANDIDATES:
                 break
@@ -305,6 +305,16 @@ def main():
         return
 
     leads = council_filter(fresh[:MAX_CANDIDATES], creds)
+    # Resolve search-redirect links to real destination URLs — ONLY for the few the
+    # council kept (fast), then final-dedupe on the real URL so Bill never gets a
+    # repeat or an opaque redirect link.
+    final = []
+    for l in leads:
+        l["url"] = _resolve_url(l["url"])
+        if l["url"] in seen:
+            continue
+        final.append(l)
+    leads = final
     print(f"council kept {len(leads)} genuine lead(s).")
 
     if dry:
