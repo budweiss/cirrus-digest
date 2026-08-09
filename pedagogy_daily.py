@@ -51,6 +51,11 @@ try:
 except Exception:
     job_status = None
 
+try:
+    import ensemble                 # S57: 4-LLM council for Alyssa's requested topic briefs
+except Exception:
+    ensemble = None
+
 
 def _jrec(ok, note, dry):
     """Best-effort pedagogy run-status record (skipped on dry-run). Never raises."""
@@ -722,14 +727,41 @@ or program names. If the topic is outside reading/writing/English instruction,
 say so briefly and give your best practical pointer."""
 
 
-def cover_focus_topics(cfg, dry_run):
+_TOPIC_COUNCIL_SYSTEM = (
+    "You are one of several models writing a practical literacy research brief for "
+    "Alyssa, an experienced 4th-grade reading/writing/English teacher. Follow the "
+    "user's instructions exactly (markdown, under 450 words, veteran-level, one "
+    "concrete example). Be rigorously honest — NEVER invent citations, statistics, "
+    "study titles, or program names.")
+
+
+def _topic_brief(topic, cfg, creds):
+    """A topic brief for one of Alyssa's REQUESTS. These are high-value + low-volume,
+    so they get the full 4-LLM council (each drafts, Claude synthesizes the best),
+    when available — else the local model. Fail-open to local on any council issue."""
+    prompt = TOPIC_PROMPT.format(topic=topic)
+    if ensemble is not None and creds and creds.get("pedagogy_council", True):
+        try:
+            meta, text = ensemble.best_answer(_TOPIC_COUNCIL_SYSTEM, prompt, creds,
+                                              max_tokens=1400, task="pedagogy-topic",
+                                              mode="council")
+            if text and text.strip() and not text.startswith("[Summarization"):
+                log(f"  topic brief via council "
+                    f"({'/'.join(meta.get('members', []))}→{meta.get('judge')})")
+                return text
+        except Exception as e:
+            log(f"  topic council failed → local fallback: {e}")
+    return ollama(prompt, cfg, timeout=240)
+
+
+def cover_focus_topics(cfg, dry_run, creds=None):
     data = load_json(TOPICS_PATH, {"topics": []})
     covered = []
     for t in data.get("topics", []):
         if t.get("status") != "active":
             continue
         log(f"focus topic: {t['topic'][:60]}")
-        brief = ollama(TOPIC_PROMPT.format(topic=t["topic"]), cfg, timeout=240)
+        brief = _topic_brief(t["topic"], cfg, creds)
         if brief.startswith("[Summarization error"):
             continue
         covered.append({"topic": t["topic"], "requested_by":
@@ -856,7 +888,7 @@ def main(dry_run=False, force=False):
 
     articles = fetch_articles(cfg, state)
     podcasts = fetch_podcasts(cfg, state)
-    topics = cover_focus_topics(cfg, dry_run)
+    topics = cover_focus_topics(cfg, dry_run, creds)
 
     # Dry-spell source discovery (Buddy 2026-07-23): if the FEEDS produce nothing
     # for several days running, ask a foundation model for fresh literacy sources
