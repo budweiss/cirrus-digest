@@ -415,9 +415,17 @@ def load_ledger():
     return _load_json(LEDGER, {})
 
 
-def update_ledger(items):
-    """Merge assessed items into the ledger. Returns (new_items, high_new)."""
+def update_ledger(items, breaches=None):
+    """Merge assessed items into the ledger. Returns (new_items, high_new).
+
+    Status lifecycle: new -> known (seen again) -> resolved (Buddy acknowledged
+    via do_resolve, e.g. changed password + enabled 2FA). A `resolved` breach
+    finding is REACTIVATED (back to `new`, re-alerts) only if HIBP now reports a
+    breach name we did NOT acknowledge — so historical breaches stay quiet but a
+    genuinely fresh breach still surfaces. See do_resolve() / ack_breaches.
+    """
     ledger = load_ledger()
+    breaches = breaches or {}
     now = datetime.now().isoformat(timespec="seconds")
     new_items, high_new = [], []
     for it in items:
@@ -432,9 +440,24 @@ def update_ledger(items):
             if (it.get("severity") == "high"):
                 high_new.append(ledger[fid])
         else:
-            ledger[fid]["last_seen"] = now
-            if ledger[fid].get("status") == "new":
-                ledger[fid]["status"] = "known"
+            entry = ledger[fid]
+            entry["last_seen"] = now
+            if entry.get("status") == "new":
+                entry["status"] = "known"
+            elif entry.get("status") == "resolved" and it.get("category") == "breach":
+                # Only a NEW (un-acknowledged) breach name reactivates the alert.
+                current = set(breaches.get(it.get("target", ""), []))
+                acked   = set(entry.get("ack_breaches", []))
+                fresh   = sorted(current - acked)
+                if fresh:
+                    entry["status"] = "new"
+                    entry["severity"] = "high"
+                    entry["why"] = ("NEW breach since you acknowledged this email: "
+                                    + ", ".join(fresh)
+                                    + " (already acknowledged: "
+                                    + (", ".join(sorted(acked)) or "none") + ").")
+                    new_items.append(entry)
+                    high_new.append(entry)
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         LEDGER.write_text(json.dumps(ledger, indent=2) + "\n")
@@ -443,17 +466,74 @@ def update_ledger(items):
     return new_items, high_new
 
 
+# ── acknowledge / resolve ───────────────────────────────────────────────────
+def do_resolve(argv):
+    """Mark breach findings as resolved/acknowledged (e.g. Buddy changed the
+    password + enabled 2FA). Captures the CURRENT HIBP breach set as
+    `ack_breaches`; future runs only re-alert if an UN-acknowledged breach name
+    appears. Usage: privacy_monitor.py --resolve <email1,email2> [--note "..."]"""
+    emails, note = [], ""
+    if "--resolve" in argv:
+        i = argv.index("--resolve")
+        if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            emails = [e.strip() for e in argv[i + 1].split(",") if e.strip()]
+    if "--note" in argv:
+        j = argv.index("--note")
+        if j + 1 < len(argv):
+            note = argv[j + 1]
+    if not emails:
+        print("do_resolve: no emails given (--resolve a@b.com,c@d.com [--note \"...\"])")
+        return
+    wl    = load_watchlist() or {}
+    creds = load_creds()
+    api_key = creds.get("hibp_api_key") or wl.get("settings", {}).get("hibp_api_key")
+    ledger = load_ledger()
+    if LEDGER.exists():                       # reversible: keep a backup
+        (LEDGER.parent / (LEDGER.name + ".bak")).write_text(LEDGER.read_text())
+    now = datetime.now().isoformat(timespec="seconds")
+    today = datetime.now().strftime("%Y-%m-%d")
+    for em in emails:
+        fid = f"{em}|breach|"
+        if fid not in ledger:
+            print(f"  ! {em}: not a tracked breach finding — skipped.")
+            continue
+        names = hibp_check(em, api_key) if api_key else None
+        if names is None:
+            print(f"  ! {em}: HIBP check failed (no key / error) — NOT resolved, "
+                  f"re-run when HIBP is reachable so ack_breaches is accurate.")
+            continue
+        entry = ledger[fid]
+        entry["status"] = "resolved"
+        entry["resolved_on"] = today
+        entry["resolved_note"] = note or "password changed + 2FA enabled"
+        entry["ack_breaches"] = sorted(names)
+        entry["last_seen"] = now
+        print(f"  ✓ {em}: resolved; acknowledged {len(names)} breach(es): "
+              f"{', '.join(sorted(names)) or '(none currently)'}")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LEDGER.write_text(json.dumps(ledger, indent=2) + "\n")
+    print("ledger updated:", LEDGER, "(backup: findings.json.bak)")
+
+
 # ── report compose ──────────────────────────────────────────────────────────
 def compose_report(items, breaches, council_note, hibp_keyed, new_items, high_new):
+    led = load_ledger()
+
+    def _resolved(item):
+        return led.get(_fid(item), {}).get("status") == "resolved"
+
     real = [i for i in items if i.get("verdict") in ("real", "unreviewed")]
+    active = [i for i in real if not _resolved(i)]
+    acked  = [i for i in real if _resolved(i)]
     by_sev = {"high": [], "medium": [], "low": [], "unknown": []}
-    for i in real:
+    for i in active:
         by_sev.get(i.get("severity", "unknown"), by_sev["unknown"]).append(i)
 
     lines = [f"# Privacy Exposure Report — {TODAY}", ""]
     lines.append(f"Scanned exposure candidates and triaged them with the LLM council. "
-                 f"**{len(real)} flagged**, **{len(new_items)} new since last run** "
-                 f"({len(high_new)} high-severity new).")
+                 f"**{len(active)} active**, **{len(new_items)} new since last run** "
+                 f"({len(high_new)} high-severity new)"
+                 + (f", {len(acked)} acknowledged." if acked else "."))
     lines.append("")
     if not hibp_keyed:
         lines.append("> HIBP breach check is **dormant** — add `hibp_api_key` to "
@@ -474,12 +554,30 @@ def compose_report(items, breaches, council_note, hibp_keyed, new_items, high_ne
             lines.append(f"- **{tgt}** [{cat}]{loc}\n  {why}")
         lines.append("")
 
-    if breaches:
+    # Breach section: only NON-acknowledged emails get the change-password nag.
+    active_breaches = {em: n for em, n in (breaches or {}).items()
+                       if led.get(f"{em}|breach|", {}).get("status") != "resolved"}
+    if active_breaches:
         lines.append("## Breach exposure (HIBP)")
-        for em, names in breaches.items():
+        for em, names in active_breaches.items():
             lines.append(f"- **{em}** — {len(names)} breach(es): {', '.join(names)}")
             lines.append("  → **ACTION:** change this account's password now and turn on "
                          "2-factor authentication; make sure it isn't reused on other sites.")
+        lines.append("")
+
+    # Acknowledged / remediated — still on record, no action needed. Reactivates
+    # automatically if HIBP later reports a breach you have not acknowledged.
+    if acked:
+        lines.append(f"## Acknowledged / remediated ({len(acked)}) — no action needed")
+        for i in acked:
+            e = led.get(_fid(i), {})
+            on = e.get("resolved_on", "?")
+            note = e.get("resolved_note", "")
+            ack = e.get("ack_breaches", [])
+            extra = f" — {note}" if note else ""
+            brs = f" [{', '.join(ack)}]" if ack else ""
+            lines.append(f"- **{i.get('target','?')}** [{i.get('category','?')}] "
+                         f"— acknowledged {on}{extra}{brs}")
         lines.append("")
 
     lines.append("---")
@@ -516,6 +614,10 @@ def main():
           f"({'dry-run' if dry else 'live'}{' no-llm' if no_llm else ''})")
 
     precheck = "--precheck" in sys.argv
+
+    if "--resolve" in sys.argv:
+        do_resolve(sys.argv)
+        return
 
     wl = load_watchlist()
     if wl is None:
@@ -562,7 +664,7 @@ def main():
     items, council_note = triage(hits, breaches, creds, no_llm=no_llm)
     print("   " + council_note)
 
-    new_items, high_new = update_ledger(items)
+    new_items, high_new = update_ledger(items, breaches)
     subject, body = compose_report(items, breaches, council_note,
                                    hibp_keyed, new_items, high_new)
 
