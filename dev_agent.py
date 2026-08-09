@@ -491,8 +491,11 @@ def build_item(item: dict):
         else:
             rec["test_dryrun"] = "skipped (no core digest file changed)"
 
-        # Full-panel cross-check of the diff (advisory; never blocks the ship).
+        # Full-panel cross-check of the diff. A council REJECT auto-HOLDS the build:
+        # it stays visible but `ship` refuses it until an explicit `unhold` (S57).
         _council_review(item, wt, rec)
+        if (rec.get("council") or {}).get("verdict") == "reject":
+            rec["council_hold"] = True
 
         rec["status"] = "awaiting-confirm"
         _ledger("test", bid, result="PASS")
@@ -526,7 +529,8 @@ def list_builds_text():
         c = b.get("council") or {}
         if c.get("verdict"):
             mark = {"approve": "🟢", "concerns": "🟡", "reject": "🔴"}.get(c["verdict"], "⚪")
-            lines.append(f"   {mark} council: {c['verdict']} — {c.get('notes','')[:90]}")
+            held = "  🔒 HELD (reply `unhold N` to override)" if b.get("council_hold") else ""
+            lines.append(f"   {mark} council: {c['verdict']} — {c.get('notes','')[:90]}{held}")
         lines.append("")
     lines.append("_Reply `ship N` to deploy or `discard N` to drop._")
     return "\n".join(lines)
@@ -539,6 +543,11 @@ def ship(n: int):
     if not (1 <= n <= len(rows)):
         return f"Invalid build number. Choose 1-{len(rows)}." if rows else "No builds awaiting confirm."
     b = rows[n - 1]
+    if b.get("council_hold"):
+        c = b.get("council") or {}
+        return (f"🔴 `{b['id']}` was REJECTED by the review council "
+                f"({'/'.join(c.get('members', []))}→{c.get('judge','')}): {c.get('notes','')[:140]}\n"
+                f"It's HELD. Reply `unhold {n}` to override, then `ship {n}` — or `discard {n}`.")
     bid, wt, changed = b["id"], Path(b["worktree"]), b.get("files", [])
     _ledger("ship", bid, detail=b.get("summary", ""))
 
@@ -652,6 +661,23 @@ def discard(n: int):
     return f"🗑 Discarded `{b['id']}` — branch and worktree removed."
 
 
+def unhold(n: int):
+    """Clear a council auto-hold on awaiting build #n so it can be shipped (S57).
+    Explicit override of a council REJECT — Buddy's decision, logged."""
+    builds = builds_load()
+    rows = awaiting(builds)
+    if not (1 <= n <= len(rows)):
+        return f"Invalid build number. Choose 1-{len(rows)}." if rows else "No builds awaiting confirm."
+    b = rows[n - 1]
+    if not b.get("council_hold"):
+        return f"`{b['id']}` is not held — nothing to override."
+    b["council_hold"] = False
+    b["council_hold_overridden"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    builds_save(builds)
+    _ledger("unhold", b["id"], detail=f"override council reject: {(b.get('council') or {}).get('notes','')[:80]}")
+    return f"🔓 Override recorded — `{b['id']}` un-held. Reply `ship {n}` to deploy it anyway."
+
+
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
 def run_nightly():
     _log("nightly sweep start")
@@ -680,8 +706,9 @@ def run_nightly():
             c = rec.get("council") or {}
             if c.get("verdict"):
                 mark = {"approve": "🟢", "concerns": "🟡", "reject": "🔴"}.get(c["verdict"], "⚪")
+                held = "  🔒 HELD (`unhold N` to override)" if rec.get("council_hold") else ""
                 lines.append(f"   {mark} council ({'/'.join(c.get('members', []))}→{c.get('judge','')}): "
-                             f"{c['verdict']} — {c.get('notes','')[:80]}")
+                             f"{c['verdict']} — {c.get('notes','')[:80]}{held}")
         else:
             lines.append(f"❌ *{rec['id']}* {rec['status']} — {rec.get('error','')[:100]}")
     n_wait = len(awaiting())
@@ -800,6 +827,8 @@ if __name__ == "__main__":
         print(ship(int(sys.argv[2])))
     elif cmd == "discard" and len(sys.argv) > 2:
         print(discard(int(sys.argv[2])))
+    elif cmd == "unhold" and len(sys.argv) > 2:
+        print(unhold(int(sys.argv[2])))
     elif cmd == "review-test":
         # Live check of the council review path on this box (no build/worktree).
         # Feeds a SAFE sample patch and an UNSAFE one; prints the panel's verdict.

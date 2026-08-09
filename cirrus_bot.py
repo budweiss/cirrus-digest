@@ -2073,15 +2073,18 @@ def handle_message(message, chat_id):
         return cmd_omitlist()
     elif re.match(r"^(approve|reject)(\s+(\d+|all))?$", normalized, re.IGNORECASE):
         return handle_approval_reply(normalized, chat_id)
-    elif re.match(r"^(ship|discard)\s+\d+$", normalized, re.IGNORECASE):
-        # Dev-Loop Phase 3 one-tap: deploy or drop a tested nightly build.
+    elif re.match(r"^(ship|discard|unhold)\s+\d+$", normalized, re.IGNORECASE):
+        # Dev-Loop Phase 3 one-tap: deploy, drop, or override-hold a tested build.
         try:
             import dev_agent
             verb, num = normalized.split()
-            if verb.lower() == "ship":
+            verb = verb.lower()
+            if verb == "ship":
                 send_message(chat_id, "🚀 Shipping — snapshot, rebase, push, "
                                       "pull, verify. ~1 min...")
                 return dev_agent.ship(int(num))
+            if verb == "unhold":
+                return dev_agent.unhold(int(num))
             return dev_agent.discard(int(num))
         except Exception as e:
             return f"❌ dev-loop error: {e}"
