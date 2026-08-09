@@ -26,6 +26,8 @@ ALLOWED = {
     "grok_api_key", "grok_model",
     "deepseek_api_key", "deepseek_model",
     "brave_api_key",
+    # S57: X (Twitter) API for the Bill HOA lead-monitor (v2 recent search).
+    "x_bearer_token", "x_api_key", "x_api_secret",
 }
 
 CREDS = "config/credentials.json"
