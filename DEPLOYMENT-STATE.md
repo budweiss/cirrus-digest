@@ -20,7 +20,8 @@ _Last updated: 2026-08-06 (S57) — client jobs cut over to CUMULUS; ensemble li
 |:--|:--|:--|:--|:--|:--|:--|
 | billsnow | `snowbrief/bill_snow_weekly.py` | **CUMULUS** | Mon 08:06 | council | CIRRUS (SSH pull) | S57 cutover; sends to Bill on material change only, cc Buddy |
 | billnewdev | `newdev/bill_newdev_weekly.py` | **CUMULUS** | Mon 09:05 | n/a (deterministic) | CIRRUS (SSH pull) | S57 cutover; sends to Bill only if new leads, cc Buddy |
-| pedagogy | `pedagogy_daily.py` | **CUMULUS** | daily 06:00 | panel model-brief | CIRRUS (SSH pull) | S57 cutover; sends to Alyssa (cc Buddy); config localized on CUMULUS |
+| pedagogy | `pedagogy_daily.py` | **CUMULUS** | daily 06:00 | panel model-brief + council topic briefs | CIRRUS (SSH pull) | S57 cutover; sends to Alyssa (cc Buddy); config localized on CUMULUS |
+| hoaleads | `hoa_leads/hoa_monitor.py` | **CUMULUS** | Mon 09:20 | council lead-filter | CIRRUS (SSH pull) | S57 NEW; DE HOA lead monitor (X + web/RFP); emails Bill vetted LINKS cc Buddy only when the council finds genuine leads; we never contact anyone |
 
 Rollback for any client job: `cirrus-job enable <job>` + `cumulus-service disable <unit>.timer`
 (CIRRUS plists are left in place — disable-not-delete).

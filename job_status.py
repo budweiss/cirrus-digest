@@ -29,6 +29,7 @@ CADENCE_H = {
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
+    "hoaleads":      24 * 8,    # weekly Monday + grace (DE HOA lead monitor, S57)
     "stratusreview": 24 * 33,   # monthly + grace
     "privacymon":    24 * 8,    # weekly Sunday + grace
 }
@@ -37,7 +38,7 @@ CADENCE_H = {
 # CIRRUS (dev), it reads their status from CUMULUS's ledger over the read-only SSH
 # link instead of the (now-stale) local ledger — so a moved job is reported from
 # where it actually runs, not falsely flagged OVERDUE here.
-REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy"}
+REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads"}
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 

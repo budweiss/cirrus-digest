@@ -58,6 +58,7 @@ SERVICES=(
   "cirrus-pedagogy|pedagogy_daily.py|timer|*-*-* 06:00:00"
   "cirrus-billsnow|snowbrief/bill_snow_weekly.py|timer|Mon *-*-* 08:06:00"
   "cirrus-billnewdev|newdev/bill_newdev_weekly.py|timer|Mon *-*-* 09:05:00"
+  "cirrus-hoaleads|hoa_leads/hoa_monitor.py|timer|Mon *-*-* 09:20:00"
   "cirrus-intake|intake.py|timer|every:900"
   "cirrus-devloop|dev_agent.py nightly|timer|*-*-* 21:30:00"
   "cirrus-watchdog|cirrus_watchdog.py|timer|every:1800"
