@@ -113,6 +113,25 @@ def gather_x():
     return out
 
 
+def _resolve_url(u, timeout=8):
+    """Follow a search redirect (e.g. a Gemini grounding-redirect) to the REAL
+    destination URL so we never email Bill an opaque redirect link. Best-effort:
+    returns the original URL on any failure. Only touches known redirect hosts."""
+    if not u or ("grounding-api-redirect" not in u and "vertexaisearch" not in u):
+        return u
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(u, method=method,
+                                         headers={"User-Agent": "CirrusLeadMonitor/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                final = r.geturl()
+                if final and "vertexaisearch" not in final:
+                    return final
+        except Exception:
+            continue
+    return u
+
+
 # ── gather: web / news / RFP portals ────────────────────────────────────────────
 def gather_web():
     """Candidate dicts from web/news/RFP search via CIRRUS's own tooling. Best-effort."""
@@ -139,7 +158,7 @@ def gather_web():
                     snippet = (content or "")[:600]
             except Exception:
                 pass
-            out.append({"source": "web", "url": u,
+            out.append({"source": "web", "url": _resolve_url(u),
                         "text": snippet.replace("\n", " ") or "(no snippet retrieved)"})
             if len(out) >= MAX_CANDIDATES:
                 break
@@ -330,6 +349,8 @@ def selftest():
                             '{"idx":1,"lead":false}] thanks')
     ck("parse json array from prose", len(arr) == 2 and arr[0]["type"] == "RFP")
     ck("parse: no array -> []", _parse_json_array("no json") == [])
+    ck("resolve passes through a clean URL untouched",
+       _resolve_url("https://demandstar.com/x") == "https://demandstar.com/x")
 
     cands = [{"source": "X", "url": "https://x.com/i/web/status/1", "text": "our HOA needs a manager"},
              {"source": "web", "url": "http://ex/2", "text": "vendor ad"}]

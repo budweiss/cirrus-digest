@@ -777,15 +777,15 @@ def cover_focus_topics(cfg, dry_run, creds=None):
 
 # One-time announcement shown on the NEXT digest that sends, then retired (keyed by
 # ANNOUNCE_ID in state["announce_id"]). Bump the ID to announce something new.
-ANNOUNCE_ID = "2026-07-28-newfeeds"
+ANNOUNCE_ID = "2026-08-back-to-school"
 ANNOUNCE_TEXT = (
-    "We've expanded the sources we monitor for you. Newly added: **Reading Simplified** "
-    "and **researchED** (YouTube), plus **David Didau / The Learning Spy**, **Alex "
-    "Quigley / The Confident Teacher**, and **Five from Five** (Australia) — and recently "
-    "**Sounds-Write** (UK), **Learning Difficulties Australia**, **UKLA** and **SPELD NZ**. "
-    "On quiet news days we'll also include a short brief of worldwide literacy research so "
-    "there's always something useful. As always, reply with \"REQUEST: <your topic>\" to "
-    "steer what we dig into.")
+    "With the new school year almost here, I wanted to check in — if there's anything "
+    "I can dig into to help you get ready, I'd be really glad to. Whether it's research "
+    "on a topic you're planning to teach, the evidence behind a strategy you want to try "
+    "this year, or fresh classroom-ready ideas for your first units, just tell me what's "
+    "on your plate. Reply anytime with \"REQUEST: <your topic>\" — or simply reply in "
+    "plain words — and I'll pull the research together for you. Wishing you a restful "
+    "stretch before the year begins, and a wonderful start when it does.")
 
 
 def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
@@ -793,7 +793,7 @@ def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
     lines = [f"# Literacy Research Digest — {date_str}",
              "*Prepared for Alyssa — 4th-grade reading, writing & English*", ""]
     if announce:
-        lines.append(f"## What's new in your digest\n\n{announce}\n")
+        lines.append(f"## A quick note\n\n{announce}\n")
     if topics:
         lines.append("## Your requested topics\n")
         for t in topics:
@@ -1046,10 +1046,10 @@ def selftest():
     # one-time announcement renders when passed, absent otherwise
     dann = build_digest("2026-07-29", [], [], None, [], cfg, is_friday=False,
                         announce=ANNOUNCE_TEXT)
-    check("digest: announcement renders", "What's new in your digest" in dann
-          and "Reading Simplified" in dann)
+    check("digest: announcement renders", "A quick note" in dann
+          and "new school year" in dann)
     dnoann = build_digest("2026-07-29", [], [], None, [], cfg, is_friday=False)
-    check("digest: no announcement when None", "What's new in your digest" not in dnoann)
+    check("digest: no announcement when None", "A quick note" not in dnoann)
 
     # empty-send guard (mirrors main): skip iff NO sourced content AND NO spotlight.
     def _skip_empty(has_sourced, spot_ok):
