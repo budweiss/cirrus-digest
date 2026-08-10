@@ -267,6 +267,11 @@
       "name": "Google News: AI Regulation (OpenAI/Anthropic policy) [added 2026-07-30]",
       "type": "blog",
       "rss": "https://news.google.com/rss/search?q=%28%22AI%20regulation%22%20OR%20%22AI%20policy%22%20OR%20%22AI%20Act%22%20OR%20%22AI%20safety%22%20OR%20%22AI%20executive%20order%22%20OR%20%22AI%20governance%22%29%20%28OpenAI%20OR%20Anthropic%29&hl=en-US&gl=US&ceid=US:en"
+    },
+    {
+      "name": "Google News: Local LLM Runtime Updates (Ollama/llama.cpp/LM Studio/vLLM) [added 2026-08-09]",
+      "type": "blog",
+      "rss": "https://news.google.com/rss/search?q=Ollama%20OR%20%22llama.cpp%22%20OR%20%22LM%20Studio%22%20OR%20vLLM%20release%20OR%20update&hl=en-US&gl=US&ceid=US:en"
     }
   ],
   "digest": {
