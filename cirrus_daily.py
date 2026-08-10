@@ -31,6 +31,13 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from pathlib import Path
 
+# Funds-exhausted fail-safe: pause a pay-per-use source until funds refresh next
+# month (optional import so the digest still runs if the module is absent).
+try:
+    import spend_guard as _SPEND
+except Exception:
+    _SPEND = None
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
@@ -291,7 +298,7 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
     URLs; empty on no-key / error / quota, so the caller falls back to Gemini. A
     429 (rate or the $25/mo cap) is treated as a soft fall-back, not an error."""
     key = _load_brave_key()
-    if not key:
+    if not key or (_SPEND and _SPEND.is_paused("brave")):
         return []
     try:
         with hard_deadline(20, "brave_search"):
@@ -316,7 +323,11 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Brave search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
-        log(f"    Brave search error: {e} — falling back to Gemini")
+        if _SPEND and _SPEND.is_funds_error(e):
+            _SPEND.pause("brave", str(e))
+            log("    Brave funds/quota exhausted — paused till next month; falling back to Gemini")
+        else:
+            log(f"    Brave search error: {e} — falling back to Gemini")
         return []
 
 
