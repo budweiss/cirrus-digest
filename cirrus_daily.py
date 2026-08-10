@@ -14,6 +14,9 @@ import unicodedata
 import requests
 import feedparser
 import sys
+import signal
+import threading
+from contextlib import contextmanager
 
 # ── Dev-loop test harness (Session 34) ───────────────────────────────────────
 # `--dry-run` builds the digest to a daily-DRYRUN-*.md file and skips ALL side
@@ -241,6 +244,82 @@ def _load_gemini_key() -> str:
         _GEMINI_KEY = ""
     return _GEMINI_KEY
 
+
+@contextmanager
+def hard_deadline(seconds, label=""):
+    """Hard wall-clock deadline via SIGALRM. `requests`' own timeout does NOT
+    cover a hung DNS lookup or TLS handshake — that stall froze the 7am digest
+    for ~4h on 2026-08-10. This bounds any blocking network call: on expiry it
+    raises TimeoutError, which every network helper below already catches
+    (returns empty), so the run skips that one item and keeps going. Active on
+    the main thread with SIGALRM only; a no-op elsewhere (worker thread / non-POSIX)."""
+    if not (hasattr(signal, "SIGALRM")
+            and threading.current_thread() is threading.main_thread()):
+        yield
+        return
+
+    def _fire(signum, frame):
+        raise TimeoutError(f"hard deadline {seconds}s exceeded"
+                           + (f" — {label}" if label else ""))
+
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
+
+
+_BRAVE_KEY = None
+
+def _load_brave_key() -> str:
+    """Lazy-load the Brave Search API key from credentials.json (once)."""
+    global _BRAVE_KEY
+    if _BRAVE_KEY is not None:
+        return _BRAVE_KEY
+    try:
+        with open(Path.home() / "projects/cirrus-digest/config/credentials.json") as f:
+            _BRAVE_KEY = json.load(f).get("brave_api_key", "")
+    except Exception:
+        _BRAVE_KEY = ""
+    return _BRAVE_KEY
+
+
+def brave_search(query: str, max_results: int = 3) -> list[str]:
+    """Primary web search — Brave Search API (paid, reliable). Returns top result
+    URLs; empty on no-key / error / quota, so the caller falls back to Gemini. A
+    429 (rate or the $25/mo cap) is treated as a soft fall-back, not an error."""
+    key = _load_brave_key()
+    if not key:
+        return []
+    try:
+        with hard_deadline(20, "brave_search"):
+            resp = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={"Accept": "application/json",
+                         "X-Subscription-Token": key},
+                params={"q": query, "count": max_results},
+                timeout=15)
+        if resp.status_code == 429:
+            log("    Brave search quota/rate hit (429) — falling back to Gemini")
+            return []
+        resp.raise_for_status()
+        results = (resp.json().get("web") or {}).get("results", []) or []
+        urls = []
+        for r in results:
+            u = r.get("url", "")
+            if u.startswith("http") and u not in urls:
+                urls.append(u)
+            if len(urls) >= max_results:
+                break
+        log(f"    Brave search '{query[:50]}' → {len(urls)} result(s)")
+        return urls
+    except Exception as e:
+        log(f"    Brave search error: {e} — falling back to Gemini")
+        return []
+
+
 def gemini_search(query: str, max_results: int = 3) -> list[str]:
     """Google-grounded web search via the Gemini API (google_search tool).
 
@@ -254,11 +333,12 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
     try:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{_GEMINI_MODEL}:generateContent?key={key}")
-        resp = requests.post(url, json={
-            "contents": [{"parts": [{"text":
-                f"Search the web for: {query}\nBriefly say what the top results are."}]}],
-            "tools": [{"google_search": {}}],
-        }, timeout=30)
+        with hard_deadline(45, "gemini_search"):
+            resp = requests.post(url, json={
+                "contents": [{"parts": [{"text":
+                    f"Search the web for: {query}\nBriefly say what the top results are."}]}],
+                "tools": [{"google_search": {}}],
+            }, timeout=30)
         resp.raise_for_status()
         cand = resp.json()["candidates"][0]
         chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks", [])
@@ -277,7 +357,23 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
 
 
 def search_web(query: str, max_results: int = 3) -> list[str]:
-    """Search DuckDuckGo HTML and return top result URLs (no API key required).
+    """Web search with reliable-source priority: Brave (paid) → Gemini grounding
+    → DuckDuckGo scrape (last resort). Each provider is hard-deadline bounded, so
+    a single hung lookup can't freeze the digest (the 2026-08-10 freeze cause).
+    DuckDuckGo scraping is unreliable now (returns 0 for most queries), which is
+    why Brave is primary."""
+    urls = brave_search(query, max_results)
+    if urls:
+        return urls
+    urls = gemini_search(query, max_results)
+    if urls:
+        return urls
+    return _ddg_search(query, max_results)
+
+
+def _ddg_search(query: str, max_results: int = 3) -> list[str]:
+    """Last-resort DuckDuckGo HTML scrape (free, no key). Unreliable — frequently
+    returns 0 now — kept only as a final fallback after Brave and Gemini.
 
     DuckDuckGo wraps result links in a redirect:
       //duckduckgo.com/l/?uddg=<encoded_url>&...
@@ -291,7 +387,8 @@ def search_web(query: str, max_results: int = 3) -> list[str]:
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/124.0.0.0 Safari/537.36",
         }
-        resp = requests.get(search_url, headers=headers, timeout=15)
+        with hard_deadline(20, "ddg_search"):
+            resp = requests.get(search_url, headers=headers, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         urls = []
@@ -304,13 +401,11 @@ def search_web(query: str, max_results: int = 3) -> list[str]:
                     urls.append(actual)
                     if len(urls) >= max_results:
                         break
-        log(f"    Web search '{query[:50]}' → {len(urls)} result(s)")
-        if not urls:
-            return gemini_search(query, max_results)
+        log(f"    DDG search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
-        log(f"    Web search error: {e} — trying Gemini search")
-        return gemini_search(query, max_results)
+        log(f"    DDG search error: {e}")
+        return []
 
 
 def extract_named_references(text: str) -> list[str]:
@@ -584,8 +679,9 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         site_cookies = get_cookies_for_url(url)
         if site_cookies:
             log(f"    🍪 Using stored cookies for: {urlparse(url).netloc}")
-        resp = requests.get(url, headers=headers, cookies=site_cookies,
-                            timeout=timeout, allow_redirects=True)
+        with hard_deadline(timeout + 10, "fetch_article"):
+            resp = requests.get(url, headers=headers, cookies=site_cookies,
+                                timeout=timeout, allow_redirects=True)
         resp.raise_for_status()
         page_text_lower = resp.text.lower()
 
