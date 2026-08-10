@@ -63,19 +63,45 @@ MAX_CANDIDATES = 40     # cap what we hand the council in one run
 
 # X recent-search: DE + community-association + lead-intent, no retweets, English.
 X_QUERIES = [
+    # HOT: active intent
     '("homeowners association" OR HOA OR "condo association" OR "community association") '
     '(Delaware OR DE OR "New Castle County" OR "Sussex County" OR "Kent County") '
     '("property management" OR "management company" OR RFP OR "request for proposal" OR '
     '"seeking" OR "looking for" OR "snow removal" OR "landscaping") -is:retweet lang:en',
+    # WARM: distress / dissatisfaction
+    '("homeowners association" OR HOA OR "condo association" OR "community association") '
+    '(Delaware OR DE OR "New Castle County" OR "Sussex County" OR "Kent County") '
+    '("mold" OR "water damage" OR "special assessment" OR "board resigned" OR '
+    '"self-managed" OR "terrible management" OR "lawsuit" OR "unplowed" OR '
+    '"no snow removal" OR "complaints") -is:retweet lang:en',
 ]
-# Web / news / RFP-portal signal (RFP portals are the highest-intent leads).
+# Web / news / RFP-portal + DISTRESS signals. Two lead classes:
+#  HOT  = actively soliciting (RFP / "seeking management") — the classic procurement lead.
+#  WARM = distressed / dissatisfied / self-managed / in-transition communities — often the
+#         best, least-competed leads (every competitor sees a public RFP; almost nobody
+#         watches for communities quietly unhappy with their current setup).
+# Kept broad on purpose; the 4-LLM council still screens each candidate for real DE opportunity.
 WEB_QUERIES = [
+    # ── HOT: active procurement ───────────────────────────────────────────────
     "Delaware HOA request for proposal property management",
     "Delaware homeowners association seeking property management company",
     "Delaware condo association RFP management services",
     "DemandStar Delaware community association property management",
     "BidNet Delaware HOA property management RFP",
     "Delaware HOA snow removal bid proposal 2026",
+    # ── WARM: management change / transition ──────────────────────────────────
+    "Delaware HOA condo association changing management company 2026",
+    "Delaware community association new property manager",
+    "Delaware self-managed HOA condo association needs help",
+    # ── WARM: distress / dissatisfaction ──────────────────────────────────────
+    "Delaware condo association mold water damage maintenance complaints",
+    "Delaware HOA condo board resigns turnover dispute residents",
+    "Delaware condo homeowners association lawsuit special assessment",
+    "Delaware HOA condo association code violation fined maintenance problems",
+    "Delaware HOA unplowed snow removal complaints residents",
+    # ── Local Delaware news sources (where distress actually surfaces) ─────────
+    "delawareonline.com Delaware HOA condominium association",
+    "Delaware condo association news Pike Creek Newark Wilmington 2026",
 ]
 
 
@@ -184,14 +210,21 @@ def save_seen(seen):
 # ── council filter (all 4 LLMs judge, Claude synthesizes) ───────────────────────
 FILTER_SYSTEM = (
     "You are one of several AI models on a lead-screening council for a Delaware "
-    "property-management + snow business (Knight Property Services). You are shown "
-    "public posts and listings. For EACH item decide whether it is a GENUINE, "
-    "actionable signal that a Delaware HOA, condominium association, or residential "
-    "community is looking for — or plausibly needs — property management, snow "
-    "removal, or grounds/landscaping services. Be STRICT: it must be Delaware, about "
-    "a community/association (not a single homeowner, not a vendor advertising its "
-    "own services, not national news or generic commentary), and reflect a real "
-    "need/opportunity. When unsure, mark lead=false."
+    "property-management + snow business (Knight Property Services). For EACH item "
+    "decide whether it is a GENUINE, actionable lead — a Delaware HOA, condominium "
+    "association, or residential community that is EITHER:\n"
+    "  (a) HOT — actively looking for property management / snow / grounds services "
+    "(an RFP, bid request, or explicit 'seeking a management company'); OR\n"
+    "  (b) WARM — a plausible prospect a better manager could win: a community showing "
+    "distress or dissatisfaction, e.g. mold / water-damage / maintenance disputes, "
+    "board turnover or resignations, litigation or special assessments, code "
+    "violations, unresolved snow/landscaping complaints, or a struggling self-managed "
+    "association.\n"
+    "BOTH hot and warm are lead=true (type them accordingly; rank hot above warm). "
+    "Still require: it must be Delaware and about a community/association — NOT a single "
+    "homeowner, NOT a vendor advertising its own services, NOT national news or generic "
+    "commentary. For a warm prospect, older or ongoing dissatisfaction is acceptable. "
+    "Mark lead=false only when it is clearly not a Delaware community opportunity."
 )
 
 FILTER_INSTRUCTIONS = (
