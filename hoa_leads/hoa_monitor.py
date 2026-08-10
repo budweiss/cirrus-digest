@@ -104,6 +104,30 @@ WEB_QUERIES = [
     "Delaware condo association news Pike Creek Newark Wilmington 2026",
 ]
 
+# ── Growable watchlist (SELF-IMPROVEMENT hook) ──────────────────────────────────
+# Known DE communities to track BY NAME + local-news sites to scope-search (site:).
+# This JSON is APPENDED to over time — by the feed-discovery loop or by hand — so lead
+# coverage keeps improving with NO code change. Seeded with communities surfaced
+# manually (e.g. Mermaid Run, Le Parc). A missing file just leaves the static queries.
+WATCHLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "community_watchlist.json")
+
+
+def _extend_queries_from_watchlist():
+    try:
+        wl = json.loads(open(WATCHLIST_PATH).read())
+    except Exception:
+        return
+    for site in wl.get("local_news_sites", []):
+        WEB_QUERIES.append(
+            f'site:{site} Delaware (HOA OR condominium OR "community association")')
+    for name in wl.get("communities", []):
+        WEB_QUERIES.append(
+            f'"{name}" Delaware (condominium OR HOA OR "community association")')
+
+
+_extend_queries_from_watchlist()
+
 
 # ── gather: X recent search ─────────────────────────────────────────────────────
 def _x_bearer():

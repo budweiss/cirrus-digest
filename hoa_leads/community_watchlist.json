@@ -1,0 +1,13 @@
+{
+  "_comment": "Growable watchlist for hoa_monitor.py (S58). APPEND to this over time — by the feed-discovery self-improvement loop or by hand — to keep improving DE HOA/condo lead recall with NO code change. 'communities' are searched by name each run; 'local_news_sites' are site:-scoped searched. Seeded with communities surfaced manually (Mermaid Run flagged by Buddy 2026-08-10; Le Parc from a 7/2026 Delaware Online lawsuit story).",
+  "communities": [
+    "Mermaid Run",
+    "Le Parc"
+  ],
+  "local_news_sites": [
+    "delawareonline.com",
+    "whyy.org",
+    "wboc.com",
+    "capegazette.com"
+  ]
+}
