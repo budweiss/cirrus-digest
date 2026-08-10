@@ -28,6 +28,8 @@ ALLOWED = {
     "brave_api_key",
     # S57: X (Twitter) API for the Bill HOA lead-monitor (v2 recent search).
     "x_bearer_token", "x_api_key", "x_api_secret",
+    # S59: Apify token for the DE HOA CRM Nextdoor (public-only) feed.
+    "apify_token",
 }
 
 CREDS = "config/credentials.json"
