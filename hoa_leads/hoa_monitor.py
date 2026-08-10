@@ -59,7 +59,7 @@ CC    = "Buddy.Weiss@outlook.com"
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 MAX_X_RESULTS  = 25     # per X query (v2 recent allows up to 100) — read-cap for cost
-MAX_CANDIDATES = 40     # cap what we hand the council in one run
+MAX_CANDIDATES = 60     # cap what we hand the council in one run
 
 # X recent-search: DE + community-association + lead-intent, no retweets, English.
 X_QUERIES = [
@@ -118,12 +118,14 @@ def _extend_queries_from_watchlist():
         wl = json.loads(open(WATCHLIST_PATH).read())
     except Exception:
         return
-    for site in wl.get("local_news_sites", []):
-        WEB_QUERIES.append(
-            f'site:{site} Delaware (HOA OR condominium OR "community association")')
+    priority = []
+    # Name searches are the most precise — run them FIRST so the candidate cap
+    # never crowds out a specifically-tracked community.
     for name in wl.get("communities", []):
-        WEB_QUERIES.append(
-            f'"{name}" Delaware (condominium OR HOA OR "community association")')
+        priority.append(f'"{name}" Delaware (condominium OR HOA OR "community association")')
+    for site in wl.get("local_news_sites", []):
+        priority.append(f'site:{site} Delaware (HOA OR condominium OR "community association")')
+    WEB_QUERIES[:0] = priority          # prepend so targeted queries run first
 
 
 _extend_queries_from_watchlist()
