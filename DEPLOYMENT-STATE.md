@@ -18,7 +18,7 @@ _Last updated: 2026-08-06 (S57) — client jobs cut over to CUMULUS; ensemble li
 
 | Job | Script | Runs on | Schedule | Ensemble | Monitored from | Notes |
 |:--|:--|:--|:--|:--|:--|:--|
-| billsnow | `snowbrief/bill_snow_weekly.py` | **CUMULUS** | Mon 08:06 | council | CIRRUS (SSH pull) | S57 cutover. **S59: seasonal-gated** — keeps week-over-week state (`out/last_run_state.json`), classifies change big/notable/none; OFF-season emails Bill ONLY on a **big** change, IN-season (Oct 20–Mar 15) on notable/big, and a **season opener** always sends the late-Oct update. cc Buddy. ⚠️ verify scheduled python has `feedparser` before season. Deployed to CUMULUS by direct scp (git push broken). |
+| billsnow | `snowbrief/bill_snow_weekly.py` | **CUMULUS** | Mon 08:06 | council | CIRRUS (SSH pull) | S57 cutover; sends to Bill on material change only, cc Buddy |
 | billnewdev | `newdev/bill_newdev_weekly.py` | **CUMULUS** | Mon 09:05 | n/a (deterministic) | CIRRUS (SSH pull) | S57 cutover; sends to Bill only if new leads, cc Buddy |
 | pedagogy | `pedagogy_daily.py` | **CUMULUS** | daily 06:00 | panel model-brief + council topic briefs | CIRRUS (SSH pull) | S57 cutover; sends to Alyssa (cc Buddy); config localized on CUMULUS |
 | hoaleads | `hoa_leads/hoa_monitor.py` | **CUMULUS** | Mon 09:20 | council lead-filter | CIRRUS (SSH pull) | S57 NEW; DE HOA lead monitor (X + web/RFP); emails Bill vetted LINKS cc Buddy only when the council finds genuine leads; we never contact anyone |

@@ -37,7 +37,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 HERE       = Path(__file__).resolve().parent      # ~/projects/cirrus-digest/snowbrief
@@ -77,47 +77,6 @@ def _local_hint():
 TO      = "whutchins@knightpropertysvs.com"
 CC      = "Buddy.Weiss@outlook.com"
 TODAY   = datetime.now().strftime("%Y-%m-%d")
-
-# ── Seasonal cadence (Buddy's rule, S59) ──────────────────────────────────────
-# Keep running WEEKLY and compare to the LAST run. Before the season opens,
-# email Bill ONLY on a BIG change; otherwise stay silent and let the regular
-# report wait until the season starts (Bill asked to be updated in late Oct).
-STATE        = OUT / "last_run_state.json"   # week-over-week memory
-SEASON_OPEN  = (10, 20)   # (month, day) — season opens ~late October
-SEASON_CLOSE = (3, 15)    # ...runs through mid-March
-
-def _season_phase(today=None):
-    """'in' during Oct 20 → Mar 15, else 'off'."""
-    today = today or date.today()
-    md = (today.month, today.day)
-    return "in" if (md >= SEASON_OPEN or md <= SEASON_CLOSE) else "off"
-
-def _season_year(today=None):
-    """Identifier for the winter season an update belongs to (the Oct year)."""
-    today = today or date.today()
-    return today.year if today.month >= 7 else today.year - 1
-
-def _load_state():
-    try:
-        return json.loads(STATE.read_text())
-    except Exception:
-        return {}
-
-def _save_state(snapshot, change_level, sent, opener_done_year=None):
-    try:
-        OUT.mkdir(parents=True, exist_ok=True)
-        prev = _load_state()
-        STATE.write_text(json.dumps({
-            "last_run": TODAY,
-            "change_level": change_level,
-            "sent": bool(sent),
-            "snapshot": snapshot or {},
-            "season_opener_year": opener_done_year
-                if opener_done_year is not None
-                else prev.get("season_opener_year"),
-        }, indent=2))
-    except Exception as e:
-        print("state save failed:", e)
 
 
 def _read(name):
@@ -180,44 +139,19 @@ SYSTEM = (
 )
 
 
-def build_prompt(web_block, urls, prev_snapshot=None, phase="off", opener=False):
+def build_prompt(web_block, urls):
     baseline = _read("baseline-outlook.md")
     climo    = _read("phl-climatology.md")
     drivers  = _read("Snow-Drivers-Analysis.md")
     corridor = _read("corridor-snowfall.md")
     rates    = _read("DEFAULT-SNOW-RATES.md")
     voice    = _read("voice-sample.md")
-    prev_block = (json.dumps(prev_snapshot, indent=2)
-                  if prev_snapshot else "(no prior run on record — this is the first compared run)")
-    if opener:
-        cadence = ("SEASON OPENER: the winter season has begun and Bill asked to be updated in late "
-                   "October. Produce a full current-outlook report email for Bill REGARDLESS of whether "
-                   "anything changed — this is his scheduled season-opening update. Set change_level to "
-                   "your honest read ('none'/'notable'/'big') but ALWAYS fill email_subject/email_body.")
-    elif phase == "in":
-        cadence = ("IN-SEASON: draft the email if there is a 'notable' or 'big' change vs the last run; "
-                   "otherwise leave email fields empty.")
-    else:
-        cadence = ("OFF-SEASON (before late October): Bill only wants an early heads-up for something BIG. "
-                   "Draft the email ONLY if change_level is 'big'; for 'notable' or 'none', leave the email "
-                   "fields empty (we stay silent and wait for the season). Always still report change_level.")
-    return f"""Decide how much this week's winter outlook has changed versus (a) the current
-baseline AND (b) our LAST RUN's snapshot, classify the size of the change, and — per the
-cadence rule below — draft the update for Bill only when it should actually go out.
+    return f"""Decide whether this week's winter outlook has MATERIALLY changed versus
+the current baseline, and if so, draft the update for Bill.
 
-CLASSIFY change_level as one of:
-  • "big"     — an ENSO category shift (label change / clear strengthening or weakening), a
-                newly issued CPC seasonal outlook, a meaningfully changed snowfall probability,
-                or an imminent significant corridor storm. The kind of thing worth interrupting
-                Bill's summer for.
-  • "notable" — a real but modest update (e.g. an advisory reworded, probabilities nudged) that
-                is worth sending during the season but NOT worth an off-season interruption.
-  • "none"    — essentially the same picture as the last run / baseline.
-
-CADENCE RULE FOR THIS RUN: {cadence}
-
-=== LAST RUN SNAPSHOT (compare against this for week-over-week change) ===
-{prev_block}
+MATERIAL = an ENSO category shift (e.g. strengthening/weakening/label change), a new
+CPC seasonal outlook, a meaningfully changed snowfall probability, or an imminent
+significant corridor storm. Essentially-the-same numbers = NOT material.
 
 === CURRENT BASELINE OUTLOOK (what Bill last saw) ===
 {baseline}
@@ -244,26 +178,22 @@ URL LIST: {json.dumps(urls)}
 
 Return ONLY a JSON object, no prose around it, with EXACTLY these keys:
 {{
-  "change_level": "big" | "notable" | "none",
-  "material_change": true|false,   // true iff change_level is "big" or "notable"
-  "reason": "<one or two sentences on what changed vs the last run, or why nothing did>",
-  "state_snapshot": {{"enso": "<current ENSO state/label>", "cpc_outlook": "<latest CPC seasonal read or 'none'>",
-     "snow_prob": "<current corridor snowfall probability read>", "notes": "<key indicators to compare next week>"}},
-  "refresh_md": "<if drafting: a dated outlook-refresh markdown in the honest,
+  "material_change": true|false,
+  "reason": "<one or two sentences on what changed or why nothing did>",
+  "refresh_md": "<if material: a dated outlook-refresh markdown in the honest,
      probabilistic baseline style, anchored to the climatology/drivers, scenario
      odds not a single number; else empty string>",
-  "email_subject": "<if drafting: 'Pennrose Snow Package — Winter 2026-27 Outlook Update ({TODAY})'; else empty>",
-  "email_body": "<if drafting per the cadence rule: the full Bill email body — warm, plain, honest caveats,
+  "email_subject": "<if material: 'Pennrose Snow Package — Winter 2026-27 Outlook Update ({TODAY})'; else empty>",
+  "email_body": "<if material: the full Bill email body — warm, plain, honest caveats,
      framed as a request for his expert review of the rates/assumptions, signed '{NODE}';
      else empty string>"
 }}
-ALWAYS fill state_snapshot (it is stored for next week's comparison even when nothing is sent).
-If the web findings are missing or too thin to judge a real change, set change_level="none",
-material_change=false, and say so in reason. Do NOT invent ENSO states or numbers you cannot
-support from the baseline or the web findings."""
+If the web findings are missing or too thin to judge a real change, set material_change=false
+and say so in reason. Do NOT invent ENSO states or numbers you cannot support from the
+baseline or the web findings."""
 
 
-def decide(phase="off", opener=False):
+def decide():
     creds = json.load(open(CREDS_PATH))
     try:
         import llm_providers as L
@@ -277,7 +207,7 @@ def decide(phase="off", opener=False):
         return {"material_change": False, "error": True,
                 "reason": "no web sources retrieved this run; not sending on stale data.",
                 "urls": urls}, urls
-    prompt = build_prompt(web_block, urls, _load_state().get("snapshot"), phase, opener)
+    prompt = build_prompt(web_block, urls)
     try:
         # S57: council cross-check + Claude synthesis when dev_escalation.mode=council;
         # gracefully degrades to the prior single/failover escalate() otherwise. The
@@ -332,54 +262,34 @@ def _run_failed(data):
 
 def main():
     dry = "--dry-run" in sys.argv
-    force_opener = "--opener" in sys.argv       # manual season-opener test
     OUT.mkdir(parents=True, exist_ok=True)
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] bill_snow_weekly ({'dry-run' if dry else 'live'})")
 
-    phase = _season_phase()
-    syear = _season_year()
-    prev  = _load_state()
-    opener = force_opener or (phase == "in" and prev.get("season_opener_year") != syear)
-
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] bill_snow_weekly "
-          f"({'dry-run' if dry else 'live'}) phase={phase} season={syear} opener={opener}")
-
-    data, urls = decide(phase, opener)
-    level = (data.get("change_level")
-             or ("big" if data.get("material_change") else "none")).lower()
-    snapshot  = data.get("state_snapshot") or {}
-    has_email = bool((data.get("email_body") or "").strip())
-
-    # Buddy's cadence rule (S59): OFF-season => send only on 'big'; IN-season =>
-    # 'notable' or 'big'; the season opener always sends Bill his late-Oct update.
-    if opener:
-        should = has_email
-    elif phase == "in":
-        should = has_email and level in ("notable", "big")
-    else:  # off-season — hold everything but a BIG change
-        should = has_email and level == "big"
-
-    print(f"change_level={level} | phase={phase} | opener={opener} | sendable={should}")
+    data, urls = decide()
+    material = bool(data.get("material_change")) and bool((data.get("email_body") or "").strip())
+    print("material_change:", data.get("material_change"), "| sendable:", material)
     print("reason:", data.get("reason", ""))
 
     if dry:
         print("=" * 70)
-        if should:
+        if material:
             print("SUBJECT:", data.get("email_subject"))
-            print("-" * 70); print(data.get("email_body")); print("-" * 70)
+            print("-" * 70)
+            print(data.get("email_body"))
+            print("-" * 70)
             print("REFRESH_MD (first 1200 chars):")
             print((data.get("refresh_md") or "")[:1200])
         else:
-            print(f"{phase}-season + change_level='{level}' -> live mode would send NOTHING this run.")
+            print("No material change -> live mode would send NOTHING.")
         print("=" * 70)
         print("sources:", *urls, sep="\n  ")
-        print("DRY RUN — nothing sent. (state not written in dry-run)")
+        print("DRY RUN — nothing sent.")
         return
 
-    if not should:
+    if not material:
         reason = data.get("reason", "")
-        print(f"holding ({phase}-season, change_level={level}) — {reason}. Nothing sent.")
-        _save_state(snapshot, level, sent=False)
-        _rec(dry, not _run_failed(data), f"{phase}/{level}: held"[:120])
+        print(f"no material change this week — {reason}. Nothing sent.")
+        _rec(dry, not _run_failed(data), reason[:120] or "no material change")
         return
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
@@ -395,10 +305,7 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode, "| refresh:", refresh_path.name)
-    sent_ok = r.returncode == 0
-    _save_state(snapshot, level, sent=sent_ok,
-                opener_done_year=syear if (opener and sent_ok) else None)
-    _rec(dry, sent_ok, f"{phase}/{level}: sent" if sent_ok else "send failed")
+    _rec(dry, r.returncode == 0, "sent material update" if r.returncode == 0 else "send failed")
 
 
 if __name__ == "__main__":
