@@ -64,7 +64,15 @@
       "AI policy",
       "AI Act",
       "AI safety",
-      "AI governance"
+      "AI governance",
+      "DGX Station",
+      "GB300",
+      "RTX PRO 6000",
+      "M5 Ultra",
+      "Mac Studio memory",
+      "memory bandwidth",
+      "unified memory",
+      "HBM"
     ],
     "days_back": 7,
     "daily_days_back": 3
@@ -219,9 +227,9 @@
       "type": "blog"
     },
     {
-      "name": "Google News: STRATUS hardware watch (DGX Spark / M5 Ultra / LLM boxes)",
+      "name": "Google News: STRATUS hardware watch (Spark/Station/M5 Ultra/RTX PRO 6000) [broadened 2026-08-11]",
       "type": "blog",
-      "rss": "https://news.google.com/rss/search?q=%22DGX%20Spark%22%20OR%20%22M5%20Ultra%22%20OR%20%22Mac%20Studio%22%20memory%20OR%20%22RTX%20Pro%206000%22%20OR%20%22local%20LLM%20hardware%22%20price&hl=en-US&gl=US&ceid=US:en"
+      "rss": "https://news.google.com/rss/search?q=%28%22DGX%20Spark%22%20OR%20%22DGX%20Station%22%20OR%20%22M5%20Ultra%22%20OR%20%22RTX%20PRO%206000%22%20OR%20%22GB300%22%20OR%20%22Mac%20Studio%22%20OR%20%22local%20LLM%20hardware%22%29%20%28price%20OR%20available%20OR%20bandwidth%20OR%20memory%29&hl=en-US&gl=US&ceid=US:en"
     },
     {
       "name": "Not Boring (Packy McCormick) [approved 2026-06]",
