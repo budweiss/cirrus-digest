@@ -34,6 +34,7 @@ PROJECT_DIR  = Path.home() / "projects/cirrus-digest"
 CONFIG_PATH  = PROJECT_DIR / "config/sources.json"
 CREDS_PATH   = PROJECT_DIR / "config/credentials.json"
 PENDING_FILE = PROJECT_DIR / "config/pending_approvals.json"
+BUILDS_FILE = PROJECT_DIR / "logs/dev-loop/builds.json"
 
 # Make sibling modules importable when launched by full path from launchd.
 sys.path.insert(0, str(PROJECT_DIR))
@@ -140,6 +141,21 @@ def gather_pending():
         out.append(f"{it.get('type','?')}: {det[:90]}")
     return out
 
+def gather_awaiting_builds():
+    """Dev-Loop builds that were built + council-approved and are waiting for a
+    ship/discard decision. The /accept queue does NOT surface these, so without
+    this a built-but-unconfirmed item can sit unseen for days (happened S57->S60)."""
+    try:
+        builds = json.loads(BUILDS_FILE.read_text())
+    except Exception:
+        return []
+    out = []
+    for b in builds:
+        if b.get("status") == "awaiting-confirm":
+            summ = (b.get("summary") or b.get("detail") or "").strip().replace("\n", " ")
+            out.append(f"{b.get('id','?')}: {summ[:90]}")
+    return out
+
 def gather_attention():
     flags = []
     # bot.log: real errors, ignoring the benign getUpdates long-poll timeouts
@@ -167,9 +183,10 @@ def compose():
     dig = gather_digest()
     act = gather_actions()
     pend = gather_pending()
+    awaiting = gather_awaiting_builds()
     att = gather_attention()
 
-    healthy = dig["dated_today"] and not att
+    healthy = dig["dated_today"] and not att and not awaiting
     verdict = "✅ CIRRUS healthy" if healthy else "⚠️ Needs a look"
 
     lines = [f"# ☀️ CIRRUS Morning Brief — {DAY_NAME}", "", f"**{verdict}**", "",
@@ -186,6 +203,11 @@ def compose():
     else:
         lines.append("- None — /accept queue is clear")
     lines.append("")
+
+    if awaiting:
+        lines.append(f"**⚠️ Awaiting your ship/discard ({len(awaiting)})** — built + council-approved; reply /builds or run dev-ship")
+        lines += [f"- {a}" for a in awaiting[:6]]
+        lines.append("")
 
     if act["actions"]:
         lines.append("**Today's action items**")
@@ -214,6 +236,8 @@ def compose():
     # one suggested next action
     if not dig["dated_today"]:
         nxt = "Investigate the 7am digest — today's file is missing or misdated."
+    elif awaiting:
+        nxt = f"Ship or discard {len(awaiting)} built Dev-Loop item(s) — reply /builds."
     elif pend:
         nxt = f"Review the {len(pend)} pending /accept item(s)."
     elif att:
