@@ -90,3 +90,5 @@ CIRRUS morning brief / jobs_check
 Add a `prod` column / rows here, extend the monitoring pull to STRATUS (mirror the
 `cirrus-cumulus-link` set), and move any promoted job's "Runs on" to STRATUS. Same
 disable-not-delete cutover pattern. Update this file as the final step of the promotion.
+
+- 2026-08-11 (S60): GitHub push auth migrated PAT -> GitHub App (App ID 4560828); tokens auto-rotate, no silent expiry. cowork-deploy.sh + cowork-push mint via runner/gh_app_token.py (PAT fallback retained until old PAT revoked).
