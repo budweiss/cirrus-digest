@@ -866,6 +866,69 @@ def deploy():
         "restart": restart_info
     })
 
+
+@app.route("/admin/deploy-all", methods=["GET"])
+def deploy_all():
+    """Pull latest on CIRRUS, then trigger CUMULUS to pull too — one call, both boxes.
+
+    GET: /admin/deploy-all?job=none&token=<token>
+         ?job=com.cirrus.api   optional: restart a CIRRUS service (same allowlist as /deploy)
+    The CUMULUS pull is ff-only and NON-destructive: on any conflict it reports the
+    failure and leaves CUMULUS untouched (never force-resets — its sources.json is
+    skip-worktree localized; use the runner cumulus-git-reset for a deliberate resync).
+    """
+    require_token()
+    job = request.args.get("job", "none").strip()
+
+    # 1. CIRRUS pull
+    git = subprocess.run(
+        ["git", "-C", str(PROJECT_DIR), "pull", "--ff-only"],
+        capture_output=True, text=True
+    )
+    cirrus_out = (git.stdout + git.stderr).strip()
+    cirrus_ok = git.returncode == 0
+
+    # 2. Optional CIRRUS service restart
+    restart_info = None
+    if job and job != "none":
+        if job not in ALLOWED_SERVICES:
+            return jsonify({
+                "cirrus": {"ok": cirrus_ok, "output": cirrus_out},
+                "restart": {"error": f"service not allowed: {job}"},
+                "cumulus": {"ok": None, "output": "skipped (bad job)"},
+            }), 400
+        uid = os.getuid()
+        r = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/{job}"],
+            capture_output=True, text=True
+        )
+        restart_info = {
+            "service": job,
+            "status": "restarted" if r.returncode == 0 else "error",
+            "stderr": r.stderr.strip(),
+        }
+
+    # 3. CUMULUS pull over the existing CIRRUS->cumulus1 SSH link (ff-only, non-destructive)
+    try:
+        cum = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=20", "-o", "BatchMode=yes",
+             "buddy@192.168.0.204",
+             "cd /home/buddy/cirrus-digest && git pull --ff-only 2>&1 && "
+             "echo HEAD=$(git rev-parse --short HEAD)"],
+            capture_output=True, text=True, timeout=60
+        )
+        cumulus_out = (cum.stdout + cum.stderr).strip()
+        cumulus_ok = cum.returncode == 0
+    except subprocess.TimeoutExpired:
+        cumulus_out = "timeout reaching cumulus1 (VPN/LAN down?)"
+        cumulus_ok = False
+
+    return jsonify({
+        "cirrus": {"ok": cirrus_ok, "output": cirrus_out},
+        "restart": restart_info,
+        "cumulus": {"ok": cumulus_ok, "output": cumulus_out},
+    })
+
 # ── Write (token-protected) ────────────────────────────────────────────────────
 
 # ── Admin: Upload Config ───────────────────────────────────────────────────────
