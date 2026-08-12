@@ -37,6 +37,15 @@ before reviewing proposals or writing any code for CIRRUS.
   `config/credentials.json`** (secrets, gitignored). Both
   `cirrus_bot.py`, `cirrus_digest.py`, and `extract_actions.py` load these
   at import time via `Path.home() / "projects/cirrus-digest/config/..."`.
+  **S62: `credentials.json` is now `age`-encrypted at rest** —
+  `config/credentials.json.age` is the persistent copy; the well-known path is
+  a symlink into a RAM-disk volume (`/Volumes/CirrusCredsRAM`, macOS's
+  equivalent of tmpfs — no persistent-disk plaintext), rebuilt on every
+  reboot by the `com.cirrus.creds-materialize` LaunchAgent. All ~24 call
+  sites keep reading the same path unchanged. Rotate with
+  `runner/rotate-creds-cirrus.sh key=value ...` (NOT the old
+  `runner/rotate-creds.sh`, which is superseded — see `CUMULUS.md` §8a for
+  the full design, shared with cumulus1's identical pattern).
 
 - **Directory layout** (all under `DIGEST_CFG["output_dir"]`, referred to as
   `digests/`):
