@@ -12,7 +12,9 @@ project is promoted and where it is monitored from. **Update it on every cutover
 - "Monitored from" = where the health of that job is reported (see topology below).
 - Full mechanism: `~/Documents/Cowork/docs/PROMOTION-AND-NODE-AWARENESS.md`.
 
-_Last updated: 2026-08-06 (S57) — client jobs cut over to CUMULUS; ensemble live on CUMULUS._
+_Last updated: 2026-08-13 (S63) — Boss (CUMULUS supervisor agent) armed live; intake now runs on
+BOTH boxes (Tier-0 auto-apply + live LLM-council answers); credential self-heal + nightly backup
+extended to cover CUMULUS._
 
 ## Client jobs (external email — high-stakes)
 
@@ -33,11 +35,12 @@ Rollback for any client job: `cirrus-job enable <job>` + `cumulus-service disabl
 | research digest | `cirrus_daily.py` | CIRRUS | daily 07:00 | CIRRUS (local) | local-model summarization; dev tier |
 | morning brief | `morning_brief.py` | CIRRUS | daily 07:30 | CIRRUS (local) | reads job_status; now pulls CUMULUS jobs too |
 | model health | `model_health.py` | **BOTH** | daily 05:30 | each box (local) | self-heals retired models; S57 funding alert |
-| intake | `intake.py` | CIRRUS | every 15 min | CIRRUS (local) | inbound routing (Bill/Aggie/Alyssa) |
+| intake | `intake.py` | **BOTH** | every 15 min | each box (local) | S63: CUMULUS now also watches `cumulus@cumulustask.com` (`INTAKE_ACCOUNT_LABEL=cumulus-research`), same allowlist (Bill/Aggie/Alyssa/Buddy) as CIRRUS's `cirrustask@gmail.com`. Tier-0 requests (add/subscribe/monitor a source) now **auto-apply** on both boxes via `task_solver.py` — reuses the existing `source-add` validation, writes to `sources.local.json` (git-external overlay, unaffected by the carryback TODO below). New opt-in `request_kind: "answer"` live-answers via the 4-provider council instead of queuing; nobody's opted in yet. |
 | dev-loop | `dev_agent.py` | CIRRUS | nightly 21:30 | CIRRUS (local) | Tier-1 self-improvement builder |
 | watchdog | `cirrus_watchdog.py` | CIRRUS | every 30 min | CIRRUS (local) | agent-loaded / exit-code watch |
 | privacy monitor | `privacy/privacy_monitor.py` | CIRRUS | Sun 07:15 | CIRRUS (local) | own-info exposure scan |
 | stratus review | `stratus/stratus_monthly.py` | CIRRUS | 1st 09:00 | CIRRUS (local) | research log |
+| **Boss** (supervisor agent) | `supervisor/supervisor_agent.py` | **CUMULUS** | 60s heartbeat (deterministic, no LLM) + once-daily reasoning pass after 08:00, or immediately on an anomaly | CUMULUS (local, `cumulus-supervisor-status`) | S63 NEW, armed live. Watches CUMULUS's own client-job services + its own credential health via a fixed 7-tool registry (read-only checks + restart/reset-failed on 8 allow-listed units + one-way Telegram). Runs under its own low-privilege OS account (`cumulus-supervisor`, narrowly-scoped sudo — not general access). Does **not** touch email/intake — that's a separate system. $5/day spend cap. Full operating contract: `supervisor/CLAUDE.md`. |
 
 ## Per-box knobs (in each box's `credentials.json`)
 
@@ -76,6 +79,12 @@ CIRRUS morning brief / jobs_check
   Tier-0 config changes vs git and merges the source/omit additions back into the
   tracked configs (so CIRRUS and the repo stay in sync). Until it exists, check
   CUMULUS's self-change ledger manually when reconciling.
+  → **S63: intake's new Tier-0 auto-apply (`task_solver.py`) is NOT affected by this
+  gap** — it writes to `sources.local.json`, which is deliberately gitignored/
+  box-local by design (same overlay the manual `source-add` runner command has
+  always used), not one of the localized/skip-worktree tracked configs the
+  carryback TODO is about. Runs on both boxes independently now, each with its
+  own overlay file — nothing to reconcile between them.
 
 ## Local models per box (live inventory 2026-08-06)
 
