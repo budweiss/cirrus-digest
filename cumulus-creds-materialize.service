@@ -1,0 +1,15 @@
+[Unit]
+Description=Decrypt CUMULUS credentials.json.age into tmpfs and symlink config/credentials.json to it (self-healing loop, S63: replaced the .timer variant, whose calendar schedule kept reverting to unset on this box for unexplained reasons)
+DefaultDependencies=no
+After=local-fs.target
+Before=cirrus-api.service cirrus-bot.service cirrus-billnewdev.service cirrus-billsnow.service cirrus-hoaleads.service cirrus-modelhealth.service cirrus-pedagogy.service
+
+[Service]
+Type=simple
+ExecStart=/home/buddy/cirrus-digest/materialize_loop.sh
+User=buddy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
