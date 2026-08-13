@@ -33,6 +33,7 @@ import email
 import email.utils
 import imaplib
 import json
+import os
 import re
 import smtplib
 import socket
@@ -46,6 +47,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 import dev_loop
+import task_solver
 
 # ── Paths & config ────────────────────────────────────────────────────────────
 
@@ -57,7 +59,11 @@ STATE_PATH   = PROJECT_DIR / "config/intake_state.json"
 INTAKE_DIR   = PROJECT_DIR / "logs/intake"
 LOG_PATH     = PROJECT_DIR / "logs/intake.log"
 
-INTAKE_ACCOUNT_LABEL = "gmail-research"   # sources.json email.accounts[].label
+# S63: env-var override so a second intake instance (CUMULUS, watching
+# cumulus@cumulustask.com) can run the same script against a different
+# sources.json account label. Default unchanged so CIRRUS's existing
+# LaunchAgent (no env var set) behaves byte-for-byte as before.
+INTAKE_ACCOUNT_LABEL = os.environ.get("INTAKE_ACCOUNT_LABEL", "gmail-research")
 DAYS_BACK            = 3                  # IMAP search window (state bounds real work)
 BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
 SCAN_ATTEMPTS        = 4                  # retry the IMAP scan this many times before alerting
@@ -122,8 +128,11 @@ def load_allowlist(path: Path = SENDERS_PATH):
                 # "research": requests are FOCUS TOPICS for that project's
                 # research digest (Alyssa/pedagogy) → config/topics-<project>.json,
                 # no dev ticket. See pedagogy/PEDAGOGY-SPEC.md.
+                # "answer" (S63): live-answered now via the 4-LLM council
+                # (task_solver.solve_and_answer) instead of queued/deferred —
+                # explicit per-sender opt-in, see docs/CIRRUS-Autonomous-Task-Solver.md.
                 "request_kind": (entry.get("request_kind") or "build")
-                                 if entry.get("request_kind") in (None, "build", "research")
+                                 if entry.get("request_kind") in (None, "build", "research", "answer")
                                  else "build",
             }
     return allow
@@ -318,6 +327,18 @@ def ack_body(rec: dict) -> str:
                 f"research queue:\n\n    {rec['title']}\n\n"
                 "It'll be covered in an upcoming digest. Send as many topics "
                 f"as you like — one email per topic works best.\n\n— {node}")
+    if rec.get("kind") == "answer":
+        return (f"Hi {name},\n\nGot it — researching your question now:\n\n"
+                f"    {rec['title']}\n\n"
+                f"You'll have an answer in a follow-up email shortly.\n\n— {node}")
+    auto = rec.get("auto_applied")
+    if auto and not auto.get("already_present"):
+        return (f"Hi {name},\n\nGot it — and it's done:\n\n    {rec['title']}\n\n"
+                f"Added ({auto['url']}). If anything about it is wrong, just reply "
+                f"to this email.\n\n— {node}")
+    if auto and auto.get("already_present"):
+        return (f"Hi {name},\n\nGot it — that source is already being monitored:"
+                f"\n\n    {rec['title']}\n\nNothing further needed.\n\n— {node}")
     if rec["tier"] >= dev_loop.TIER_DESIGN:
         eta = "It's been scheduled for an upcoming working session."
     else:
@@ -580,8 +601,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 "status": rec["status"], "spec_id": rec["dev_spec"]["id"],
             }, PROJECT_DIR)
             # Route by kind: research requests become focus topics for the
-            # project's research digest; build requests (default) also land
-            # in the ticket queue for the (future) dev-agent wiring.
+            # project's research digest; answer requests (S63) are solved
+            # live after the ack goes out (below); build requests try Tier-0
+            # auto-apply first, else land in the ticket queue.
             if rec["status"] != "refused":
                 if rec["kind"] == "feedback":
                     log("  → feedback (reply) — backlogged for manual review, no topic")
@@ -592,16 +614,37 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         log(f"  → focus topic queued for '{proj}'")
                     except Exception as e:
                         log(f"  topic append failed (backlog still recorded): {e}")
+                elif rec["kind"] == "answer":
+                    log("  → answer request — solving live after ack (below)")
                 else:
+                    auto = None
                     try:
-                        ticket = dev_loop.ticket_create(
-                            entry["name"], entry["projects"], rec["title"],
-                            rec["body_head"][:400], origin="user-intake",
-                            project_dir=PROJECT_DIR)
-                        rec["ticket_id"] = ticket["id"]
+                        auto = task_solver.try_auto_apply_source(rec)
                     except Exception as e:
-                        log(f"  ticket enqueue failed (backlog still recorded): {e}")
+                        log(f"  auto-apply attempt failed (falling back to ticket): {e}")
+                    if auto:
+                        rec["auto_applied"] = auto
+                        log(f"  → Tier-0 auto-applied: added source '{auto['name']}' "
+                            f"({auto['url']})" if not auto["already_present"]
+                            else f"  → Tier-0: source already present ({auto['url']})")
+                    else:
+                        try:
+                            ticket = dev_loop.ticket_create(
+                                entry["name"], entry["projects"], rec["title"],
+                                rec["body_head"][:400], origin="user-intake",
+                                project_dir=PROJECT_DIR)
+                            rec["ticket_id"] = ticket["id"]
+                        except Exception as e:
+                            log(f"  ticket enqueue failed (backlog still recorded): {e}")
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
+            if rec["kind"] == "answer" and rec["status"] != "refused":
+                try:
+                    solved = task_solver.solve_and_answer(rec, creds, from_addr, subject)
+                except Exception as e:
+                    solved = {"answered": False, "reason": f"unhandled error: {e}"}
+                rec["solved"] = solved
+                log(f"  → answer {'sent' if solved['answered'] else 'FELL BACK to ticket'}: "
+                    f"{solved['reason']}")
         processed.append(rec)
 
     if not dry_run:
@@ -690,11 +733,14 @@ def selftest() -> int:
                         "request_kind": "research"},
             "bill": {"emails": ["b@k.com"], "projects": ["snow"]},
             "bad": {"emails": ["x@y.com"], "request_kind": "banana"},
+            "aggie": {"emails": ["ag2@re.com"], "projects": ["realestate"],
+                       "request_kind": "answer"},
         }))
         al3 = load_allowlist(p)
         check("research kind parsed", al3["a@school.org"]["request_kind"] == "research")
         check("kind default build", al3["b@k.com"]["request_kind"] == "build")
         check("invalid kind falls back to build", al3["x@y.com"]["request_kind"] == "build")
+        check("answer kind parsed (S63)", al3["ag2@re.com"]["request_kind"] == "answer")
 
     # research ack copy
     rec_r = classify("alyssa", ["pedagogy"], "REQUEST: multisyllabic decoding strategies", "")
@@ -787,6 +833,41 @@ def selftest() -> int:
     bump_count(st, "bill"); bump_count(st, "bill")
     check("limit enforced", not under_limit(st, "bill", 2))
     check("other sender unaffected", under_limit(st, "aggie", 2))
+
+    # S63: answer-kind + Tier-0 auto-apply ack copy
+    rec_a = classify("aggie", ["realestate"], "REQUEST: what's the average closing time?", "")
+    rec_a["kind"] = "answer"
+    check("answer ack mentions researching now", "researching your question" in ack_body(rec_a))
+    rec_auto = classify("bill", ["snow"], "REQUEST: monitor this weather blog", "")
+    rec_auto["kind"] = "build"
+    rec_auto["auto_applied"] = {"url": "https://example.com/feed", "name": "weather blog",
+                                "already_present": False}
+    check("auto-applied ack says done, not queued", "it's done" in ack_body(rec_auto).lower())
+    rec_auto2 = dict(rec_auto)
+    rec_auto2["auto_applied"] = {"url": "https://example.com/feed", "name": "weather blog",
+                                 "already_present": True}
+    check("already-present ack says already monitored",
+          "already being monitored" in ack_body(rec_auto2))
+
+    # S63: task_solver — offline, no network
+    import task_solver as TS
+    check("quality gate: empty fails", not TS._quality_ok(""))
+    check("quality gate: too short fails", not TS._quality_ok("ok"))
+    check("quality gate: refusal-shaped fails",
+          not TS._quality_ok("I cannot help with that specific request."))
+    check("quality gate: substantive answer passes",
+          TS._quality_ok("The average closing time in this market has run "
+                         "35-45 days over the past two quarters, per the "
+                         "regional MLS data reviewed."))
+    check("auto-apply: wrong tier -> None",
+          TS.try_auto_apply_source({"tier": dev_loop.TIER_CONFIRM, "kind": "build",
+                                     "body_head": "https://example.com/feed"}) is None)
+    check("auto-apply: wrong kind -> None",
+          TS.try_auto_apply_source({"tier": dev_loop.TIER_AUTO, "kind": "research",
+                                     "body_head": "https://example.com/feed"}) is None)
+    check("auto-apply: no URL in body -> None",
+          TS.try_auto_apply_source({"tier": dev_loop.TIER_AUTO, "kind": "build",
+                                     "body_head": "please add this, thanks"}) is None)
 
     print(f"selftest: {'OK' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
