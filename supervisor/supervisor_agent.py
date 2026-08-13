@@ -13,6 +13,21 @@ names are exposed to the model as mcp__<server>__<tool>, permission_mode
 "bypassPermissions" is required since there's no human to approve a prompt,
 and ResultMessage.total_cost_usd gives the real spend per call directly —
 no need to compute it from token counts.
+
+CONTROLS: the actual operating contract (identity, tool allowlist, autonomy
+tiers, cost discipline, secrets rule) lives in CLAUDE.md, in this same
+directory — NOT inline here. The SDK loads it automatically as project
+context via cwd + setting_sources=["project"] (confirmed live, see
+https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts — CLAUDE.md
+injects into the conversation independently of systemPrompt, so it applies
+regardless of the custom string below). Edit CLAUDE.md to change the agent's
+actual rules; SYSTEM_PROMPT below is just per-invocation framing, deliberately
+thin so there's exactly one place — CLAUDE.md — that's the source of truth
+for what this agent is allowed to do. Keep CLAUDE.md in sync with the real
+tool set / sudoers allowlist in tools.py — it deliberately does NOT mirror
+~/Documents/Cowork/CUMULUS.md verbatim, since that broader design doc
+describes future capabilities (local-model routing, general sudo, CIRRUS
+access) this v1 skeleton does not have.
 """
 import asyncio
 import json
@@ -29,6 +44,7 @@ import heartbeat
 import tools
 from ledger import ledger_append
 
+APP_DIR = Path("/opt/cumulus-supervisor/app")
 SECRETS_PATH = Path("/opt/cumulus-supervisor/state/secrets.json")
 STATE_DIR = Path("/opt/cumulus-supervisor/state")
 LAST_DAILY_FILE = STATE_DIR / "last-daily-check.txt"
@@ -39,26 +55,10 @@ DAILY_CHECK_HOUR = 8       # local time, after the 05:30-06:00 client jobs
 SKIP_NOTIFY_MIN_GAP_SEC = 3600  # don't Telegram-spam a budget-cap skip more than hourly
 
 SYSTEM_PROMPT = """You are the CUMULUS supervisor agent (B1, v1 skeleton).
-
-You watch the CUMULUS client pipelines (billsnow, billnewdev, hoaleads,
-pedagogy) plus your own credential-materialize health, on this one box.
-You are NOT the interactive Cowork agent — you run unattended, on a
-schedule, with no human present to approve anything mid-task.
-
-Your job each time you're invoked:
-1. Check service status for the units you're responsible for and the
-   credentials health.
-2. If something is broken AND it is one of your allow-listed reversible
-   actions (restart_service / reset_failed on an allow-listed unit),
-   fix it yourself. You do NOT need to ask permission for these — they
-   are pre-approved, reversible, and logged automatically.
-3. If something is broken and it is NOT something your tools can fix,
-   do not attempt anything else — just report it clearly.
-4. ALWAYS end by calling send_telegram exactly once, with a short summary:
-   what you checked, what you found, what you fixed (if anything), and
-   what (if anything) needs Buddy's attention. Keep it under ~500 characters.
-
-Never report a status you did not actually check with a tool call.
+Your operating contract — what you can do, your autonomy tiers, cost
+discipline, secrets handling — is in CLAUDE.md, loaded as project context
+alongside this message. Follow it. This message only gives you this run's
+trigger reason; CLAUDE.md governs everything else.
 """
 
 
@@ -124,7 +124,8 @@ async def run_reasoning_pass(reason: str) -> float:
         max_turns=12,
         max_budget_usd=1.00,
         env={"ANTHROPIC_API_KEY": secrets["anthropic_api_key"]},
-        cwd=str(STATE_DIR),
+        cwd=str(APP_DIR),
+        setting_sources=["project"],  # loads CLAUDE.md from cwd (APP_DIR) as project context
     )
 
     prompt = f"Reasoning pass triggered because: {reason}. Do your check now."
