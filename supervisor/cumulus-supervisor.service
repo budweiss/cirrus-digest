@@ -1,0 +1,15 @@
+[Unit]
+Description=CUMULUS supervisor agent (B1, v1 skeleton)
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cumulus-supervisor
+WorkingDirectory=/opt/cumulus-supervisor/app
+ExecStart=/opt/cumulus-supervisor/venv/bin/python3 /opt/cumulus-supervisor/app/supervisor_agent.py
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

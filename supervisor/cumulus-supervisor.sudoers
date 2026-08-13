@@ -1,0 +1,31 @@
+# cumulus-supervisor sudoers — B1 supervisor agent (S63)
+# Narrow, explicit allowlist: restart/reset-failed on the fixed reversible-action
+# unit list from CUMULUS.md §4. No wildcards (sudoers wildcard argument matching
+# is exploitable) — every command spelled out in full.
+Cmnd_Alias SUPERVISOR_RESTART = \
+    /usr/bin/systemctl restart cirrus-api.service, \
+    /usr/bin/systemctl restart cirrus-bot.service, \
+    /usr/bin/systemctl restart cirrus-billnewdev.service, \
+    /usr/bin/systemctl restart cirrus-billsnow.service, \
+    /usr/bin/systemctl restart cirrus-hoaleads.service, \
+    /usr/bin/systemctl restart cirrus-modelhealth.service, \
+    /usr/bin/systemctl restart cirrus-pedagogy.service, \
+    /usr/bin/systemctl restart cumulus-creds-materialize.service
+
+Cmnd_Alias SUPERVISOR_RESET = \
+    /usr/bin/systemctl reset-failed cirrus-api.service, \
+    /usr/bin/systemctl reset-failed cirrus-bot.service, \
+    /usr/bin/systemctl reset-failed cirrus-billnewdev.service, \
+    /usr/bin/systemctl reset-failed cirrus-billsnow.service, \
+    /usr/bin/systemctl reset-failed cirrus-hoaleads.service, \
+    /usr/bin/systemctl reset-failed cirrus-modelhealth.service, \
+    /usr/bin/systemctl reset-failed cirrus-pedagogy.service, \
+    /usr/bin/systemctl reset-failed cumulus-creds-materialize.service
+
+cumulus-supervisor ALL=(root) NOPASSWD: SUPERVISOR_RESTART, SUPERVISOR_RESET
+
+# Read-only credential-health probe. Runs AS buddy (who owns the credentials
+# file) because cumulus-supervisor cannot traverse /home/buddy (750). The
+# script is fixed, root-owned, mode 755 — cumulus-supervisor cannot edit it,
+# so this does not grant arbitrary code execution as buddy.
+cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_creds_health.py
