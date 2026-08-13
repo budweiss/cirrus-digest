@@ -24,6 +24,14 @@ docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
 Both are called from intake.py's run(), after dev_loop.classify_risk and the
 sender-allowlist gate have already run — never invoked on unclassified input.
 """
+from __future__ import annotations  # dict|None syntax needs 3.10+; CIRRUS's
+                                     # system python3 is 3.9.6 -- this makes
+                                     # annotations lazy/string-only so it runs
+                                     # fine back to 3.7. Caught live: deploying
+                                     # without this broke CIRRUS's intake
+                                     # LaunchAgent outright (selftest crashed
+                                     # at import time before ever reaching the
+                                     # allowlist gate).
 import json
 import re
 import smtplib
