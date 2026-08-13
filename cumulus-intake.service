@@ -1,0 +1,15 @@
+[Unit]
+Description=CUMULUS end-user direct intake (S63) — watches cumulus@cumulustask.com every 15 min
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+ExecStart=/home/buddy/cirrus-digest/cumulus_intake_loop.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
