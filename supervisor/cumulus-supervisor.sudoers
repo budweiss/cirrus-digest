@@ -10,7 +10,8 @@ Cmnd_Alias SUPERVISOR_RESTART = \
     /usr/bin/systemctl restart cirrus-hoaleads.service, \
     /usr/bin/systemctl restart cirrus-modelhealth.service, \
     /usr/bin/systemctl restart cirrus-pedagogy.service, \
-    /usr/bin/systemctl restart cumulus-creds-materialize.service
+    /usr/bin/systemctl restart cumulus-creds-materialize.service, \
+    /usr/bin/systemctl restart cumulus-intake.service
 
 Cmnd_Alias SUPERVISOR_RESET = \
     /usr/bin/systemctl reset-failed cirrus-api.service, \
@@ -20,7 +21,8 @@ Cmnd_Alias SUPERVISOR_RESET = \
     /usr/bin/systemctl reset-failed cirrus-hoaleads.service, \
     /usr/bin/systemctl reset-failed cirrus-modelhealth.service, \
     /usr/bin/systemctl reset-failed cirrus-pedagogy.service, \
-    /usr/bin/systemctl reset-failed cumulus-creds-materialize.service
+    /usr/bin/systemctl reset-failed cumulus-creds-materialize.service, \
+    /usr/bin/systemctl reset-failed cumulus-intake.service
 
 cumulus-supervisor ALL=(root) NOPASSWD: SUPERVISOR_RESTART, SUPERVISOR_RESET
 

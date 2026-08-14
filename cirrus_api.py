@@ -27,6 +27,14 @@ with open(PROJECT_DIR / "config/credentials.json") as f:
 
 SECRET_TOKEN = _creds.get("api_token", "")
 
+# S64: separate, narrower token for the CUMULUS supervisor agent (Boss) --
+# deliberately NOT the main SECRET_TOKEN, which unlocks every /admin/ route
+# (deploys, approvals, service restarts). Boss only needs Time Machine
+# status; giving it the full admin token would be far broader than its job
+# requires, the same "narrow, explicit allowlist" principle already applied
+# to its systemd/sudoers grant on cumulus1.
+SUPERVISOR_TM_TOKEN = _creds.get("supervisor_tm_token", "")
+
 ALLOWED_SERVICES = {
     "com.cirrus.bot",
     "com.cirrus.daily",
@@ -42,6 +50,16 @@ def require_token():
     token = request.headers.get("X-API-Token", "") or request.args.get("token", "")
     if not SECRET_TOKEN or token != SECRET_TOKEN:
         abort(403, description="Invalid or missing API token.")
+
+
+def require_supervisor_token():
+    """Narrower auth for the one route Boss (CUMULUS supervisor) is allowed
+    to call. Deliberately a SEPARATE check from require_token() — a leak of
+    this token only ever exposes Time Machine status, not the full admin
+    surface. Same header/query-param convention as require_token()."""
+    token = request.headers.get("X-API-Token", "") or request.args.get("token", "")
+    if not SUPERVISOR_TM_TOKEN or token != SUPERVISOR_TM_TOKEN:
+        abort(403, description="Invalid or missing supervisor token.")
 
 @app.after_request
 def no_cache(response):
@@ -810,6 +828,40 @@ def restart_service():
         return jsonify({"status": "restarted", "service": service})
     return jsonify({"status": "error", "service": service,
                     "stderr": result.stderr.strip()}), 500
+
+@app.route("/admin/tm-status", methods=["GET"])
+def tm_status():
+    """S64 — READ-ONLY Time Machine health, for the CUMULUS supervisor (Boss)
+    to monitor CIRRUS's OWC Envoy Pro FX backup without giving it the main
+    admin token. Uses `defaults read` (goes through cfprefsd) rather than
+    reading the plist file directly — direct file access to
+    /Library/Preferences/com.apple.TimeMachine.plist is permission-denied
+    even for buddy, confirmed live; `defaults read` works around that the
+    same way this project's own backup-ordering check already did.
+    tmutil latestbackup/status were considered and rejected: latestbackup
+    needs Full Disk Access (a one-time GUI-only grant, not remotely
+    grantable), and status only reports whether a backup is CURRENTLY
+    running, not overall health.
+    """
+    require_supervisor_token()
+    result = subprocess.run(
+        ["defaults", "read", "/Library/Preferences/com.apple.TimeMachine"],
+        capture_output=True, text=True, timeout=20)
+    text = result.stdout or result.stderr
+
+    m = re.search(r'AttemptDates\s*=\s*\((.*?)\);', text, re.DOTALL)
+    attempt_dates = re.findall(r'"([^"]+)"', m.group(1)) if m else []
+    m = re.search(r'RESULT\s*=\s*(-?\d+);', text)
+    last_result = int(m.group(1)) if m else None
+
+    return jsonify({
+        "last_attempt": attempt_dates[-1] if attempt_dates else None,
+        "last_result": last_result,
+        "last_result_ok": last_result == 0 if last_result is not None else None,
+        "attempt_count_seen": len(attempt_dates),
+        "destination": "OWC Envoy Pro FX",
+        "checked_at": datetime.now().isoformat(),
+    })
 
 @app.route("/admin/service/status", methods=["GET"])
 def service_status():

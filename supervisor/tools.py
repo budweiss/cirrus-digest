@@ -32,6 +32,7 @@ ALLOWED_UNITS = {
     "cirrus-modelhealth.service",
     "cirrus-pedagogy.service",
     "cumulus-creds-materialize.service",
+    "cumulus-intake.service",
 }
 
 
@@ -101,6 +102,62 @@ def check_credentials_health() -> str:
                    "tier_name": "read-only", "detail": "",
                    "result": out})
     return out if ok else f"UNHEALTHY: {out}"
+
+
+CIRRUS_TM_URL = "https://cirrus.cirrustask.com/admin/tm-status"
+# Warn if the last successful attempt is older than this. TM's own schedule
+# drifts a few minutes later each day (documented, expected) but should
+# never go this long without a fresh attempt.
+TM_STALE_HOURS = 36
+
+
+def check_cirrus_timemachine() -> str:
+    """Check CIRRUS's Time Machine backup health (S64). Calls CIRRUS's admin
+    API over HTTPS with a token scoped to ONLY this one endpoint — never the
+    main admin token, so this tool cannot reach deploys/approvals/anything
+    else on CIRRUS. Read-only; makes no changes on either box."""
+    import urllib.error
+    import urllib.request
+    from datetime import datetime, timezone
+
+    try:
+        token = _load_secrets()["cirrus_tm_token"]
+    except Exception as e:
+        result = f"FAILED: no cirrus_tm_token in secrets.json ({e})"
+        ledger_append({"event": "check", "tool": "check_cirrus_timemachine",
+                       "tier_name": "read-only", "detail": "", "result": result})
+        return result
+
+    try:
+        req = urllib.request.Request(f"{CIRRUS_TM_URL}?token={token}")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        result = f"FAILED: could not reach CIRRUS tm-status ({e})"
+        ledger_append({"event": "check", "tool": "check_cirrus_timemachine",
+                       "tier_name": "read-only", "detail": "", "result": result})
+        return result
+
+    last_attempt = data.get("last_attempt")
+    ok = data.get("last_result_ok")
+    stale = False
+    if last_attempt:
+        try:
+            dt = datetime.strptime(last_attempt, "%Y-%m-%d %H:%M:%S %z")
+            stale = (datetime.now(timezone.utc) - dt).total_seconds() > TM_STALE_HOURS * 3600
+        except ValueError:
+            pass
+
+    if ok and not stale:
+        result = f"OK: last successful backup {last_attempt}"
+    elif stale:
+        result = f"STALE: last attempt {last_attempt} is over {TM_STALE_HOURS}h old"
+    else:
+        result = f"UNHEALTHY: last attempt {last_attempt}, result code {data.get('last_result')}"
+
+    ledger_append({"event": "check", "tool": "check_cirrus_timemachine",
+                   "tier_name": "read-only", "detail": "", "result": result})
+    return result
 
 
 # ── Reversible actions (TIER_AUTO) ───────────────────────────────────────────

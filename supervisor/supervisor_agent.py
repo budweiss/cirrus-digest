@@ -88,6 +88,12 @@ def _build_mcp_tools():
     async def _check_credentials_health(args):
         return {"content": [{"type": "text", "text": tools.check_credentials_health()}]}
 
+    @tool("check_cirrus_timemachine",
+          "Check CIRRUS's Time Machine backup health over its admin API (read-only, "
+          "scoped token — cannot reach anything else on CIRRUS)", {})
+    async def _check_cirrus_timemachine(args):
+        return {"content": [{"type": "text", "text": tools.check_cirrus_timemachine()}]}
+
     @tool("restart_service",
           "Restart an allow-listed systemd unit (reversible, TIER_AUTO)", {"unit": str})
     async def _restart_service(args):
@@ -105,8 +111,8 @@ def _build_mcp_tools():
         return {"content": [{"type": "text", "text": tools.send_telegram(args["message"])}]}
 
     return [_check_service_status, _check_timers, _tail_journal,
-            _check_credentials_health, _restart_service, _reset_failed,
-            _send_telegram]
+            _check_credentials_health, _check_cirrus_timemachine,
+            _restart_service, _reset_failed, _send_telegram]
 
 
 async def run_reasoning_pass(reason: str) -> float:
