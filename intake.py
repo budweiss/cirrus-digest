@@ -331,6 +331,10 @@ def ack_body(rec: dict) -> str:
         return (f"Hi {name},\n\nGot it — researching your question now:\n\n"
                 f"    {rec['title']}\n\n"
                 f"You'll have an answer in a follow-up email shortly.\n\n— {node}")
+    if rec.get("kind") == "resend":
+        return (f"Hi {name},\n\nGot it — looking for your past emails now:\n\n"
+                f"    {rec['title']}\n\n"
+                f"You'll see them land back in your inbox shortly.\n\n— {node}")
     auto = rec.get("auto_applied")
     if auto and not auto.get("already_present"):
         return (f"Hi {name},\n\nGot it — and it's done:\n\n    {rec['title']}\n\n"
@@ -575,11 +579,24 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 and (subject or "").lower().lstrip().startswith("re:")
                 and not REQUEST_RX.match(subject or "")):
             rec["kind"] = "feedback"
+        # S63: capability triage — a request can match a known, already-built
+        # capability (resend, source-add) regardless of the sender's static
+        # request_kind. Runs before the research-project safety net below so
+        # e.g. Alyssa (statically 'research') asking to resend past mail
+        # isn't force-routed into the topic queue as if it were a research
+        # ask. Only overrides when a real capability is detected — everything
+        # else keeps its normal static-kind routing unchanged.
+        if rec["kind"] != "feedback":
+            cap = task_solver.classify_capability(rec)
+            if cap == "resend":
+                rec["kind"] = "resend"
         # Safety net: a sender on a research-only project (e.g. pedagogy)
         # ALWAYS routes as research, even if their request_kind is mis-set to
         # 'build'. Guarantees literacy requests reach the topic queue instead
-        # of silently landing in the dev-ticket queue.
-        if (rec["kind"] != "feedback"
+        # of silently landing in the dev-ticket queue. Exempts 'resend' (S63)
+        # — a detected capability match is more specific than the static
+        # per-sender default and shouldn't be clobbered by it.
+        if (rec["kind"] not in ("feedback", "resend")
                 and any(p in RESEARCH_PROJECTS for p in entry["projects"])):
             if rec["kind"] != "research":
                 log(f"  routing override: {entry['name']} is on a research-only "
@@ -616,6 +633,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         log(f"  topic append failed (backlog still recorded): {e}")
                 elif rec["kind"] == "answer":
                     log("  → answer request — solving live after ack (below)")
+                elif rec["kind"] == "resend":
+                    log("  → resend request — solving live after ack (below)")
                 else:
                     auto = None
                     try:
@@ -644,6 +663,14 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     solved = {"answered": False, "reason": f"unhandled error: {e}"}
                 rec["solved"] = solved
                 log(f"  → answer {'sent' if solved['answered'] else 'FELL BACK to ticket'}: "
+                    f"{solved['reason']}")
+            if rec["kind"] == "resend" and rec["status"] != "refused":
+                try:
+                    solved = task_solver.try_auto_resend(rec, creds, from_addr, subject)
+                except Exception as e:
+                    solved = {"resent": False, "count": 0, "reason": f"unhandled error: {e}"}
+                rec["solved"] = solved
+                log(f"  → resend {'sent (' + str(solved['count']) + ')' if solved['resent'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
         processed.append(rec)
 
@@ -868,6 +895,59 @@ def selftest() -> int:
     check("auto-apply: no URL in body -> None",
           TS.try_auto_apply_source({"tier": dev_loop.TIER_AUTO, "kind": "build",
                                      "body_head": "please add this, thanks"}) is None)
+
+    # S63 (later): resend capability — classify_capability + intake routing
+    check("capability: 'please resend my emails' detected",
+          TS.classify_capability({"title": "", "body_head": "Can you please resend all my emails, I think I missed some"}) == "resend")
+    check("capability: 'going to my junk' detected",
+          TS.classify_capability({"title": "", "body_head": "My CUMULUS emails keep going to my junk folder, can you resend them"}) == "resend")
+    check("capability: 'never received' + digest detected",
+          TS.classify_capability({"title": "", "body_head": "I never received last week's digest"}) == "resend")
+    check("capability: plain research topic NOT misdetected as resend",
+          TS.classify_capability({"title": "", "body_head": "phonics small groups for 3rd grade"}) == "none")
+    check("capability: unrelated 'Resend' mention (email API) NOT misdetected",
+          TS.classify_capability({"title": "", "body_head": "can you research Resend vs SendGrid for transactional email pricing"}) == "none")
+    check("capability: source-add still detected (unchanged)",
+          TS.classify_capability({"title": "", "body_head": "please monitor https://example.com/feed"}) == "source_add")
+
+    rec_resend = classify("alyssa", ["pedagogy"], "resend my emails please", "")
+    rec_resend["kind"] = "resend"
+    check("resend ack mentions looking for past emails", "past emails" in ack_body(rec_resend))
+
+    # Routing: a pedagogy (research-only project) sender asking to resend
+    # must NOT be force-routed to research by the RESEARCH_PROJECTS safety
+    # net — this was a real bug this session's change fixes.
+    def _route(entry_kind, projects, subject, body):
+        kind = entry_kind
+        if (kind == "research" and (subject or "").lower().lstrip().startswith("re:")
+                and not REQUEST_RX.match(subject or "")):
+            kind = "feedback"
+        rec = {"title": subject, "body_head": body}
+        if kind != "feedback" and TS.classify_capability(rec) == "resend":
+            kind = "resend"
+        if kind not in ("feedback", "resend") and any(p in RESEARCH_PROJECTS for p in projects):
+            kind = "research"
+        return kind
+    check("pedagogy sender resend request routes to resend, not research",
+          _route("research", ["pedagogy"], "REQUEST: my digests",
+                 "please resend all my CUMULUS emails, I've missed them") == "resend")
+    check("pedagogy sender normal topic still routes to research",
+          _route("research", ["pedagogy"], "REQUEST: phonics", "small group ideas") == "research")
+    check("pedagogy sender reply-feedback still routes to feedback (resend check skipped)",
+          _route("research", ["pedagogy"], "Re: intro", "looks great!") == "feedback")
+
+    # try_auto_resend: no send creds configured -> clean failure + fallback,
+    # no network attempted (offline-safe unit test)
+    with tempfile.TemporaryDirectory() as td3:
+        TS._orig_dir = TS.PROJECT_DIR
+        TS.PROJECT_DIR = Path(td3)
+        try:
+            res = TS.try_auto_resend({"requester": "alyssa", "projects": ["pedagogy"],
+                                      "title": "resend"}, {}, "alyssa@school.org", "resend")
+            check("resend: no creds -> resent False", res["resent"] is False)
+            check("resend: no creds -> reason explains why", "credentials" in res["reason"])
+        finally:
+            TS.PROJECT_DIR = TS._orig_dir
 
     print(f"selftest: {'OK' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0

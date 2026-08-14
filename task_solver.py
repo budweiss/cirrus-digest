@@ -1,6 +1,6 @@
 """task_solver.py — narrow first slice of the Autonomous Task Solver (S63).
 
-Two capabilities, both deliberately narrow relative to the full design in
+Capabilities, all deliberately narrow relative to the full design in
 docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
 
 1. try_auto_apply_source(rec) — Tier-0 auto-apply, scoped to exactly what
@@ -21,7 +21,24 @@ docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
    Supervisor design — docs/CIRRUS-Sanity-Supervisor.md's "v0 hard
    sniff-tests" — cheap enough to include here for free).
 
-Both are called from intake.py's run(), after dev_loop.classify_risk and the
+3. classify_capability(rec) + try_auto_resend(rec, creds, to_addr, subject)
+   (S63, later same session) — the first entry in a small CAPABILITY
+   registry: known request shapes intake can solve on its own regardless of
+   the sender's static `request_kind`. Today the registry has exactly two
+   members (source-add via #1's URL detector, resend via this one). This is
+   the safe, real version of "Boss looks at a request and decides whether it
+   can build a solution": a request either matches an already-built,
+   already-tested capability (auto-solved, zero-click) or it doesn't (told
+   plainly it needs review — see intake.py's ack_body "needs_review"
+   branch). It does NOT mean the agent writes and ships new arbitrary code
+   unattended for a request shape nobody's seen before — that's a much
+   larger, still-open piece of the original design (sandboxed execution, a
+   real tool-registry planning loop) and deliberately isn't what this ships.
+   Growing this registry is the intended pattern for "recursive
+   development": each time a new request shape recurs, a session builds and
+   registers a narrow, tested handler for it, same as this one.
+
+All are called from intake.py's run(), after dev_loop.classify_risk and the
 sender-allowlist gate have already run — never invoked on unclassified input.
 """
 from __future__ import annotations  # dict|None syntax needs 3.10+; CIRRUS's
@@ -32,11 +49,15 @@ from __future__ import annotations  # dict|None syntax needs 3.10+; CIRRUS's
                                      # LaunchAgent outright (selftest crashed
                                      # at import time before ever reaching the
                                      # allowlist gate).
+import email
+import email.utils
+import imaplib
 import json
 import re
 import smtplib
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.header import decode_header
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -200,3 +221,204 @@ def _fallback_to_ticket(rec: dict):
             project_dir=PROJECT_DIR)
     except Exception:
         pass
+
+
+# ── Capability registry: request-shape detection ─────────────────────────────
+# Deterministic pattern matches, not a live LLM call, on purpose: this runs on
+# EVERY allowlisted message regardless of static request_kind, so it needs to
+# be cheap, offline-testable, and auditable — same bar as the URL detector
+# already used for source-add. A request that matches nothing here is exactly
+# the "needs review" case intake.py's ack_body flags to the sender.
+
+_DETERMINER = r"(my|our|the|all|those|these|past|previous|old|missed|prior)"
+_MAILWORD = r"(email|emails|digest|digests|message|messages|newsletter)s?"
+_RESEND_RX = re.compile(
+    # "resend"/"re-send" gated by an object determiner ("my", "the", "all", …)
+    # before the mail-word — NOT just bare proximity, so a mention of the
+    # unrelated "Resend" email-API product ("Resend vs SendGrid pricing")
+    # doesn't false-positive just because "email" appears nearby.
+    r"\bre-?send\b[^.!?\n]{0,50}\b" + _DETERMINER + r"\b[^.!?\n]{0,30}\b" + _MAILWORD + r"\b"
+    r"|\b" + _DETERMINER + r"\b[^.!?\n]{0,30}\b" + _MAILWORD + r"\b[^.!?\n]{0,50}\bre-?sen[dt]\b"
+    r"|\bsend\s*(it|them|everything)?\s*again\b[^.!?\n]{0,50}\b" + _MAILWORD + r"\b"
+    r"|\b" + _MAILWORD + r"\b[^.!?\n]{0,50}\bsend\s*(it|them|everything)?\s*again\b"
+    r"|\b(didn'?t|did\s+not|never)\s+(receive[d]?|get|got)\b[^.!?\n]{0,60}\b" + _MAILWORD + r"\b"
+    r"|\bmissed\s+(all\s+)?(my\s+)?" + _MAILWORD + r"\b"
+    r"|\b(went|goes|going)\s+(straight\s+)?to\s+(my\s+)?(junk|spam)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_capability(rec: dict) -> str:
+    """Returns 'resend', 'source_add', or 'none'. Runs BEFORE any per-sender
+    static request_kind is applied, so a known request shape (e.g. Alyssa,
+    statically 'research', asking to resend past mail) is caught regardless
+    of the sender's default routing."""
+    text = f"{rec.get('title', '')} {rec.get('body_head', '')}"
+    if _RESEND_RX.search(text):
+        return "resend"
+    if dev_loop._URL_RX.search(rec.get("body_head", "") or ""):
+        return "source_add"
+    return "none"
+
+
+# ── Resend: find + redeliver our own past sent mail ──────────────────────────
+
+IMAP_SERVER = "imap.gmail.com"          # same Gmail infra the outbound side
+                                        # uses (smtplib.SMTP("smtp.gmail.com"))
+MAX_RESEND = 30                         # cap a single batch — avoid a flood
+SELF_EXCLUDE_MINUTES = 10               # skip anything sent in this run's own
+                                        # ack window (else the ack we just
+                                        # sent shows up as a "past email")
+
+
+def _decode_hdr(value: str) -> str:
+    if not value:
+        return ""
+    out = []
+    for part, enc in decode_header(value):
+        out.append(part.decode(enc or "utf-8", errors="replace")
+                   if isinstance(part, bytes) else part)
+    return "".join(out)
+
+
+def _plain_text(msg) -> str:
+    """First text/plain part (fallback: stripped text/html) — no length cap;
+    unlike intake.py's body_text() this is for redelivering the ORIGINAL
+    content, not classifying it."""
+    def _decode(part):
+        try:
+            payload = part.get_payload(decode=True)
+            return payload.decode(part.get_content_charset() or "utf-8",
+                                  errors="replace") if payload else ""
+        except Exception:
+            return ""
+    plain, html = "", ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if ctype == "text/plain" and not plain:
+                plain = _decode(part)
+            elif ctype == "text/html" and not html:
+                html = _decode(part)
+    else:
+        if msg.get_content_type() == "text/html":
+            html = _decode(msg)
+        else:
+            plain = _decode(msg)
+    return plain or re.sub(r"<[^>]+>", " ", html)
+
+
+def _find_sent_folder(mail: imaplib.IMAP4_SSL) -> str:
+    """Locate the Sent-mail folder by its \\Sent special-use attribute (works
+    regardless of account locale/naming); falls back to Gmail's default
+    English name if the attribute lookup fails."""
+    try:
+        typ, data = mail.list()
+        if typ == "OK":
+            for line in data or []:
+                line_s = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+                if "\\Sent" in line_s:
+                    m = re.search(r'"([^"]+)"\s*$', line_s)
+                    if m:
+                        return m.group(1)
+    except Exception:
+        pass
+    return "[Gmail]/Sent Mail"
+
+
+def try_auto_resend(rec: dict, creds: dict, to_addr: str, orig_subject: str) -> dict:
+    """Find CUMULUS's own past sent mail to `to_addr` (its Sent folder — the
+    same account intake sends acks/digests from) and redeliver it verbatim.
+    Read-only IMAP search + a bounded batch of outbound resends; no new
+    destructive surface. Falls back to the normal ticket queue on any
+    failure or if nothing is found, same pattern as solve_and_answer — the
+    ack already sent told the requester it's being worked on."""
+    result = {"resent": False, "count": 0, "skipped_older": 0, "reason": ""}
+    from_email = creds.get("outlook_email", "")
+    password = creds.get("outlook_password", "")
+    if not from_email or not password:
+        result["reason"] = "no send credentials configured"
+        _fallback_to_ticket(rec)
+        return result
+
+    mail = None
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, 993, timeout=30)
+        mail.login(from_email, password)
+        folder = _find_sent_folder(mail)
+        typ, _ = mail.select(f'"{folder}"', readonly=True)
+        if typ != "OK":
+            raise RuntimeError(f"could not open sent folder '{folder}'")
+        typ, msg_ids = mail.search(None, "TO", f'"{to_addr}"')
+        if typ != "OK":
+            raise RuntimeError("IMAP search failed")
+        ids = msg_ids[0].split()
+
+        cutoff = datetime.now() - timedelta(minutes=SELF_EXCLUDE_MINUTES)
+        candidates = []
+        for mid in ids:
+            try:
+                typ, hdr_data = mail.fetch(mid, "(BODY.PEEK[HEADER.FIELDS (SUBJECT DATE)])")
+                if typ != "OK" or not hdr_data or not hdr_data[0]:
+                    continue
+                hdr = email.message_from_bytes(hdr_data[0][1])
+                subj = _decode_hdr(hdr.get("Subject", ""))
+                date_hdr = hdr.get("Date")
+                sent_dt = email.utils.parsedate_to_datetime(date_hdr) if date_hdr else None
+                if sent_dt and sent_dt.tzinfo:
+                    sent_dt = sent_dt.astimezone().replace(tzinfo=None)
+                if sent_dt and sent_dt > cutoff:
+                    continue  # excludes mail sent by this very run (the ack)
+                candidates.append((mid, subj, sent_dt))
+            except Exception:
+                continue
+
+        if not candidates:
+            result["reason"] = "no prior sent mail found to this address"
+            _fallback_to_ticket(rec)
+            return result
+
+        candidates.sort(key=lambda c: c[2] or datetime.min)
+        batch = candidates[-MAX_RESEND:]
+        result["skipped_older"] = len(candidates) - len(batch)
+
+        sent_count = 0
+        for mid, subj, sent_dt in batch:
+            try:
+                typ, full = mail.fetch(mid, "(BODY.PEEK[])")
+                if typ != "OK" or not full or not full[0]:
+                    continue
+                orig = email.message_from_bytes(full[0][1])
+                body = _plain_text(orig)
+                when = sent_dt.strftime("%Y-%m-%d") if sent_dt else "an earlier date"
+                resend_subj = f"[Resent] {subj}" if subj else "[Resent] CUMULUS email"
+                if _send_mail(from_email, password, to_addr, CC_ADDR, resend_subj,
+                             f"(Resending at your request — originally sent {when})\n\n{body}"):
+                    sent_count += 1
+            except Exception:
+                continue
+    except Exception as e:
+        result["reason"] = f"could not read/resend sent mail: {e}"
+        _fallback_to_ticket(rec)
+        return result
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+    result["resent"] = sent_count > 0
+    result["count"] = sent_count
+    if not result["resent"]:
+        result["reason"] = "found candidates but every resend attempt failed"
+        _fallback_to_ticket(rec)
+        return result
+    result["reason"] = (f"resent {sent_count}/{len(batch)}"
+                        + (f", {result['skipped_older']} older one(s) skipped "
+                           f"(cap {MAX_RESEND}/request)" if result["skipped_older"] else ""))
+    dev_loop.ledger_append({
+        "event": "auto-resent", "requester": rec.get("requester"),
+        "to": to_addr, "count": sent_count, "skipped_older": result["skipped_older"],
+    }, PROJECT_DIR)
+    return result
