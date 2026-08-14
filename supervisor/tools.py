@@ -129,7 +129,14 @@ def check_cirrus_timemachine() -> str:
         return result
 
     try:
-        req = urllib.request.Request(f"{CIRRUS_TM_URL}?token={token}")
+        # Explicit User-Agent required -- Cloudflare's bot protection in
+        # front of cirrus.cirrustask.com blocks urllib's default UA (curl's
+        # default sails through fine; confirmed live testing this). Same
+        # fix already used by intake.py's telegram() and task_solver.py's
+        # _fetch_is_feed() for the same reason.
+        req = urllib.request.Request(
+            f"{CIRRUS_TM_URL}?token={token}",
+            headers={"User-Agent": "CUMULUS-supervisor/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
