@@ -41,6 +41,7 @@ from claude_agent_sdk import (
 
 import budget
 import heartbeat
+import opus_approval
 import tools
 from ledger import ledger_append
 
@@ -110,31 +111,53 @@ def _build_mcp_tools():
     async def _send_telegram(args):
         return {"content": [{"type": "text", "text": tools.send_telegram(args["message"])}]}
 
+    @tool("request_opus_upgrade",
+          "Ask Buddy's permission (via Telegram) to use Opus starting next pass, for a task that "
+          "genuinely seems to need deeper reasoning than Sonnet can give it", {"reason": str})
+    async def _request_opus_upgrade(args):
+        return {"content": [{"type": "text", "text": tools.request_opus_upgrade(args["reason"])}]}
+
     return [_check_service_status, _check_timers, _tail_journal,
             _check_credentials_health, _check_cirrus_timemachine,
-            _restart_service, _reset_failed, _send_telegram]
+            _restart_service, _reset_failed, _send_telegram,
+            _request_opus_upgrade]
 
 
 async def run_reasoning_pass(reason: str) -> float:
-    """Runs one claude-agent-sdk reasoning pass. Returns cost in USD."""
+    """Runs one claude-agent-sdk reasoning pass. Returns cost in USD.
+
+    S64: model is explicitly pinned (was previously unset -- silently riding
+    the SDK's default rather than a deliberate choice). Defaults to Sonnet;
+    upgrades to Opus for exactly ONE pass if opus_approval.consume_approval()
+    finds Buddy approved a pending request via Telegram reply -- consuming it
+    means the pass after this one reverts to Sonnet automatically, so an
+    upgrade never silently persists."""
     secrets = _load_secrets()
     mcp_tools = _build_mcp_tools()
     server = create_sdk_mcp_server(name="supervisor", tools=mcp_tools)
     allowed = [f"mcp__supervisor__{t.name}" for t in mcp_tools]
+
+    upgraded = opus_approval.consume_approval()
+    model = "opus" if upgraded else "sonnet"
 
     options = ClaudeAgentOptions(
         mcp_servers={"supervisor": server},
         allowed_tools=allowed,
         permission_mode="bypassPermissions",
         system_prompt=SYSTEM_PROMPT,
+        model=model,
         max_turns=12,
-        max_budget_usd=1.00,
+        max_budget_usd=3.00 if upgraded else 1.00,
         env={"ANTHROPIC_API_KEY": secrets["anthropic_api_key"]},
         cwd=str(APP_DIR),
         setting_sources=["project"],  # loads CLAUDE.md from cwd (APP_DIR) as project context
     )
 
     prompt = f"Reasoning pass triggered because: {reason}. Do your check now."
+    if upgraded:
+        prompt += (" NOTE: Buddy approved an Opus upgrade for this pass "
+                   "(your prior request). This is a one-time upgrade -- "
+                   "you're back on Sonnet next time.")
     cost = 0.0
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, ResultMessage):
@@ -182,8 +205,8 @@ def _handle_trigger(reason: str, is_daily: bool):
                        "tier_name": "n/a", "detail": reason, "result": why})
         if _should_notify_skip():
             tools.send_telegram(
-                f"CUMULUS supervisor: {reason}. Skipping AI review — today's "
-                f"${budget.DAILY_CAP_USD:.2f} cap reached (${spent:.2f} spent).")
+                f"CUMULUS supervisor: {reason}. Skipping AI review — this month's "
+                f"${budget.MONTHLY_CAP_USD:.2f} cap reached (${spent:.2f} spent).")
             _mark_skip_notified()
     if is_daily:
         _mark_daily_done()
@@ -193,6 +216,7 @@ def main_loop():
     print("CUMULUS supervisor starting", flush=True)
     while True:
         hb = heartbeat.run_heartbeat()
+        opus_approval.check_for_reply()  # cheap no-op unless a request is pending
         if not hb["ok"]:
             _handle_trigger(f"heartbeat found an issue: {hb['detail']}", is_daily=False)
         elif _daily_check_due():

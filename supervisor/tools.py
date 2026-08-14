@@ -205,6 +205,22 @@ def reset_failed(unit: str) -> str:
     return result
 
 
+def request_opus_upgrade(reason: str) -> str:
+    """S64: ask Buddy's permission to use Opus for the rest of THIS reasoning
+    pass onward — call this if a task genuinely seems to need deeper
+    reasoning than you can give it, not as a routine choice. Sends Buddy a
+    Telegram; if he replies "approve" within 2 hours, your NEXT invocation
+    runs on Opus for exactly one pass, then reverts to Sonnet automatically.
+    This pass itself still finishes on Sonnet — note in your summary that
+    you're requesting an upgrade and will revisit next time you're woken."""
+    import opus_approval
+    text = opus_approval.create_request(reason)
+    result = send_telegram(text)
+    ledger_append({"event": "action", "tool": "request_opus_upgrade",
+                   "tier_name": "notify", "detail": reason[:120], "result": result})
+    return result
+
+
 # ── Notify ────────────────────────────────────────────────────────────────────
 
 def send_telegram(message: str) -> str:
