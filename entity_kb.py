@@ -407,6 +407,27 @@ def selftest() -> bool:
         checks.append(("PASS", "recap_text is empty for an unknown entity",
                         recap_text(project, "does-not-exist", db_path=path) == ""))
 
+        # Multi-tenant isolation: two different projects sharing the SAME
+        # underlying db file (deliberately, to prove the boundary is the
+        # `project` column, not just per-project file separation -- since
+        # production never shares a file, this is the stricter of the two
+        # guarantees). Same slug AND overlapping name text in both projects.
+        upsert_entity("hoa_leads_bill_test", "shared-name", "Riverside Community Association",
+                      fields={"owner_tag": "bill-only-data"}, db_path=path)
+        upsert_entity("pedagogy_sources_test", "shared-name", "Riverside Community Association",
+                      fields={"owner_tag": "alyssa-only-data"}, db_path=path)
+        q = "tell me about Riverside Community Association"
+        bill_hits = search_entities("hoa_leads_bill_test", q, db_path=path)
+        alyssa_hits = search_entities("pedagogy_sources_test", q, db_path=path)
+        checks.append(("PASS", "same slug + overlapping name in two projects: each search "
+                        "returns only its own project's entity",
+                        len(bill_hits) == 1 and bill_hits[0]["state"]["owner_tag"] == "bill-only-data"
+                        and len(alyssa_hits) == 1
+                        and alyssa_hits[0]["state"]["owner_tag"] == "alyssa-only-data"))
+        checks.append(("PASS", "list_entities never crosses project boundaries",
+                        all(e["project"] == "hoa_leads_bill_test"
+                            for e in list_entities("hoa_leads_bill_test", db_path=path))))
+
         all_ok = all(ok for _, _, ok in checks)
         for status, desc, ok in checks:
             print(f"  {'PASS' if ok else 'FAIL'}  {desc}")

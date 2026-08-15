@@ -15,13 +15,21 @@ docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
    request_kind == "answer" (explicit per-sender opt-in in
    config/intake_senders.json). S65: checks entity_kb.py first (via
    try_entity_kb_answer) for a grounded, sourced recap from a project's own
-   researched data — free, no LLM call, no hallucination risk — and only
-   falls back to the 4-provider LLM council (ensemble.best_answer(), which
-   already handles its own budget-aware degradation) when nothing in the KB
-   matches the question. A cheap deterministic quality gate runs before
-   sending either way (the one part of the never-built Sanity Supervisor
-   design — docs/CIRRUS-Sanity-Supervisor.md's "v0 hard sniff-tests" —
-   cheap enough to include here for free).
+   researched data — free, no LLM call, no hallucination risk. If the
+   question also asks for UPDATED/fresh info (wants_fresh_research), runs a
+   live deep_research.deep_research_entity() pass first — search + fetch +
+   4-LLM-council extraction against the open web, written back into
+   entity_kb — so the reply reflects a fresh look, not just what was
+   already on file. Falls back to the general 4-provider LLM council
+   (ensemble.best_answer(), which already handles its own budget-aware
+   degradation) only when nothing in the KB matches the question at all.
+   A cheap deterministic quality gate runs before sending either way (the
+   one part of the never-built Sanity Supervisor design —
+   docs/CIRRUS-Sanity-Supervisor.md's "v0 hard sniff-tests" — cheap enough
+   to include here for free). PROJECT_TO_KB is the multi-tenant boundary:
+   a sender only ever searches the entity_kb project(s) their own intake
+   "projects" tag maps to, so one client's questions can never surface
+   another client's data.
 
 3. classify_capability(rec) + try_auto_resend(rec, creds, to_addr, subject)
    (S63, later same session) — the first entry in a small CAPABILITY
@@ -63,6 +71,7 @@ from email.header import decode_header
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import deep_research
 import dev_loop
 import ensemble
 import entity_kb
@@ -171,21 +180,49 @@ def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
 # Maps an intake sender's "projects" tag (config/intake_senders.json) to the
 # entity_kb.py project string to search for that sender's questions. Extend
 # this dict, not the matching logic, when a new project gets its own KB.
+# This IS the multi-tenant boundary: a sender only ever searches the
+# project(s) their own "projects" tag maps to -- e.g. Alyssa's pedagogy
+# senders would map only to a pedagogy_* entity_kb project, never
+# hoa_leads_bill, so her lookups can never surface Bill's data or vice versa.
 PROJECT_TO_KB = {
     "snow": "hoa_leads_bill",
     "property-management": "hoa_leads_bill",
 }
 
+_DETERMINER2 = r"(the|this|that|it|our|my)"
+_REFRESH_RX = re.compile(
+    # "updated/latest/current/new/fresh info(rmation)/status/news" on X
+    r"\b(updat(e[ds]?|ing)|latest|current|new|fresh)\b[^.!?\n]{0,40}\b(info(rmation)?|update|status|news|details)\b"
+    r"|\b(any\s+)?(updates?|news)\s+on\b"
+    r"|\brefresh\b|\bre-?research\b|\bdig\s+(deeper|further)\b"
+    r"|\blook\s+into\s+" + _DETERMINER2 + r"\b[^.!?\n]{0,20}\b(again|further|more|deeper)\b"
+    r"|\bcheck\s+(again|for\s+updates)\b",
+    re.IGNORECASE,
+)
 
-def try_entity_kb_answer(rec: dict, db_path: str = None) -> str | None:
+
+def wants_fresh_research(text: str) -> bool:
+    """Deterministic, offline-testable: does this question ask for
+    NEW/updated research, vs. just 'what do you have on record'? Same
+    pattern-match approach as classify_capability's resend detector above."""
+    return bool(_REFRESH_RX.search(text))
+
+
+def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> str | None:
     """If the question plausibly names something already researched (per
     the sender's project -> entity_kb project mapping above), answer from
-    the KB instead of the general LLM council -- grounded and sourced,
-    costs nothing, and can't hallucinate a management company that isn't
-    in our records. Returns None (caller falls back to the council) when
-    no entity_kb project applies to this sender or nothing matches.
-    `db_path` overrides entity_kb's default per-project path -- only ever
-    passed by selftest(), never by the live call site."""
+    the KB -- grounded and sourced, costs nothing, and can't hallucinate a
+    management company that isn't in our records. If the question also asks
+    for UPDATED/fresh info (wants_fresh_research) and `creds` is supplied,
+    runs a live deep_research_entity() pass first so the reply reflects a
+    fresh search, not just what was already on file.
+
+    Returns None (caller falls back to the council) when no entity_kb
+    project applies to this sender or nothing matches. `creds=None` skips
+    the refresh path even if the question asks for it (selftest never
+    passes creds, so it never triggers live network/LLM calls). `db_path`
+    overrides entity_kb's default per-project path -- only ever passed by
+    selftest(), never by the live call site."""
     question = f"{rec.get('title', '')} {rec.get('body_head', '')}"
     kb_projects = {PROJECT_TO_KB[p] for p in rec.get("projects", []) if p in PROJECT_TO_KB}
     for kb_project in kb_projects:
@@ -193,12 +230,24 @@ def try_entity_kb_answer(rec: dict, db_path: str = None) -> str | None:
             matches = entity_kb.search_entities(kb_project, question, db_path=db_path, limit=3)
         except Exception:
             continue
-        if len(matches) == 1:
-            return entity_kb.recap_text(kb_project, matches[0]["slug"], db_path=db_path)
         if len(matches) > 1:
             names = "; ".join(m["name"] for m in matches)
             return (f"I found a few possible matches in our records — could you "
                      f"let me know which one you mean? {names}")
+        if len(matches) == 1:
+            entity = matches[0]
+            if creds and wants_fresh_research(question):
+                try:
+                    recap, found = deep_research.deep_research_entity(
+                        kb_project, entity["name"], entity["slug"], creds, db_path=db_path)
+                    prefix = ("I did a fresh search and found some updates — here's the "
+                              "latest:\n\n" if found else
+                              "I looked for updated information but didn't find anything new "
+                              "since our last check — here's what's currently on record:\n\n")
+                    return prefix + recap
+                except Exception:
+                    pass  # fall through to the plain (non-refreshed) recap below
+            return entity_kb.recap_text(kb_project, entity["slug"], db_path=db_path)
     return None
 
 
@@ -213,7 +262,7 @@ def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) ->
     question = rec.get("body_head", "") or rec.get("title", "")
     result = {"answered": False, "cost_usd": None, "reason": ""}
 
-    kb_text = try_entity_kb_answer(rec)
+    kb_text = try_entity_kb_answer(rec, creds=creds)
     if kb_text is not None:
         text = kb_text
         meta = {"est_cost_usd": 0.0, "reason": "entity_kb lookup",
@@ -523,6 +572,25 @@ def selftest() -> int:
         # matching rather than asserting a specific (fragile) ranking behavior.
         check("a vague question with no entity name mentioned returns None",
               try_entity_kb_answer(rec_ambiguous, db_path=db_path) is None)
+
+        # wants_fresh_research: pure regex, no I/O
+        check("'any updates on X' reads as a refresh request",
+              wants_fresh_research("Do you have any updates on Mermaid Run?"))
+        check("'latest info' reads as a refresh request",
+              wants_fresh_research("What's the latest information on this property?"))
+        check("'refresh your research' reads as a refresh request",
+              wants_fresh_research("Can you refresh your research on this one?"))
+        check("a plain lookup question does NOT read as a refresh request",
+              not wants_fresh_research("What do you have on Mermaid Run?"))
+
+        # Refresh phrasing WITHOUT creds must never trigger a live search --
+        # falls through to the plain on-file recap, same as a non-refresh ask.
+        rec_refresh_no_creds = {"projects": ["snow"], "title": "REQUEST",
+                                  "body_head": "Any updates on Mermaid Run before I visit?"}
+        answer = try_entity_kb_answer(rec_refresh_no_creds, creds=None, db_path=db_path)
+        check("refresh phrasing with creds=None returns the plain recap, no live search",
+              answer is not None and "RE/MAX Associates" in answer
+              and "fresh search" not in answer)
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
