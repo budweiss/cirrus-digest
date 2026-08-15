@@ -11,15 +11,17 @@ docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
    config/sources.local.json (git-external overlay, reversible by deleting
    the entry).
 
-2. solve_and_answer(rec, creds, to_addr, orig_subject) — live LLM-council
-   answer for request_kind == "answer" (explicit per-sender opt-in in
-   config/intake_senders.json). Reuses ensemble.best_answer() as-is — it
-   already handles its own budget-aware degradation (falls back to a
-   cheaper single-provider call under budget pressure rather than failing),
-   so no separate budget gate is needed here. A cheap deterministic quality
-   gate runs before sending (the one part of the never-built Sanity
-   Supervisor design — docs/CIRRUS-Sanity-Supervisor.md's "v0 hard
-   sniff-tests" — cheap enough to include here for free).
+2. solve_and_answer(rec, creds, to_addr, orig_subject) — live answer for
+   request_kind == "answer" (explicit per-sender opt-in in
+   config/intake_senders.json). S65: checks entity_kb.py first (via
+   try_entity_kb_answer) for a grounded, sourced recap from a project's own
+   researched data — free, no LLM call, no hallucination risk — and only
+   falls back to the 4-provider LLM council (ensemble.best_answer(), which
+   already handles its own budget-aware degradation) when nothing in the KB
+   matches the question. A cheap deterministic quality gate runs before
+   sending either way (the one part of the never-built Sanity Supervisor
+   design — docs/CIRRUS-Sanity-Supervisor.md's "v0 hard sniff-tests" —
+   cheap enough to include here for free).
 
 3. classify_capability(rec) + try_auto_resend(rec, creds, to_addr, subject)
    (S63, later same session) — the first entry in a small CAPABILITY
@@ -63,6 +65,7 @@ from pathlib import Path
 
 import dev_loop
 import ensemble
+import entity_kb
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 SOURCES_OVERLAY = PROJECT_DIR / "config/sources.local.json"
@@ -165,24 +168,66 @@ def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
         return False
 
 
+# Maps an intake sender's "projects" tag (config/intake_senders.json) to the
+# entity_kb.py project string to search for that sender's questions. Extend
+# this dict, not the matching logic, when a new project gets its own KB.
+PROJECT_TO_KB = {
+    "snow": "hoa_leads_bill",
+    "property-management": "hoa_leads_bill",
+}
+
+
+def try_entity_kb_answer(rec: dict, db_path: str = None) -> str | None:
+    """If the question plausibly names something already researched (per
+    the sender's project -> entity_kb project mapping above), answer from
+    the KB instead of the general LLM council -- grounded and sourced,
+    costs nothing, and can't hallucinate a management company that isn't
+    in our records. Returns None (caller falls back to the council) when
+    no entity_kb project applies to this sender or nothing matches.
+    `db_path` overrides entity_kb's default per-project path -- only ever
+    passed by selftest(), never by the live call site."""
+    question = f"{rec.get('title', '')} {rec.get('body_head', '')}"
+    kb_projects = {PROJECT_TO_KB[p] for p in rec.get("projects", []) if p in PROJECT_TO_KB}
+    for kb_project in kb_projects:
+        try:
+            matches = entity_kb.search_entities(kb_project, question, db_path=db_path, limit=3)
+        except Exception:
+            continue
+        if len(matches) == 1:
+            return entity_kb.recap_text(kb_project, matches[0]["slug"], db_path=db_path)
+        if len(matches) > 1:
+            names = "; ".join(m["name"] for m in matches)
+            return (f"I found a few possible matches in our records — could you "
+                     f"let me know which one you mean? {names}")
+    return None
+
+
 def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) -> dict:
-    """Answer a request_kind=='answer' message live via the 4-provider
-    council. Returns {"answered": bool, "cost_usd": float|None, "reason": str}.
-    On a quality-gate failure or any hard error, falls back to a normal
-    dev-ticket queue entry (via dev_loop.ticket_create) rather than silently
-    dropping the request — the ack the caller already sent told the
-    requester it's being worked on."""
+    """Answer a request_kind=='answer' message live -- from entity_kb.py if
+    the question matches something already researched (try_entity_kb_answer),
+    else via the 4-provider council. Returns {"answered": bool,
+    "cost_usd": float|None, "reason": str}. On a quality-gate failure or any
+    hard error, falls back to a normal dev-ticket queue entry (via
+    dev_loop.ticket_create) rather than silently dropping the request — the
+    ack the caller already sent told the requester it's being worked on."""
     question = rec.get("body_head", "") or rec.get("title", "")
     result = {"answered": False, "cost_usd": None, "reason": ""}
-    try:
-        meta, text = ensemble.best_answer(
-            _ANSWER_SYSTEM, question, creds, task="intake-answer",
-            session_id=f"intake-answer-{rec.get('message_id', datetime.now().isoformat())}",
-            app_dir=PROJECT_DIR, mode="council")
-    except Exception as e:
-        result["reason"] = f"council call failed: {e}"
-        _fallback_to_ticket(rec)
-        return result
+
+    kb_text = try_entity_kb_answer(rec)
+    if kb_text is not None:
+        text = kb_text
+        meta = {"est_cost_usd": 0.0, "reason": "entity_kb lookup",
+                 "degraded": False, "members": ["entity_kb"]}
+    else:
+        try:
+            meta, text = ensemble.best_answer(
+                _ANSWER_SYSTEM, question, creds, task="intake-answer",
+                session_id=f"intake-answer-{rec.get('message_id', datetime.now().isoformat())}",
+                app_dir=PROJECT_DIR, mode="council")
+        except Exception as e:
+            result["reason"] = f"council call failed: {e}"
+            _fallback_to_ticket(rec)
+            return result
 
     result["cost_usd"] = meta.get("est_cost_usd")
     if not _quality_ok(text):
@@ -422,3 +467,70 @@ def try_auto_resend(rec: dict, creds: dict, to_addr: str, orig_subject: str) -> 
         "to": to_addr, "count": sent_count, "skipped_older": result["skipped_older"],
     }, PROJECT_DIR)
     return result
+
+
+# ── Selftest (offline, no network) ───────────────────────────────────────────
+# Covers try_entity_kb_answer only -- solve_and_answer/try_auto_resend need
+# live network (council/SMTP/IMAP), same reason intake.py's own selftest
+# stays offline-only.
+
+def selftest() -> int:
+    import os
+    import tempfile
+
+    failures = 0
+
+    def check(name, cond):
+        nonlocal failures
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+        if not cond:
+            failures += 1
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(db_path)
+    kb_project = "hoa_leads_bill"  # matches PROJECT_TO_KB's real mapping
+    try:
+        entity_kb.upsert_entity(
+            kb_project, "mermaid-run", "Mermaid Run Condominium Association",
+            fields={"current_mgmt_co": "RE/MAX Associates"}, lead_state="warm",
+            db_path=db_path)
+        entity_kb.upsert_entity(
+            kb_project, "le-parc", "Le Parc Community Association",
+            fields={"current_mgmt_co": "Premier Property Management"},
+            lead_state="cold", db_path=db_path)
+
+        rec_snow = {"projects": ["snow"], "title": "REQUEST: recap on Mermaid Run",
+                    "body_head": "What do you have on Mermaid Run before I visit?"}
+        answer = try_entity_kb_answer(rec_snow, db_path=db_path)
+        check("known-project sender + matching entity returns a KB recap",
+              answer is not None and "RE/MAX Associates" in answer)
+
+        rec_unmapped = {"projects": ["realestate"], "title": "REQUEST: recap on Mermaid Run",
+                         "body_head": "What do you have on Mermaid Run?"}
+        check("sender project not in PROJECT_TO_KB returns None (falls back to council)",
+              try_entity_kb_answer(rec_unmapped, db_path=db_path) is None)
+
+        rec_no_match = {"projects": ["snow"], "title": "REQUEST",
+                         "body_head": "What's your rate for snow removal this winter?"}
+        check("no matching entity returns None (falls back to council)",
+              try_entity_kb_answer(rec_no_match, db_path=db_path) is None)
+
+        rec_ambiguous = {"projects": ["property-management"], "title": "REQUEST",
+                          "body_head": "Any updates on our management communities?"}
+        # neither name/slug appears verbatim and word-overlap is too generic to
+        # match either seeded entity -- documents the honest limit of substring
+        # matching rather than asserting a specific (fragile) ranking behavior.
+        check("a vague question with no entity name mentioned returns None",
+              try_entity_kb_answer(rec_ambiguous, db_path=db_path) is None)
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+    print(f"\n{'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(selftest())

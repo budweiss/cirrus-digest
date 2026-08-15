@@ -28,6 +28,7 @@ rules, etc. belong in the calling script (e.g. a future hoa_research.py), not
 in this module.
 """
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -270,6 +271,83 @@ def project_counts(project: str, db_path: str = None) -> dict:
         conn.close()
 
 
+def _normalize(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def search_entities(project: str, query_text: str, db_path: str = None,
+                     limit: int = 5) -> list:
+    """Simple substring/word-overlap search over entity names+slugs within a
+    project -- not fuzzy/typo-tolerant, just enough for "what do you have on
+    X" style lookups where the caller names the entity close to verbatim.
+    Returns entities ranked best-match-first."""
+    q = _normalize(query_text)
+    q_words = {w for w in q.split() if len(w) > 3}
+    scored = []
+    for e in list_entities(project, db_path=db_path):
+        name_norm = _normalize(e["name"])
+        slug_norm = e["slug"].replace("-", " ")
+        if name_norm and name_norm in q:
+            scored.append((100 + len(name_norm), e))
+            continue
+        if slug_norm and slug_norm in q:
+            scored.append((100 + len(slug_norm), e))
+            continue
+        overlap = q_words & set(name_norm.split())
+        if len(overlap) >= 2:
+            scored.append((len(overlap), e))
+    scored.sort(key=lambda t: -t[0])
+    return [e for _, e in scored[:limit]]
+
+
+def recap_text(project: str, slug: str, db_path: str = None,
+                max_events: int = 8) -> str:
+    """Human-readable summary of one entity's current state + recent
+    history -- for a client-facing recap reply, not a raw data dump.
+    Empty string if the entity doesn't exist."""
+    e = get_entity(project, slug, db_path=db_path)
+    if not e:
+        return ""
+
+    lines = [e["name"]]
+    if e.get("lead_state"):
+        lines.append(f"Status: {e['lead_state']}")
+
+    state = e.get("state", {})
+    # Only the fields most likely to matter to a human reader -- state_json
+    # can hold arbitrary caller-defined keys, we don't dump all of them.
+    for key in ("county", "type", "mgmt_status", "current_mgmt_co",
+                "board_contact", "board_email", "website", "opportunity_tier"):
+        val = state.get(key)
+        if val:
+            lines.append(f"{key.replace('_', ' ').title()}: {val}")
+
+    events = get_events(project, slug=slug, db_path=db_path)[:max_events]
+    if events:
+        lines.append("")
+        lines.append("Recent history:")
+        for ev in events:
+            date = (ev.get("occurred_at") or "")[:10]
+            if ev["event_type"] == "signal":
+                src = f" (source: {ev['source_url']})" if ev.get("source_url") else ""
+                lines.append(f"- {date}: {ev.get('summary', '')}{src}")
+            else:
+                try:
+                    old = json.loads(ev["old_value"]) if ev.get("old_value") else None
+                    new = json.loads(ev["new_value"]) if ev.get("new_value") else None
+                except (TypeError, json.JSONDecodeError):
+                    old, new = ev.get("old_value"), ev.get("new_value")
+                lines.append(f"- {date}: {ev['field']} changed from '{old}' to '{new}'")
+
+    if e.get("last_updated"):
+        lines.append("")
+        lines.append(f"(Last updated in our records: {e['last_updated']})")
+
+    return "\n".join(lines)
+
+
 def selftest() -> bool:
     """Exercises the module against a throwaway in-memory-equivalent temp
     file. No effect on any real project's data."""
@@ -313,6 +391,21 @@ def selftest() -> bool:
                     name="Brand New HOA", db_path=path)
         checks.append(("PASS", "add_signal auto-creates missing entity",
                         get_entity(project, "brand-new-hoa", db_path=path) is not None))
+
+        upsert_entity(project, "mermaid-run", "Mermaid Run Condominium Association",
+                      fields={"county": "New Castle"}, db_path=path)
+        hits = search_entities(project, "what do you have on Mermaid Run?", db_path=path)
+        checks.append(("PASS", "search_entities matches a name substring in the question",
+                        len(hits) == 1 and hits[0]["slug"] == "mermaid-run"))
+        no_hits = search_entities(project, "what's the weather like today", db_path=path)
+        checks.append(("PASS", "search_entities returns nothing for an unrelated question",
+                        len(no_hits) == 0))
+
+        recap = recap_text(project, "acme-hoa", db_path=path)
+        checks.append(("PASS", "recap_text includes name, state, and signal history",
+                        "Acme HOA" in recap and "Beta PM" in recap and "Pool closed" in recap))
+        checks.append(("PASS", "recap_text is empty for an unknown entity",
+                        recap_text(project, "does-not-exist", db_path=path) == ""))
 
         all_ok = all(ok for _, _, ok in checks)
         for status, desc, ok in checks:
