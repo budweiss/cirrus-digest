@@ -277,6 +277,13 @@ def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def slugify(name: str, max_len: int = 60) -> str:
+    """Public helper for callers that discover a brand-new entity and need
+    a slug for it (the curated seed data used hand-picked short slugs like
+    "mermaid-run" -- new discoveries just get a mechanical one)."""
+    return _normalize(name).replace(" ", "-")[:max_len].strip("-") or "entity"
+
+
 def search_entities(project: str, query_text: str, db_path: str = None,
                      limit: int = 5) -> list:
     """Simple substring/word-overlap search over entity names+slugs within a
