@@ -73,6 +73,28 @@ DEFAULT_DAILY_LIMIT  = 10
 
 REQUEST_RX = re.compile(r"^\s*(re:\s*)?request\b\s*:?\s*", re.IGNORECASE)
 
+
+def needs_prefix_skip(entry: dict, subject: str) -> bool:
+    """True when a require_prefix sender's subject fails the REQUEST: gate —
+    the exact condition that must trigger the prefix-skip Telegram alert
+    (2026-08-14). Pulled out to a named function so the selftest exercises
+    the real decision, not a re-typed copy of it that could silently drift
+    from the code actually running in run()."""
+    return bool(entry["require_prefix"] and not REQUEST_RX.match(subject or ""))
+
+
+def prefix_skip_alert_lines(prefix_skipped: list) -> list:
+    """Telegram lines for the prefix-skip alert. Pulled out so the selftest
+    can assert on the real message text, not just the trigger condition —
+    a bug that fires the alert with garbled/missing content would pass a
+    condition-only test but fail this one."""
+    lines = [f"✉️ *Intake*: {len(prefix_skipped)} email(s) skipped "
+             f"(missing REQUEST: prefix) — resend with \"REQUEST: ...\" "
+             f"in the subject if these were meant as requests:"]
+    for name, subj in prefix_skipped:
+        lines.append(f"• {name}: _{subj}_")
+    return lines
+
 # Projects that are research-only (a request from these senders is ALWAYS a
 # focus topic for the project's research digest, never a build/dev ticket).
 # This is a safety net: even if a sender's request_kind is mis-set to 'build'
@@ -568,7 +590,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     processed, limited, prefix_skipped = [], [], []
     for uid, from_addr, subject, body, mid in messages:
         entry = allowlist[from_addr]
-        if entry["require_prefix"] and not REQUEST_RX.match(subject or ""):
+        if needs_prefix_skip(entry, subject):
             log(f"  skipped (no REQUEST: prefix, sender requires it): "
                 f"{entry['name']} — '{(subject or '')[:60]}'")
             prefix_skipped.append((entry["name"], subject))
@@ -710,11 +732,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     # again. If this gets noisy for routine forwarded mail, revisit — but
     # silence-by-default already proved worse.
     if prefix_skipped:
-        plines = [f"✉️ *Intake*: {len(prefix_skipped)} email(s) skipped "
-                  f"(missing REQUEST: prefix) — resend with \"REQUEST: ...\" "
-                  f"in the subject if these were meant as requests:"]
-        for name, subj in prefix_skipped:
-            plines.append(f"• {name}: _{subj}_")
+        plines = prefix_skip_alert_lines(prefix_skipped)
         if dry_run:
             log("DRY RUN — would telegram:\n" + "\n".join(plines))
         else:
@@ -785,13 +803,23 @@ def selftest() -> int:
         check("prefix gate: Fwd blocked", not REQUEST_RX.match("Fwd: research stuff"))
         check("prefix gate: plain blocked", not REQUEST_RX.match("more salt data"))
         # 2026-08-14: a require_prefix sender whose subject fails the gate
-        # used to vanish with zero notice (server-log-only). Mirrors run()'s
-        # actual condition (entry["require_prefix"] and not REQUEST_RX.match)
-        # so a future refactor that silences this again gets caught here.
-        check("prefix gate condition flags a genuine near-miss for alerting",
-              al2["b@y.com"]["require_prefix"] and not REQUEST_RX.match("Research. Name change for boss."))
-        check("prefix gate condition does not flag a compliant subject",
-              not (al2["b@y.com"]["require_prefix"] and not REQUEST_RX.match("REQUEST: name change for boss")))
+        # used to vanish with zero notice (server-log-only). These call the
+        # REAL functions run() uses (needs_prefix_skip / prefix_skip_alert_
+        # lines), not a re-typed copy of the condition — so if a future edit
+        # deletes the alert call or breaks the condition, these fail instead
+        # of silently continuing to pass against stale duplicated logic.
+        check("prefix gate: flags a genuine near-miss for alerting",
+              needs_prefix_skip(al2["b@y.com"], "Research. Name change for boss."))
+        check("prefix gate: does not flag a compliant subject",
+              not needs_prefix_skip(al2["b@y.com"], "REQUEST: name change for boss"))
+        check("prefix gate: sender without require_prefix never flags",
+              not needs_prefix_skip(al["bill@knight.com"], "no prefix at all"))
+        alines = prefix_skip_alert_lines([("buddy", "Research. Name change for boss.")])
+        check("prefix skip alert names the sender", "buddy" in alines[1])
+        check("prefix skip alert quotes the actual subject",
+              "Research. Name change for boss." in alines[1])
+        check("prefix skip alert tells the sender how to fix it",
+              "REQUEST:" in alines[0])
         p.write_text(json.dumps({
             "alyssa": {"emails": ["a@school.org"], "projects": ["pedagogy"],
                         "request_kind": "research"},
