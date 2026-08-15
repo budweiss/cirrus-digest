@@ -26,7 +26,7 @@ docs/CIRRUS-Autonomous-Task-Solver.md (Phases A-E, none previously built):
    registry: known request shapes intake can solve on its own regardless of
    the sender's static `request_kind`. Today the registry has exactly two
    members (source-add via #1's URL detector, resend via this one). This is
-   the safe, real version of "Boss looks at a request and decides whether it
+   the safe, real version of "Skywarden looks at a request and decides whether it
    can build a solution": a request either matches an already-built,
    already-tested capability (auto-solved, zero-click) or it doesn't (told
    plainly it needs review — see intake.py's ack_body "needs_review"

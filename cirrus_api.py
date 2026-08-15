@@ -27,9 +27,9 @@ with open(PROJECT_DIR / "config/credentials.json") as f:
 
 SECRET_TOKEN = _creds.get("api_token", "")
 
-# S64: separate, narrower token for the CUMULUS supervisor agent (Boss) --
+# S64: separate, narrower token for the CUMULUS supervisor agent (Skywarden) --
 # deliberately NOT the main SECRET_TOKEN, which unlocks every /admin/ route
-# (deploys, approvals, service restarts). Boss only needs Time Machine
+# (deploys, approvals, service restarts). Skywarden only needs Time Machine
 # status; giving it the full admin token would be far broader than its job
 # requires, the same "narrow, explicit allowlist" principle already applied
 # to its systemd/sudoers grant on cumulus1.
@@ -53,7 +53,7 @@ def require_token():
 
 
 def require_supervisor_token():
-    """Narrower auth for the one route Boss (CUMULUS supervisor) is allowed
+    """Narrower auth for the one route Skywarden (CUMULUS supervisor) is allowed
     to call. Deliberately a SEPARATE check from require_token() — a leak of
     this token only ever exposes Time Machine status, not the full admin
     surface. Same header/query-param convention as require_token()."""
@@ -831,7 +831,7 @@ def restart_service():
 
 @app.route("/admin/tm-status", methods=["GET"])
 def tm_status():
-    """S64 — READ-ONLY Time Machine health, for the CUMULUS supervisor (Boss)
+    """S64 — READ-ONLY Time Machine health, for the CUMULUS supervisor (Skywarden)
     to monitor CIRRUS's OWC Envoy Pro FX backup without giving it the main
     admin token. Uses `defaults read` (goes through cfprefsd) rather than
     reading the plist file directly — direct file access to

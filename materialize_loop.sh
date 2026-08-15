@@ -5,7 +5,7 @@
 # leaving up to a minute-long gap another job could hit.
 #
 # Interval tightened from 60s -> 10s (S63, same session, after CUMULUS intake
-# and Boss both hit the gap during testing). Cost is negligible: age-decrypting
+# and Skywarden both hit the gap during testing). Cost is negligible: age-decrypting
 # a ~5KB file is sub-millisecond CPU, so running it 6x more often has no real
 # overhead. This directly shrinks the vulnerability window regardless of what
 # the actual root cause turns out to be -- unlike staggering job schedules,

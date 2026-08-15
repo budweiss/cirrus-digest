@@ -1,17 +1,17 @@
 """Opus-upgrade approval flow for the CUMULUS supervisor (B1) — S64.
 
-Buddy's ask: Boss shouldn't be permanently capped at Sonnet if a task
+Buddy's ask: Skywarden shouldn't be permanently capped at Sonnet if a task
 genuinely needs more — but an upgrade needs Buddy's explicit Telegram
 approval each time, not a silent self-escalation.
 
-Boss's `request_opus_upgrade` tool (tools.py) writes a pending request here
-and sends the ask. This module polls for Buddy's reply — short, non-blocking
-`getUpdates` calls (offset-tracked, same technique cirrus_bot.py's long-poll
-loop uses, just called in short bursts from the existing 60s heartbeat cycle
-instead of run as its own persistent listener; Boss's process model is
-wake-check-sleep, not a standing service). A reply is checked once per
-heartbeat tick, and consumed at most once by the next reasoning pass, then
-Boss reverts to Sonnet automatically.
+Skywarden's `request_opus_upgrade` tool (tools.py) writes a pending request
+here and sends the ask. This module polls for Buddy's reply — short,
+non-blocking `getUpdates` calls (offset-tracked, same technique cirrus_bot.py's
+long-poll loop uses, just called in short bursts from the existing 60s
+heartbeat cycle instead of run as its own persistent listener; Skywarden's
+process model is wake-check-sleep, not a standing service). A reply is
+checked once per heartbeat tick, and consumed at most once by the next
+reasoning pass, then Skywarden reverts to Sonnet automatically.
 """
 import json
 import time
@@ -50,7 +50,7 @@ def create_request(reason: str) -> str:
         "reason": reason, "requested_at": time.time(),
         "status": "pending",
     }))
-    return (f"Boss is requesting an Opus upgrade for: {reason}\n\n"
+    return (f"Skywarden is requesting an Opus upgrade for: {reason}\n\n"
             f"Reply \"approve\" within 2 hours to allow ONE upgraded pass. "
             f"No reply = stays on Sonnet, no action needed.")
 

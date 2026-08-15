@@ -12,7 +12,7 @@ project is promoted and where it is monitored from. **Update it on every cutover
 - "Monitored from" = where the health of that job is reported (see topology below).
 - Full mechanism: `~/Documents/Cowork/docs/PROMOTION-AND-NODE-AWARENESS.md`.
 
-_Last updated: 2026-08-13 (S63) — Boss (CUMULUS supervisor agent) armed live; intake now runs on
+_Last updated: 2026-08-13 (S63) — Skywarden (CUMULUS supervisor agent) armed live; intake now runs on
 BOTH boxes (Tier-0 auto-apply + live LLM-council answers); credential self-heal + nightly backup
 extended to cover CUMULUS._
 
@@ -40,7 +40,7 @@ Rollback for any client job: `cirrus-job enable <job>` + `cumulus-service disabl
 | watchdog | `cirrus_watchdog.py` | CIRRUS | every 30 min | CIRRUS (local) | agent-loaded / exit-code watch |
 | privacy monitor | `privacy/privacy_monitor.py` | CIRRUS | Sun 07:15 | CIRRUS (local) | own-info exposure scan |
 | stratus review | `stratus/stratus_monthly.py` | CIRRUS | 1st 09:00 | CIRRUS (local) | research log |
-| **Boss** (supervisor agent) | `supervisor/supervisor_agent.py` | **CUMULUS** | 60s heartbeat (deterministic, no LLM) + once-daily reasoning pass after 08:00, or immediately on an anomaly | CUMULUS (local, `cumulus-supervisor-status`) | S63 NEW, armed live. Watches CUMULUS's own client-job services + its own credential health via a fixed 7-tool registry (read-only checks + restart/reset-failed on 8 allow-listed units + one-way Telegram). Runs under its own low-privilege OS account (`cumulus-supervisor`, narrowly-scoped sudo — not general access). Does **not** touch email/intake — that's a separate system. $5/day spend cap. Full operating contract: `supervisor/CLAUDE.md`. |
+| **Skywarden** (supervisor agent) | `supervisor/supervisor_agent.py` | **CUMULUS** | 60s heartbeat (deterministic, no LLM) + once-daily reasoning pass after 08:00, or immediately on an anomaly | CUMULUS (local, `cumulus-supervisor-status`) | S63 NEW, armed live. Watches CUMULUS's own client-job services + its own credential health via a fixed 7-tool registry (read-only checks + restart/reset-failed on 8 allow-listed units + one-way Telegram). Runs under its own low-privilege OS account (`cumulus-supervisor`, narrowly-scoped sudo — not general access). Does **not** touch email/intake — that's a separate system. $150/month spend cap (S64, was $5/day). Full operating contract: `supervisor/CLAUDE.md`. |
 
 ## Per-box knobs (in each box's `credentials.json`)
 
