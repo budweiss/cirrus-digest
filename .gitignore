@@ -20,3 +20,5 @@ out/llm-spend-ledger.jsonl
 llm-spend-ledger.jsonl
 config/credentials.json.age
 config/credentials.json.pre-encryption-backup
+# entity_kb per-project data (S65) — runtime data, not code; each box's copy is its own
+data/entity_kb/
