@@ -473,6 +473,14 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                 continue
             mid = msg.get("Message-ID", f"uid-{uid}")
             if mid in seen_ids:
+                # The only skip branch that used to log nothing at all (every
+                # other branch above/below does) — 2026-08-14: this made a
+                # dropped message indistinguishable from one that never
+                # arrived. Not what caused that incident (root cause was the
+                # prefix-gate skip below, which already logged), but it's a
+                # real blind spot in its own right, so it gets a line too.
+                log(f"  skipped (duplicate Message-ID, already processed): "
+                    f"{from_addr} — '{decode_hdr(msg.get('Subject', ''))[:60]}'")
                 continue
             seen_ids.add(mid)
             out.append((uid, from_addr, decode_hdr(msg.get("Subject", "")),
@@ -557,12 +565,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                      f"attempt(s): `{last_err}`", creds)
         return 1
 
-    processed, limited = [], []
+    processed, limited, prefix_skipped = [], [], []
     for uid, from_addr, subject, body, mid in messages:
         entry = allowlist[from_addr]
         if entry["require_prefix"] and not REQUEST_RX.match(subject or ""):
             log(f"  skipped (no REQUEST: prefix, sender requires it): "
                 f"{entry['name']} — '{(subject or '')[:60]}'")
+            prefix_skipped.append((entry["name"], subject))
             continue
         if not under_limit(state, entry["name"], entry["limit"]):
             limited.append((entry["name"], subject))
@@ -691,6 +700,26 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         else:
             telegram("\n".join(blines), creds)
 
+    # Prefix-gate alert (2026-08-14): require_prefix exists so a sender whose
+    # mail ALSO feeds elsewhere (e.g. Buddy's own research forwards) doesn't
+    # get every routine email treated as a request — that part should stay
+    # silent. But the same silent path was swallowing genuine requests that
+    # simply forgot the "REQUEST:" prefix, with zero notice to the sender —
+    # they'd have no way to know it needed resending. This doesn't try to
+    # guess intent; it just tells Buddy every time so nothing sits unanswered
+    # again. If this gets noisy for routine forwarded mail, revisit — but
+    # silence-by-default already proved worse.
+    if prefix_skipped:
+        plines = [f"✉️ *Intake*: {len(prefix_skipped)} email(s) skipped "
+                  f"(missing REQUEST: prefix) — resend with \"REQUEST: ...\" "
+                  f"in the subject if these were meant as requests:"]
+        for name, subj in prefix_skipped:
+            plines.append(f"• {name}: _{subj}_")
+        if dry_run:
+            log("DRY RUN — would telegram:\n" + "\n".join(plines))
+        else:
+            telegram("\n".join(plines), creds)
+
     if processed or limited:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
         for r in processed:
@@ -755,6 +784,14 @@ def selftest() -> int:
         check("prefix gate: Re: REQUEST passes", bool(REQUEST_RX.match("Re: request: x")))
         check("prefix gate: Fwd blocked", not REQUEST_RX.match("Fwd: research stuff"))
         check("prefix gate: plain blocked", not REQUEST_RX.match("more salt data"))
+        # 2026-08-14: a require_prefix sender whose subject fails the gate
+        # used to vanish with zero notice (server-log-only). Mirrors run()'s
+        # actual condition (entry["require_prefix"] and not REQUEST_RX.match)
+        # so a future refactor that silences this again gets caught here.
+        check("prefix gate condition flags a genuine near-miss for alerting",
+              al2["b@y.com"]["require_prefix"] and not REQUEST_RX.match("Research. Name change for boss."))
+        check("prefix gate condition does not flag a compliant subject",
+              not (al2["b@y.com"]["require_prefix"] and not REQUEST_RX.match("REQUEST: name change for boss")))
         p.write_text(json.dumps({
             "alyssa": {"emails": ["a@school.org"], "projects": ["pedagogy"],
                         "request_kind": "research"},
