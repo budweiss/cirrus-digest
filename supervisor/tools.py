@@ -214,10 +214,31 @@ def request_opus_upgrade(reason: str) -> str:
     This pass itself still finishes on Sonnet — note in your summary that
     you're requesting an upgrade and will revisit next time you're woken."""
     import opus_approval
-    text = opus_approval.create_request(reason)
+    text = opus_approval.create_opus_request(reason)
     result = send_telegram(text)
     ledger_append({"event": "action", "tool": "request_opus_upgrade",
                    "tier_name": "notify", "detail": reason[:120], "result": result})
+    return result
+
+
+def request_guidance(issue: str, question: str) -> str:
+    """S65: ask Buddy for actual direction, not just a yes/no — call this
+    ONLY when genuinely stuck: you've tried your allowed diagnostics/fixes
+    (restart_service/reset_failed on the allowlist, the read-only checks),
+    the problem persists, and you have no remaining tool that could address
+    it. NOT for routine anomalies you can already report-and-move-on from
+    via send_telegram — this is for when you need a human decision. Sends
+    Buddy a Telegram describing the issue and your question; his free-text
+    reply (within 2 hours) is read back to you at the START of your NEXT
+    invocation, before you begin your checks. This pass itself still
+    finishes without an answer — note in your summary that you've escalated
+    and will act on Buddy's direction next time you're woken."""
+    import opus_approval
+    text = opus_approval.create_guidance_request(issue, question)
+    result = send_telegram(text)
+    ledger_append({"event": "action", "tool": "request_guidance",
+                   "tier_name": "notify", "detail": f"{issue[:80]} | {question[:80]}",
+                   "result": result})
     return result
 
 

@@ -117,10 +117,19 @@ def _build_mcp_tools():
     async def _request_opus_upgrade(args):
         return {"content": [{"type": "text", "text": tools.request_opus_upgrade(args["reason"])}]}
 
+    @tool("request_guidance",
+          "Ask Buddy for actual direction (via Telegram) when genuinely stuck: you've tried your "
+          "allowed diagnostics/fixes, the problem persists, and no remaining tool can address it. "
+          "NOT for routine anomalies you can already report via send_telegram. His free-text reply "
+          "is handed to you at the start of your next run.", {"issue": str, "question": str})
+    async def _request_guidance(args):
+        return {"content": [{"type": "text",
+                              "text": tools.request_guidance(args["issue"], args["question"])}]}
+
     return [_check_service_status, _check_timers, _tail_journal,
             _check_credentials_health, _check_cirrus_timemachine,
             _restart_service, _reset_failed, _send_telegram,
-            _request_opus_upgrade]
+            _request_opus_upgrade, _request_guidance]
 
 
 async def run_reasoning_pass(reason: str) -> float:
@@ -137,7 +146,8 @@ async def run_reasoning_pass(reason: str) -> float:
     server = create_sdk_mcp_server(name="supervisor", tools=mcp_tools)
     allowed = [f"mcp__supervisor__{t.name}" for t in mcp_tools]
 
-    upgraded = opus_approval.consume_approval()
+    upgraded = opus_approval.consume_opus_approval()
+    guidance = opus_approval.consume_guidance()
     model = "opus" if upgraded else "sonnet"
 
     options = ClaudeAgentOptions(
@@ -158,6 +168,9 @@ async def run_reasoning_pass(reason: str) -> float:
         prompt += (" NOTE: Buddy approved an Opus upgrade for this pass "
                    "(your prior request). This is a one-time upgrade -- "
                    "you're back on Sonnet next time.")
+    if guidance:
+        prompt += (f" NOTE: Buddy replied to your prior request_guidance escalation "
+                   f"with: \"{guidance}\" -- act on this before anything else this run.")
     cost = 0.0
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, ResultMessage):
