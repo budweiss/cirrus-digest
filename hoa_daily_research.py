@@ -101,16 +101,22 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
             result["updated_entities"].append(name)
 
         if not dry_run:
+            # Resolve search-redirect links (Gemini grounding, etc.) to the real
+            # destination URL before storing -- same reason hoa_monitor.py's own
+            # main() does this before composing Bill's email: an opaque
+            # vertexaisearch.cloud.google.com redirect link is useless to a
+            # human reader and the redirect can expire.
+            resolved_url = hoa_monitor._resolve_url(lead.get("url"))
             entity_kb.upsert_entity(KB_PROJECT, slug, name, entity_type="hoa", db_path=db_path)
             if is_new:
                 summary = (f"First seen {datetime.now():%Y-%m-%d} via automated search — "
                            f"not previously in our records. {lead.get('why', '')}").strip()
                 entity_kb.add_signal(KB_PROJECT, slug, "new-discovery", summary,
-                                     source_url=lead.get("url"), confidence="medium",
+                                     source_url=resolved_url, confidence="medium",
                                      db_path=db_path)
             else:
                 entity_kb.add_signal(KB_PROJECT, slug, lead.get("type", "other"),
-                                     lead.get("why", ""), source_url=lead.get("url"),
+                                     lead.get("why", ""), source_url=resolved_url,
                                      confidence="medium", db_path=db_path)
             newly_seen.add(lead["url"])
 
