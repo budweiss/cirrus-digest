@@ -14,6 +14,8 @@ config/sources.local.json
 config/snapshots/
 config/cookies.json
 config/intake_senders.json
+config/intake_state.json
+config/intake_fast_poll_until.txt
 config/watchlist.json
 # per-box LLM spend ledger (runtime; each box keeps its own — never commit)
 out/llm-spend-ledger.jsonl

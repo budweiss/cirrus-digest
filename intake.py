@@ -59,6 +59,15 @@ STATE_PATH   = PROJECT_DIR / "config/intake_state.json"
 INTAKE_DIR   = PROJECT_DIR / "logs/intake"
 LOG_PATH     = PROJECT_DIR / "logs/intake.log"
 
+# S65: fast-poll signal for the loop wrapper (cumulus_intake_loop.sh /
+# cirrus_intake_loop.sh) -- a plain epoch-seconds timestamp, not JSON, so the
+# bash loop can read+compare it with zero parsing. Written only when this run
+# actually processed a real request (not on prefix-skips, rate-limits, or an
+# empty inbox) -- the goal is fast turnaround on an active client exchange,
+# not just polling harder because the mailbox happened to get checked.
+FAST_POLL_STATE_PATH = PROJECT_DIR / "config/intake_fast_poll_until.txt"
+FAST_POLL_WINDOW_SEC = 15 * 60
+
 # S63: env-var override so a second intake instance (CUMULUS, watching
 # cumulus@cumulustask.com) can run the same script against a different
 # sources.json account label. Default unchanged so CIRRUS's existing
@@ -737,6 +746,18 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             log("DRY RUN — would telegram:\n" + "\n".join(plines))
         else:
             telegram("\n".join(plines), creds)
+
+    # S65: a real request came in -- tell the loop wrapper to poll fast for a
+    # while, so a client corresponding back-and-forth doesn't wait a full
+    # cycle for each reply. `limited` (rate-limited, not actually processed)
+    # deliberately does NOT extend the window -- that sender is already
+    # over their cap for today, there's nothing to respond to faster.
+    if processed and not dry_run:
+        try:
+            FAST_POLL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            FAST_POLL_STATE_PATH.write_text(str(int(time.time()) + FAST_POLL_WINDOW_SEC))
+        except Exception as e:
+            log(f"  fast-poll state write failed (non-fatal): {e}")
 
     if processed or limited:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
