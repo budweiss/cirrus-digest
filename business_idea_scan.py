@@ -167,31 +167,46 @@ def _relevance(title: str, text: str, creds: dict):
 # objection sinks an idea no matter how neatly it fits the brief. Same
 # adversarial-verify shape used elsewhere in this codebase for findings.
 _CRITIQUE_SYSTEM = (
-    "You are a skeptical operator whose job is to kill bad business ideas BEFORE "
-    "months and money go into them. You are not judging whether the idea is "
-    "interesting or well-written -- assume it will fail and find the single "
-    "strongest, most concrete reason why. Be specific and checkable: name the "
-    "actual competitor, the actual reason customers won't pay, the actual "
-    "regulatory or platform rule, the actual quality bar automated output "
-    "won't clear. Generic risks ('execution is hard', 'needs marketing') are "
-    "worthless -- if that is all you have, say so and score higher. Default to "
-    "skepticism; a high survival score must be earned."
+    "You are a skeptical operator who kills bad business ideas before months "
+    "and money go into them. Find the single strongest, most concrete reason "
+    "this would fail. Be specific and checkable -- name the actual blocker, "
+    "not a generic risk like 'execution is hard' or 'needs marketing'.\n\n"
+    "CALIBRATE TO THE ACTUAL GOAL. The operator is one person with strong "
+    "automation infrastructure aiming for a small, self-running business "
+    "reaching roughly $2,000-$5,000/month within a year, as a learning "
+    "venture he can grow. He does NOT need to beat the market leader, win a "
+    "category, or reach venture scale.\n\n"
+    "This matters enormously for how you score:\n"
+    "- The mere EXISTENCE of large incumbents is NOT fatal. Almost every "
+    "market has them, and profitable small operators coexist with giants all "
+    "the time by serving a slice the giant ignores, a buyer who cannot afford "
+    "the giant, or a need the giant serves badly. Only call an incumbent "
+    "fatal if it plausibly blocks reaching ANY paying slice at all -- and say "
+    "concretely why.\n"
+    "- 'A big company already does something similar' is a reason to sharpen "
+    "the niche, not a reason to score 2/10.\n"
+    "What IS genuinely fatal: no reachable buyer at any price; no plausible "
+    "way to find the first ~20 customers; automated output that cannot meet "
+    "the minimum quality the buyer requires; an actual legal or ToS "
+    "prohibition; or total dependence on a platform that forbids or "
+    "demonetizes the model."
 )
 
 _CRITIQUE_QUESTIONS = """Attack it on these specifically:
-- DISTRIBUTION: how would the first 100 customers actually find this? "SEO",
-  "post on social", and "content marketing" are not answers -- everyone says
-  that and most fail. If there is no concrete, unusual distribution edge, that
-  is often the fatal flaw.
-- WILLINGNESS TO PAY: is the buyer a real budget-holder with this as a
-  recognized line item, or would this be a nice-to-have they cancel in month 2?
-- QUALITY BAR: would fully-automated output actually be good enough for this
-  buyer, or is this a domain where being 90% right is worthless (or legally
-  dangerous)?
-- MOAT: what stops a competitor -- or the data source itself, or an LLM
-  vendor -- from doing this next quarter?
-- PLATFORM / LEGAL RISK: does it depend on scraping, a platform's API or
-  monetization rules, or republishing someone else's data or content?"""
+- DISTRIBUTION: how would the first ~20 paying customers actually be found?
+  "SEO" and "post on social" are not answers. Note the bar is 20, not 1000 --
+  a narrow, reachable channel (a niche forum, a trade association list, direct
+  outreach to an identifiable list of firms) counts as a real answer.
+- WILLINGNESS TO PAY: is there a buyer for whom this is worth real money, even
+  if it is a small buyer? A cheaper, narrower tool for buyers priced out of the
+  incumbent is a legitimate answer.
+- QUALITY BAR: would automated output be good enough for this buyer, or is this
+  a domain where being 90% right is worthless or legally dangerous?
+- MOAT: what stops this being trivially copied? Accumulating proprietary data,
+  or assembly work across many fragmented sources, are real moats at this scale.
+- PLATFORM / LEGAL RISK: does it depend on scraping in violation of ToS, or on
+  a platform whose rules forbid or demonetize this model? This one IS usually
+  fatal when true."""
 
 
 def critique(name: str, text: str, creds: dict) -> tuple:
@@ -202,10 +217,17 @@ def critique(name: str, text: str, creds: dict) -> tuple:
         f"{CAPABILITIES}\n\nCandidate business:\nNAME: {name}\n{text[:3000]}\n\n"
         f"{_CRITIQUE_QUESTIONS}\n\n"
         f"Reply with EXACTLY one line: SURVIVAL: <0-10> | FLAW: <the single "
-        f"strongest concrete reason this fails, one sentence>\n"
-        f"SURVIVAL 0-3 = fatally flawed, do not pursue. 4-5 = serious "
-        f"unresolved problem. 6-7 = real problems but addressable. 8-10 = "
-        f"objections are manageable and the idea genuinely holds up."
+        f"strongest concrete reason this fails or is hard, one sentence>\n"
+        f"Score against the $2-5k/month solo-operator bar described above, NOT "
+        f"against market leadership:\n"
+        f"0-3 = fatally flawed: no reachable buyer, legally/ToS blocked, or "
+        f"automation cannot meet the required quality. Reserve this for real "
+        f"blockers, not for 'a bigger competitor exists'.\n"
+        f"4-5 = a serious unresolved problem that must be answered first.\n"
+        f"6-7 = real problems, but a plausible path to the first few thousand "
+        f"dollars a month exists. THIS IS THE NORMAL SCORE for a decent, "
+        f"non-obvious idea -- most workable small businesses land here.\n"
+        f"8-10 = genuinely strong: a clear reachable buyer and a real edge."
     )
     try:
         import ensemble
