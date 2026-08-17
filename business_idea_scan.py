@@ -158,6 +158,26 @@ def _relevance(title: str, text: str, creds: dict):
 
 
 # ── Adversarial pass ─────────────────────────────────────────────────────────
+# CALIBRATION RECORD (S66) -- re-measure with these controls before changing
+# the prompt or thresholds below; a critique that scores everything low is
+# indistinguishable from no critique at all.
+#
+# First version ("assume it will fail, default to skepticism", scored against
+# no explicit success bar) returned 2/10 for EVERYTHING, including two
+# deliberately strong controls -- it found an incumbent for every B2B data
+# idea, which is always true and therefore says nothing. Fixed by telling it
+# the ACTUAL bar (one operator, $2-5k/month, not market leadership) and that
+# an incumbent's mere existence is not fatal.
+#
+#   control                                    before  after
+#   50-state utility rate-filing normalizer      2/10    8/10   (good)
+#   continuous independent-pharmacy directory    2/10    8/10   (good)
+#   faceless AI quote YouTube channel            1/10    2/10   (bad)
+#   bulk LinkedIn scraper sold to recruiters     1/10    1/10   (bad)
+#
+# After: clear separation, and the flaws named on the GOOD ideas became
+# useful engineering warnings (scraper maintenance across 50 changing sites)
+# rather than defeatist non-information.
 # S66: the fit-scoring gate above discriminates well on ARTICLES (they weren't
 # written to satisfy our mission -- the first live run rejected 2 of 4) but
 # poorly on GENERATED ideas, which are constructed to satisfy it and so score
