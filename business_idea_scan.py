@@ -505,13 +505,30 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
         except Exception:
             continue
 
-    if new_ids:
-        try:
-            EMAIL_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-            EMAIL_SEEN_PATH.write_text(json.dumps(sorted(seen_ids | new_ids), indent=1))
-        except Exception:
-            pass
+    # NOTE: deliberately does NOT record these as seen. S66 -- an SSH drop
+    # mid-run proved the hazard: the seen-file was written here at FETCH
+    # time, so 40 messages were permanently marked processed while the
+    # scoring loop that should have consumed them never ran. A transient
+    # network blip silently cost a day of Medium content, unrecoverably.
+    # mark_emails_seen() is now called by the caller AFTER scoring, matching
+    # how the RSS path only persists SEEN_PATH at the end of a completed run.
     return out
+
+
+def mark_emails_seen(message_ids) -> None:
+    """Persist Message-IDs as processed. Call only after scoring succeeds."""
+    ids = {m for m in message_ids if m}
+    if not ids:
+        return
+    try:
+        existing = set(json.loads(EMAIL_SEEN_PATH.read_text()))
+    except Exception:
+        existing = set()
+    try:
+        EMAIL_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        EMAIL_SEEN_PATH.write_text(json.dumps(sorted(existing | ids), indent=1))
+    except Exception:
+        pass
 
 
 def _score_and_store(url: str, title: str, text: str, source_name: str,
@@ -625,12 +642,15 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
     if not dry_run:
         for msg in fetch_business_emails(creds):
             body = cirrus_daily.clean_text(msg["body"], 20000)
-            if not body.strip() or len(body) < 200:
-                continue
-            result["emails"] = result.get("emails", 0) + 1
-            _score_and_store("", msg["subject"] or msg["sender"], body,
-                             f"email: {msg['sender'][:50]}", creds, result,
-                             db_path=db_path)
+            if body.strip() and len(body) >= 200:
+                result["emails"] = result.get("emails", 0) + 1
+                _score_and_store("", msg["subject"] or msg["sender"], body,
+                                 f"email: {msg['sender'][:50]}", creds, result,
+                                 db_path=db_path)
+            # Marked seen per-message, immediately AFTER it is scored, so an
+            # interrupted run loses at most the one message in flight rather
+            # than the whole batch.
+            mark_emails_seen([msg["message_id"]])
 
     # ── Phase 3: targeted search ──────────────────────────────────────────
     # Actively hunt for operating businesses rather than waiting for one to
