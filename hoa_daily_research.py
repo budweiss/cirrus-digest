@@ -36,6 +36,27 @@ import entity_kb
 KB_PROJECT = "hoa_leads_bill"
 DEFAULT_CHUNK_SIZE = 5  # ~180 communities / 5 per day ≈ one full cycle every 36 days
 
+# S66: a bare entity name search collides with unrelated same-named orgs
+# elsewhere -- caught live: "Auburn Meadows" pulled a WA senior-living
+# facility, "Barrett Farm" pulled an unrelated MA organic farm, "Breeders
+# Crown" pulled the harness-racing championship instead of the Delaware
+# community, "Church Creek"/"Chestnut Ridge" pulled a MD town government and
+# a NY village board. Every entity here is a Kent/Sussex/New Castle County
+# Delaware HOA -- ground both the search query and the extraction step in
+# that, per-entity county when known.
+def _hoa_query_terms(entity: dict) -> str:
+    county = (entity.get("state") or {}).get("county")
+    return f"{county} County Delaware HOA homeowners association" if county \
+        else "Delaware HOA homeowners association"
+
+_HOA_CONTEXT_HINT = (
+    "This must be a homeowners association / residential community in "
+    "Delaware. Ignore any source about a same-named entity in a different "
+    "U.S. state, or about a different kind of thing entirely (a business, "
+    "farm, sporting event/championship, or municipal government) that "
+    "merely shares this name -- it is NOT this Delaware HOA."
+)
+
 
 def pick_refresh_chunk(chunk_size: int = DEFAULT_CHUNK_SIZE, db_path: str = None) -> list:
     """Least-recently-updated entities first. Self-balancing rotation, no
@@ -60,7 +81,9 @@ def run_refresh(chunk_size: int = DEFAULT_CHUNK_SIZE, creds: dict = None,
     for e in chunk:
         try:
             _recap, found = deep_research.deep_research_entity(
-                KB_PROJECT, e["name"], e["slug"], creds, db_path=db_path)
+                KB_PROJECT, e["name"], e["slug"], creds,
+                extra_query_terms=_hoa_query_terms(e),
+                context_hint=_HOA_CONTEXT_HINT, db_path=db_path)
             result["refreshed"] += 1
             if found:
                 result["found_new_info"] += 1

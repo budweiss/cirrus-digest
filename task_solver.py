@@ -189,6 +189,25 @@ PROJECT_TO_KB = {
     "property-management": "hoa_leads_bill",
 }
 
+# S66: a bare entity-name search on refresh can collide with an unrelated
+# same-named org elsewhere (see hoa_daily_research.py's _hoa_query_terms for
+# the live examples that caught this) -- per-kb_project search/extraction
+# grounding for deep_research_entity(), same fix applied to the live client-
+# refresh path here. Extend this dict (not the logic) for a future kb
+# project; one with no entry gets deep_research's ungrounded default.
+KB_RESEARCH_CONTEXT = {
+    "hoa_leads_bill": {
+        "extra_query_terms": "Delaware HOA homeowners association",
+        "context_hint": (
+            "This must be a homeowners association / residential community "
+            "in Delaware. Ignore any source about a same-named entity in a "
+            "different U.S. state, or about a different kind of thing "
+            "entirely (a business, farm, sporting event/championship, or "
+            "municipal government) that merely shares this name."
+        ),
+    },
+}
+
 _DETERMINER2 = r"(the|this|that|it|our|my)"
 _REFRESH_RX = re.compile(
     # "updated/latest/current/new/fresh info(rmation)/status/news" on X
@@ -238,8 +257,11 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
             entity = matches[0]
             if creds and wants_fresh_research(question):
                 try:
+                    ctx = KB_RESEARCH_CONTEXT.get(kb_project, {})
                     recap, found = deep_research.deep_research_entity(
-                        kb_project, entity["name"], entity["slug"], creds, db_path=db_path)
+                        kb_project, entity["name"], entity["slug"], creds,
+                        extra_query_terms=ctx.get("extra_query_terms", ""),
+                        context_hint=ctx.get("context_hint", ""), db_path=db_path)
                     prefix = ("I did a fresh search and found some updates — here's the "
                               "latest:\n\n" if found else
                               "I looked for updated information but didn't find anything new "

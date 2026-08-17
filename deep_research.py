@@ -29,7 +29,14 @@ MAX_FETCH_CHARS = 6000  # per source, keeps the council prompt bounded
 
 _EXTRACT_SYSTEM = (
     "You are extracting structured facts about a specific organization from "
-    "web page excerpts. Given source texts, extract ONLY what the text "
+    "web page excerpts. A generic entity name can collide with unrelated "
+    "organizations elsewhere (a same-named business, farm, event, or "
+    "municipality in a different location) -- when a CONTEXT line is given, "
+    "first check each source is actually about that specific entity in that "
+    "context; if a source is clearly about a different, unrelated "
+    "organization that merely shares the name, IGNORE that source entirely "
+    "-- do not extract any fact from it, even a plausible-sounding one. "
+    "Given source texts that pass that check, extract ONLY what the text "
     "directly supports: current management company (if any), public board/"
     "contact info, and notable recent signals (leadership change, distress, "
     "RFP, policy change, complaint) each with a date if known and which "
@@ -37,7 +44,8 @@ _EXTRACT_SYSTEM = (
     "support. Respond as JSON only, no prose, no markdown fences: "
     '{"fields": {"current_mgmt_co": "...", "board_contact": "..."}, '
     '"signals": [{"kind": "...", "summary": "...", "source_url": "...", '
-    '"confidence": "high|medium|low"}]}. If nothing new is found, return '
+    '"confidence": "high|medium|low"}]}. If nothing new is found (including '
+    'when every source was ignored as off-context), return '
     '{"fields": {}, "signals": []}.'
 )
 
@@ -52,14 +60,26 @@ def _parse_extraction(text: str) -> dict:
 
 
 def deep_research_entity(kb_project: str, entity_name: str, slug: str, creds: dict,
-                          extra_query_terms: str = "", db_path: str = None) -> tuple:
+                          extra_query_terms: str = "", context_hint: str = "",
+                          db_path: str = None) -> tuple:
     """Search + fetch + council-extract fresh info about one entity, write
     findings into entity_kb (project=kb_project, slug=slug). Returns
     (recap_text, findings_count) -- findings_count is 0 if the pipeline
     found nothing new (search failure, no fetchable content, or the council
     genuinely found nothing beyond what's already on record). entity_kb is
     still touched (last_updated bumped) even when nothing new is found, so
-    "we checked and there's nothing new" is itself recorded."""
+    "we checked and there's nothing new" is itself recorded.
+
+    extra_query_terms / context_hint (S66): a bare entity_name search can
+    collide with an unrelated same-named organization elsewhere (e.g. an
+    HOA called "Auburn Meadows" pulling in a Washington-state senior-living
+    facility, or "Breeders Crown" pulling in the harness-racing
+    championship instead of the Delaware community). extra_query_terms
+    narrows the SEARCH (e.g. "Kent County Delaware HOA"); context_hint tells
+    the EXTRACTION step what to reject a source for. Both are caller-
+    supplied (not hardcoded here) since this module is shared across
+    projects, not HOA-specific -- see hoa_daily_research.py / task_solver.py
+    for how the HOA project fills them in."""
     import cirrus_daily
     import ensemble
 
@@ -83,7 +103,8 @@ def deep_research_entity(kb_project: str, entity_name: str, slug: str, creds: di
         return entity_kb.recap_text(kb_project, slug, db_path=db_path), 0
 
     source_block = "\n\n".join(f"SOURCE: {url}\n{text}" for url, text in sources)
-    question = f"Extract facts about: {entity_name}\n\n{source_block}"
+    context_line = f"CONTEXT: {context_hint}\n" if context_hint else ""
+    question = f"Extract facts about: {entity_name}\n{context_line}\n{source_block}"
 
     try:
         _, text = ensemble.best_answer(
