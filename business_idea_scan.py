@@ -765,9 +765,72 @@ def selftest() -> bool:
                    all(final_score(a, b) <= min(a, b)
                        for a in range(11) for b in range(11))))
 
-    # S66 regression: two articles about the same story got two entities.
+    # S66 regression: CRASH SAFETY. Both email bugs shipped with a fully
+    # green selftest, because nothing tested the fetch/mark contract -- the
+    # tests only covered pure helpers. A network drop mid-run then
+    # permanently lost 40 messages. These assert the properties that
+    # actually failed, without needing a live IMAP server.
+    import ast as _ast
+    import inspect as _inspect
+    import textwrap as _tw
+    _fetch_src = _inspect.getsource(fetch_business_emails)
+
+    # AST, not text search: the function's own explanatory comment mentions
+    # mark_emails_seen(), and a substring check would flag that as a call.
+    # (Made exactly that mistake writing this test -- comments are not code.)
+    def _calls_in(fn):
+        names = set()
+        for n in _ast.walk(_ast.parse(_tw.dedent(_inspect.getsource(fn)))):
+            if isinstance(n, _ast.Call):
+                f = n.func
+                if isinstance(f, _ast.Name):
+                    names.add(f.id)
+                elif isinstance(f, _ast.Attribute):
+                    base = getattr(f.value, "id", "")
+                    names.add(f"{base}.{f.attr}" if base else f.attr)
+        return names
+
+    _fetch_calls = _calls_in(fetch_business_emails)
+    checks.append(("fetch does NOT persist seen-state (crash safety)",
+                   "mark_emails_seen" not in _fetch_calls
+                   and "EMAIL_SEEN_PATH.write_text" not in _fetch_calls))
+    checks.append(("the write path is confined to mark_emails_seen",
+                   "EMAIL_SEEN_PATH.write_text" in _calls_in(mark_emails_seen)))
+    _run_src = _inspect.getsource(run)
+    checks.append(("the run loop marks each email seen after scoring it",
+                   "mark_emails_seen" in _run_src))
+    checks.append(("scoring happens before marking seen, not after",
+                   _run_src.index('_score_and_store("",')
+                   < _run_src.index("mark_emails_seen")))
+    # The cap must never be applied before the sender filter -- that bug hid
+    # 967 Medium emails behind 660 promos in a busy inbox.
+    checks.append(("sender filtering happens server-side, before the cap",
+                   _fetch_src.index('FROM "') < _fetch_src.index("_MAX_EMAILS_PER_RUN")))
+
     import os
     import tempfile
+    fd, _edb = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        _orig = globals()["EMAIL_SEEN_PATH"]
+        globals()["EMAIL_SEEN_PATH"] = Path(_edb)
+        Path(_edb).write_text("[]")
+        mark_emails_seen(["<a@x>", "<b@x>"])
+        first = set(json.loads(Path(_edb).read_text()))
+        mark_emails_seen(["<b@x>", "<c@x>"])
+        second = set(json.loads(Path(_edb).read_text()))
+        checks.append(("mark_emails_seen accumulates rather than overwriting",
+                       first == {"<a@x>", "<b@x>"}
+                       and second == {"<a@x>", "<b@x>", "<c@x>"}))
+        mark_emails_seen([])
+        checks.append(("marking nothing is a safe no-op",
+                       set(json.loads(Path(_edb).read_text())) == second))
+    finally:
+        globals()["EMAIL_SEEN_PATH"] = _orig
+        if os.path.exists(_edb):
+            os.unlink(_edb)
+
+    # S66 regression: two articles about the same story got two entities.
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     os.unlink(db_path)
