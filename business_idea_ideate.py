@@ -109,10 +109,46 @@ def _gen_prompt(lens: dict) -> str:
     )
 
 
+def _salvage_objects(text: str) -> list:
+    """Recover every complete, balanced {...} object that looks like an idea,
+    even from TRUNCATED JSON.
+
+    S66: hit this live -- the council's synthesis ran past max_tokens and cut
+    off mid-array, so the outer {"ideas": [...]} never closed and strict
+    parsing dropped all four ideas including three that were fully intact.
+    Raising max_tokens fixed that instance, but truncation recurs whenever a
+    model is verbose, and silently discarding good ideas is the worst
+    failure mode here. String-aware so braces inside text don't miscount."""
+    out, stack = [], []
+    in_str = esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            start = stack.pop()
+            try:
+                obj = json.loads(text[start:i + 1])
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("name"):
+                out.append(obj)
+    return out
+
+
 def _parse_ideas(text: str) -> list:
-    """Tolerant JSON extraction -- same fenced-block handling as
-    deep_research._parse_extraction, plus a brace-scan fallback for models
-    that wrap JSON in stray prose despite being told not to."""
+    """Tolerant JSON extraction -- fenced-block handling like
+    deep_research._parse_extraction, a brace-scan for models that wrap JSON
+    in stray prose, then per-object salvage for truncated output."""
     if not text:
         return []
     t = text.strip()
@@ -121,16 +157,26 @@ def _parse_ideas(text: str) -> list:
         if t.lower().startswith("json"):
             t = t[4:]
     try:
-        return (json.loads(t) or {}).get("ideas", []) or []
+        ideas = (json.loads(t) or {}).get("ideas", []) or []
+        if ideas:
+            return ideas
     except Exception:
         pass
     m = re.search(r"\{.*\}", t, re.DOTALL)
     if m:
         try:
-            return (json.loads(m.group(0)) or {}).get("ideas", []) or []
+            ideas = (json.loads(m.group(0)) or {}).get("ideas", []) or []
+            if ideas:
+                return ideas
         except Exception:
             pass
-    return []
+    seen, uniq = set(), []
+    for obj in _salvage_objects(t):
+        key = obj["name"].strip().lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(obj)
+    return uniq
 
 
 def _idea_as_text(idea: dict) -> str:
@@ -148,8 +194,11 @@ def generate(lens: dict, creds: dict) -> list:
     failure -- one dead lens must not abort the whole run."""
     try:
         import ensemble
+        # 8000, not 3000: the council's synthesis must restate all
+        # _IDEAS_PER_LENS ideas with six fields each, and 3000 truncated it
+        # mid-array live (S66). The salvage parser covers the rest.
         _meta, text = ensemble.best_answer(
-            _GEN_SYSTEM, _gen_prompt(lens), creds, max_tokens=3000,
+            _GEN_SYSTEM, _gen_prompt(lens), creds, max_tokens=8000,
             task="business-idea-ideate", mode="council")
         return _parse_ideas(text)
     except Exception as e:
@@ -257,6 +306,23 @@ def selftest() -> bool:
     checks.append(("garbage returns empty, not an exception",
                    _parse_ideas("no json at all here") == []))
     checks.append(("empty input returns empty", _parse_ideas("") == []))
+    # S66 regression: live truncation dropped 3 intact ideas along with the
+    # 4th partial one, because the outer wrapper never closed.
+    truncated = ('{"ideas": [{"name": "A", "what": "x"}, {"name": "B", "what": "y"}, '
+                 '{"name": "C", "what": "part')
+    salvaged = _parse_ideas(truncated)
+    checks.append(("truncated JSON still yields its complete ideas",
+                   [i["name"] for i in salvaged] == ["A", "B"]))
+    # Braces inside a string value must not miscount depth -- "A" survives
+    # intact; the genuinely-truncated "B" is correctly NOT salvaged.
+    brace_salvage = _parse_ideas(
+        '{"ideas": [{"name": "A", "what": "uses { and } chars"}, '
+        '{"name": "B", "what": "tr')
+    checks.append(("a brace inside a string does not break salvage",
+                   [i["name"] for i in brace_salvage] == ["A"]
+                   and brace_salvage[0]["what"] == "uses { and } chars"))
+    checks.append(("salvage dedupes repeated names",
+                   len(_parse_ideas('{"ideas": [{"name": "A"}, {"name": "A"}, {"x"')) == 1))
     flat = _idea_as_text({"what": "W", "who_pays": "P", "autonomous_loop": "L",
                           "needs_building": "B", "why_now": "N"})
     checks.append(("flattened idea keeps every field",
