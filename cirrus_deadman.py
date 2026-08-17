@@ -1,0 +1,182 @@
+"""cirrus_deadman.py — external dead-man's switch for CIRRUS (S66).
+
+Runs ON CUMULUS. Closes the one monitoring gap nothing else covers: every
+existing CIRRUS monitor (cirrus_watchdog, jobs_check, job_status, the morning
+brief) runs ON CIRRUS, so a full outage -- power, network, kernel panic, an
+unattended-upgrade reboot -- takes the monitoring down with the box. The
+failure is silent: no alert fires, the morning email simply never arrives,
+and the first signal is Buddy noticing its absence. Backlog item #2 since
+S49.
+
+Deliberately needs NO credentials. Liveness only cares whether CIRRUS's
+public HTTPS surface answers at all -- a 401/403 is a perfectly good answer
+(the server is up and refusing us, which is correct), while a timeout or
+connection error is the real signal. That means no token to leak, rotate, or
+scope, and CUMULUS gains no new access to CIRRUS by running this.
+
+Alert discipline:
+  * FAIL_THRESHOLD consecutive failures before alerting -- a single blip
+    across a home network is noise, not an outage.
+  * One alert per outage, not one per check. Re-alerts only after
+    REALERT_HOURS, so a long outage nags occasionally rather than every
+    10 minutes.
+  * An explicit all-clear when it recovers, so "no news" is never ambiguous.
+
+Usage:
+  python3 cirrus_deadman.py            # one check (the scheduled mode)
+  python3 cirrus_deadman.py --status   # print state, send nothing
+  python3 cirrus_deadman.py selftest
+"""
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta
+from pathlib import Path
+
+APP_DIR = Path.home() / "cirrus-digest"
+STATE_PATH = APP_DIR / "logs/cirrus-deadman-state.json"
+CREDS_PATH = APP_DIR / "config/credentials.json"
+
+CIRRUS_URL = "https://cirrus.cirrustask.com/status"
+TIMEOUT = 20
+FAIL_THRESHOLD = 3      # ~30 min of failures at a 10-minute cadence
+REALERT_HOURS = 6
+# Cloudflare in front of cirrus.cirrustask.com blocks urllib's default UA --
+# same quirk already worked around in supervisor/tools.py and intake.py.
+USER_AGENT = "CUMULUS-deadman/1.0"
+
+
+def _load_state() -> dict:
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except Exception:
+        return {"consecutive_failures": 0, "alerted": False, "last_alert": None}
+
+
+def _save_state(s: dict) -> None:
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(s, indent=1))
+    except Exception:
+        pass
+
+
+def probe(url: str = CIRRUS_URL) -> tuple:
+    """(alive, detail). An HTTP status -- ANY status -- means CIRRUS answered
+    and is therefore up; 401/403 is expected since we send no token. Only a
+    timeout, DNS failure, or refused connection counts as down."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return True, f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return True, f"HTTP {e.code} (server answered — alive)"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def telegram(msg: str) -> bool:
+    try:
+        creds = json.loads(CREDS_PATH.read_text())
+        token = creds.get("telegram_bot_token", "")
+        user = str(creds.get("telegram_user_id", "")).strip()
+        if not token or not user:
+            return False
+        data = urllib.parse.urlencode({"chat_id": user, "text": msg}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=data)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return bool(json.loads(r.read()).get("ok"))
+    except Exception:
+        return False
+
+
+def decide(state: dict, alive: bool, now: datetime) -> tuple:
+    """Pure decision step -- (new_state, action). Separated from I/O so the
+    alerting logic is testable without a network or a live outage."""
+    s = dict(state)
+    if alive:
+        recovered = s.get("alerted")
+        s["consecutive_failures"] = 0
+        s["alerted"] = False
+        s["last_ok"] = now.isoformat(timespec="seconds")
+        return s, ("recovered" if recovered else "none")
+
+    s["consecutive_failures"] = s.get("consecutive_failures", 0) + 1
+    if s["consecutive_failures"] < FAIL_THRESHOLD:
+        return s, "none"
+    last = s.get("last_alert")
+    if s.get("alerted") and last:
+        try:
+            if now - datetime.fromisoformat(last) < timedelta(hours=REALERT_HOURS):
+                return s, "none"  # already alerted recently; don't nag
+        except Exception:
+            pass
+    s["alerted"] = True
+    s["last_alert"] = now.isoformat(timespec="seconds")
+    return s, "alert"
+
+
+def run() -> dict:
+    now = datetime.now()
+    alive, detail = probe()
+    state, action = decide(_load_state(), alive, now)
+    state["last_check"] = now.isoformat(timespec="seconds")
+    state["last_detail"] = detail
+    _save_state(state)
+
+    if action == "alert":
+        telegram(f"🚨 CIRRUS UNREACHABLE\n\n{state['consecutive_failures']} consecutive "
+                 f"failed checks from CUMULUS.\nLast error: {detail}\n\n"
+                 f"Nothing on CIRRUS can report this — its own monitors are down with it. "
+                 f"Scheduled jobs (digest, morning brief, business ideas) are likely not running.")
+    elif action == "recovered":
+        telegram(f"✅ CIRRUS is reachable again ({detail}). "
+                 f"Check that this morning's scheduled jobs actually ran.")
+    return {"alive": alive, "detail": detail, "action": action,
+            "consecutive_failures": state["consecutive_failures"]}
+
+
+def selftest() -> bool:
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    checks = []
+    s = {"consecutive_failures": 0, "alerted": False, "last_alert": None}
+
+    for i in range(FAIL_THRESHOLD - 1):
+        s, a = decide(s, False, now)
+        checks.append((f"failure {i+1} below threshold stays quiet", a == "none"))
+    s, a = decide(s, False, now)
+    checks.append((f"alerts only on failure {FAIL_THRESHOLD}", a == "alert"))
+
+    s, a = decide(s, False, now + timedelta(minutes=10))
+    checks.append(("does not re-alert immediately during an outage", a == "none"))
+    s, a = decide(s, False, now + timedelta(hours=REALERT_HOURS + 1))
+    checks.append((f"re-alerts after {REALERT_HOURS}h of continued outage", a == "alert"))
+
+    s, a = decide(s, True, now + timedelta(hours=8))
+    checks.append(("sends an all-clear on recovery", a == "recovered"))
+    checks.append(("failure counter resets on recovery", s["consecutive_failures"] == 0))
+    s, a = decide(s, True, now + timedelta(hours=9))
+    checks.append(("stays silent while healthy", a == "none"))
+
+    # The critical semantic: an HTTP error means CIRRUS ANSWERED, so it is
+    # alive. Treating 401 as "down" would page Buddy every single check.
+    s2, a2 = decide({"consecutive_failures": 2, "alerted": False}, True, now)
+    checks.append(("an authenticated-refusal (alive) clears the counter",
+                   s2["consecutive_failures"] == 0 and a2 == "none"))
+
+    all_ok = all(ok for _, ok in checks)
+    for d, ok in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}  {d}")
+    return all_ok
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        sys.exit(0 if selftest() else 1)
+    if "--status" in sys.argv:
+        print(json.dumps({"state": _load_state(), "probe": probe()}, indent=2))
+        sys.exit(0)
+    print(json.dumps(run(), indent=2))
