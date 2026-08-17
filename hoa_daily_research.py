@@ -27,6 +27,7 @@ Usage:
   python3 hoa_daily_research.py [--chunk-size N] [--dry-run]
   python3 hoa_daily_research.py selftest
 """
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,56 @@ _HOA_CONTEXT_HINT = (
 )
 
 
+# S66, Buddy's ask: now that current_mgmt_co/board_contact are grounded in
+# real Delaware sources (not the pre-fix pollution above), a genuinely
+# out-of-state management company is a real, useful signal rather than
+# noise -- it's a lead for Bill: an HOA currently paying an out-of-state PM
+# firm is a candidate to pitch local management to. Same detection heuristic
+# used to find the pollution in the first place, now repurposed as a
+# feature. Distinguishes "no data" (nothing to flag) from "flagged".
+_OTHER_STATE_RX = re.compile(
+    r"\b(Washington|Maryland|Virginia|New York|Massachusetts|Michigan|"
+    r"Oklahoma|California|Pennsylvania|New Jersey|Ohio|Georgia|Florida|"
+    r"Texas|Illinois|North Carolina|South Carolina)\b", re.IGNORECASE)
+_OUT_OF_STATE_AREA_CODE_RX = re.compile(
+    r"\((?!302)(\d{3})\)|(?<!\d)(?!302)(\d{3})-\d{3}-\d{4}")
+
+
+def out_of_state_mgmt_reason(fields: dict) -> str | None:
+    """Fields already grounded to this specific Delaware entity (post-S66 fix)
+    -- if the management company's own contact info reads as based in
+    another state, that's a real fact about them, not a matching error.
+    Returns a short reason string, or None if nothing to flag."""
+    blob = " ".join(str(fields.get(k, "")) for k in ("current_mgmt_co", "board_contact"))
+    if not blob.strip():
+        return None
+    state_m = _OTHER_STATE_RX.search(blob)
+    if state_m:
+        return f"management contact references {state_m.group(1)}"
+    area_m = _OUT_OF_STATE_AREA_CODE_RX.search(blob)
+    if area_m:
+        code = area_m.group(1) or area_m.group(2)
+        return f"management contact phone has a non-Delaware area code ({code})"
+    return None
+
+
+def flag_out_of_state_mgmt(slug: str, name: str, fields: dict, db_path: str = None) -> bool:
+    """Adds an out-of-state-mgmt signal if warranted and not already present
+    for this entity (avoid re-flagging the same fact every refresh cycle).
+    Returns True if a new signal was added."""
+    reason = out_of_state_mgmt_reason(fields)
+    if not reason:
+        return False
+    existing = entity_kb.get_events(KB_PROJECT, slug=slug, event_type="signal", db_path=db_path)
+    if any(e.get("signal_kind") == "out-of-state-mgmt" for e in existing):
+        return False
+    entity_kb.add_signal(
+        KB_PROJECT, slug, "out-of-state-mgmt",
+        f"Currently managed by an out-of-state company ({reason}) — potential "
+        f"local-PM pitch opportunity.", confidence="medium", db_path=db_path)
+    return True
+
+
 def pick_refresh_chunk(chunk_size: int = DEFAULT_CHUNK_SIZE, db_path: str = None) -> list:
     """Least-recently-updated entities first. Self-balancing rotation, no
     persisted cursor needed -- whatever hasn't been touched longest comes
@@ -75,7 +126,8 @@ def run_refresh(chunk_size: int = DEFAULT_CHUNK_SIZE, creds: dict = None,
     import deep_research  # lazy: pulls in cirrus_daily/ensemble transitively
 
     chunk = pick_refresh_chunk(chunk_size, db_path=db_path)
-    result = {"attempted": [e["name"] for e in chunk], "refreshed": 0, "found_new_info": 0}
+    result = {"attempted": [e["name"] for e in chunk], "refreshed": 0, "found_new_info": 0,
+              "out_of_state_mgmt": []}
     if dry_run or not chunk:
         return result
     for e in chunk:
@@ -87,6 +139,9 @@ def run_refresh(chunk_size: int = DEFAULT_CHUNK_SIZE, creds: dict = None,
             result["refreshed"] += 1
             if found:
                 result["found_new_info"] += 1
+            after = entity_kb.get_entity(KB_PROJECT, e["slug"], db_path=db_path)
+            if after and flag_out_of_state_mgmt(e["slug"], e["name"], after["state"], db_path=db_path):
+                result["out_of_state_mgmt"].append(e["name"])
         except Exception:
             continue
     return result
@@ -194,6 +249,25 @@ def selftest() -> bool:
 
         empty_chunk = pick_refresh_chunk(chunk_size=0, db_path=db_path)
         checks.append(("chunk size 0 returns nothing", empty_chunk == []))
+
+        checks.append(("out-of-state state name is flagged", bool(
+            out_of_state_mgmt_reason({"current_mgmt_co": "Acme PM",
+                                      "board_contact": "123 Main St, Edmond, Oklahoma"}))))
+        checks.append(("out-of-state area code is flagged", bool(
+            out_of_state_mgmt_reason({"board_contact": "Phone: (405) 348-1436"}))))
+        checks.append(("a real Delaware area code (302) is NOT flagged", not
+                       out_of_state_mgmt_reason({"board_contact": "Phone: (302) 555-1234"})))
+        checks.append(("empty fields are NOT flagged", not
+                       out_of_state_mgmt_reason({"current_mgmt_co": "", "board_contact": ""})))
+
+        entity_kb.upsert_entity(KB_PROJECT, "oos-test", "OOS Test HOA", db_path=db_path)
+        first = flag_out_of_state_mgmt("oos-test", "OOS Test HOA",
+                                       {"board_contact": "(405) 348-1436"}, db_path=db_path)
+        second = flag_out_of_state_mgmt("oos-test", "OOS Test HOA",
+                                        {"board_contact": "(405) 348-1436"}, db_path=db_path)
+        checks.append(("first out-of-state flag on an entity adds a signal", first is True))
+        checks.append(("re-flagging the same entity is a no-op, not a duplicate signal",
+                       second is False))
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
