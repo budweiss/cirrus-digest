@@ -385,6 +385,31 @@ EMAIL_SEEN_PATH = PROJECT_DIR / "config/business_idea_email_seen.json"
 _EMAIL_LOOKBACK_DAYS = 2
 _MAX_EMAILS_PER_RUN = 40
 
+# A sender allowlist is not optional here. The live inboxes are mostly
+# promotional mail (retail sales, marketplace listings, spam with obfuscated
+# headers) -- a first live read returned 40 messages of which zero were
+# relevant. Every message scored costs a council call, so scanning
+# indiscriminately would burn real money on Harley-Davidson listings.
+# Matched case-insensitively against the raw From header, so it covers both
+# the display name and the address. Extend this list, not the logic.
+EMAIL_SENDER_PATTERNS = [
+    "medium.com",          # the whole reason this path exists
+    "substack.com",
+    "beehiiv.com",
+    "ghost.io",
+    "convertkit",
+    "lennysnewsletter",
+    "notboring",
+    "latent.space",
+    "stratechery",
+    "indiehackers",
+]
+
+
+def email_sender_allowed(sender: str) -> bool:
+    s = (sender or "").lower()
+    return any(p in s for p in EMAIL_SENDER_PATTERNS)
+
 
 def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS) -> list:
     """Read recent messages from the configured inboxes WITHOUT touching the
@@ -429,6 +454,11 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                     continue
                 mid = (msg.get("Message-ID") or "").strip()
                 if not mid or mid in seen_ids or mid in new_ids:
+                    continue
+                # Filter BEFORE marking seen and before any scoring, so a
+                # sender added to the allowlist later still gets picked up
+                # on the next run rather than being permanently skipped.
+                if not email_sender_allowed(msg.get("From") or ""):
                     continue
                 new_ids.add(mid)
                 try:
@@ -667,6 +697,20 @@ def selftest() -> bool:
                     for j in range(_QUERIES_PER_RUN)}
     checks.append(("rotation eventually covers every query",
                    covered == set(BUSINESS_SEARCH_QUERIES)))
+    # S66: the email sender allowlist -- a live inbox read returned 40
+    # messages, all promotional, none relevant. Without this every one costs
+    # a council call.
+    checks.append(("Medium senders are allowed (the point of email intake)",
+                   email_sender_allowed("Medium Daily Digest <noreply@medium.com>")))
+    checks.append(("Substack senders are allowed",
+                   email_sender_allowed("Some Writer <x@substack.com>")))
+    checks.append(("retail promo mail is rejected",
+                   not email_sender_allowed('"Bose Certified" <Email@email.bose.com>')))
+    checks.append(("marketplace listings are rejected",
+                   not email_sender_allowed('"Facebook Marketplace" <marketplace@facebookmail.com>')))
+    checks.append(("an empty sender is rejected, not allowed by default",
+                   not email_sender_allowed("")))
+
     checks.append(("search terms target revenue/operating businesses, not 'ideas'",
                    all(any(w in q for w in ("revenue", "profitable", "subscribers",
                                             "business"))
