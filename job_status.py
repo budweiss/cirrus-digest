@@ -40,6 +40,7 @@ CADENCE_H = {
     "businessideascan":   26,   # daily 07:45 -- RSS + email + search intake
     "businessideaideate": 26,   # daily 07:55 -- council generation
     "businessideareport": 26,   # daily 08:15 -- the email Buddy actually reads
+    "businessideafeeds":  26,   # daily 07:40 -- judge trials (+ discover on Sundays)
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on

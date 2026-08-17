@@ -307,7 +307,24 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
     if cmd == "selftest":
         sys.exit(0 if selftest() else 1)
-    if cmd == "discover":
+    if cmd == "cycle":
+        # The scheduled mode: judge every day (a trial that has run its
+        # course gets promoted or retired promptly), but only hunt for new
+        # feeds weekly -- discovery is a council call with a low yield, and
+        # running it daily would mostly re-reject the same dead suggestions.
+        out = {"judged": judge()}
+        if datetime.now().weekday() == 6:  # Sunday
+            out["discovered"] = discover(6)
+        print(json.dumps(out, indent=2))
+        try:
+            import job_status
+            job_status.record("businessideafeeds", True,
+                              f"{len(out['judged']['promoted'])} promoted, "
+                              f"{len(out['judged']['retired'])} retired, "
+                              f"{len(out['judged']['still_trialing'])} on trial")
+        except Exception:
+            pass
+    elif cmd == "discover":
         n = 5
         if "--n" in sys.argv:
             n = int(sys.argv[sys.argv.index("--n") + 1])
