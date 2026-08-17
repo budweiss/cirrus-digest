@@ -46,29 +46,78 @@ SOURCES = [
     {"name": "The Generalist", "rss": "https://thegeneralist.substack.com/feed"},
 ]
 
-MISSION = """Buddy is looking for real business opportunities he could start using
-the AI/LLM automation environment already built here (Claude-driven research,
-extraction, and workflow automation -- the same kind of system already running
-live for Delaware HOA lead research, a real-estate assistant, and AI-news
-digests). Score how good a candidate THIS SPECIFIC article/case-study is as a
-blueprint or inspiration for a new business:
-1. Is it a real, operating business model with identifiable revenue or
-   customers -- not a hypothetical, a big-tech feature announcement, or pure
-   opinion/commentary with no business behind it?
-2. Could it realistically be built and run by a solo founder or a very small
-   team, with AI/LLM tooling doing most of the day-to-day research, content,
-   or operational work?
-3. Is the AI/automation angle central to why it works economically, not
-   incidental?
-4. Is it a distinct-enough opportunity, not something already saturated by
-   dozens of near-identical competitors?
-NOT relevant: general AI industry news, funding announcements about large
-companies, pure how-to/productivity tips with no business-opportunity angle,
-opinion pieces with no concrete business described."""
+MISSION = """Buddy owns a real, always-on AI automation environment (see CAPABILITIES
+below) and wants to start a business that this environment can largely RUN, not
+merely assist with. Score how good a candidate THIS article/case-study is as a
+blueprint for such a business.
+
+Score HIGH when all of these hold:
+1. REAL: an actually-operating business model with identifiable paying
+   customers or revenue -- not a hypothetical, a big-tech product
+   announcement, or opinion/commentary with no business behind it.
+2. MACHINE-OPERABLE: the day-to-day work could be performed by scheduled,
+   autonomous software (research, generation, publishing, outreach,
+   fulfillment) rather than by Buddy's hands each day. This is the single
+   most important criterion. A business that merely "uses AI tools" while
+   still requiring daily human labor per unit of output scores LOW.
+   Automated media -- YouTube/shorts/podcast/audio/video pipelines that
+   generate and publish on a schedule -- is explicitly IN SCOPE and of high
+   interest.
+3. AI-ECONOMIC: the automation is why the unit economics work, not a
+   nice-to-have bolted onto a conventional labor business.
+4. DISTINCT: not already saturated by dozens of near-identical competitors,
+   or has a defensible angle (proprietary data, accumulating knowledge base,
+   niche depth) that compounds over time.
+5. STARTABLE SMALL: can begin at small scale as a genuine learning cycle and
+   grow, rather than requiring a large launch to work at all. Upfront capital
+   is NOT a limiting factor and should not lower a score.
+
+Score LOW / reject:
+- Anything in property management, HOAs, real estate, snow removal, or
+  seasonal home services. Buddy already operates in these sectors and
+  explicitly wants this venture to be UNRELATED to them.
+- Businesses whose core is human consulting, done-for-you agency labor, or
+  anything billing Buddy's own hours.
+- General AI industry news, funding rounds, model releases, or company
+  announcements with no startable business for an individual.
+- Pure how-to/productivity tips, or opinion pieces with no concrete
+  business described."""
+
+# Honest inventory of what actually exists here, used to ground scoring and
+# (in business_idea_ideate.py) generation. Deliberately lists what is NOT
+# built as well -- an idea requiring video/voice/payments is still viable,
+# but the models should know it's a build, not a given.
+CAPABILITIES = """CAPABILITIES ALREADY BUILT AND RUNNING (as of 2026-08):
+- Two always-on machines: CIRRUS (Mac Studio, local Ollama/qwen) and CUMULUS
+  (NVIDIA DGX Spark, Linux+GPU, a second unit arriving). Both run scheduled
+  jobs unattended (launchd/systemd) and have been stable for months.
+- A funded 4-provider LLM council (Anthropic Claude, Gemini, OpenAI, Grok)
+  with automatic failover, cost ledgers, and per-month spend caps.
+- Autonomous research pipeline: paid Brave Search + Gemini grounded search,
+  article fetching (incl. paywall detection and cookie-based access), and
+  multi-model extraction of structured facts from web sources.
+- entity_kb: a generic SQLite entity/knowledge-base engine with an append-only
+  event ledger -- purpose-built for knowledge that COMPOUNDS over time, with
+  proven multi-tenant isolation. Currently holds 184 researched entities for
+  one live client.
+- Email pipelines in both directions: IMAP intake with sender allowlisting and
+  automatic classification, plus SMTP send. Live clients already receive
+  autonomous, research-grounded email replies.
+- RSS/podcast ingestion, X/Twitter API read access, Telegram bot.
+- A public HTTPS API surface (Cloudflare tunnel + owned domains).
+- Skywarden: an autonomous supervisor agent with real tool use, budget caps,
+  and an audit ledger -- it monitors and repairs the other pipelines.
+- Full CI/CD: git-based deploy to both machines, rollback, secret encryption.
+
+NOT YET BUILT (possible, but count as real build work in your assessment):
+- Video generation/editing, text-to-speech/voice, image generation.
+- Payment processing, billing, subscriptions.
+- Any public-facing consumer web product or mobile app.
+- Social/video platform publishing integrations (YouTube, TikTok, etc.)."""
 
 
 def _gate_prompt(title: str, text: str) -> str:
-    return (f"{MISSION}\n\nCandidate article:\nTITLE: {title}\n"
+    return (f"{MISSION}\n\n{CAPABILITIES}\n\nCandidate article:\nTITLE: {title}\n"
             f"EXCERPT: {text[:3000]}\n\n"
             f"How good a candidate is this? Reply with EXACTLY one line: "
             f"SCORE: <0-10> | WHY: <one short sentence> | IDEA: <a short "
@@ -112,6 +161,26 @@ def _slug_for(idea_label: str, title: str) -> str:
     return entity_kb.slugify(idea_label or title)
 
 
+def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
+    """Return (slug, is_new). Checks entity_kb for an existing entity that
+    already covers this idea before minting a new slug.
+
+    S66: the first live run created two separate entities ("AI-Native Solo
+    Fashion Brand" / "AI-Orchestrated Niche Fashion Brand") from a podcast
+    episode and its companion post about the SAME underlying story -- the
+    LLM labels each article slightly differently, so slug-only matching
+    can't collapse them. Same fuzzy-match-first pattern
+    hoa_daily_research.run_discovery() already uses for communities."""
+    name = idea_label or title
+    try:
+        matches = entity_kb.search_entities(KB_PROJECT, name, db_path=db_path, limit=1)
+    except Exception:
+        matches = []
+    if matches:
+        return matches[0]["slug"], False
+    return entity_kb.slugify(name), True
+
+
 def run(dry_run: bool = False, db_path: str = None) -> dict:
     import cirrus_daily  # lazy: needs requests/bs4/feedparser, live venv only
     import feedparser
@@ -127,7 +196,8 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
         seen = set()
 
     since = datetime.now() - timedelta(hours=48)
-    result = {"fetched": 0, "fresh": 0, "admitted": [], "scored_low": 0}
+    result = {"fetched": 0, "fresh": 0, "admitted": [], "corroborated": [],
+              "scored_low": 0}
     newly_seen = set()
 
     for source in SOURCES:
@@ -166,7 +236,7 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
                 result["scored_low"] += 1
                 continue
 
-            slug = _slug_for(idea_label, title)
+            slug, is_new = resolve_slug(idea_label, title, db_path=db_path)
             entity_kb.upsert_entity(KB_PROJECT, slug, idea_label or title,
                                     entity_type="business_idea",
                                     fields={"category": source["name"]},
@@ -175,7 +245,11 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
                 KB_PROJECT, slug, "candidate",
                 f"[{score}/10] {why} (from {source['name']}: \"{title}\")",
                 source_url=url, confidence="medium", db_path=db_path)
-            result["admitted"].append(f"{idea_label or title} ({score}/10)")
+            if is_new:
+                result["admitted"].append(f"{idea_label or title} ({score}/10)")
+            else:
+                result.setdefault("corroborated", []).append(
+                    f"{idea_label or title} ({score}/10)")
 
     if not dry_run and newly_seen:
         seen |= newly_seen
@@ -201,6 +275,25 @@ def selftest() -> bool:
                    == entity_kb.slugify("AI Bookkeeping Agency")))
     checks.append(("slug falls back to title when no idea label",
                    _slug_for("", "Some Article Title") == entity_kb.slugify("Some Article Title")))
+
+    # S66 regression: two articles about the same story got two entities.
+    import os
+    import tempfile
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(db_path)
+    try:
+        slug1, new1 = resolve_slug("AI-Native Solo Fashion Brand", "t1", db_path=db_path)
+        checks.append(("a genuinely new idea resolves as new", new1 is True))
+        entity_kb.upsert_entity(KB_PROJECT, slug1, "AI-Native Solo Fashion Brand",
+                                db_path=db_path)
+        _slug2, new2 = resolve_slug("AI-Native Solo Fashion Brand", "t2", db_path=db_path)
+        checks.append(("the same idea seen again is NOT a second entity", new2 is False))
+        _slug3, new3 = resolve_slug("Automated Podcast Clip Service", "t3", db_path=db_path)
+        checks.append(("an unrelated idea still resolves as new", new3 is True))
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
 
     all_ok = all(ok for _, ok in checks)
     for desc, ok in checks:
