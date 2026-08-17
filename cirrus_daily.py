@@ -748,7 +748,22 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
     except requests.exceptions.Timeout:
         log(f"    Fetch timed out: {url[:70]}")
     except requests.exceptions.HTTPError as e:
-        log(f"    Fetch HTTP error {e.response.status_code}: {url[:70]}")
+        status = e.response.status_code
+        log(f"    Fetch HTTP error {status}: {url[:70]}")
+        # S66: a 401/403 on a WATCHLISTED (subscription) domain is an access
+        # failure on content Buddy pays for -- treat it exactly like a
+        # detected paywall so the cookie-refresh flag gets written.
+        #
+        # This closes a self-reinforcing bug that had silently disabled
+        # cookie refresh since 2026-06-25 (~8 weeks): the refresh flag was
+        # only ever written by log_paywall_hit(), which fires on a paywall
+        # PHRASE found in fetched text. Medium now blocks expired sessions
+        # with a hard Cloudflare 403 BEFORE any text exists, so no phrase was
+        # ever seen -> no flag -> sync_cookies.sh logged "No cookie refresh
+        # needed" every 30 minutes forever -> cookies stayed expired -> more
+        # 403s. Once cookies lapse, nothing could ever un-lapse them.
+        if status in (401, 403):
+            flag_cookie_refresh(url)
     except Exception as e:
         log(f"    Fetch error: {e}")
 
