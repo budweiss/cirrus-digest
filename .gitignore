@@ -24,3 +24,10 @@ config/credentials.json.age
 config/credentials.json.pre-encryption-backup
 # entity_kb per-project data (S65) — runtime data, not code; each box's copy is its own
 data/entity_kb/
+
+# S66 business-idea pipeline runtime state (same reason as email_state.json /
+# intake_state.json above: per-box cursors and counters, never source).
+config/business_idea_seen.json
+config/business_idea_email_seen.json
+config/business_idea_source_stats.json
+config/business_idea_trial_feeds.json
