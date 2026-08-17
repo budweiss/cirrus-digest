@@ -156,6 +156,36 @@ def gather_awaiting_builds():
             out.append(f"{b.get('id','?')}: {summ[:90]}")
     return out
 
+def _domain(url: str) -> str:
+    try:
+        d = urllib.parse.urlparse(url).netloc
+        return d[4:] if d.startswith("www.") else d
+    except Exception:
+        return url
+
+def _parse_paywall_entries(text):
+    """paywalls.log entries are 3 lines each:
+    '[ts] PAYWALL | URL: ...' / '          Sender: ...' / '          Subject: ...'
+    Returns [{"date", "url", "subject"}, ...] oldest-first."""
+    out = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] PAYWALL \| URL: (.+)", lines[i])
+        if m:
+            subject = ""
+            if i + 2 < len(lines):
+                sm = re.match(r"\s*Subject:\s*(.*)", lines[i + 2])
+                if sm:
+                    subject = sm.group(1).strip()
+                    if subject.startswith("[ref] "):
+                        subject = subject[6:]
+            out.append({"date": m.group(1), "url": m.group(2).strip(), "subject": subject})
+            i += 3
+        else:
+            i += 1
+    return out
+
 def gather_attention():
     flags = []
     # bot.log: real errors, ignoring the benign getUpdates long-poll timeouts
@@ -170,12 +200,24 @@ def gather_attention():
                 and "getupdates" not in l.lower()]
         if errs:
             flags.append(f"bot.log: {len(errs)} error line(s) today — e.g. {errs[-1][-120:].strip()}")
-    # paywalls: any hits logged today
+    # paywalls: any hits logged today — name the SOURCE + article, plus how
+    # often that domain has come up blocked all-time, so Buddy can judge
+    # whether a subscription there is actually worth setting up (S66 ask).
     pw = _read(LOG_DIR / "paywalls.log")
     if pw:
-        hits = [l for l in pw.splitlines() if TODAY in l]
-        if hits:
-            flags.append(f"paywalls: {len(hits)} hit(s) today (cookies may need refresh)")
+        entries = _parse_paywall_entries(pw)
+        today_entries = [e for e in entries if e["date"] == TODAY]
+        if today_entries:
+            domain_counts = {}
+            for e in entries:
+                d = _domain(e["url"])
+                domain_counts[d] = domain_counts.get(d, 0) + 1
+            for e in today_entries:
+                d = _domain(e["url"])
+                title = e["subject"] or "(no title)"
+                n = domain_counts.get(d, 1)
+                recur = f" — blocked {n}x all-time" if n > 1 else " — first time seen"
+                flags.append(f"paywall: {d}{recur} — \"{title[:80]}\"")
     return flags
 
 # ── Compose ────────────────────────────────────────────────────────────────────
