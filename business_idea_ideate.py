@@ -87,12 +87,49 @@ _GEN_SYSTEM = (
     "that requires ongoing manual human labor per unit of output."
 )
 
+# S66: the first adversarial run killed 4/4 ideas for the SAME structural
+# reason -- "automated briefing on public data X" dies because a free
+# official feed or an entrenched paid incumbent already owns that niche, and
+# automated output carries liability in high-stakes domains. Without memory
+# the council cheerfully re-proposes that shape forever. Rejected ideas are
+# kept in entity_kb (lead_state="rejected") precisely so they can be fed back
+# here, making each run start from what the last one learned.
+_MAX_LESSONS = 15
+
+
+def past_failures(db_path: str = None) -> str:
+    """Recently-killed ideas + why, formatted for the generation prompt.
+    Returns '' when there's no history yet (first run)."""
+    try:
+        rejected = entity_kb.list_entities(KB_PROJECT, lead_state="rejected",
+                                           db_path=db_path)
+    except Exception:
+        return ""
+    if not rejected:
+        return ""
+    lines = []
+    for e in rejected[:_MAX_LESSONS]:
+        risk = (e.get("state") or {}).get("main_risk", "")
+        lines.append(f"- {e['name']}: {str(risk)[:200]}")
+    return (
+        "ALREADY PROPOSED AND KILLED -- do not propose these again, and more "
+        "importantly do not propose anything that fails for the SAME "
+        "STRUCTURAL REASON:\n" + "\n".join(lines) +
+        "\n\nStudy those failure modes before answering. If your idea is 'an "
+        "automated briefing/newsletter/feed summarizing public data source X', "
+        "check first whether X already publishes its own free alerts, whether "
+        "an entrenched paid incumbent already serves that buyer, and whether "
+        "an error in automated output would carry legal or financial "
+        "liability -- if any of those hold, propose something else entirely."
+    )
+
 _IDEAS_PER_LENS = 4
 
 
-def _gen_prompt(lens: dict) -> str:
+def _gen_prompt(lens: dict, lessons: str = "") -> str:
     return (
         f"{MISSION}\n\n{CAPABILITIES}\n\n"
+        + (f"{lessons}\n\n" if lessons else "") +
         f"LENS FOR THIS REQUEST: {lens['focus']}\n\n"
         f"Propose exactly {_IDEAS_PER_LENS} specific businesses fitting this lens. "
         f"Be concrete: name a real niche, a real customer, a real revenue mechanism. "
@@ -189,7 +226,7 @@ def _idea_as_text(idea: dict) -> str:
             f"Why now: {idea.get('why_now', '')}")
 
 
-def generate(lens: dict, creds: dict) -> list:
+def generate(lens: dict, creds: dict, lessons: str = "") -> list:
     """Council-generate candidate ideas for one lens. Returns [] on any
     failure -- one dead lens must not abort the whole run."""
     try:
@@ -198,7 +235,7 @@ def generate(lens: dict, creds: dict) -> list:
         # _IDEAS_PER_LENS ideas with six fields each, and 3000 truncated it
         # mid-array live (S66). The salvage parser covers the rest.
         _meta, text = ensemble.best_answer(
-            _GEN_SYSTEM, _gen_prompt(lens), creds, max_tokens=8000,
+            _GEN_SYSTEM, _gen_prompt(lens, lessons), creds, max_tokens=8000,
             task="business-idea-ideate", mode="council")
         return _parse_ideas(text)
     except Exception as e:
@@ -233,9 +270,13 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
         lenses = [l for l in LENSES if not only_lens or l["key"] == only_lens]
     result = {"generated": 0, "admitted": [], "corroborated": [], "rejected": []}
 
+    lessons = past_failures(db_path=db_path)
+    if lessons:
+        print(f"[memory] feeding back {lessons.count(chr(10) + '- ')} past failure(s)")
+
     for lens in lenses:
         print(f"[lens] {lens['key']}...")
-        ideas = generate(lens, creds)
+        ideas = generate(lens, creds, lessons)
         result["generated"] += len(ideas)
         for idea in ideas:
             name = (idea.get("name") or "").strip()
@@ -255,6 +296,31 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
             if final < RELEVANCE_MIN:
                 result["rejected"].append(
                     f"{name} (fit {score}, survival {survival}): {flaw}")
+                # Killed ideas are RECORDED, not discarded -- they're the
+                # failure memory past_failures() feeds back into the next
+                # run, they stop the same dead idea being re-proposed
+                # (resolve_slug matches them), and Buddy explicitly wants to
+                # see what died and why so he can tune the criteria.
+                if not dry_run:
+                    rslug, _rnew = resolve_slug(name, name, db_path=db_path)
+                    entity_kb.upsert_entity(
+                        KB_PROJECT, rslug, name, entity_type="business_idea",
+                        lead_state="rejected",
+                        fields={"category": f"ideated:{lens['key']}",
+                                "what": idea.get("what", ""),
+                                "who_pays": idea.get("who_pays", ""),
+                                "fit_score": score,
+                                "survival_score": survival,
+                                "final_score": final,
+                                "main_risk": flaw},
+                        db_path=db_path)
+                    entity_kb.add_signal(
+                        KB_PROJECT, rslug, "rejected",
+                        f"REJECTED [{final}/10 | fit {score}, survival {survival}]\n"
+                        f"    What it was: {idea.get('what', '')}\n"
+                        f"    Killed by: {flaw}\n"
+                        f"    (council-ideated, lens: {lens['key']})",
+                        confidence="medium", db_path=db_path)
                 continue
             if dry_run:
                 result["admitted"].append(
@@ -265,6 +331,10 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
             slug, is_new = resolve_slug(name, name, db_path=db_path)
             entity_kb.upsert_entity(
                 KB_PROJECT, slug, name, entity_type="business_idea",
+                lead_state="candidate",  # vs "rejected" above -- keeps the
+                                         # shortlist queryable and lets a
+                                         # previously-killed idea be promoted
+                                         # if the criteria later change
                 fields={"category": f"ideated:{lens['key']}",
                         "what": idea.get("what", ""),
                         "who_pays": idea.get("who_pays", ""),
@@ -330,6 +400,32 @@ def selftest() -> bool:
     checks.append(("every lens has a unique key",
                    len({l["key"] for l in LENSES}) == len(LENSES)))
     checks.append(("today's lens is a real lens", todays_lens() in LENSES))
+
+    # S66: rejected ideas must persist as failure memory and reach the prompt.
+    import os
+    import tempfile
+    fd, _db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(_db)
+    try:
+        checks.append(("no history yields no lessons block", past_failures(db_path=_db) == ""))
+        entity_kb.upsert_entity(
+            KB_PROJECT, "dead-idea", "Dead Idea", lead_state="rejected",
+            fields={"main_risk": "incumbent already owns this"}, db_path=_db)
+        entity_kb.upsert_entity(
+            KB_PROJECT, "live-idea", "Live Idea", lead_state="candidate",
+            fields={"main_risk": "manageable"}, db_path=_db)
+        lessons = past_failures(db_path=_db)
+        checks.append(("a rejected idea becomes a lesson", "Dead Idea" in lessons))
+        checks.append(("its actual flaw is included, not just the name",
+                       "incumbent already owns this" in lessons))
+        checks.append(("a surviving candidate is NOT fed back as a failure",
+                       "Live Idea" not in lessons))
+        checks.append(("lessons reach the generation prompt",
+                       "Dead Idea" in _gen_prompt(LENSES[0], lessons)))
+    finally:
+        if os.path.exists(_db):
+            os.unlink(_db)
     from datetime import date, timedelta as _td
     span = {LENSES[(date.today() + _td(days=i)).toordinal() % len(LENSES)]["key"]
             for i in range(len(LENSES))}
