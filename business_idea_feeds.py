@@ -62,6 +62,50 @@ def active_feeds() -> list:
     return [{"name": f["name"], "rss": f["rss"]} for f in d["trial"] + d["promoted"]]
 
 
+# S66: the first live discovery run had all 6 suggestions fail verification
+# (4x HTTP 404, 1 unparseable, 1 stale). The models know which publications
+# EXIST but reliably guess their feed PATH wrong -- so stop asking for feed
+# URLs. Ask for the publication's homepage instead and resolve the real feed
+# from the site itself: RSS autodiscovery first (the <link rel="alternate">
+# tag publishers put there for exactly this), then the handful of
+# conventional paths.
+_COMMON_FEED_PATHS = ("/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml",
+                      "/index.xml", "/feed/", "/blog/feed")
+
+
+def find_feed_url(site: str, timeout: int = 15) -> str:
+    """Resolve a site's real feed URL, or '' if it has none."""
+    import re as _re
+    from urllib.parse import urljoin
+    try:
+        import requests
+    except Exception:
+        return ""
+    site = site.strip()
+    if not site.startswith("http"):
+        site = "https://" + site
+    headers = {"User-Agent": "CIRRUS-digest/1.0"}
+    try:
+        r = requests.get(site, timeout=timeout, headers=headers)
+        if r.status_code == 200:
+            # RSS autodiscovery -- the authoritative answer when present.
+            for m in _re.finditer(r"<link[^>]+>", r.text[:200000], _re.IGNORECASE):
+                tag = m.group(0)
+                if "alternate" in tag.lower() and _re.search(
+                        r"application/(rss|atom)\+xml", tag, _re.IGNORECASE):
+                    href = _re.search(r'href=["\']([^"\']+)["\']', tag, _re.IGNORECASE)
+                    if href:
+                        return urljoin(site, href.group(1))
+    except Exception:
+        pass
+    for path in _COMMON_FEED_PATHS:
+        cand = urljoin(site, path)
+        ok, _detail = verify_feed(cand, timeout=timeout)
+        if ok:
+            return cand
+    return ""
+
+
 def verify_feed(rss: str, timeout: int = 20) -> tuple:
     """(ok, detail). A suggested RSS URL is wrong or dead often enough that
     nothing may be added without a live check."""
@@ -106,9 +150,10 @@ def propose(n: int, creds: dict) -> list:
         f"trade publications. Favor sources that publish concrete numbers and "
         f"specifics over general tech or AI news, and prefer ones a large "
         f"audience is NOT already mining for ideas.\n"
-        f"Give the real, direct feed URL, not the site homepage. If unsure of "
-        f"the exact feed path, omit that suggestion rather than guessing.\n"
-        f'Respond as JSON only: {{"feeds": [{{"name": "...", "rss": "https://...", '
+        f"Give each publication's HOMEPAGE URL -- do NOT try to give the feed "
+        f"path, we resolve that ourselves. Only suggest publications you are "
+        f"confident actually exist at that domain.\n"
+        f'Respond as JSON only: {{"feeds": [{{"name": "...", "site": "https://...", '
         f'"why": "one sentence"}}]}}'
     )
     try:
@@ -140,8 +185,21 @@ def discover(n: int = 5) -> dict:
         f["rss"] for f in d["trial"] + d["promoted"] + d["retired"]}
     added, rejected = [], []
     for f in propose(n, creds):
-        rss, name = (f.get("rss") or "").strip(), (f.get("name") or "").strip()
-        if not rss or not name or rss in known:
+        name = (f.get("name") or "").strip()
+        site = (f.get("site") or f.get("rss") or "").strip()
+        if not name or not site:
+            continue
+        # Resolve the real feed from the site rather than trusting a guessed
+        # path; accept a direct feed URL too, if one was given anyway.
+        rss = site if verify_feed(site)[0] else find_feed_url(site)
+        if not rss:
+            rejected.append(f"{name}: no discoverable feed at {site}")
+            d["retired"].append({"name": name, "rss": site,
+                                 "retired": datetime.now().strftime("%Y-%m-%d"),
+                                 "reason": "no discoverable feed"})
+            continue
+        if rss in known:
+            rejected.append(f"{name}: already covered")
             continue
         ok, detail = verify_feed(rss)
         if not ok:
