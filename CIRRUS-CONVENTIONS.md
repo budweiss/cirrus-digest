@@ -46,6 +46,14 @@ before reviewing proposals or writing any code for CIRRUS.
   `runner/rotate-creds-cirrus.sh key=value ...` (NOT the old
   `runner/rotate-creds.sh`, which is superseded — see `CUMULUS.md` §8a for
   the full design, shared with cumulus1's identical pattern).
+  **Never write a live credential via `tools/set_cred.py` piped over ssh
+  directly** (the `cirrus-grok-sync` pattern) — it atomic-replaces the
+  symlink with a plain file, and the change is silently lost on this box's
+  next reboot when the LaunchAgent re-materializes from the (unchanged)
+  `.age` file. On cumulus1 the same mistake reverts even faster — within
+  ~10 seconds, a continuous self-heal loop there, not just on reboot (hit
+  live, S66 — see `CUMULUS.md` §8a). Always go through
+  `rotate-creds-cirrus.sh`, which updates the actual `.age` source.
 
 - **Directory layout** (all under `DIGEST_CFG["output_dir"]`, referred to as
   `digests/`):
