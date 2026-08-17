@@ -157,13 +157,31 @@ def generate(lens: dict, creds: dict) -> list:
         return []
 
 
-def run(only_lens: str = None, dry_run: bool = False, db_path: str = None) -> dict:
+def todays_lens() -> dict:
+    """Deterministically pick one lens per day, cycling through all of them.
+
+    S66: Buddy wants a DAILY idea email. Running all five lenses every day
+    would be repetitive and noisy (~20 candidates/day, heavily overlapping);
+    running them weekly would leave most daily emails empty. One rotating
+    lens per day gives a steady drip with a genuinely different angle each
+    day, cycles every len(LENSES) days, and lets the corroboration signal in
+    resolve_slug() surface ideas that recur across cycles -- which is exactly
+    the ranking signal we want."""
+    from datetime import date
+    return LENSES[date.today().toordinal() % len(LENSES)]
+
+
+def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
+        rotate: bool = False) -> dict:
     try:
         creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     except Exception:
         creds = {}
 
-    lenses = [l for l in LENSES if not only_lens or l["key"] == only_lens]
+    if rotate:
+        lenses = [todays_lens()]
+    else:
+        lenses = [l for l in LENSES if not only_lens or l["key"] == only_lens]
     result = {"generated": 0, "admitted": [], "corroborated": [], "rejected": []}
 
     for lens in lenses:
@@ -245,6 +263,12 @@ def selftest() -> bool:
                    all(x in flat for x in ("W", "P", "L", "B", "N"))))
     checks.append(("every lens has a unique key",
                    len({l["key"] for l in LENSES}) == len(LENSES)))
+    checks.append(("today's lens is a real lens", todays_lens() in LENSES))
+    from datetime import date, timedelta as _td
+    span = {LENSES[(date.today() + _td(days=i)).toordinal() % len(LENSES)]["key"]
+            for i in range(len(LENSES))}
+    checks.append((f"rotation covers all {len(LENSES)} lenses in {len(LENSES)} days",
+                   span == {l["key"] for l in LENSES}))
 
     all_ok = all(ok for _, ok in checks)
     for desc, ok in checks:
@@ -258,6 +282,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--lens", default=None, help="run only this lens key")
+    parser.add_argument("--rotate", action="store_true",
+                        help="run only today's lens (rotates daily) -- the scheduled mode")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(only_lens=args.lens, dry_run=args.dry_run), indent=2))
+    print(json.dumps(run(only_lens=args.lens, dry_run=args.dry_run,
+                         rotate=args.rotate), indent=2))
