@@ -39,12 +39,47 @@ KB_PROJECT = "business_ideas"
 SEEN_PATH = PROJECT_DIR / "config/business_idea_seen.json"
 RELEVANCE_MIN = 6  # same bar as self_review.py's mission gate
 
+# Business/founder-focused feeds picked specifically for this project (all
+# live-verified). These are ADDITIVE to the Medium/Substack sources the main
+# digest already reads -- see inherited_sources() below.
 SOURCES = [
     {"name": "Growth In Reverse", "rss": "https://growthinreverse.substack.com/feed"},
     {"name": "Entrepreneur Loop", "rss": "https://entrepreneurloop.substack.com/feed"},
     {"name": "Lenny's Newsletter", "rss": "https://www.lennysnewsletter.com/feed"},
     {"name": "The Generalist", "rss": "https://thegeneralist.substack.com/feed"},
 ]
+
+
+def inherited_sources() -> list:
+    """The Medium/Substack feeds the main digest already reads.
+
+    S66, Buddy's ask -- he pays for many of these subscriptions and CIRRUS
+    already holds working medium.com/substack.com cookies for them, so a
+    business idea surfacing there was being silently ignored by this scan.
+    Read from config/sources.json rather than copied here, so any source he
+    adds to the main digest is picked up automatically and the two lists
+    can't drift. Most of these are AI-news feeds where a given article is not
+    a business idea at all -- that is fine and expected: the relevance gate
+    rejects those cheaply, before the more expensive critique ever runs."""
+    try:
+        cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
+    except Exception:
+        return []
+    out = []
+    for s in cfg.get("web_sources", []) or []:
+        if s.get("type") in ("medium", "substack", "newsletter") and s.get("rss"):
+            out.append({"name": s.get("name", s["rss"]), "rss": s["rss"]})
+    return out
+
+
+def all_sources() -> list:
+    """Project-specific feeds + inherited ones, deduped by RSS URL."""
+    seen, out = set(), []
+    for s in SOURCES + inherited_sources():
+        if s["rss"] not in seen:
+            seen.add(s["rss"])
+            out.append(s)
+    return out
 
 MISSION = """Buddy owns a real, always-on AI automation environment (see CAPABILITIES
 below) and wants to start a business that this environment can largely RUN, not
@@ -314,7 +349,7 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
               "scored_low": 0}
     newly_seen = set()
 
-    for source in SOURCES:
+    for source in all_sources():
         try:
             feed = feedparser.parse(source["rss"])
         except Exception:
@@ -333,10 +368,23 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
             if not title:
                 continue
 
+            paywalled = False
             try:
-                content, _paywalled = cirrus_daily.fetch_article_content(url)
+                content, paywalled = cirrus_daily.fetch_article_content(url)
             except Exception:
                 content = ""
+            if paywalled:
+                # Buddy pays for many of these subscriptions -- a paywall hit
+                # means either a cookie needs refreshing or he has an article
+                # worth reading that we couldn't. Route it into the SAME
+                # paywalls.log the morning brief already reports (with domain,
+                # title, and all-time hit count), rather than inventing a
+                # second channel he'd have to remember to check.
+                try:
+                    cirrus_daily.log_paywall_hit(url, source["name"], title)
+                except Exception:
+                    pass
+                result.setdefault("paywalled", []).append(f"{source['name']}: {title}")
             text = content or entry.get("summary", "") or ""
             if not text.strip():
                 continue
@@ -405,6 +453,16 @@ def selftest() -> bool:
                    == entity_kb.slugify("AI Bookkeeping Agency")))
     checks.append(("slug falls back to title when no idea label",
                    _slug_for("", "Some Article Title") == entity_kb.slugify("Some Article Title")))
+
+    # S66: the scan must cover the Medium/Substack feeds Buddy already pays
+    # for via the main digest, not just this project's own four.
+    combined = all_sources()
+    checks.append(("all_sources includes this project's own feeds",
+                   all(any(c["rss"] == s["rss"] for c in combined) for s in SOURCES)))
+    checks.append(("all_sources dedupes by RSS url",
+                   len({s["rss"] for s in combined}) == len(combined)))
+    checks.append(("every source has a name and an rss url",
+                   all(s.get("name") and s.get("rss") for s in combined)))
 
     checks.append(("a fatal flaw sinks a high-fit idea (min, not average)",
                    final_score(9, 2) == 2))
