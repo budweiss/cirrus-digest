@@ -32,6 +32,14 @@ CADENCE_H = {
     "hoaleads":      24 * 8,    # weekly Monday + grace (DE HOA lead monitor, S57)
     "stratusreview": 24 * 33,   # monthly + grace
     "privacymon":    24 * 8,    # weekly Sunday + grace
+    # S66 business-idea pipeline (CIRRUS, daily 07:45 / 07:55 / 08:15).
+    # Tracked separately rather than as one entry: during the shakedown week
+    # it matters WHICH stage broke -- the report still sends (just thinner)
+    # when the scan or ideation fails, so a single combined check would look
+    # green while half the pipeline was dead.
+    "businessideascan":   26,   # daily 07:45 -- RSS + email + search intake
+    "businessideaideate": 26,   # daily 07:55 -- council generation
+    "businessideareport": 26,   # daily 08:15 -- the email Buddy actually reads
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on

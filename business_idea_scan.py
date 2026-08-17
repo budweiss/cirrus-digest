@@ -913,4 +913,22 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         sys.exit(0 if selftest() else 1)
     dry = "--dry-run" in sys.argv
-    print(run(dry_run=dry))
+    # Record health so a silent failure surfaces in the morning brief rather
+    # than going unnoticed for days -- these run unattended every morning.
+    try:
+        outcome = run(dry_run=dry)
+        print(outcome)
+        if not dry:
+            import job_status
+            job_status.record("businessideascan", True,
+                              f"{len(outcome.get('admitted', []))} new, "
+                              f"{outcome.get('scored_low', 0)} rejected, "
+                              f"{outcome.get('emails', 0)} emails")
+    except Exception as exc:
+        if not dry:
+            try:
+                import job_status
+                job_status.record("businessideascan", False, str(exc)[:180])
+            except Exception:
+                pass
+        raise

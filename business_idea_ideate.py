@@ -450,5 +450,20 @@ if __name__ == "__main__":
                         help="run only today's lens (rotates daily) -- the scheduled mode")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(only_lens=args.lens, dry_run=args.dry_run,
-                         rotate=args.rotate), indent=2))
+    try:
+        outcome = run(only_lens=args.lens, dry_run=args.dry_run, rotate=args.rotate)
+        print(json.dumps(outcome, indent=2))
+        if not args.dry_run:
+            import job_status
+            job_status.record("businessideaideate", True,
+                              f"{outcome.get('generated', 0)} generated, "
+                              f"{len(outcome.get('admitted', []))} kept, "
+                              f"{len(outcome.get('rejected', []))} rejected")
+    except Exception as exc:
+        if not args.dry_run:
+            try:
+                import job_status
+                job_status.record("businessideaideate", False, str(exc)[:180])
+            except Exception:
+                pass
+        raise

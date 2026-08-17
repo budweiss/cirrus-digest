@@ -239,6 +239,19 @@ if __name__ == "__main__":
     p.add_argument("--days", type=int, default=1)
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
-    out = run(days=a.days, dry_run=a.dry_run)
-    print(out)
+    try:
+        out = run(days=a.days, dry_run=a.dry_run)
+        print(out)
+        if not a.dry_run:
+            import job_status
+            job_status.record("businessideareport", bool(out.get("sent")),
+                              out.get("reason", "") or "sent")
+    except Exception as exc:
+        if not a.dry_run:
+            try:
+                import job_status
+                job_status.record("businessideareport", False, str(exc)[:180])
+            except Exception:
+                pass
+        raise
     sys.exit(0 if (out.get("sent") or a.dry_run) else 1)
