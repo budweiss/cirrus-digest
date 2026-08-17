@@ -159,11 +159,24 @@ REFRESH_FLAG     = Path.home() / "projects/cirrus-digest/logs/cookie_refresh.nee
 _SITE_COOKIES: dict = {}
 _SITE_COOKIES_LOADED = False
 _COOKIE_WATCHLIST: list = []
+_COOKIE_WATCHLIST_LOADED = False
 
 
 def _load_cookie_watchlist():
-    """Load the list of domains to watch for paywall hits."""
-    global _COOKIE_WATCHLIST
+    """Load the list of domains to watch for paywall hits, once.
+
+    S66: made lazy + load-once, mirroring _load_site_cookies(). It used to be
+    called ONLY from main(), which meant the watchlist was empty for every
+    caller that imports this module instead of running the digest --
+    business_idea_scan.py, deep_research.py, hoa_monitor.py, task_solver.py.
+    flag_cookie_refresh() returns early on an empty watchlist, so cookie
+    refresh was silently disabled for all of those callers: they could hit
+    paywalls on medium.com/substack.com all day and never flag a refresh.
+    """
+    global _COOKIE_WATCHLIST, _COOKIE_WATCHLIST_LOADED
+    if _COOKIE_WATCHLIST_LOADED:
+        return
+    _COOKIE_WATCHLIST_LOADED = True
     if WATCHLIST_PATH.exists():
         try:
             with open(WATCHLIST_PATH) as f:
@@ -179,6 +192,7 @@ def flag_cookie_refresh(url: str):
     The MacBook sync_cookies.sh polls this file every 30 minutes and
     automatically extracts fresh cookies from Safari for flagged domains.
     """
+    _load_cookie_watchlist()  # lazy: works from any caller, not just main()
     if not _COOKIE_WATCHLIST:
         return
     try:
