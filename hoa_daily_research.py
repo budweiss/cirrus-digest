@@ -78,13 +78,20 @@ def out_of_state_mgmt_reason(fields: dict) -> str | None:
     """Fields already grounded to this specific Delaware entity (post-S66 fix)
     -- if the management company's own contact info reads as based in
     another state, that's a real fact about them, not a matching error.
-    Returns a short reason string, or None if nothing to flag."""
-    blob = " ".join(str(fields.get(k, "")) for k in ("current_mgmt_co", "board_contact"))
-    if not blob.strip():
-        return None
-    state_m = _OTHER_STATE_RX.search(blob)
+    Returns a short reason string, or None if nothing to flag.
+
+    State-name matching is scoped to current_mgmt_co ONLY, not
+    board_contact -- board_contact routinely lists volunteer board members'
+    personal names (e.g. "Washington Alava"), and several state names
+    double as common first names (Washington, Georgia, Virginia). A company
+    name stating a state ("FirstService Residential Maryland Inc.") is a
+    reliable signal; a person's name is not. Area-code matching (an
+    unambiguous phone-number fact) still applies to both fields."""
+    mgmt_co = str(fields.get("current_mgmt_co", ""))
+    state_m = _OTHER_STATE_RX.search(mgmt_co)
     if state_m:
-        return f"management contact references {state_m.group(1)}"
+        return f"management company name references {state_m.group(1)}"
+    blob = " ".join(str(fields.get(k, "")) for k in ("current_mgmt_co", "board_contact"))
     area_m = _OUT_OF_STATE_AREA_CODE_RX.search(blob)
     if area_m:
         code = area_m.group(1) or area_m.group(2)
@@ -250,15 +257,21 @@ def selftest() -> bool:
         empty_chunk = pick_refresh_chunk(chunk_size=0, db_path=db_path)
         checks.append(("chunk size 0 returns nothing", empty_chunk == []))
 
-        checks.append(("out-of-state state name is flagged", bool(
-            out_of_state_mgmt_reason({"current_mgmt_co": "Acme PM",
-                                      "board_contact": "123 Main St, Edmond, Oklahoma"}))))
+        checks.append(("out-of-state company name is flagged", bool(
+            out_of_state_mgmt_reason({"current_mgmt_co": "FirstService Residential Maryland Inc."}))))
         checks.append(("out-of-state area code is flagged", bool(
             out_of_state_mgmt_reason({"board_contact": "Phone: (405) 348-1436"}))))
         checks.append(("a real Delaware area code (302) is NOT flagged", not
                        out_of_state_mgmt_reason({"board_contact": "Phone: (302) 555-1234"})))
         checks.append(("empty fields are NOT flagged", not
                        out_of_state_mgmt_reason({"current_mgmt_co": "", "board_contact": ""})))
+        # S66 regression: caught live in the first backfill run -- a board
+        # member literally named "Washington Alava" (real Woodside, DE HOA)
+        # was mis-flagged before state-name matching was scoped to
+        # current_mgmt_co only.
+        checks.append(("a board member's name containing a state word is NOT flagged", not
+                       out_of_state_mgmt_reason({"board_contact": "WASHINGTON ALAVA — Board "
+                                                 "member, WOODSIDE DE"})))
 
         entity_kb.upsert_entity(KB_PROJECT, "oos-test", "OOS Test HOA", db_path=db_path)
         first = flag_out_of_state_mgmt("oos-test", "OOS Test HOA",
