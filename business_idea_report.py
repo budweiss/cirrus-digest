@@ -162,8 +162,14 @@ def compose(days: int = 1, db_path: str = None) -> tuple:
     L.append("*Sources: your Medium/Substack subscriptions (by email), followed feeds, "
              "targeted web search, and direct generation by the model council.*")
 
+    # Count only NEW ideas that are actually on the live shortlist. new_slugs
+    # is every slug with a candidate-signal in the window, which also counts
+    # ideas later flipped to rejected (an idea can be proposed, admitted, and
+    # then killed by a second run's harsher critique) -- reporting those as
+    # "new" alongside a shorter shortlist read as a contradiction.
+    new_live = len({e["slug"] for e in candidates} & new_slugs)
     subject = (f"Business opportunities — {len(candidates)} live"
-               + (f", {len(new_slugs)} new" if new_slugs else ""))
+               + (f", {new_live} new" if new_live else ""))
     return subject, "\n".join(L)
 
 
