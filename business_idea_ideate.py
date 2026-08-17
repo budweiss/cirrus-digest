@@ -32,7 +32,8 @@ from pathlib import Path
 
 import entity_kb
 from business_idea_scan import (CAPABILITIES, KB_PROJECT, MISSION,
-                                RELEVANCE_MIN, _relevance, resolve_slug)
+                                RELEVANCE_MIN, _relevance, critique,
+                                final_score, resolve_slug)
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 
@@ -173,12 +174,25 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None) -> di
             name = (idea.get("name") or "").strip()
             if not name:
                 continue
-            score, why, _label = _relevance(name, _idea_as_text(idea), creds)
+            idea_text = _idea_as_text(idea)
+            score, why, _label = _relevance(name, idea_text, creds)
             if score < RELEVANCE_MIN:
-                result["rejected"].append(f"{name} ({score}/10)")
+                result["rejected"].append(f"{name} (fit {score}/10)")
+                continue
+
+            # The pass that actually does the work here: a generated idea is
+            # BUILT to satisfy the mission, so a high fit score is close to
+            # guaranteed and means little. Survival is the real filter.
+            survival, flaw = critique(name, idea_text, creds)
+            final = final_score(score, survival)
+            if final < RELEVANCE_MIN:
+                result["rejected"].append(
+                    f"{name} (fit {score}, survival {survival}): {flaw}")
                 continue
             if dry_run:
-                result["admitted"].append(f"{name} ({score}/10) [dry-run]")
+                result["admitted"].append(
+                    f"{name} ({final}/10 | fit {score}, survival {survival}) "
+                    f"risk: {flaw} [dry-run]")
                 continue
 
             slug, is_new = resolve_slug(name, name, db_path=db_path)
@@ -189,14 +203,24 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None) -> di
                         "who_pays": idea.get("who_pays", ""),
                         "autonomous_loop": idea.get("autonomous_loop", ""),
                         "needs_building": idea.get("needs_building", ""),
-                        "why_now": idea.get("why_now", "")},
+                        "why_now": idea.get("why_now", ""),
+                        "fit_score": score,
+                        "survival_score": survival,
+                        "final_score": final,
+                        "main_risk": flaw},
                 db_path=db_path)
             entity_kb.add_signal(
                 KB_PROJECT, slug, "candidate",
-                f"[{score}/10] {why} (council-ideated, lens: {lens['key']})",
+                f"[{final}/10 | fit {score}, survives critique {survival}] {why}\n"
+                f"    What: {idea.get('what', '')}\n"
+                f"    Who pays: {idea.get('who_pays', '')}\n"
+                f"    Runs itself by: {idea.get('autonomous_loop', '')}\n"
+                f"    Needs building: {idea.get('needs_building', '')}\n"
+                f"    Main risk: {flaw}\n"
+                f"    (council-ideated, lens: {lens['key']})",
                 confidence="medium", db_path=db_path)
             (result["admitted"] if is_new else result["corroborated"]).append(
-                f"{name} ({score}/10)")
+                f"{name} ({final}/10)")
 
     return result
 

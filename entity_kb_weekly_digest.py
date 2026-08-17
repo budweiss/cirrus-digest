@@ -36,7 +36,8 @@ WEEKLY_DIGEST_RECIPIENTS = {
     "buddy-business": {
         "to": "Buddy.Weiss@outlook.com",
         "kb_projects": ["business_ideas"],
-        "label": "AI-buildable business ideas",
+        "label": "AI-run business ideas",
+        "days": 1,  # daily, not weekly -- Buddy tunes the scoring from what it surfaces
     },
 }
 
@@ -93,17 +94,25 @@ def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
         return False
 
 
-def run(client: str, dry_run: bool = False, db_path: str = None) -> dict:
+def run(client: str, dry_run: bool = False, db_path: str = None,
+        days: int = None) -> dict:
+    """`days` overrides the lookback window (default: the recipient's own
+    `days` if set, else 7). S66: Buddy wants the business-ideas digest DAILY
+    so he can tune the scoring criteria from what it surfaces, while Bill's
+    client digest stays weekly -- so the window is per-recipient config, not
+    a global constant. An empty window still sends nothing, unchanged."""
     cfg = WEEKLY_DIGEST_RECIPIENTS.get(client)
     if not cfg:
         return {"sent": False, "reason": f"no digest config for client '{client}'"}
 
-    since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+    window = days or cfg.get("days", 7)
+    since = (datetime.now() - timedelta(days=window)).strftime("%Y-%m-%d 00:00:00")
     body = compose_digest(cfg["kb_projects"], since, db_path=db_path)
     if not body:
-        return {"sent": False, "reason": "nothing to report this week"}
+        return {"sent": False, "reason": f"nothing to report in the last {window}d"}
 
-    subject = f"Weekly {cfg['label']} update — {datetime.now():%Y-%m-%d}"
+    cadence = "Daily" if window == 1 else ("Weekly" if window == 7 else f"{window}-day")
+    subject = f"{cadence} {cfg['label']} update — {datetime.now():%Y-%m-%d}"
     if dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")
         return {"sent": False, "reason": "dry-run"}
@@ -158,6 +167,20 @@ def selftest() -> bool:
         result = run("nobody-configured", dry_run=True, db_path=db_path)
         checks.append(("unconfigured client is refused, not silently sent",
                        result["sent"] is False and "no digest config" in result["reason"]))
+
+        # S66: per-recipient lookback window (daily for buddy-business,
+        # weekly for Bill) -- the 30-day-old change must be outside a 1-day
+        # window but inside a 60-day one, from the same stored data.
+        body_1d = compose_digest(["hoa_leads_bill"],
+                                 (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00"),
+                                 db_path=db_path)
+        checks.append(("a 1-day window sees today's signal", "Pool closed" in body_1d))
+        checks.append(("a 1-day window excludes the 30-day-old change",
+                       "county updated" not in body_1d))
+        checks.append(("buddy-business is configured for a DAILY window",
+                       WEEKLY_DIGEST_RECIPIENTS["buddy-business"].get("days") == 1))
+        checks.append(("bill keeps the weekly default (no days override)",
+                       "days" not in WEEKLY_DIGEST_RECIPIENTS["bill"]))
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
@@ -177,7 +200,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--client", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--days", type=int, default=None,
+                        help="lookback window; overrides the recipient's own setting")
     args = parser.parse_args()
-    outcome = run(args.client, dry_run=args.dry_run)
+    outcome = run(args.client, dry_run=args.dry_run, days=args.days)
     print(outcome)
-    sys.exit(0 if outcome.get("sent") or args.dry_run else 1)
+    # "nothing to report" is a legitimate no-op, not a failure -- on a DAILY
+    # cadence quiet days are normal and common, and exiting non-zero would
+    # log a false failure (and alarm the watchdog) most days. Only a real
+    # send failure or a bad config is an error.
+    quiet = outcome.get("reason", "").startswith("nothing to report")
+    sys.exit(0 if (outcome.get("sent") or args.dry_run or quiet) else 1)

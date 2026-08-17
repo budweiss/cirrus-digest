@@ -157,6 +157,78 @@ def _relevance(title: str, text: str, creds: dict):
     return (0, "gate unavailable -- fail-closed (not admitted)", "")
 
 
+# ── Adversarial pass ─────────────────────────────────────────────────────────
+# S66: the fit-scoring gate above discriminates well on ARTICLES (they weren't
+# written to satisfy our mission -- the first live run rejected 2 of 4) but
+# poorly on GENERATED ideas, which are constructed to satisfy it and so score
+# 8-9/10 almost uniformly. That measures "well-formed proposal", not "good
+# business". This second pass asks the council for the strongest reason each
+# idea FAILS, and the final score is min(fit, survival) -- one strong concrete
+# objection sinks an idea no matter how neatly it fits the brief. Same
+# adversarial-verify shape used elsewhere in this codebase for findings.
+_CRITIQUE_SYSTEM = (
+    "You are a skeptical operator whose job is to kill bad business ideas BEFORE "
+    "months and money go into them. You are not judging whether the idea is "
+    "interesting or well-written -- assume it will fail and find the single "
+    "strongest, most concrete reason why. Be specific and checkable: name the "
+    "actual competitor, the actual reason customers won't pay, the actual "
+    "regulatory or platform rule, the actual quality bar automated output "
+    "won't clear. Generic risks ('execution is hard', 'needs marketing') are "
+    "worthless -- if that is all you have, say so and score higher. Default to "
+    "skepticism; a high survival score must be earned."
+)
+
+_CRITIQUE_QUESTIONS = """Attack it on these specifically:
+- DISTRIBUTION: how would the first 100 customers actually find this? "SEO",
+  "post on social", and "content marketing" are not answers -- everyone says
+  that and most fail. If there is no concrete, unusual distribution edge, that
+  is often the fatal flaw.
+- WILLINGNESS TO PAY: is the buyer a real budget-holder with this as a
+  recognized line item, or would this be a nice-to-have they cancel in month 2?
+- QUALITY BAR: would fully-automated output actually be good enough for this
+  buyer, or is this a domain where being 90% right is worthless (or legally
+  dangerous)?
+- MOAT: what stops a competitor -- or the data source itself, or an LLM
+  vendor -- from doing this next quarter?
+- PLATFORM / LEGAL RISK: does it depend on scraping, a platform's API or
+  monetization rules, or republishing someone else's data or content?"""
+
+
+def critique(name: str, text: str, creds: dict) -> tuple:
+    """Adversarially score an idea's SURVIVAL, 0-10. Returns
+    (survival_score, fatal_flaw). Fails CLOSED (0) -- same reasoning as
+    _relevance: an un-critiqued idea must not slip onto the shortlist."""
+    prompt = (
+        f"{CAPABILITIES}\n\nCandidate business:\nNAME: {name}\n{text[:3000]}\n\n"
+        f"{_CRITIQUE_QUESTIONS}\n\n"
+        f"Reply with EXACTLY one line: SURVIVAL: <0-10> | FLAW: <the single "
+        f"strongest concrete reason this fails, one sentence>\n"
+        f"SURVIVAL 0-3 = fatally flawed, do not pursue. 4-5 = serious "
+        f"unresolved problem. 6-7 = real problems but addressable. 8-10 = "
+        f"objections are manageable and the idea genuinely holds up."
+    )
+    try:
+        import ensemble
+        _meta, out = ensemble.best_answer(
+            _CRITIQUE_SYSTEM, prompt, creds, max_tokens=300,
+            task="business-idea-critique", mode="council")
+        m = re.search(r"SURVIVAL:\s*(\d+)", out or "")
+        if not m:
+            return 0, "critique unparseable -- fail-closed (not admitted)"
+        flaw_m = re.search(r"FLAW:\s*(.+)", out or "")
+        return (min(int(m.group(1)), 10),
+                flaw_m.group(1).strip()[:300] if flaw_m else "")
+    except Exception as e:
+        return 0, f"critique unavailable ({e}) -- fail-closed (not admitted)"
+
+
+def final_score(fit: int, survival: int) -> int:
+    """One strong objection sinks an idea regardless of how well it fits the
+    brief -- so the final score is the WEAKER of the two, never an average.
+    Averaging would let a 9/10 fit paper over a 2/10 fatal flaw."""
+    return min(fit, survival)
+
+
 def _slug_for(idea_label: str, title: str) -> str:
     return entity_kb.slugify(idea_label or title)
 
@@ -236,20 +308,36 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
                 result["scored_low"] += 1
                 continue
 
+            # Same adversarial bar the ideated candidates face -- one standard
+            # for both intake paths, so a shortlist entry means the same thing
+            # regardless of where it came from.
+            survival, flaw = critique(idea_label or title, text, creds)
+            final = final_score(score, survival)
+            if final < RELEVANCE_MIN:
+                result["scored_low"] += 1
+                result.setdefault("killed_by_critique", []).append(
+                    f"{idea_label or title} (fit {score}, survival {survival}): {flaw}")
+                continue
+
             slug, is_new = resolve_slug(idea_label, title, db_path=db_path)
             entity_kb.upsert_entity(KB_PROJECT, slug, idea_label or title,
                                     entity_type="business_idea",
-                                    fields={"category": source["name"]},
+                                    fields={"category": source["name"],
+                                            "fit_score": score,
+                                            "survival_score": survival,
+                                            "final_score": final,
+                                            "main_risk": flaw},
                                     db_path=db_path)
             entity_kb.add_signal(
                 KB_PROJECT, slug, "candidate",
-                f"[{score}/10] {why} (from {source['name']}: \"{title}\")",
+                f"[{final}/10 | fit {score}, survives critique {survival}] {why} "
+                f"(from {source['name']}: \"{title}\")\n"
+                f"    Main risk: {flaw}",
                 source_url=url, confidence="medium", db_path=db_path)
             if is_new:
-                result["admitted"].append(f"{idea_label or title} ({score}/10)")
+                result["admitted"].append(f"{idea_label or title} ({final}/10)")
             else:
-                result.setdefault("corroborated", []).append(
-                    f"{idea_label or title} ({score}/10)")
+                result["corroborated"].append(f"{idea_label or title} ({final}/10)")
 
     if not dry_run and newly_seen:
         seen |= newly_seen
@@ -275,6 +363,17 @@ def selftest() -> bool:
                    == entity_kb.slugify("AI Bookkeeping Agency")))
     checks.append(("slug falls back to title when no idea label",
                    _slug_for("", "Some Article Title") == entity_kb.slugify("Some Article Title")))
+
+    checks.append(("a fatal flaw sinks a high-fit idea (min, not average)",
+                   final_score(9, 2) == 2))
+    checks.append(("a weak-fit idea is not rescued by surviving critique",
+                   final_score(3, 10) == 3))
+    checks.append(("both strong keeps the score", final_score(8, 8) == 8))
+    checks.append(("a fail-closed critique (0) always sinks the idea",
+                   final_score(10, 0) == 0))
+    checks.append(("final score never exceeds either input",
+                   all(final_score(a, b) <= min(a, b)
+                       for a in range(11) for b in range(11))))
 
     # S66 regression: two articles about the same story got two entities.
     import os
