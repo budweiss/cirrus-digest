@@ -444,8 +444,26 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                                      account.get("imap_port", 993), timeout=60)
             mail.login(account["address"], password)
             mail.select("inbox", readonly=True)  # readonly: never marks read
-            _typ, ids = mail.uid("search", None, f"SINCE {since_date}")
-            uids = (ids[0].split() if ids and ids[0] else [])[-_MAX_EMAILS_PER_RUN:]
+
+            # Filter SERVER-SIDE, one IMAP search per allowlisted sender.
+            # S66 bug caught live: fetching the most recent N and filtering
+            # client-side returned ZERO relevant messages on Buddy's Yahoo
+            # inbox -- it receives ~660 messages per 2 days, so the newest 40
+            # were all promotional and the 967 Medium emails sitting in that
+            # same mailbox were never even looked at. Asking the server for
+            # the senders we want is both correct and far cheaper.
+            uids = []
+            for pattern in EMAIL_SENDER_PATTERNS:
+                try:
+                    _typ, ids = mail.uid("search", None,
+                                         f'(SINCE {since_date} FROM "{pattern}")')
+                except Exception:
+                    continue
+                if ids and ids[0]:
+                    uids.extend(ids[0].split())
+            # newest first, then cap -- the cap now applies to ALREADY-relevant
+            # mail rather than silently discarding it
+            uids = sorted(set(uids), key=lambda u: int(u), reverse=True)[:_MAX_EMAILS_PER_RUN]
             for uid in uids:
                 try:
                     _t, data = mail.uid("fetch", uid, "(RFC822)")
