@@ -281,13 +281,26 @@ def hard_deadline(seconds, label=""):
 _BRAVE_KEY = None
 
 def _load_brave_key() -> str:
-    """Lazy-load the Brave Search API key from credentials.json (once)."""
+    """Lazy-load the Brave Search API key from credentials.json (once).
+
+    S66: a still-unfilled credentials.json just holds the template's own
+    placeholder text (e.g. "OPTIONAL — Brave Search API key, ..."). Sending
+    that as the X-Subscription-Token header crashes http.client's latin-1
+    header encoding on the placeholder's em-dash -- every call, not a
+    transient error -- and that crash was silently swallowed as a generic
+    "Brave search error" that looked like a Brave-side problem. A real key
+    is always latin-1-safe (headers can't carry anything else); anything
+    that isn't is definitely not a usable key, so treat it as unset here
+    rather than let brave_search() discover that the hard way on every
+    single call."""
     global _BRAVE_KEY
     if _BRAVE_KEY is not None:
         return _BRAVE_KEY
     try:
         with open(Path.home() / "projects/cirrus-digest/config/credentials.json") as f:
-            _BRAVE_KEY = json.load(f).get("brave_api_key", "")
+            key = json.load(f).get("brave_api_key", "")
+        key.encode("latin-1")
+        _BRAVE_KEY = key
     except Exception:
         _BRAVE_KEY = ""
     return _BRAVE_KEY
