@@ -341,6 +341,59 @@ def final_score(fit: int, survival: int) -> int:
     return min(fit, survival)
 
 
+# ── Effort / cost estimate ───────────────────────────────────────────────────
+# S66, Buddy's ask: "can you estimate what it would take for each". A score
+# says whether an idea is worth considering; an estimate says whether it is
+# worth HIS time this month. Grounded in CAPABILITIES so the model prices
+# only the delta -- most of these need a scraper and a billing hookup, not a
+# research stack, because the research stack already exists.
+_ESTIMATE_SYSTEM = (
+    "You estimate what it would actually take to build and run a small "
+    "automated business, for an operator who ALREADY owns the infrastructure "
+    "described. Price only the DELTA -- what genuinely has to be built or paid "
+    "for on top of what exists. Be concrete and conservative; prefer a range "
+    "over false precision. Do not pad estimates to seem thorough."
+)
+
+
+def estimate(name: str, text: str, creds: dict) -> dict:
+    """Return {build_effort, run_cost, time_to_revenue, first_step} or {}.
+    Never raises -- an estimate is useful context, not a gate, so a failure
+    here must not affect whether an idea is admitted."""
+    prompt = (
+        f"{CAPABILITIES}\n\nBusiness to estimate:\nNAME: {name}\n{text[:2500]}\n\n"
+        f"Reply with JSON only, no prose, no fences:\n"
+        f'{{"build_effort": "<realistic build time for one experienced person '
+        f'using AI coding tools, e.g. \'3-5 days\' or \'2-3 weeks\'; count ONLY '
+        f'what is not already built>", '
+        f'"run_cost": "<estimated monthly running cost in USD: APIs, data '
+        f'feeds, hosting; note anything with a real per-unit cost>", '
+        f'"time_to_revenue": "<realistic time to the first paying customer, '
+        f'assuming part-time effort>", '
+        f'"first_step": "<the single most useful thing to do FIRST to test '
+        f'whether this is real, ideally before building anything>"}}'
+    )
+    try:
+        import ensemble
+        _meta, out = ensemble.best_answer(
+            _ESTIMATE_SYSTEM, prompt, creds, max_tokens=700,
+            task="business-idea-estimate", mode="council")
+        t = (out or "").strip()
+        if t.startswith("```"):
+            t = t.strip("`")
+            if t.lower().startswith("json"):
+                t = t[4:]
+        try:
+            data = json.loads(t)
+        except Exception:
+            m = re.search(r"\{.*\}", t, re.DOTALL)
+            data = json.loads(m.group(0)) if m else {}
+        return {k: str(v)[:400] for k, v in (data or {}).items()
+                if k in ("build_effort", "run_cost", "time_to_revenue", "first_step") and v}
+    except Exception:
+        return {}
+
+
 def _slug_for(idea_label: str, title: str) -> str:
     return entity_kb.slugify(idea_label or title)
 
@@ -550,6 +603,8 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
             f"{idea_label or title} (fit {score}, survival {survival}): {flaw}")
         return
 
+    # Only survivors get an estimate -- no point pricing a dead idea.
+    est = estimate(idea_label or title, text, creds)
     slug, is_new = resolve_slug(idea_label, title, db_path=db_path)
     entity_kb.upsert_entity(KB_PROJECT, slug, idea_label or title,
                             entity_type="business_idea",
@@ -558,7 +613,8 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
                                     "fit_score": score,
                                     "survival_score": survival,
                                     "final_score": final,
-                                    "main_risk": flaw},
+                                    "main_risk": flaw,
+                                    **est},
                             db_path=db_path)
     entity_kb.add_signal(
         KB_PROJECT, slug, "candidate",

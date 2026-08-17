@@ -32,7 +32,7 @@ from pathlib import Path
 
 import entity_kb
 from business_idea_scan import (CAPABILITIES, KB_PROJECT, MISSION,
-                                RELEVANCE_MIN, _relevance, critique,
+                                RELEVANCE_MIN, _relevance, critique, estimate,
                                 final_score, resolve_slug)
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
@@ -328,6 +328,7 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
                     f"risk: {flaw} [dry-run]")
                 continue
 
+            est = estimate(name, idea_text, creds)  # survivors only
             slug, is_new = resolve_slug(name, name, db_path=db_path)
             entity_kb.upsert_entity(
                 KB_PROJECT, slug, name, entity_type="business_idea",
@@ -344,7 +345,8 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
                         "fit_score": score,
                         "survival_score": survival,
                         "final_score": final,
-                        "main_risk": flaw},
+                        "main_risk": flaw,
+                        **est},
                 db_path=db_path)
             entity_kb.add_signal(
                 KB_PROJECT, slug, "candidate",

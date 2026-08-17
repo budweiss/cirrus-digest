@@ -120,6 +120,21 @@ def compose(days: int = 1, db_path: str = None) -> tuple:
                 L.append(f"- **Still to build:** {s['needs_building']}")
             if s.get("main_risk"):
                 L.append(f"- **Biggest risk:** {s['main_risk']}")
+            # What it would take -- the part that decides whether it is worth
+            # this month, as opposed to whether it is a good idea at all.
+            if any(s.get(k) for k in ("build_effort", "run_cost", "time_to_revenue")):
+                L.append("")
+                L.append(f"  | | |")
+                L.append(f"  |---|---|")
+                if s.get("build_effort"):
+                    L.append(f"  | **Build effort** | {s['build_effort']} |")
+                if s.get("run_cost"):
+                    L.append(f"  | **Running cost** | {s['run_cost']} |")
+                if s.get("time_to_revenue"):
+                    L.append(f"  | **Time to first customer** | {s['time_to_revenue']} |")
+            if s.get("first_step"):
+                L.append("")
+                L.append(f"- **▶ Cheapest first test:** {s['first_step']}")
             L.append("")
     else:
         L.append("## The shortlist")
