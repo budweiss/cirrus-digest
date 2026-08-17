@@ -81,6 +81,41 @@ def all_sources() -> list:
             out.append(s)
     return out
 
+
+# ── Targeted search ──────────────────────────────────────────────────────────
+# S66, Buddy's point: reading the feeds is PASSIVE -- it only finds a business
+# idea if one happens to be published in a feed we already follow, and the
+# inherited feeds are AI-news oriented, not business-opportunity oriented.
+# These queries actively hunt for the thing this project is actually looking
+# for. Deliberately phrased around REVENUE and OPERATING businesses (not
+# "ideas" or "trends"), because the mission rejects hypotheticals -- searching
+# for "business ideas" returns listicles, searching for revenue figures
+# returns real operators. Distinct from self_review.py's system-improvement
+# keywords, which look for ways to improve CIRRUS itself; nothing is shared.
+BUSINESS_SEARCH_QUERIES = [
+    "solo founder automated business monthly recurring revenue case study",
+    "one person software business run entirely by automation revenue",
+    "bootstrapped niche data subscription business monthly revenue",
+    "productized service AI automation recurring revenue teardown",
+    "indie hacker profitable side business automated no employees",
+    "small newsletter or media business automated production revenue",
+    "underserved niche B2B data product solo operator revenue",
+    "automated monitoring alerting service niche industry subscribers",
+]
+_QUERIES_PER_RUN = 3
+_RESULTS_PER_QUERY = 4
+
+
+def todays_queries(n: int = _QUERIES_PER_RUN) -> list:
+    """Rotate through the query list by date, same reasoning as the ideation
+    lens rotation: running all of them daily is expensive and returns heavily
+    overlapping results, while a rotating slice covers the whole list over a
+    few days and keeps each day's findings fresh."""
+    from datetime import date
+    start = (date.today().toordinal() * n) % len(BUSINESS_SEARCH_QUERIES)
+    return [BUSINESS_SEARCH_QUERIES[(start + i) % len(BUSINESS_SEARCH_QUERIES)]
+            for i in range(min(n, len(BUSINESS_SEARCH_QUERIES)))]
+
 MISSION = """Buddy owns a real, always-on AI automation environment (see CAPABILITIES
 below) and wants to start a business that this environment can largely RUN, not
 merely assist with. Score how good a candidate THIS article/case-study is as a
@@ -330,6 +365,47 @@ def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
     return entity_kb.slugify(name), True
 
 
+def _score_and_store(url: str, title: str, text: str, source_name: str,
+                     creds: dict, result: dict, db_path: str = None) -> None:
+    """Score one article and store it if it clears both bars. Shared by the
+    RSS-feed phase and the targeted-search phase so a candidate means exactly
+    the same thing regardless of how it was found -- same mission, same
+    RELEVANCE_MIN, same adversarial critique."""
+    score, why, idea_label = _relevance(title, text, creds)
+    if score < RELEVANCE_MIN:
+        result["scored_low"] += 1
+        return
+
+    survival, flaw = critique(idea_label or title, text, creds)
+    final = final_score(score, survival)
+    if final < RELEVANCE_MIN:
+        result["scored_low"] += 1
+        result.setdefault("killed_by_critique", []).append(
+            f"{idea_label or title} (fit {score}, survival {survival}): {flaw}")
+        return
+
+    slug, is_new = resolve_slug(idea_label, title, db_path=db_path)
+    entity_kb.upsert_entity(KB_PROJECT, slug, idea_label or title,
+                            entity_type="business_idea",
+                            lead_state="candidate",
+                            fields={"category": source_name,
+                                    "fit_score": score,
+                                    "survival_score": survival,
+                                    "final_score": final,
+                                    "main_risk": flaw},
+                            db_path=db_path)
+    entity_kb.add_signal(
+        KB_PROJECT, slug, "candidate",
+        f"[{final}/10 | fit {score}, survives critique {survival}] {why} "
+        f"(from {source_name}: \"{title}\")\n"
+        f"    Main risk: {flaw}",
+        source_url=url, confidence="medium", db_path=db_path)
+    if is_new:
+        result["admitted"].append(f"{idea_label or title} ({final}/10)")
+    else:
+        result["corroborated"].append(f"{idea_label or title} ({final}/10)")
+
+
 def run(dry_run: bool = False, db_path: str = None) -> dict:
     import cirrus_daily  # lazy: needs requests/bs4/feedparser, live venv only
     import feedparser
@@ -392,42 +468,41 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
 
             if dry_run:
                 continue
+            _score_and_store(url, title, text, source["name"], creds, result,
+                             db_path=db_path)
 
-            score, why, idea_label = _relevance(title, text, creds)
-            if score < RELEVANCE_MIN:
-                result["scored_low"] += 1
+    # ── Phase 2: targeted search ──────────────────────────────────────────
+    # Actively hunt for operating businesses rather than waiting for one to
+    # appear in a followed feed.
+    if not dry_run:
+        for query in todays_queries():
+            try:
+                urls = cirrus_daily.search_web(query, max_results=_RESULTS_PER_QUERY)
+            except Exception:
                 continue
-
-            # Same adversarial bar the ideated candidates face -- one standard
-            # for both intake paths, so a shortlist entry means the same thing
-            # regardless of where it came from.
-            survival, flaw = critique(idea_label or title, text, creds)
-            final = final_score(score, survival)
-            if final < RELEVANCE_MIN:
-                result["scored_low"] += 1
-                result.setdefault("killed_by_critique", []).append(
-                    f"{idea_label or title} (fit {score}, survival {survival}): {flaw}")
-                continue
-
-            slug, is_new = resolve_slug(idea_label, title, db_path=db_path)
-            entity_kb.upsert_entity(KB_PROJECT, slug, idea_label or title,
-                                    entity_type="business_idea",
-                                    fields={"category": source["name"],
-                                            "fit_score": score,
-                                            "survival_score": survival,
-                                            "final_score": final,
-                                            "main_risk": flaw},
-                                    db_path=db_path)
-            entity_kb.add_signal(
-                KB_PROJECT, slug, "candidate",
-                f"[{final}/10 | fit {score}, survives critique {survival}] {why} "
-                f"(from {source['name']}: \"{title}\")\n"
-                f"    Main risk: {flaw}",
-                source_url=url, confidence="medium", db_path=db_path)
-            if is_new:
-                result["admitted"].append(f"{idea_label or title} ({final}/10)")
-            else:
-                result["corroborated"].append(f"{idea_label or title} ({final}/10)")
+            result["searched"] = result.get("searched", 0) + 1
+            for url in urls:
+                if not url or url in seen or url in newly_seen:
+                    continue
+                newly_seen.add(url)
+                result["fetched"] += 1
+                paywalled = False
+                try:
+                    content, paywalled = cirrus_daily.fetch_article_content(url)
+                except Exception:
+                    content = ""
+                title = (content or "").strip().splitlines()[0][:120] if content else url
+                if paywalled:
+                    try:
+                        cirrus_daily.log_paywall_hit(url, f"search: {query[:40]}", title)
+                    except Exception:
+                        pass
+                    result.setdefault("paywalled", []).append(f"search result: {url}")
+                if not (content or "").strip():
+                    continue
+                result["fresh"] += 1
+                _score_and_store(url, title, content, f"search: {query[:40]}",
+                                 creds, result, db_path=db_path)
 
     if not dry_run and newly_seen:
         seen |= newly_seen
@@ -463,6 +538,26 @@ def selftest() -> bool:
                    len({s["rss"] for s in combined}) == len(combined)))
     checks.append(("every source has a name and an rss url",
                    all(s.get("name") and s.get("rss") for s in combined)))
+
+    # S66: targeted search must use BUSINESS terms, distinct from
+    # self_review.py's system-improvement criteria.
+    checks.append((f"query rotation returns {_QUERIES_PER_RUN} queries",
+                   len(todays_queries()) == _QUERIES_PER_RUN))
+    checks.append(("rotated queries are all real, distinct queries",
+                   set(todays_queries()) <= set(BUSINESS_SEARCH_QUERIES)
+                   and len(set(todays_queries())) == _QUERIES_PER_RUN))
+    from datetime import date as _d, timedelta as _t
+    covered = set()
+    for i in range(len(BUSINESS_SEARCH_QUERIES)):
+        start = ((_d.today() + _t(days=i)).toordinal() * _QUERIES_PER_RUN) % len(BUSINESS_SEARCH_QUERIES)
+        covered |= {BUSINESS_SEARCH_QUERIES[(start + j) % len(BUSINESS_SEARCH_QUERIES)]
+                    for j in range(_QUERIES_PER_RUN)}
+    checks.append(("rotation eventually covers every query",
+                   covered == set(BUSINESS_SEARCH_QUERIES)))
+    checks.append(("search terms target revenue/operating businesses, not 'ideas'",
+                   all(any(w in q for w in ("revenue", "profitable", "subscribers",
+                                            "business"))
+                       for q in BUSINESS_SEARCH_QUERIES)))
 
     checks.append(("a fatal flaw sinks a high-fit idea (min, not average)",
                    final_score(9, 2) == 2))
