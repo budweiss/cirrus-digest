@@ -302,12 +302,23 @@ def send_telegram(text):
     chunk = text if len(text) <= 3900 else text[:3900] + "\n…(truncated)"
     data = urllib.parse.urlencode({"chat_id": TG_USER, "text": chunk,
                                    "parse_mode": "Markdown"}).encode()
+
+    # S66 fix: Telegram returns HTTP 400 (not a 200-with-ok:false) for
+    # malformed Markdown entities. urlopen() RAISES on a non-2xx status, so
+    # this used to jump straight to the outer except and skip the plain-text
+    # retry below entirely -- it only ever ran for the rarer 200-but-ok:false
+    # case. Catch the markdown attempt's own exception so the plain-text
+    # retry actually runs on both failure shapes. Same bug, same fix as
+    # cumulus_daily_brief.py's send_telegram (found live, S66).
     try:
         with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
             ok = json.loads(r.read()).get("ok")
         if ok:
             return "telegram: sent"
-        # retry without markdown
+    except Exception:
+        pass
+
+    try:
         data = urllib.parse.urlencode({"chat_id": TG_USER, "text": chunk}).encode()
         with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
             ok = json.loads(r.read()).get("ok")
