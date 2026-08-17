@@ -365,6 +365,107 @@ def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
     return entity_kb.slugify(name), True
 
 
+# ── Email intake (the Medium answer) ─────────────────────────────────────────
+# S66: Medium blocks automated fetching at the Cloudflare WAF level -- not a
+# paywall, not cookies (verified: fresh session cookies + matching Safari UA
+# still get "Sorry, you have been blocked"). RSS gives ~110 characters. But
+# Medium will EMAIL Buddy the writers he follows, and CIRRUS already reads
+# three of his inboxes -- so the content arrives legitimately, sent by Medium
+# to a subscriber, with no scraping and nothing to circumvent.
+#
+# Deliberately NOT reusing cirrus_daily.fetch_emails(), for two reasons:
+#   1. It filters on EMAIL_CFG["keywords"] -- the system-IMPROVEMENT keywords.
+#      This project needs the business mission instead (Buddy raised exactly
+#      this distinction).
+#   2. It ADVANCES the shared config/email_state.json UID cursor. Calling it
+#      here would consume messages the main digest hasn't processed yet and
+#      make them silently vanish from the daily digest.
+# So this is a separate, strictly read-only pass with its own state file.
+EMAIL_SEEN_PATH = PROJECT_DIR / "config/business_idea_email_seen.json"
+_EMAIL_LOOKBACK_DAYS = 2
+_MAX_EMAILS_PER_RUN = 40
+
+
+def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS) -> list:
+    """Read recent messages from the configured inboxes WITHOUT touching the
+    digest's UID state. Returns [{message_id, subject, sender, body}].
+    Dedupes on Message-ID, which is stable across accounts and re-runs."""
+    import email as _email
+    import imaplib
+    from email.header import decode_header, make_header
+
+    try:
+        cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
+        accounts = (cfg.get("email") or {}).get("accounts", []) or []
+    except Exception:
+        return []
+
+    try:
+        seen_ids = set(json.loads(EMAIL_SEEN_PATH.read_text()))
+    except Exception:
+        seen_ids = set()
+
+    since_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%d-%b-%Y")
+    out, new_ids = [], set()
+
+    for account in accounts:
+        if not account.get("enabled", True):
+            continue
+        password = creds.get(account.get("credential_key", ""))
+        if not password or not account.get("address"):
+            continue
+        try:
+            mail = imaplib.IMAP4_SSL(account["imap_server"],
+                                     account.get("imap_port", 993), timeout=60)
+            mail.login(account["address"], password)
+            mail.select("inbox", readonly=True)  # readonly: never marks read
+            _typ, ids = mail.uid("search", None, f"SINCE {since_date}")
+            uids = (ids[0].split() if ids and ids[0] else [])[-_MAX_EMAILS_PER_RUN:]
+            for uid in uids:
+                try:
+                    _t, data = mail.uid("fetch", uid, "(RFC822)")
+                    msg = _email.message_from_bytes(data[0][1])
+                except Exception:
+                    continue
+                mid = (msg.get("Message-ID") or "").strip()
+                if not mid or mid in seen_ids or mid in new_ids:
+                    continue
+                new_ids.add(mid)
+                try:
+                    subject = str(make_header(decode_header(msg.get("Subject", ""))))
+                except Exception:
+                    subject = msg.get("Subject", "") or ""
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/html":
+                            body = part.get_payload(decode=True).decode(
+                                part.get_content_charset() or "utf-8", "ignore")
+                            break
+                        if part.get_content_type() == "text/plain" and not body:
+                            body = part.get_payload(decode=True).decode(
+                                part.get_content_charset() or "utf-8", "ignore")
+                else:
+                    try:
+                        body = msg.get_payload(decode=True).decode(
+                            msg.get_content_charset() or "utf-8", "ignore")
+                    except Exception:
+                        body = ""
+                out.append({"message_id": mid, "subject": subject.strip(),
+                            "sender": (msg.get("From") or "").strip(), "body": body})
+            mail.logout()
+        except Exception:
+            continue
+
+    if new_ids:
+        try:
+            EMAIL_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+            EMAIL_SEEN_PATH.write_text(json.dumps(sorted(seen_ids | new_ids), indent=1))
+        except Exception:
+            pass
+    return out
+
+
 def _score_and_store(url: str, title: str, text: str, source_name: str,
                      creds: dict, result: dict, db_path: str = None) -> None:
     """Score one article and store it if it clears both bars. Shared by the
@@ -471,7 +572,19 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
             _score_and_store(url, title, text, source["name"], creds, result,
                              db_path=db_path)
 
-    # ── Phase 2: targeted search ──────────────────────────────────────────
+    # ── Phase 2: email intake ─────────────────────────────────────────────
+    # Where Medium content actually reaches us (see fetch_business_emails).
+    if not dry_run:
+        for msg in fetch_business_emails(creds):
+            body = cirrus_daily.clean_text(msg["body"], 20000)
+            if not body.strip() or len(body) < 200:
+                continue
+            result["emails"] = result.get("emails", 0) + 1
+            _score_and_store("", msg["subject"] or msg["sender"], body,
+                             f"email: {msg['sender'][:50]}", creds, result,
+                             db_path=db_path)
+
+    # ── Phase 3: targeted search ──────────────────────────────────────────
     # Actively hunt for operating businesses rather than waiting for one to
     # appear in a followed feed.
     if not dry_run:
