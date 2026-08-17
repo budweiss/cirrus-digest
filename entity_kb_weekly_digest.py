@@ -30,6 +30,14 @@ WEEKLY_DIGEST_RECIPIENTS = {
         "kb_projects": ["hoa_leads_bill"],
         "label": "Delaware HOA research",
     },
+    # S66: Buddy's own new-project shortlist (business_idea_scan.py), not a
+    # client -- "to" is Buddy himself, so CC_ADDR below just double-lists him
+    # (harmless, same address in To and Cc).
+    "buddy-business": {
+        "to": "Buddy.Weiss@outlook.com",
+        "kb_projects": ["business_ideas"],
+        "label": "AI-buildable business ideas",
+    },
 }
 
 
