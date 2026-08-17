@@ -166,6 +166,36 @@ def compose(days: int = 1, db_path: str = None) -> tuple:
                  "back, so the same dead end isn't proposed twice._")
         L.append("")
 
+    # Which sources are earning their place. Buddy's plan is to tighten the
+    # filters after a week or two ON EVIDENCE -- this is that evidence, and
+    # it's also what lets trial feeds judge themselves.
+    try:
+        from business_idea_scan import source_productivity
+        prod = source_productivity()
+    except Exception:
+        prod = []
+    if prod:
+        producers = [p for p in prod if p[2] > 0]
+        barren = [p for p in prod if p[2] == 0 and p[1] >= 5]
+        L.append("## Source productivity")
+        L.append("")
+        if producers:
+            L.append("**Producing candidates**")
+            for name, seen, adm, _v in sorted(producers, key=lambda t: -t[2]):
+                L.append(f"- {name} — {adm} from {seen} item(s)")
+            L.append("")
+        if barren:
+            L.append(f"**Nothing yet** (≥5 items seen) — {len(barren)} source(s)")
+            for name, seen, _a, _v in barren[:8]:
+                L.append(f"- {name} — 0 from {seen}")
+            if len(barren) > 8:
+                L.append(f"- …and {len(barren)-8} more")
+            L.append("")
+        L.append("_Kept deliberately wide for now. After a week or two this tells us what to "
+                 "filter out — based on what actually produced, not on which publication "
+                 "sounded promising._")
+        L.append("")
+
     cost, calls = _spend_today(today)
     counts = entity_kb.project_counts(KB_PROJECT, db_path=db_path)
     L.append("## Pipeline")

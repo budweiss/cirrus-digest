@@ -72,10 +72,26 @@ def inherited_sources() -> list:
     return out
 
 
-def all_sources() -> list:
-    """Project-specific feeds + inherited ones, deduped by RSS URL."""
+def trial_sources() -> list:
+    """Feeds currently on trial or promoted by business_idea_feeds.py.
+
+    Imported lazily inside the function: business_idea_feeds imports
+    all_sources() from this module to know what's already covered, so a
+    module-level import here would be circular."""
+    try:
+        from business_idea_feeds import active_feeds
+        return active_feeds()
+    except Exception:
+        return []
+
+
+def all_sources(include_trials: bool = True) -> list:
+    """Project-specific feeds + inherited ones + feeds under trial, deduped
+    by RSS URL. include_trials=False breaks the recursion when
+    business_idea_feeds asks what is already covered."""
     seen, out = set(), []
-    for s in SOURCES + inherited_sources():
+    pool = SOURCES + inherited_sources() + (trial_sources() if include_trials else [])
+    for s in pool:
         if s["rss"] not in seen:
             seen.add(s["rss"])
             out.append(s)
@@ -341,6 +357,110 @@ def final_score(fit: int, survival: int) -> int:
     return min(fit, survival)
 
 
+# ── Local pre-filter ─────────────────────────────────────────────────────────
+# S66: the sender allowlist is deliberately WIDE (whole domains), because a
+# business idea can surface in a newsletter that isn't about business at all
+# -- a policy piece noting a regulation, a stock letter describing an
+# operating model. Narrowing it would substitute a guess about which writers
+# are productive for the evaluation system that exists to decide that.
+#
+# So instead of narrowing the net, make the net cheap: CIRRUS runs Ollama
+# locally at zero marginal cost, so a local triage pass rejects the obvious
+# non-starters (political commentary, product promos, personal essays) before
+# any paid council call. Same shape as self_review._relevance_local().
+#
+# FAILS OPEN, and the direction matters: if the local model is down, slow, or
+# unparseable, the item is ESCALATED to the paid council rather than dropped.
+# Spending a cent unnecessarily is a much cheaper mistake than silently
+# discarding a real opportunity.
+_PREFILTER_PROMPT = (
+    "Does the following text describe a REAL, OPERATING business, product, or "
+    "revenue model -- something with actual customers or income -- in enough "
+    "detail that someone could study how it works?\n\n"
+    "Answer NO for: political or cultural commentary, news about large public "
+    "companies, personal essays, product marketing, tutorials, opinion pieces, "
+    "and anything with no identifiable business being run.\n"
+    "Answer YES if there is any concrete business whose model could be "
+    "examined, even briefly mentioned.\n\n"
+    "TITLE: {title}\n\nTEXT: {text}\n\n"
+    "Reply with exactly one word: YES or NO."
+)
+
+
+def prefilter_local(title: str, text: str) -> tuple:
+    """Cheap local triage before paying for the council.
+    Returns (should_escalate: bool, reason: str)."""
+    try:
+        import cirrus_daily as B
+        import requests
+        r = requests.post(
+            f"{B.OLLAMA_HOST}/api/generate",
+            json={"model": B.MODEL,
+                  "prompt": _PREFILTER_PROMPT.format(title=title[:200], text=text[:4000]),
+                  "stream": False,
+                  "options": {"temperature": 0, "num_ctx": 4096}},
+            timeout=60)
+        r.raise_for_status()
+        ans = (r.json().get("response") or "").strip().upper()
+        if ans.startswith("NO"):
+            return False, "local triage: no operating business described"
+        if ans.startswith("YES"):
+            return True, "local triage: passed"
+        return True, "local triage unparseable — escalated (fail-open)"
+    except Exception as e:
+        return True, f"local triage unavailable ({type(e).__name__}) — escalated (fail-open)"
+
+
+# ── Source productivity tracking ─────────────────────────────────────────────
+# Which sources actually produce candidates, versus only ever producing
+# rejections. Buddy's ask: decide what to filter after a week or two of
+# EVIDENCE rather than intuition -- and this is also what lets a trial feed
+# judge itself (see business_idea_feeds.py).
+SOURCE_STATS_PATH = PROJECT_DIR / "config/business_idea_source_stats.json"
+
+
+def _load_stats() -> dict:
+    try:
+        return json.loads(SOURCE_STATS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def record_source(source_name: str, outcome: str) -> None:
+    """outcome ∈ prefiltered | scored_low | killed | admitted. Never raises."""
+    try:
+        stats = _load_stats()
+        key = (source_name or "unknown")[:80]
+        row = stats.setdefault(key, {"prefiltered": 0, "scored_low": 0,
+                                     "killed": 0, "admitted": 0,
+                                     "first_seen": datetime.now().strftime("%Y-%m-%d")})
+        row[outcome] = row.get(outcome, 0) + 1
+        row["last_seen"] = datetime.now().strftime("%Y-%m-%d")
+        if outcome == "admitted":
+            row["last_admitted"] = datetime.now().strftime("%Y-%m-%d")
+        SOURCE_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SOURCE_STATS_PATH.write_text(json.dumps(stats, indent=1, sort_keys=True))
+    except Exception:
+        pass
+
+
+def source_productivity() -> list:
+    """[(source, seen, admitted, verdict)] worst-first, for the report and for
+    deciding which trial feeds to keep."""
+    out = []
+    for name, r in _load_stats().items():
+        seen = sum(r.get(k, 0) for k in ("prefiltered", "scored_low", "killed", "admitted"))
+        adm = r.get("admitted", 0)
+        if seen < 5:
+            verdict = "too early to judge"
+        elif adm == 0:
+            verdict = "no candidates yet"
+        else:
+            verdict = f"{adm} candidate(s)"
+        out.append((name, seen, adm, verdict))
+    return sorted(out, key=lambda t: (t[2], -t[1]))
+
+
 # ── Effort / cost estimate ───────────────────────────────────────────────────
 # S66, Buddy's ask: "can you estimate what it would take for each". A score
 # says whether an idea is worth considering; an estimate says whether it is
@@ -590,15 +710,25 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
     RSS-feed phase and the targeted-search phase so a candidate means exactly
     the same thing regardless of how it was found -- same mission, same
     RELEVANCE_MIN, same adversarial critique."""
+    # Free local triage first -- most inbound text is not about a business at
+    # all, and there is no reason to pay a council to tell us that.
+    escalate, why_local = prefilter_local(title, text)
+    if not escalate:
+        result["prefiltered"] = result.get("prefiltered", 0) + 1
+        record_source(source_name, "prefiltered")
+        return
+
     score, why, idea_label = _relevance(title, text, creds)
     if score < RELEVANCE_MIN:
         result["scored_low"] += 1
+        record_source(source_name, "scored_low")
         return
 
     survival, flaw = critique(idea_label or title, text, creds)
     final = final_score(score, survival)
     if final < RELEVANCE_MIN:
         result["scored_low"] += 1
+        record_source(source_name, "killed")
         result.setdefault("killed_by_critique", []).append(
             f"{idea_label or title} (fit {score}, survival {survival}): {flaw}")
         return
@@ -622,6 +752,7 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
         f"(from {source_name}: \"{title}\")\n"
         f"    Main risk: {flaw}",
         source_url=url, confidence="medium", db_path=db_path)
+    record_source(source_name, "admitted")
     if is_new:
         result["admitted"].append(f"{idea_label or title} ({final}/10)")
     else:
@@ -804,6 +935,37 @@ def selftest() -> bool:
                    not email_sender_allowed('"Facebook Marketplace" <marketplace@facebookmail.com>')))
     checks.append(("an empty sender is rejected, not allowed by default",
                    not email_sender_allowed("")))
+
+    # S66: the local pre-filter must fail OPEN -- if the local model is down,
+    # items escalate to the paid council rather than being silently dropped.
+    # Getting this backwards would quietly discard opportunities to save cents.
+    _ok, _why = prefilter_local("x", "y")  # no Ollama in the dev checkout
+    checks.append(("prefilter fails OPEN when the local model is unreachable",
+                   _ok is True and "fail-open" in _why))
+
+    # Source stats: the evidence Buddy will use to tighten filters later.
+    import os as _os
+    import tempfile as _tf
+    _fd, _sp = _tf.mkstemp(suffix=".json")
+    _os.close(_fd)
+    _os.unlink(_sp)
+    _orig_sp = globals()["SOURCE_STATS_PATH"]
+    try:
+        globals()["SOURCE_STATS_PATH"] = Path(_sp)
+        for _ in range(6):
+            record_source("Barren Feed", "scored_low")
+        record_source("Good Feed", "admitted")
+        rows = {r[0]: r for r in source_productivity()}
+        checks.append(("a source with an admit is reported as productive",
+                       rows["Good Feed"][2] == 1))
+        checks.append(("a well-sampled source with no admits is flagged",
+                       rows["Barren Feed"][3] == "no candidates yet"))
+        checks.append(("a barely-sampled source is not judged yet",
+                       rows["Good Feed"][3] != "no candidates yet"))
+    finally:
+        globals()["SOURCE_STATS_PATH"] = _orig_sp
+        if _os.path.exists(_sp):
+            _os.unlink(_sp)
 
     checks.append(("search terms target revenue/operating businesses, not 'ideas'",
                    all(any(w in q for w in ("revenue", "profitable", "subscribers",
