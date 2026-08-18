@@ -1081,17 +1081,27 @@ def _redact_request_line(line):
 
 
 class _RedactingRequestHandler(WSGIRequestHandler):
-    """WSGI handler that never writes a credential into the access log."""
+    """WSGI handler that never writes a credential into the access log.
+
+    Overriding `requestline` alone is NOT enough and was the first attempt here:
+    current werkzeug builds its log message from `self.command`/`self.path`/
+    `self.request_version` and only falls back to `self.requestline` if those
+    are missing, so redacting requestline was a silent no-op. Caught by the
+    server-side raw-token count in `scrub-verify` rather than by reading the
+    code -- which is exactly why that count exists and is measured ON CIRRUS
+    where the Cowork scrubber cannot mask it. Both attributes are redacted now.
+    """
 
     def log_request(self, code="-", size="-"):
-        original = self.requestline
+        original_line, original_path = self.requestline, self.path
         try:
-            self.requestline = _redact_request_line(original)
+            self.requestline = _redact_request_line(original_line)
+            self.path = _redact_request_line(original_path)
             super().log_request(code, size)
         finally:
-            # requestline is read elsewhere in the handler; restore it so
-            # redaction stays a logging concern and cannot change behaviour.
-            self.requestline = original
+            # These attributes are read elsewhere in the handler, so redaction
+            # stays strictly a logging concern and cannot change behaviour.
+            self.requestline, self.path = original_line, original_path
 
 
 def _selftest_redaction():
@@ -1102,6 +1112,11 @@ def _selftest_redaction():
         ('GET /status?token=abc123def456 HTTP/1.1', 'token=[REDACTED]', 'abc123def456'),
         ('GET /admin/heartbeat?src=macbook&status=ok&token=deadbeefdeadbeef HTTP/1.1',
          'src=macbook', 'deadbeefdeadbeef'),
+        # The bare `self.path` form werkzeug actually logs — no method, no HTTP
+        # version. Missing this is what made the first version a silent no-op.
+        ('/admin/approvals/all?token=677e0ef2c910c560597371f6b7e6cc8f&cb=1784291184',
+         'cb=1784291184', '677e0ef2'),
+        ('/status?token=abc123def456', 'token=[REDACTED]', 'abc123def456'),
     ]
     bad = 0
     for line, must_have, must_not in cases:
