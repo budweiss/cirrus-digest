@@ -64,14 +64,25 @@ class Rule:
     all-clear.
     """
 
-    def __init__(self, name, produced_patterns, max_zero_runs, why):
+    def __init__(self, name, produced_patterns, max_zero_runs, why,
+                 zero_phrases=()):
         self.name = name
         self.produced_patterns = [re.compile(p, re.I) for p in produced_patterns]
+        # Literal phrases that MEAN zero without carrying a number. Jobs write
+        # prose, not just counters -- hoaleads' real note is "no genuine leads",
+        # which no count regex can match. Without this the check reports
+        # "unreadable" forever and the alert never fires. (Found on the very
+        # first live run against CUMULUS's ledger, S67.)
+        self.zero_phrases = tuple(z.lower() for z in zero_phrases)
         self.max_zero_runs = max_zero_runs
         self.why = why
 
     def productivity(self, note: str):
         """(produced_total, matched_any). matched_any=False means unreadable."""
+        n = (note or "").lower()
+        for phrase in self.zero_phrases:
+            if phrase in n:
+                return 0, True
         total, matched = 0, False
         for pat in self.produced_patterns:
             m = pat.search(note or "")
@@ -92,8 +103,9 @@ RULES = {
     # County moved domains and started 403-ing us).
     "hoaleads": Rule(
         "hoaleads",
-        [r"(\d+)\s+new", r"(\d+)\s+updated", r"(\d+)\s+found_new_info",
+        [r"(\d+)\s+new", r"(\d+)\s+updated", r"(\d+)\s+lead",
          r"found_new_info[\"'\s:]+(\d+)"],
+        zero_phrases=("no genuine leads", "no new leads", "no leads"),
         max_zero_runs=3,
         why="Bill's HOA deep dive produced nothing — check whether the county "
             "source is reachable (Kent County moved to kentcountyde.gov and "
@@ -117,6 +129,34 @@ RULES = {
         max_zero_runs=5,
         why="Intake admitted nothing for five runs — check the local prefilter "
             "is not over-rejecting and that the email/RSS sources still fetch.",
+    ),
+    # Bill's other two client jobs — weekly, and they SEND him email, so a
+    # stalled one is directly client-visible. Weekly cadence means the
+    # threshold is in runs, not days: 2 runs = two weeks of silence.
+    "billsnow": Rule(
+        "billsnow", [r"(\d+)\s+sent"], max_zero_runs=2,
+        zero_phrases=("no material change", "nothing to send", "no change"),
+        why="Bill's snow outlook has sent nothing for two weeks — confirm the "
+            "weather research still returns data before assuming a quiet season.",
+    ),
+    "billnewdev": Rule(
+        "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=2,
+        zero_phrases=("no new leads", "nothing new"),
+        why="Bill's new-dev lead check found nothing for two weeks — confirm "
+            "the DE PLUS/parcel sources still respond.",
+    ),
+    "pedagogy": Rule(
+        "pedagogy", [r"(\d+)\s+sent", r"(\d+)\s+item"], max_zero_runs=5,
+        zero_phrases=("quiet day", "nothing to send"),
+        why="Alyssa's pedagogy digest has been quiet for five runs — check the "
+            "literacy feeds and podcast transcription still produce.",
+    ),
+    # modelhealth reports "N ok, ... needs-funding". Zero providers OK is a
+    # real emergency (every paid model unreachable), so the threshold is 1.
+    "modelhealth": Rule(
+        "modelhealth", [r"(\d+)\s+ok"], max_zero_runs=1,
+        why="ZERO LLM providers healthy — every paid model is unreachable. "
+            "Check credentials and provider funding immediately.",
     ),
     # Vendor/account mail watcher (S67). Genuinely quiet most days — zero new
     # items is the NORMAL case, so this is only about the scan itself dying.
@@ -240,9 +280,14 @@ def selftest() -> bool:
     def ck(name, cond):
         checks.append((name, bool(cond)))
 
-    # The exact hoaleads note shape from the 2026-08-18 run that Skywarden
-    # called "all clear".
-    real = "0 new, 0 updated, found_new_info 0"
+    # The ACTUAL note hoaleads writes, found on the first live run -- prose,
+    # not counters. The count-regex version reported "unreadable" forever,
+    # which would have meant the alert never fired.
+    real = "no genuine leads"
+    ck("the real prose note parses as zero, not unreadable",
+       RULES["hoaleads"].productivity(real) == (0, True))
+    ck("a counted note still parses",
+       RULES["hoaleads"].productivity("2 new, 1 updated")[0] == 3)
     st = {"hoaleads": {"ok": True, "epoch": 1, "note": real}}
     r1 = check(st, {})
     ck("one zero day does NOT alert", r1["ok"] is True)
