@@ -7,6 +7,13 @@ Runs on port 5001, accessible via Cloudflare Tunnel at https://cirrus.cirrustask
 Auth: ALL endpoints require the API token, including /status.
   X-API-Token: <credentials.json["api_token"]>
   or ?token=<api_token> query param
+
+S67: the ?token= form is convenient but it puts a live admin credential in the
+request line, which the WSGI server writes verbatim into logs/api-error.log --
+cleartext, on disk, forever, and swept into every backup. That log is what leaked
+tokens into a Cowork transcript in S67. `_RedactingRequestHandler` below strips
+secret query params out of the logged request line; prefer the X-API-Token header
+where you control the caller.
 """
 
 from flask import Flask, jsonify, request, abort
@@ -16,6 +23,7 @@ import subprocess
 import os
 from pathlib import Path
 from datetime import datetime
+from werkzeug.serving import WSGIRequestHandler
 
 app = Flask(__name__)
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
@@ -1047,8 +1055,70 @@ def write_file(filename):
     file_path.write_text(data["content"])
     return jsonify({"status": "written", "filename": filename})
 
+# ── Access-log redaction (S67) ────────────────────────────────────────────────
+# require_token() accepts ?token=<api_token>, so the admin token rides in the
+# request line. WSGIRequestHandler.log_request writes that line verbatim, which
+# means every admin call has been persisting a live credential in cleartext to
+# logs/api-error.log. In S67 a routine read-only log grep on the Cowork side
+# matched those lines and pulled tokens into the session transcript.
+#
+# Scrubbing at the point of logging is the fix that actually removes the secret
+# from disk. The Cowork-side scrubber (runner/redact.py) stays as the second
+# layer: it covers logs written before this deploy, and any other server or tool
+# whose logs we read.
+_SECRET_QS_PARAMS = ("token", "api_token", "key", "api_key", "password", "secret")
+_QS_REDACT_RE = re.compile(
+    r"(?i)\b(" + "|".join(_SECRET_QS_PARAMS) + r")=([^&\s]+)")
+
+
+def _redact_request_line(line):
+    """Replace secret query-param values in a request line with [REDACTED].
+
+    Keeps method, path, other params and the HTTP version, so the access log
+    stays just as useful for debugging -- only the credential is removed.
+    """
+    return _QS_REDACT_RE.sub(r"\1=[REDACTED]", line)
+
+
+class _RedactingRequestHandler(WSGIRequestHandler):
+    """WSGI handler that never writes a credential into the access log."""
+
+    def log_request(self, code="-", size="-"):
+        original = self.requestline
+        try:
+            self.requestline = _redact_request_line(original)
+            super().log_request(code, size)
+        finally:
+            # requestline is read elsewhere in the handler; restore it so
+            # redaction stays a logging concern and cannot change behaviour.
+            self.requestline = original
+
+
+def _selftest_redaction():
+    """Offline check: `python3 cirrus_api.py --selftest-redaction`."""
+    cases = [
+        ('GET /admin/approvals/all?token=677e0ef2c910c560597371f6b7e6cc8f&cb=1784291184 HTTP/1.1',
+         'token=[REDACTED]', '677e0ef2'),
+        ('GET /status?token=abc123def456 HTTP/1.1', 'token=[REDACTED]', 'abc123def456'),
+        ('GET /admin/heartbeat?src=macbook&status=ok&token=deadbeefdeadbeef HTTP/1.1',
+         'src=macbook', 'deadbeefdeadbeef'),
+    ]
+    bad = 0
+    for line, must_have, must_not in cases:
+        out = _redact_request_line(line)
+        ok = must_have in out and must_not not in out
+        print(("  ok   " if ok else "  FAIL ") + out)
+        bad += 0 if ok else 1
+    print("redaction selftest:", "PASSED" if not bad else f"{bad} FAILED")
+    return bad
+
+
 if __name__ == "__main__":
+    import sys
+    if "--selftest-redaction" in sys.argv:
+        raise SystemExit(1 if _selftest_redaction() else 0)
     # Bind to localhost only — Cloudflare tunnel connects via 127.0.0.1,
     # so external access still works via the tunnel. Binding to 0.0.0.0
     # would expose port 5001 to anyone on the local network unnecessarily.
-    app.run(host="127.0.0.1", port=5001)
+    app.run(host="127.0.0.1", port=5001,
+            request_handler=_RedactingRequestHandler)
