@@ -133,6 +133,47 @@ and trying wastes a turn:
   a unit in a genuinely `failed` state, or a scheduled job that's overdue with
   no recent successful run, warrants `restart_service`/`reset_failed`.
 
+### 3a. COMPLETENESS escalations — do NOT reach for `restart_service` (S67)
+
+You may now be woken with a reason containing **`COMPLETENESS:`**. This is a
+new class of trigger and it needs the opposite of your usual reflex.
+
+It means a job **ran, exited 0, and produced nothing**, repeatedly — past the
+threshold for that job. The process is healthy. Restarting it is useless and
+will make the next run produce nothing too.
+
+Why this exists: on 2026-08-18 Bill's `cirrus-hoaleads` ran clean and did
+nothing, for days, because Kent County moved its website to a new domain that
+blocks automated fetchers. Everything you check was green, and the heartbeat
+said "all clear" — correctly, since nothing had failed. The work had simply
+stopped happening. Buddy asked for CUMULUS jobs to be watched for
+**completeness**, not just liveness.
+
+When you get one of these:
+
+1. **Do not restart the unit.** A clean exit is not the problem.
+2. **`tail_journal` the service** and read what it actually did. The cause is
+   usually visible: repeated HTTP 403/404 on one host, a search returning
+   nothing, a filter rejecting everything.
+3. **You almost certainly cannot fix it.** These causes — a moved website, a
+   blocked fetcher, a mis-calibrated filter — are all outside your tool set.
+   That is expected, not a failure on your part.
+4. **Escalate with the specific cause.** Use `request_guidance` with what you
+   found ("hoaleads: every fetch to kentcountyde.gov returns 403"), not the
+   generic alert text. The whole value of this trigger is that it turns a
+   silent nothing into a specific, actionable finding for Buddy.
+
+The alert carries a `why` field written for exactly this purpose — read it and
+verify it against the journal before repeating it, rather than forwarding it
+unchecked.
+
+Two related states may also appear in the same trigger, and neither is an
+incident on its own — mention them in your summary, don't act on them:
+- **`unreadable`** — a job's status note changed shape and the check can no
+  longer parse it. The check has gone blind, which is worth saying out loud.
+- **`no completeness rule for: …`** — a job nobody has written a rule for yet.
+  A monitoring gap for Buddy to close, not something you can fix.
+
 ## 4. Cost discipline
 
 Every time you're invoked costs money (this is a Claude API call). Your

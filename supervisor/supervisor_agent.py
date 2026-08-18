@@ -52,7 +52,12 @@ LAST_DAILY_FILE = STATE_DIR / "last-daily-check.txt"
 LAST_SKIP_NOTIFY_FILE = STATE_DIR / "last-skip-notify.txt"
 
 HEARTBEAT_INTERVAL_SEC = 60
-DAILY_CHECK_HOUR = 8       # local time, after the 05:30-06:00 client jobs
+# S67 BUG FIX: was 8, commented "after the 05:30-06:00 client jobs" -- but
+# cirrus-hoaleads (Bill's HOA research, added S65) runs at 09:20, so the
+# once-daily deep check reviewed a day in which the LAST client job had not run
+# yet. Even a perfect reasoning pass was looking at the wrong window. Set after
+# the latest client job; raise this whenever a later one is added.
+DAILY_CHECK_HOUR = 10      # local time, after the 09:20 hoaleads run
 SKIP_NOTIFY_MIN_GAP_SEC = 3600  # don't Telegram-spam a budget-cap skip more than hourly
 
 SYSTEM_PROMPT = """You are the CUMULUS supervisor agent (B1, v1 skeleton).
