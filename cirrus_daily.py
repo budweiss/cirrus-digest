@@ -292,6 +292,22 @@ def hard_deadline(seconds, label=""):
         signal.signal(signal.SIGALRM, prev)
 
 
+def _count_search(provider: str, caller: str, outcome: str, n: int = 1) -> None:
+    """Record one search request. S67 -- see search_usage.py for why.
+
+    Deliberately swallows everything: a broken counter must never break a
+    search. The provisional-then-correct pattern at the call sites (count "ok"
+    up front, then decrement and re-count on failure) exists because a request
+    that 429s or times out still consumed quota; counting only on success is
+    exactly how the original estimate came out low.
+    """
+    try:
+        import search_usage
+        search_usage.record(provider, caller, outcome, n)
+    except Exception:
+        pass
+
+
 _BRAVE_KEY = None
 
 def _load_brave_key() -> str:
@@ -327,6 +343,7 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
     key = _load_brave_key()
     if not key or (_SPEND and _SPEND.is_paused("brave")):
         return []
+    _count_search("brave", "daily_digest", "ok")   # provisional; corrected below
     try:
         with hard_deadline(20, "brave_search"):
             resp = requests.get(
@@ -336,6 +353,8 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
                 params={"q": query, "count": max_results},
                 timeout=15)
         if resp.status_code == 429:
+            _count_search("brave", "daily_digest", "quota")
+            _count_search("brave", "daily_digest", "ok", -1)
             log("    Brave search quota/rate hit (429) — falling back to Gemini")
             return []
         resp.raise_for_status()
@@ -350,6 +369,8 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Brave search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
+        _count_search("brave", "daily_digest", "error")
+        _count_search("brave", "daily_digest", "ok", -1)
         if _SPEND and _SPEND.is_funds_error(e):
             _SPEND.pause("brave", str(e))
             log("    Brave funds/quota exhausted — paused till next month; falling back to Gemini")
@@ -368,6 +389,7 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
     key = _load_gemini_key()
     if not key:
         return []
+    _count_search("gemini", "daily_digest", "ok")
     try:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{_GEMINI_MODEL}:generateContent?key={key}")
@@ -390,6 +412,8 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Gemini search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
+        _count_search("gemini", "daily_digest", "error")
+        _count_search("gemini", "daily_digest", "ok", -1)
         log(f"    Gemini search error: {e}")
         return []
 

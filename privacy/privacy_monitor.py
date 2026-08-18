@@ -156,6 +156,20 @@ def _is_own_site(url, domain):
     return host == domain or host.endswith("." + domain)
 
 
+def _count(provider, outcome, n=1):
+    """Record one search request (S67). Never raises -- see search_usage.py.
+
+    This module was the largest Brave consumer in the bill (~416 requests per
+    sweep) and counted nothing, so its spend was invisible and had to be
+    reverse-engineered. That is what this fixes.
+    """
+    try:
+        import search_usage
+        search_usage.record(provider, "privacy_monitor", outcome, n)
+    except Exception:
+        pass
+
+
 def _brave_search(query, api_key, count=6):
     """Brave Search API → list of real result URLs. Raises on transport error."""
     params = urllib.parse.urlencode({"q": query, "count": count})
@@ -165,25 +179,65 @@ def _brave_search(query, api_key, count=6):
         "X-Subscription-Token": api_key,
         "User-Agent": "CIRRUS-PrivacyMonitor/1.0",
     })
-    with urllib.request.urlopen(req, timeout=20) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    _count("brave", "ok")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        _count("brave", "ok", -1)
+        _count("brave", "quota" if getattr(e, "code", None) == 429 else "error")
+        raise
     return [item.get("url") for item in
             (data.get("web", {}) or {}).get("results", []) if item.get("url")]
+
+
+def _resolve_redirect(url, timeout=10):
+    """Follow a grounding-redirect URL to its real destination.
+
+    Gemini's grounding results are `vertexaisearch.cloud.google.com` redirects,
+    which `_is_real_url()` correctly rejects -- a redirect URL is not evidence
+    that anything is indexed at a particular host, and the whole job here is
+    identifying WHERE an exposure lives. Resolving them makes the Gemini
+    fallback actually usable for this module instead of yielding 100% discards.
+    Returns the original URL if resolution fails; the artifact filter then
+    drops it, which is the same behaviour as before.
+    """
+    try:
+        req = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "CIRRUS-PrivacyMonitor/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.geturl() or url
+    except Exception:
+        return url
 
 
 def gather(wl, queries, creds=None, verbose=True):
     """Run the dork/search catalog against every target. Returns list of hit dicts."""
     creds = creds or {}
     brave_key = creds.get("brave_api_key")
+
+    # S67: ALWAYS import the fallback, not only when Brave is unkeyed.
+    #
+    # The old code chose a backend once, up front, purely on whether a key
+    # existed -- so when Brave hit its monthly cap and started returning 429,
+    # every one of the ~416 queries raised, got swallowed by the per-query
+    # handler below, and returned zero URLs. The sweep then reported "0 flagged"
+    # and emailed a clean bill of health. A false all-clear from a privacy
+    # monitor is the worst possible failure: it is indistinguishable from good
+    # news. Brave is cap-limited by design and WILL 429 -- this path was always
+    # going to be taken, it just had never been exercised.
     search_web = None
-    if not brave_key:
-        try:
-            from cirrus_daily import search_web as _sw
-            search_web = _sw
-        except Exception as e:
-            print("!! no brave_api_key AND search_web import failed:", e)
-            return []
-    print(f"   search backend: {'Brave API' if brave_key else 'DuckDuckGo/Gemini fallback'}")
+    try:
+        from cirrus_daily import search_web as _sw
+        search_web = _sw
+    except Exception as e:
+        print("!! search_web import failed (no fallback available):", e)
+    if not brave_key and search_web is None:
+        print("!! no brave_api_key AND no fallback — aborting rather than "
+              "reporting an empty sweep as clean")
+        return []
+    print(f"   search backend: {'Brave API' if brave_key else 'Gemini/DuckDuckGo fallback'}"
+          f"{'  (fallback ready)' if brave_key and search_web else ''}")
 
     settings = wl.get("settings", {})
     max_results = int(settings.get("max_results_per_query", 6))
@@ -192,9 +246,27 @@ def gather(wl, queries, creds=None, verbose=True):
     # Brave free tier is ~1 query/sec; DDG we throttle lighter.
     pause = 1.1 if brave_key else 0.4
 
+    # Per-query backend state. `brave_dead` latches after the first cap/quota
+    # error so we stop hammering a provider that has already said no -- one 429
+    # is a signal, 416 of them is abuse.
+    state = {"brave_dead": not brave_key, "fell_back": 0, "failed": 0}
+
     def do_search(q):
-        if brave_key:
-            return _brave_search(q, brave_key, count=max_results)
+        if not state["brave_dead"]:
+            try:
+                return _brave_search(q, brave_key, count=max_results)
+            except Exception as e:
+                code = getattr(e, "code", None)
+                if code in (429, 402) or "quota" in str(e).lower():
+                    print(f"   Brave cap/quota hit ({code}) — switching to "
+                          f"fallback for the rest of this sweep")
+                    state["brave_dead"] = True
+                else:
+                    raise
+        if search_web is None:
+            raise RuntimeError("no search backend available")
+        state["fell_back"] += 1
+        _count("gemini", "ok")
         return search_web(q, max_results=max_results) or []
 
     dropped_own = 0
@@ -210,8 +282,14 @@ def gather(wl, queries, creds=None, verbose=True):
                 except Exception as e:
                     if verbose:
                         print(f"   search error [{cat}] {query[:60]!r}: {e}")
+                    state["failed"] += 1
                     urls = []
                 for u in urls:
+                    # Fallback results arrive as grounding redirects; resolve
+                    # them to real hosts or _is_real_url() discards 100% of a
+                    # fallback sweep (S67).
+                    if u and any(h in u for h in _ARTIFACT_HOSTS):
+                        u = _resolve_redirect(u)
                     if not _is_real_url(u):
                         continue
                     if own and _is_own_site(u, own):
@@ -231,7 +309,15 @@ def gather(wl, queries, creds=None, verbose=True):
             print(f"   scanned {kind}: {v}  (scope={scope}) — {len(hits)} hits so far")
     if verbose and dropped_own:
         print(f"   ({dropped_own} own-site results dropped as non-exposure)")
+    if state["fell_back"]:
+        print(f"   NOTE: {state['fell_back']} quer(ies) used the fallback backend")
+    if state["failed"]:
+        print(f"   WARNING: {state['failed']} quer(ies) failed outright")
+    gather.last_run = dict(state)
     return hits
+
+
+gather.last_run = {"brave_dead": False, "fell_back": 0, "failed": 0}
 
 
 # ── HIBP breach check (dormant until keyed) ─────────────────────────────────
@@ -620,12 +706,30 @@ def _cadence_should_run(iso_week, dry=False, precheck=False, force=False):
 
 
 def _selftest_cadence():
+    # S67 fallback regression: a Brave cap error must switch backends rather
+    # than propagate, and a non-cap error must still propagate (a genuine bug
+    # should not be silently absorbed as "just use the fallback").
+    class _Err(Exception):
+        def __init__(self, code):
+            self.code = code
+
+    def _is_cap(e):
+        return getattr(e, "code", None) in (429, 402) or "quota" in str(e).lower()
+
     checks = [
         ("even week: scheduled run sweeps",   _cadence_should_run(34) is True),
         ("odd week: scheduled run skips",     _cadence_should_run(33) is False),
         ("odd week: --force still sweeps",    _cadence_should_run(33, force=True) is True),
         ("odd week: --dry-run still sweeps",  _cadence_should_run(33, dry=True) is True),
         ("odd week: --precheck still runs",   _cadence_should_run(33, precheck=True) is True),
+        ("429 is treated as a cap hit",       _is_cap(_Err(429)) is True),
+        ("402 is treated as a cap hit",       _is_cap(_Err(402)) is True),
+        ("a 500 is NOT a cap hit",            _is_cap(_Err(500)) is False),
+        ("a quota message is a cap hit",      _is_cap(Exception("Quota exceeded")) is True),
+        ("grounding redirects are artifacts",
+         any("vertexaisearch" in h for h in _ARTIFACT_HOSTS)),
+        ("a resolved real url passes the filter",
+         _is_real_url("https://example.com/leak") is True),
     ]
     bad = 0
     for name, ok in checks:
@@ -737,7 +841,23 @@ def main():
 
     for r in deliver(subject, body):
         print("  ", r)
-    _record(dry, True, f"{len(items)} flagged, {len(high_new)} new high")
+    # S67: a sweep whose searches mostly FAILED must never record success.
+    # Before this, a Brave 429 made all ~416 queries return nothing, the report
+    # said "0 flagged", and job_status recorded ok=True -- a false all-clear
+    # that is indistinguishable from genuinely finding nothing. For a privacy
+    # monitor that is the single most dangerous way to fail.
+    st = getattr(gather, "last_run", {}) or {}
+    failed, fell_back = st.get("failed", 0), st.get("fell_back", 0)
+    total_q = failed + fell_back + len(hits) or 1
+    note = f"{len(items)} flagged, {len(high_new)} new high"
+    sweep_ok = True
+    if failed and failed >= total_q * 0.5:
+        sweep_ok = False
+        note += f" — SWEEP DEGRADED: {failed} quer(ies) failed, results NOT trustworthy"
+        print(f"!! {note}")
+    elif fell_back:
+        note += f" (fallback backend used for {fell_back} quer(ies))"
+    _record(dry, sweep_ok, note)
     print("done.")
 
 
