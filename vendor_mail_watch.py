@@ -79,8 +79,9 @@ CREDS_PATH = PROJECT_DIR / "config/credentials.json"
 SOURCES_PATH = PROJECT_DIR / "config/sources.json"
 LEDGER_PATH = PROJECT_DIR / "config/vendor_mail_ledger.json"
 LOOKBACK_DAYS = 4          # > the daily cadence, so a missed run self-heals
-MAX_PER_SEARCH = 40        # per phrase per account; these searches are narrow
+MAX_PER_SEARCH = 40        # per search per account; these searches are narrow
 REALERT_DAYS = 3           # an unresolved item nags again this often
+IMAP_TIMEOUT = 120         # Yahoo timed out at 60s on the first live run
 
 
 # ── Signal catalogue ─────────────────────────────────────────────────────────
@@ -323,19 +324,72 @@ def all_phrases() -> list:
     return out
 
 
-def fetch_candidates(creds: dict) -> list:
-    """Server-side IMAP search across every enabled account, one query per
-    signal phrase. Returns [{message_id, subject, sender, body, account}]."""
+def build_or_query(since: str, phrases: list) -> str:
+    """One IMAP search covering several SUBJECT phrases, via prefix-notation OR.
+
+    IMAP's OR is strictly binary, so N terms need N-1 leading ORs:
+        (SINCE 14-Aug-2026 (OR SUBJECT "a" OR SUBJECT "b" SUBJECT "c"))
+
+    Batching matters for reliability, not elegance. The first version issued one
+    SEARCH per phrase -- 41 sequential round-trips per account. Against Yahoo
+    that took 40s on a good run and TIMED OUT on the very next one, losing that
+    whole mailbox. Six batched searches finish comfortably inside the timeout.
+    """
+    if len(phrases) == 1:
+        return f'(SINCE {since} SUBJECT "{phrases[0]}")'
+    terms = " ".join(f'SUBJECT "{p}"' for p in phrases)
+    return f'(SINCE {since} ({"OR " * (len(phrases) - 1)}{terms}))'
+
+
+def _search_account(mail, since: str, phrases: list, batch: int = 8) -> list:
+    """UIDs matching any phrase. Batched, with a per-phrase fallback.
+
+    If a server rejects the OR chain we must NOT quietly return nothing -- that
+    would look exactly like "no vendor mail today", which is the failure mode
+    this whole module exists to prevent. So a failed batch is retried one phrase
+    at a time before giving up on it.
+    """
+    uids = []
+    for i in range(0, len(phrases), batch):
+        chunk = phrases[i:i + batch]
+        try:
+            _t, ids = mail.uid("search", None, build_or_query(since, chunk))
+            if ids and ids[0]:
+                uids.extend(ids[0].split()[-MAX_PER_SEARCH:])
+            continue
+        except Exception as e:
+            log(f"    batched search failed ({type(e).__name__}) — "
+                f"falling back to per-phrase for {len(chunk)} phrase(s)")
+        for phrase in chunk:
+            try:
+                _t, ids = mail.uid("search", None,
+                                   f'(SINCE {since} SUBJECT "{phrase}")')
+                if ids and ids[0]:
+                    uids.extend(ids[0].split()[-MAX_PER_SEARCH:])
+            except Exception:
+                continue
+    return uids
+
+
+def fetch_candidates(creds: dict) -> tuple:
+    """Server-side IMAP search across every enabled account.
+
+    Returns (candidates, failed_accounts). The second element is not optional
+    bookkeeping: on the very first live run Yahoo timed out, the exception was
+    swallowed, and the job recorded OK with "1 new" -- indistinguishable from a
+    genuinely quiet day, while an entire mailbox had gone unread. A partial scan
+    must be reported as a partial scan.
+    """
     try:
         cfg = json.loads(SOURCES_PATH.read_text())
         accounts = (cfg.get("email") or {}).get("accounts", []) or []
     except Exception as e:
         log(f"  could not read sources.json: {e}")
-        return []
+        return [], ["<sources.json unreadable>"]
 
     since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%d-%b-%Y")
     phrases = all_phrases()
-    out, seen_mids = [], set()
+    out, seen_mids, failed = [], set(), []
 
     for account in accounts:
         if not account.get("enabled", True):
@@ -347,47 +401,52 @@ def fetch_candidates(creds: dict) -> list:
             log(f"  skipping {account.get('label')}: no credential")
             continue
         label = account.get("label", addr)
-        try:
-            mail = imaplib.IMAP4_SSL(account["imap_server"],
-                                     account.get("imap_port", 993), timeout=60)
-            mail.login(addr, password)
-            mail.select("inbox", readonly=True)     # never marks anything read
+        # One retry: the observed Yahoo failure was a transient socket timeout,
+        # and giving up after a single attempt means one slow morning silently
+        # skips a mailbox for the day.
+        ok = False
+        for attempt in (1, 2):
+            try:
+                mail = imaplib.IMAP4_SSL(account["imap_server"],
+                                         account.get("imap_port", 993),
+                                         timeout=IMAP_TIMEOUT)
+                mail.login(addr, password)
+                mail.select("inbox", readonly=True)  # never marks anything read
 
-            uids = []
-            for phrase in phrases:
-                try:
-                    _t, ids = mail.uid("search", None,
-                                       f'(SINCE {since} SUBJECT "{phrase}")')
-                except Exception:
-                    continue
-                if ids and ids[0]:
-                    uids.extend(ids[0].split()[-MAX_PER_SEARCH:])
-            uids = sorted(set(uids), key=lambda u: int(u), reverse=True)
-            log(f"  {label}: {len(uids)} candidate message(s)")
+                uids = sorted(set(_search_account(mail, since, phrases)),
+                              key=lambda u: int(u), reverse=True)
+                log(f"  {label}: {len(uids)} candidate message(s)")
 
-            for uid in uids:
+                for uid in uids:
+                    try:
+                        _t, data = mail.uid("fetch", uid, "(RFC822)")
+                        msg = _email.message_from_bytes(data[0][1])
+                    except Exception:
+                        continue
+                    mid = (msg.get("Message-ID") or "").strip()
+                    if not mid or mid in seen_mids:
+                        continue
+                    seen_mids.add(mid)
+                    out.append({
+                        "message_id": mid,
+                        "subject": _decode(msg.get("Subject", "")).strip(),
+                        "sender": _decode(msg.get("From", "")).strip(),
+                        "date": (msg.get("Date") or "").strip(),
+                        "body": _body_of(msg),
+                        "account": label,
+                    })
                 try:
-                    _t, data = mail.uid("fetch", uid, "(RFC822)")
-                    msg = _email.message_from_bytes(data[0][1])
+                    mail.logout()
                 except Exception:
-                    continue
-                mid = (msg.get("Message-ID") or "").strip()
-                if not mid or mid in seen_mids:
-                    continue
-                seen_mids.add(mid)
-                out.append({
-                    "message_id": mid,
-                    "subject": _decode(msg.get("Subject", "")).strip(),
-                    "sender": _decode(msg.get("From", "")).strip(),
-                    "date": (msg.get("Date") or "").strip(),
-                    "body": _body_of(msg),
-                    "account": label,
-                })
-            mail.logout()
-        except Exception as e:
-            log(f"  {label}: IMAP error {type(e).__name__}: {e}")
-            continue
-    return out
+                    pass
+                ok = True
+                break
+            except Exception as e:
+                log(f"  {label}: IMAP error {type(e).__name__}: {e}"
+                    + (" — retrying once" if attempt == 1 else " — giving up"))
+        if not ok:
+            failed.append(label)
+    return out, failed
 
 
 # ── Alerting ─────────────────────────────────────────────────────────────────
@@ -442,8 +501,10 @@ def run(dry_run: bool = False) -> dict:
         return {"ok": False, "note": f"no credentials: {e}"}
 
     ledger = load_ledger()
-    candidates = fetch_candidates(creds)
+    candidates, failed = fetch_candidates(creds)
     log(f"→ {len(candidates)} message(s) matched a signal phrase")
+    if failed:
+        log(f"!! {len(failed)} inbox(es) could NOT be scanned: {', '.join(failed)}")
 
     new_entries, noise = [], 0
     for c in candidates:
@@ -485,7 +546,9 @@ def run(dry_run: bool = False) -> dict:
 
     if dry_run:
         log(f"DRY-RUN: {len(new_entries)} new, {len(stale)} re-surfaced, "
-            f"{noise} filtered as noise. Nothing written or sent.")
+            f"{noise} filtered as noise"
+            + (f", {len(failed)} INBOX(ES) UNREAD" if failed else "")
+            + ". Nothing written or sent.")
         if to_alert:
             print()
             print(format_alert(to_alert))
@@ -510,13 +573,25 @@ def run(dry_run: bool = False) -> dict:
     n_open = len(open_items(ledger))
     note = (f"{len(new_entries)} new, {len(stale)} re-surfaced, "
             f"{n_open} open, {noise} noise")
+
+    # A partial scan is NOT a success. On the first live run Yahoo timed out and
+    # this recorded ok=True with "1 new" -- which reads identically to a quiet
+    # day while an entire mailbox went unread. The morning brief only surfaces
+    # jobs that report failure, so a false green here is the same as no monitor.
+    scan_ok = not failed
+    if failed:
+        note += f" — SCAN INCOMPLETE: {', '.join(failed)} unreadable"
+        telegram(f"⚠️ vendor_mail_watch could not read: {', '.join(failed)}\n"
+                 f"Vendor/account mail in those inboxes went unscanned.")
+
     log(f"done — {note}")
     try:
         import job_status
-        job_status.record("vendormail", True, note)
+        job_status.record("vendormail", scan_ok, note)
     except Exception as e:
         log(f"  (job_status unavailable: {e})")
-    return {"ok": True, "note": note, "new": len(new_entries), "open": n_open}
+    return {"ok": scan_ok, "note": note, "new": len(new_entries),
+            "open": n_open, "failed_accounts": failed}
 
 
 def report() -> None:
@@ -621,6 +696,17 @@ def selftest() -> bool:
 
     ck("every signal phrase is IMAP-safe (no quotes)",
        all('"' not in p and "\\" not in p for p in all_phrases()))
+
+    # Batched OR query — prefix notation, N-1 leading ORs.
+    q1 = build_or_query("14-Aug-2026", ["a"])
+    ck("single phrase needs no OR", q1 == '(SINCE 14-Aug-2026 SUBJECT "a")')
+    q3 = build_or_query("14-Aug-2026", ["a", "b", "c"])
+    ck("three phrases produce two ORs", q3.count("OR ") == 2)
+    ck("batched query keeps the SINCE bound", "SINCE 14-Aug-2026" in q3)
+    ck("batched query quotes every phrase", q3.count('SUBJECT "') == 3)
+    ck("batching covers every phrase in <=8-term chunks",
+       sum(len(all_phrases()[i:i + 8]) for i in range(0, len(all_phrases()), 8))
+       == len(all_phrases()))
 
     bad = 0
     for name, ok in checks:
