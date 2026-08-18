@@ -78,7 +78,16 @@ def _spend_today(day: str) -> tuple:
 
 def compose(days: int = 1, db_path: str = None) -> tuple:
     today = datetime.now().strftime("%Y-%m-%d")
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
+    # S67 fix: this floored `now - days` to midnight, so days=1 spanned from
+    # YESTERDAY 00:00 -- a ~2-day window labelled "1d" and "NEW TODAY". On the
+    # first morning after the pipeline was built that made all 3 shortlist ideas
+    # read "★ NEW TODAY" with a "3 new" subject line, when the day's ideate run
+    # had actually kept ZERO ("4 generated, 0 kept"), and grouped 20 rejections
+    # under "the last 1d" when only 4 were from today. Materially misleading in
+    # the direction that matters: it makes a quiet day look productive, which is
+    # the exact thing the shakedown week is supposed to be measuring.
+    # days=1 now means today; days=2 means today and yesterday.
+    since = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d 00:00:00")
 
     candidates = entity_kb.list_entities(KB_PROJECT, lead_state="candidate", db_path=db_path)
     candidates.sort(key=lambda e: -((e.get("state") or {}).get("final_score") or 0))
@@ -143,7 +152,8 @@ def compose(days: int = 1, db_path: str = None) -> tuple:
         L.append("")
 
     if rejected_today:
-        L.append(f"## Rejected in the last {days}d ({len(rejected_today)}) — grouped by why")
+        window = "today" if days == 1 else f"the last {days} days"
+        L.append(f"## Rejected {window} ({len(rejected_today)}) — grouped by why")
         L.append("")
         by_theme = {}
         for ev in rejected_today:
@@ -237,6 +247,15 @@ def run(days: int = 1, dry_run: bool = False, db_path: str = None) -> dict:
 
 def selftest() -> bool:
     checks = []
+    # S67 window regression: days=1 must mean "since today 00:00", not
+    # "since yesterday 00:00". Asserted on the arithmetic rather than the KB so
+    # it runs offline and cannot be skipped for lack of a database.
+    _win1 = (datetime.now() - timedelta(days=1 - 1)).strftime("%Y-%m-%d 00:00:00")
+    _win2 = (datetime.now() - timedelta(days=2 - 1)).strftime("%Y-%m-%d 00:00:00")
+    checks.append(("days=1 window starts today at midnight",
+                   _win1 == datetime.now().strftime("%Y-%m-%d 00:00:00")))
+    checks.append(("days=2 window starts yesterday at midnight",
+                   _win2 == (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")))
     checks.append(("liability flaws group under the accuracy theme",
                    _theme_for("QA teams won't trust unvalidated LLM-extracted data, legal exposure")
                    == "Liability / accuracy bar"))
