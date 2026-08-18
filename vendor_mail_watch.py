@@ -107,6 +107,14 @@ SIGNALS = [
         "account suspended", "account deactivated", "service suspended",
         "api access disabled", "access revoked", "account closed",
         "will be terminated", "subscription cancelled", "subscription canceled",
+        # S67 first live dry-run: "Your account will be permanently deleted in
+        # 24 hours" scored only `warn`, because the sole critical phrase it hit
+        # ("payment method") was in the BODY and body-only hits are downgraded.
+        # Losing an account in 24h is exactly the case the Telegram path exists
+        # for, so the subject wording gets its own critical phrases. Calibrating
+        # on real mail rather than on imagined mail is why we dry-run first.
+        "will be permanently deleted", "will be deleted", "account deletion",
+        "will be closed", "scheduled for deletion",
     ]),
     ("credential", "critical", [
         "api key", "key expires", "key expired", "token expires",
@@ -560,6 +568,12 @@ def selftest() -> bool:
 
     cat, sev, _ = classify("Account suspended", "we have suspended your account", "z@z.com")
     ck("suspension is critical", cat == "access" and sev == "critical")
+
+    # Regression for the S67 dry-run miss: this exact subject scored warn.
+    cat, sev, _ = classify("Your account will be permanently deleted in 24 hours",
+                           "update your payment method to keep it", "x@x.com")
+    ck("imminent account deletion is critical",
+       cat == "access" and sev == "critical")
 
     # A subject-line hit must outrank a body-only hit.
     _c, sev_body, _ = classify("Monthly product update",
