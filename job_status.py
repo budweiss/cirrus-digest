@@ -31,7 +31,17 @@ CADENCE_H = {
     "billsnow":      24 * 8,    # weekly Monday + grace
     "hoaleads":      24 * 8,    # weekly Monday + grace (DE HOA lead monitor, S57)
     "stratusreview": 24 * 33,   # monthly + grace
-    "privacymon":    24 * 8,    # weekly Sunday + grace
+    # S67: dropped to BI-WEEKLY (even ISO weeks). The sweep is ~416 Brave
+    # queries in one burst -- the single largest line item in the Brave bill,
+    # and at weekly cadence it exhausted the $25+$5 monthly cap around the
+    # 22nd-25th, degrading search for every other consumer. The gate lives in
+    # privacy_monitor.py; this cadence must track it or a normal skipped week
+    # reads as "overdue" and trains us to ignore the overdue signal.
+    "privacymon":    24 * 15,   # bi-weekly Sunday + grace
+    # S67 vendor/account mail watcher (daily 07:20). Nothing watched the
+    # operational inboxes for funds/quota/key-expiry/suspension mail before
+    # this -- the Brave alert was found by eye.
+    "vendormail":    26,        # daily 07:20
     # S66 business-idea pipeline (CIRRUS, daily 07:45 / 07:55 / 08:15).
     # Tracked separately rather than as one entry: during the shakedown week
     # it matters WHICH stage broke -- the report still sends (just thinner)

@@ -606,6 +606,35 @@ def deliver(subject, body):
     return results
 
 
+def _cadence_should_run(iso_week, dry=False, precheck=False, force=False):
+    """Does a run with these flags actually sweep? (S67 bi-weekly gate)
+
+    Pulled out of main() purely so it can be tested offline -- the gate itself
+    is trivial, but the thing that would actually hurt is a manual --dry-run or
+    --force silently doing nothing on an odd week, and that is not something you
+    notice until you need the sweep.
+    """
+    if dry or precheck or force:
+        return True
+    return iso_week % 2 == 0
+
+
+def _selftest_cadence():
+    checks = [
+        ("even week: scheduled run sweeps",   _cadence_should_run(34) is True),
+        ("odd week: scheduled run skips",     _cadence_should_run(33) is False),
+        ("odd week: --force still sweeps",    _cadence_should_run(33, force=True) is True),
+        ("odd week: --dry-run still sweeps",  _cadence_should_run(33, dry=True) is True),
+        ("odd week: --precheck still runs",   _cadence_should_run(33, precheck=True) is True),
+    ]
+    bad = 0
+    for name, ok in checks:
+        print(("  ok   " if ok else "  FAIL ") + name)
+        bad += 0 if ok else 1
+    print("cadence selftest:", "PASSED" if not bad else f"{bad} FAILED")
+    return bad == 0
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 def main():
     dry    = "--dry-run" in sys.argv or "--dry" in sys.argv
@@ -615,8 +644,37 @@ def main():
 
     precheck = "--precheck" in sys.argv
 
+    if "--selftest-cadence" in sys.argv:
+        raise SystemExit(0 if _selftest_cadence() else 1)
+
     if "--resolve" in sys.argv:
         do_resolve(sys.argv)
+        return
+
+    # ── Cadence gate (S67) ───────────────────────────────────────────────────
+    # This sweep is ~416 Brave queries in one burst (16 targets x categories x
+    # templates) -- roughly $2.08 a time and the single largest line item in the
+    # Brave bill, well ahead of the whole daily digest. At weekly cadence it was
+    # pushing the $25+$5 monthly cap to exhaustion around the 22nd-25th, which
+    # silently degrades EVERY other search consumer for the last week of the
+    # month (Brave 429s -> Gemini -> DuckDuckGo). Personal-exposure findings do
+    # not move fast enough to justify that, so the scheduled sweep runs on EVEN
+    # ISO weeks only. Buddy's call, 2026-08-18.
+    #
+    # launchd has no bi-weekly trigger, so the plist still fires weekly and the
+    # gate lives here -- which is better anyway: it is visible in the code, it
+    # logs when it skips (a silent skip is the failure mode we keep getting
+    # bitten by), and it records to job_status so a skipped week is not
+    # indistinguishable from a crashed one.
+    #
+    # Any manual/on-demand run bypasses it: --dry-run, --precheck, --resolve and
+    # an explicit --force all still sweep immediately.
+    iso_week = datetime.now().isocalendar()[1]
+    if not _cadence_should_run(iso_week, dry=dry, precheck=precheck,
+                               force="--force" in sys.argv):
+        print(f"→ skipping: bi-weekly cadence, ISO week {iso_week} is odd "
+              f"(next sweep next week). Override with --force.")
+        _record(dry, True, f"skipped: bi-weekly cadence (ISO week {iso_week})")
         return
 
     wl = load_watchlist()

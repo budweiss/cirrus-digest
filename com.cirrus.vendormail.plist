@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cirrus.vendormail</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/buddy/projects/cirrus-digest/vendor_mail_watch.py</string>
+    </array>
+    <!-- 07:20, ten minutes before the morning brief reads job_status, so a
+         fresh result is in the ledger by the time the brief is composed. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>20</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/vendormail.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/vendormail.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
