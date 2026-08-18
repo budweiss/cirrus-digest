@@ -116,13 +116,73 @@ def flag_out_of_state_mgmt(slug: str, name: str, fields: dict, db_path: str = No
     return True
 
 
+# S67: how the daily chunk is split by confidence. The CRM went from 184 to
+# 2,444 entities in one session (Sussex + New Castle ingests), which turned a
+# 37-day rotation into a 16-MONTH one. Refreshing alphabetically/oldest-first
+# across all of them spends the same research budget on a verified association
+# and on a name we guessed off a plat record.
+#
+# So the chunk is allotted by confidence instead. Buddy's call, 2026-08-18:
+# "verified Sussex fast, NCC slow."
+#
+#   high (Sussex, registered associations)  -> 3 of 5  ->  ~212-day cycle over 637
+#   low  (NCC, unverified name heuristic)   -> 1 of 5  ->  slow drip over 1,623
+#   unset (pre-existing ~184, incl. Kent)   -> 1 of 5  ->  ~37-day cycle, unchanged
+#
+# The pre-existing records keep their old cadence deliberately: those are the
+# ones with real research already in them (the 2 warm / 1 watch leads live
+# there), so this change must not slow down the part of the CRM that is
+# actually producing.
+#
+# Allotments are FLOOR values, not caps. If a tier has nothing left to refresh,
+# its slots spill to the others rather than going unused -- an idle slot is
+# wasted budget, and a tier can legitimately run dry when everything in it was
+# touched recently.
+CONFIDENCE_ALLOTMENT = [("high", 3), (None, 1), ("low", 1)]
+
+
+def _confidence(entity) -> str:
+    return ((entity.get("state") or {}).get("lead_confidence")) or None
+
+
 def pick_refresh_chunk(chunk_size: int = DEFAULT_CHUNK_SIZE, db_path: str = None) -> list:
-    """Least-recently-updated entities first. Self-balancing rotation, no
-    persisted cursor needed -- whatever hasn't been touched longest comes
-    up next, including entities discovery just added."""
+    """Confidence-weighted rotation; least-recently-updated first WITHIN a tier.
+
+    Still self-balancing with no persisted cursor -- whatever hasn't been
+    touched longest in its tier comes up next, including entities discovery
+    just added.
+    """
     entities = entity_kb.list_entities(KB_PROJECT, db_path=db_path)
     entities.sort(key=lambda e: e.get("last_updated") or "")
-    return entities[:chunk_size]
+
+    tiers = {}
+    for e in entities:
+        tiers.setdefault(_confidence(e), []).append(e)
+
+    picked, used = [], set()
+    # Scale each tier's floor to the requested chunk size so a smaller or
+    # larger chunk keeps the same 3:1:1 shape rather than silently favouring
+    # whichever tier is listed first.
+    total = sum(n for _, n in CONFIDENCE_ALLOTMENT) or 1
+    for tier, share in CONFIDENCE_ALLOTMENT:
+        want = max(0, round(chunk_size * share / total))
+        for e in tiers.get(tier, []):
+            if len(picked) >= chunk_size or want <= 0:
+                break
+            if e["slug"] not in used:
+                picked.append(e)
+                used.add(e["slug"])
+                want -= 1
+
+    # Spill: fill any remaining slots from the global oldest-first order, so an
+    # empty tier never wastes a slot.
+    for e in entities:
+        if len(picked) >= chunk_size:
+            break
+        if e["slug"] not in used:
+            picked.append(e)
+            used.add(e["slug"])
+    return picked[:chunk_size]
 
 
 def run_refresh(chunk_size: int = DEFAULT_CHUNK_SIZE, creds: dict = None,
