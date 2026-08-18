@@ -418,16 +418,137 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
         return []
 
 
+_ANTHROPIC_KEY = None
+
+def _load_anthropic_key() -> str:
+    """Lazy-load the Anthropic key (once), same latin-1 guard as Brave's.
+
+    S66 caught a still-templated brave_api_key whose em-dash crashed header
+    encoding on every call and was swallowed as a generic provider error. Any
+    real key is latin-1 safe; anything that isn't is not a usable key.
+    """
+    global _ANTHROPIC_KEY
+    if _ANTHROPIC_KEY is not None:
+        return _ANTHROPIC_KEY
+    try:
+        with open(Path.home() / "projects/cirrus-digest/config/credentials.json") as f:
+            key = json.load(f).get("anthropic_api_key", "")
+        key.encode("latin-1")
+        _ANTHROPIC_KEY = key
+    except Exception:
+        _ANTHROPIC_KEY = ""
+    return _ANTHROPIC_KEY
+
+
+_CLAUDE_SEARCH_MODEL = "claude-sonnet-5"   # supports web_search_20260209
+
+
+def claude_search(query: str, max_results: int = 3) -> list[str]:
+    """Third search tier — Anthropic's server-side web_search tool.
+
+    WHY THIS TIER EXISTS (S67). Buddy asked for a third tier after
+    `search-fallback-test` measured the real chain: Brave returns usable URLs,
+    Gemini returns usable URLs (as grounding redirects), and DuckDuckGo returns
+    ZERO -- it has been dead for months. So the chain was one deep, and the
+    fallback had never been exercised until this session.
+
+    Anthropic is the right third tier because it needs NO new subscription: it
+    bills to the Anthropic key we already fund (dashboard cap $200/mo). At $10
+    per 1,000 searches it is 2x Brave's $5, which is exactly backwards for a
+    primary and fine for a tier that only runs when two other providers have
+    already failed -- expected volume is ~zero.
+
+    Deliberately raw HTTP via urllib rather than the `anthropic` SDK: this
+    module is stdlib-only by design (see llm_providers.py's header), and CIRRUS
+    runs the daily digest on system python 3.9.6 with no venv. Adding an SDK
+    dependency to that interpreter to serve a tier-3 fallback is a worse trade
+    than matching the house pattern.
+
+    The model is PINNED rather than read from credentials: the
+    `web_search_20260209` tool requires Opus 4.6+/Sonnet 4.6+, and
+    `claude_model` is a field anyone can point at an older model. Pinning means
+    a model change elsewhere cannot silently break the last search tier.
+    """
+    key = _load_anthropic_key()
+    if not key:
+        return []
+    _count_search("claude", "daily_digest", "ok")
+    try:
+        with hard_deadline(60, "claude_search"):
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key,
+                         "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={
+                    "model": _CLAUDE_SEARCH_MODEL,
+                    "max_tokens": 1024,
+                    # max_uses bounds cost: one search per call, not a research
+                    # session. We want URLs, not an essay -- the local model
+                    # does the reading.
+                    "tools": [{"type": "web_search_20260209",
+                               "name": "web_search",
+                               "max_uses": 1}],
+                    "messages": [{"role": "user", "content":
+                                  f"Search the web for: {query}\n"
+                                  f"Just search. Do not summarize the results."}],
+                },
+                timeout=55)
+        resp.raise_for_status()
+        data = resp.json()
+        urls = []
+        for block in data.get("content", []) or []:
+            if block.get("type") != "web_search_tool_result":
+                continue
+            content = block.get("content")
+            # A server-tool ERROR returns HTTP 200 with `content` as a single
+            # error OBJECT rather than a list of results (e.g.
+            # {"error_code": "max_uses_exceeded"}). Iterating it blindly would
+            # walk the dict's KEYS and silently yield nothing, which reads as
+            # "no results" instead of "the tool failed".
+            if isinstance(content, dict):
+                log(f"    Claude search tool error: {content.get('error_code')}")
+                _count_search("claude", "daily_digest", "error")
+                _count_search("claude", "daily_digest", "ok", -1)
+                return []
+            for r in content or []:
+                u = r.get("url", "")
+                if u.startswith("http") and u not in urls:
+                    urls.append(u)
+                if len(urls) >= max_results:
+                    break
+        log(f"    Claude search '{query[:50]}' → {len(urls)} result(s)")
+        return urls[:max_results]
+    except Exception as e:
+        _count_search("claude", "daily_digest", "error")
+        _count_search("claude", "daily_digest", "ok", -1)
+        log(f"    Claude search error: {e}")
+        return []
+
+
 def search_web(query: str, max_results: int = 3) -> list[str]:
-    """Web search with reliable-source priority: Brave (paid) → Gemini grounding
-    → DuckDuckGo scrape (last resort). Each provider is hard-deadline bounded, so
-    a single hung lookup can't freeze the digest (the 2026-08-10 freeze cause).
-    DuckDuckGo scraping is unreliable now (returns 0 for most queries), which is
-    why Brave is primary."""
+    """Web search, in cost order: Brave (paid, $5/1k) → Gemini grounding (billed
+    to the Gemini account) → Claude web_search ($10/1k, Anthropic account) →
+    DuckDuckGo scrape. Each provider is hard-deadline bounded, so a single hung
+    lookup can't freeze the digest (the 2026-08-10 freeze cause).
+
+    S67 measured this chain instead of assuming it (runner `search-fallback-test`):
+    Brave and Gemini both return usable URLs; **DuckDuckGo returns ZERO** and has
+    for months. That left the chain effectively one deep, which is why Buddy asked
+    for a third tier. Claude is it — no new subscription, bills to a key we
+    already fund. DDG stays last as a free lottery ticket, not a tier: never
+    count on it.
+
+    Ordering note: Claude sits BELOW Gemini despite being more capable, purely on
+    cost ($10/1k vs Gemini's grounding). It only runs when two providers have
+    already failed, so its expected volume is ~zero."""
     urls = brave_search(query, max_results)
     if urls:
         return urls
     urls = gemini_search(query, max_results)
+    if urls:
+        return urls
+    urls = claude_search(query, max_results)
     if urls:
         return urls
     return _ddg_search(query, max_results)
