@@ -31,7 +31,11 @@ def main(n: int = 40, days: int = 35):
     except Exception as e:
         print("no creds:", e)
 
-    msgs = B.fetch_business_emails(creds, lookback_days=days, max_per_sender=n)
+    # ignore_seen: the backfill already claimed these Message-IDs, so a normal
+    # fetch returns nothing. The whole point here is to re-examine what was
+    # already decided.
+    msgs = B.fetch_business_emails(creds, lookback_days=days, max_per_sender=n,
+                                   ignore_seen=True)
     print(f"fetched {len(msgs)} email(s) over {days} days\n")
 
     kept = dropped = 0

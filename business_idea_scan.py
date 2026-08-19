@@ -608,7 +608,8 @@ def email_sender_allowed(sender: str) -> bool:
 
 
 def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS,
-                          max_per_sender: int = _MAX_EMAILS_PER_RUN) -> list:
+                          max_per_sender: int = _MAX_EMAILS_PER_RUN,
+                          ignore_seen: bool = False) -> list:
     """Read recent messages from the configured inboxes WITHOUT touching the
     digest's UID state. Returns [{message_id, subject, sender, body}].
     Dedupes on Message-ID, which is stable across accounts and re-runs."""
@@ -619,7 +620,8 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
     try:
         cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
         accounts = (cfg.get("email") or {}).get("accounts", []) or []
-    except Exception:
+    except Exception as e:
+        log(f"  email: cannot read sources.json ({e}) — 0 emails this run")
         return []
 
     try:
@@ -633,8 +635,11 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
     for account in accounts:
         if not account.get("enabled", True):
             continue
+        addr = account.get("address")
         password = creds.get(account.get("credential_key", ""))
-        if not password or not account.get("address"):
+        if not password or not addr:
+            log(f"  email {account.get('label', addr)}: skipped — no credential "
+                f"for key {account.get('credential_key','?')!r}")
             continue
         try:
             mail = imaplib.IMAP4_SSL(account["imap_server"],
@@ -668,7 +673,14 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                 except Exception:
                     continue
                 mid = (msg.get("Message-ID") or "").strip()
-                if not mid or mid in seen_ids or mid in new_ids:
+                # ignore_seen is for READ-ONLY diagnostics. S68: the backfill
+                # consumed 214 emails and admitted zero, and re-examining them
+                # was then impossible -- the seen-file had already claimed them.
+                # A filter bug therefore burns the backlog silently. Diagnostics
+                # must be able to look at what was already decided.
+                if not mid or mid in new_ids:
+                    continue
+                if not ignore_seen and mid in seen_ids:
                     continue
                 # Filter BEFORE marking seen and before any scoring, so a
                 # sender added to the allowlist later still gets picked up
@@ -699,7 +711,14 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                 out.append({"message_id": mid, "subject": subject.strip(),
                             "sender": (msg.get("From") or "").strip(), "body": body})
             mail.logout()
-        except Exception:
+        except Exception as e:
+            # S68: this was a bare `except Exception: continue`. An IMAP login
+            # failure, timeout, or search error returned 0 emails with NO trace
+            # at all -- the run just looked like a quiet inbox. That is what
+            # made the zero-fetch undiagnosable: the diagnostic reported
+            # "fetched 0" and there was nothing anywhere saying why.
+            # Same silent-failure class as everything else found this session.
+            log(f"  email {account.get('label', addr)}: {type(e).__name__}: {e}")
             continue
 
     # NOTE: deliberately does NOT record these as seen. S66 -- an SSH drop
