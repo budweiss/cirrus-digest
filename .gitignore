@@ -31,3 +31,10 @@ config/business_idea_seen.json
 config/business_idea_email_seen.json
 config/business_idea_source_stats.json
 config/business_idea_trial_feeds.json
+
+# Runner trigger/result files. These change on every runner invocation and
+# have no business in source control — a permanently-dirty tree here produced
+# constant "UNCOMMITTED in cirrus-repo" noise in session-wrap, which is exactly
+# what masked three genuinely untracked modules on 2026-08-19 (S69).
+.run-command
+.run-result
