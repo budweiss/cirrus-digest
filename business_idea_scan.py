@@ -555,8 +555,28 @@ def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
 #      make them silently vanish from the daily digest.
 # So this is a separate, strictly read-only pass with its own state file.
 EMAIL_SEEN_PATH = PROJECT_DIR / "config/business_idea_email_seen.json"
-_EMAIL_LOOKBACK_DAYS = 2
+# S68 (Buddy): "make sure we are looking at least one month of articles."
+# The daily window was 2 days, which is fine for keeping up but means the
+# project never saw the BACKLOG -- and the backlog is where the good material
+# is (the Yahoo inbox holds ~967 Medium emails, and Buddy has spotted
+# AI-startable business examples in older articles).
+#
+# Two different jobs, so two different numbers:
+#   * the DAILY run only needs to cover the gap since the last run. 7 days
+#     (was 2) so a few missed runs, or a weekend outage, self-heal instead of
+#     silently dropping articles -- the same "missed run loses data" failure
+#     the vendor-mail watcher was given a 4-day window for.
+#   * a BACKFILL sweep walks a month or more, once, to seed the project.
+# Already-seen Message-IDs are skipped either way, so a backfill costs its
+# emails once and daily runs stay cheap.
+_EMAIL_LOOKBACK_DAYS = 7
+_BACKFILL_LOOKBACK_DAYS = 35        # "at least one month", with slack
+# Per-sender, per-run cap. Applied AFTER the server-side sender filter (S67 --
+# applying it before meant the newest 40 were all promos and 967 Medium emails
+# were never examined). A backfill needs a much higher ceiling or it would
+# trickle a month in at 40/day.
 _MAX_EMAILS_PER_RUN = 40
+_MAX_EMAILS_BACKFILL = 400
 
 # A sender allowlist is not optional here. The live inboxes are mostly
 # promotional mail (retail sales, marketplace listings, spam with obfuscated
@@ -584,7 +604,8 @@ def email_sender_allowed(sender: str) -> bool:
     return any(p in s for p in EMAIL_SENDER_PATTERNS)
 
 
-def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS) -> list:
+def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS,
+                          max_per_sender: int = _MAX_EMAILS_PER_RUN) -> list:
     """Read recent messages from the configured inboxes WITHOUT touching the
     digest's UID state. Returns [{message_id, subject, sender, body}].
     Dedupes on Message-ID, which is stable across accounts and re-runs."""
@@ -636,7 +657,7 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                     uids.extend(ids[0].split())
             # newest first, then cap -- the cap now applies to ALREADY-relevant
             # mail rather than silently discarding it
-            uids = sorted(set(uids), key=lambda u: int(u), reverse=True)[:_MAX_EMAILS_PER_RUN]
+            uids = sorted(set(uids), key=lambda u: int(u), reverse=True)[:max_per_sender]
             for uid in uids:
                 try:
                     _t, data = mail.uid("fetch", uid, "(RFC822)")
@@ -759,7 +780,7 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
         result["corroborated"].append(f"{idea_label or title} ({final}/10)")
 
 
-def run(dry_run: bool = False, db_path: str = None) -> dict:
+def run(dry_run: bool = False, db_path: str = None, backfill: bool = False) -> dict:
     import cirrus_daily  # lazy: needs requests/bs4/feedparser, live venv only
     import feedparser
 
@@ -827,7 +848,12 @@ def run(dry_run: bool = False, db_path: str = None) -> dict:
     # ── Phase 2: email intake ─────────────────────────────────────────────
     # Where Medium content actually reaches us (see fetch_business_emails).
     if not dry_run:
-        for msg in fetch_business_emails(creds):
+        # A backfill sweeps ~5 weeks at a much higher per-sender cap to seed
+        # the project from the inbox backlog; the daily run stays cheap.
+        for msg in fetch_business_emails(
+                creds,
+                lookback_days=(_BACKFILL_LOOKBACK_DAYS if backfill else _EMAIL_LOOKBACK_DAYS),
+                max_per_sender=(_MAX_EMAILS_BACKFILL if backfill else _MAX_EMAILS_PER_RUN)):
             body = cirrus_daily.clean_text(msg["body"], 20000)
             if body.strip() and len(body) >= 200:
                 result["emails"] = result.get("emails", 0) + 1
@@ -1075,10 +1101,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         sys.exit(0 if selftest() else 1)
     dry = "--dry-run" in sys.argv
+    backfill = "--backfill" in sys.argv
     # Record health so a silent failure surfaces in the morning brief rather
     # than going unnoticed for days -- these run unattended every morning.
     try:
-        outcome = run(dry_run=dry)
+        outcome = run(dry_run=dry, backfill=backfill)
         print(outcome)
         if not dry:
             import job_status
