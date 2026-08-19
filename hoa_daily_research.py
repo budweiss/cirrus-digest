@@ -363,4 +363,27 @@ if __name__ == "__main__":
     args = parser.parse_args()
     outcome = run(chunk_size=args.chunk_size, dry_run=args.dry_run)
     print(outcome)
+
+    # S69: this module NEVER recorded to job_status. The S65 merge pointed the
+    # cirrus-hoaleads service here, but the job_status.record call stayed behind
+    # in hoa_leads/hoa_monitor.py -- so the ledger's last hoaleads entry was
+    # 2026-08-10 while the job ran daily. The morning brief's overdue check
+    # eventually fired (cadence 192h) and that is how it surfaced.
+    #
+    # Note the completeness check could NOT have caught this: it keys on the
+    # run epoch, so a job that stops recording looks like one already-counted
+    # run forever. Overdue-detection and completeness-detection are genuinely
+    # complementary -- this needed the former.
+    if not args.dry_run:
+        try:
+            import job_status
+            d, rf = outcome.get("discovery", {}), outcome.get("refresh", {})
+            job_status.record(
+                "hoaleads", bool(outcome.get("ok")),
+                f"{len(d.get('new_entities', []))} new, "
+                f"{len(d.get('updated_entities', []))} updated, "
+                f"{rf.get('refreshed', 0)} refreshed, "
+                f"{rf.get('found_new_info', 0)} found_new_info")
+        except Exception as e:
+            print(f"job_status.record failed: {e}")
     sys.exit(0 if outcome.get("ok") else 1)
