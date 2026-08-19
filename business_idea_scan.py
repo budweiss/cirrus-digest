@@ -621,7 +621,7 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
         cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
         accounts = (cfg.get("email") or {}).get("accounts", []) or []
     except Exception as e:
-        log(f"  email: cannot read sources.json ({e}) — 0 emails this run")
+        print(f"  email: cannot read sources.json ({e}) — 0 emails this run", flush=True)
         return []
 
     try:
@@ -638,8 +638,8 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
         addr = account.get("address")
         password = creds.get(account.get("credential_key", ""))
         if not password or not addr:
-            log(f"  email {account.get('label', addr)}: skipped — no credential "
-                f"for key {account.get('credential_key','?')!r}")
+            print(f"  email {account.get('label', addr)}: skipped — no credential "
+                  f"for key {account.get('credential_key','?')!r}", flush=True)
             continue
         try:
             mail = imaplib.IMAP4_SSL(account["imap_server"],
@@ -711,6 +711,8 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
                 out.append({"message_id": mid, "subject": subject.strip(),
                             "sender": (msg.get("From") or "").strip(), "body": body})
             mail.logout()
+            print(f"  email {account.get('label', addr)}: {len(uids)} uid(s) "
+                  f"searched, {len(out)} kept so far", flush=True)
         except Exception as e:
             # S68: this was a bare `except Exception: continue`. An IMAP login
             # failure, timeout, or search error returned 0 emails with NO trace
@@ -718,7 +720,8 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
             # made the zero-fetch undiagnosable: the diagnostic reported
             # "fetched 0" and there was nothing anywhere saying why.
             # Same silent-failure class as everything else found this session.
-            log(f"  email {account.get('label', addr)}: {type(e).__name__}: {e}")
+            print(f"  email {account.get('label', addr)}: "
+                  f"{type(e).__name__}: {e}", flush=True)
             continue
 
     # NOTE: deliberately does NOT record these as seen. S66 -- an SSH drop
