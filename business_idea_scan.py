@@ -373,15 +373,44 @@ def final_score(fit: int, survival: int) -> int:
 # unparseable, the item is ESCALATED to the paid council rather than dropped.
 # Spending a cent unnecessarily is a much cheaper mistake than silently
 # discarding a real opportunity.
+# S68 REWRITE. Diagnosed 2026-08-18 (bizidea_diagnose.py) after a 35-day
+# backfill processed 214 emails and admitted ZERO.
+#
+# The old prompt asked: "does this describe a REAL, OPERATING business ... with
+# actual customers or income?" and listed TUTORIALS as an automatic NO. On a
+# real 30-email sample that rejected 97%, and the single survivor was a PAYMENT
+# RECEIPT -- literal proof of income, and completely worthless. Meanwhile it
+# dropped "Build Your AI Doctor-Visit Organizer" and "Before You Hire a
+# Contractor, Build This AI Quote Comparator", which are precisely the material
+# Buddy asked for ("examples of business that can be started by using the AI
+# solution").
+#
+# The filter was not broken. It was faithfully enforcing a mission nobody wants:
+# STUDY AN EXISTING BUSINESS. The actual mission is SPOT A STARTABLE ONE. Those
+# select nearly disjoint sets of articles, which is why the funnel read as a
+# tuning problem and was really a specification problem.
+#
+# So the question is inverted, tutorials/build-guides are explicitly ADMITTED,
+# and the NO list now names the transactional noise that was slipping through.
 _PREFILTER_PROMPT = (
-    "Does the following text describe a REAL, OPERATING business, product, or "
-    "revenue model -- something with actual customers or income -- in enough "
-    "detail that someone could study how it works?\n\n"
-    "Answer NO for: political or cultural commentary, news about large public "
-    "companies, personal essays, product marketing, tutorials, opinion pieces, "
-    "and anything with no identifiable business being run.\n"
-    "Answer YES if there is any concrete business whose model could be "
-    "examined, even briefly mentioned.\n\n"
+    "You are screening an article for someone looking for a SMALL BUSINESS or "
+    "PRODUCT THEY COULD START AND RUN THEMSELVES using AI tooling.\n\n"
+    "Answer YES if the text describes any of:\n"
+    "- a product, tool, service or workflow one person could build and sell\n"
+    "- a build-guide, tutorial or walkthrough for something with obvious "
+    "commercial use (these COUNT — the idea matters, not whether the author "
+    "monetised it)\n"
+    "- a niche someone is serving, or an unmet need described concretely "
+    "enough to act on\n"
+    "- a real operating business whose model could be copied or adapted\n\n"
+    "Answer NO for: transactional email (receipts, invoices, verification "
+    "codes, password resets, digest/roundup indexes with no substance), pure "
+    "news about large public companies, model-release and benchmark coverage "
+    "with no business angle, career and salary content, personal essays, "
+    "political or cultural commentary, and marketing for someone else's "
+    "product.\n\n"
+    "When genuinely unsure, answer YES — a later paid step will judge quality, "
+    "and this step exists only to drop obvious non-starters cheaply.\n\n"
     "TITLE: {title}\n\nTEXT: {text}\n\n"
     "Reply with exactly one word: YES or NO."
 )
