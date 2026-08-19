@@ -138,9 +138,20 @@ merely assist with. Score how good a candidate THIS article/case-study is as a
 blueprint for such a business.
 
 Score HIGH when all of these hold:
-1. REAL: an actually-operating business model with identifiable paying
-   customers or revenue -- not a hypothetical, a big-tech product
-   announcement, or opinion/commentary with no business behind it.
+1. CONCRETE: a specific product, service or workflow described in enough
+   detail to act on -- either an actually-operating business, OR a buildable
+   blueprint (a build-guide, walkthrough, or clearly-described unmet need).
+   S68: this criterion used to REQUIRE "identifiable paying customers or
+   revenue", which contradicted this mission's own framing of scoring an
+   article "as a blueprint" -- it demanded a blueprint and then disqualified
+   anything not already built. Measured effect: the council scored
+   "Build Your AI Doctor-Visit Organizer" 2/10 with the reason "pure how-to
+   with no operating business or revenue model", which is exactly the kind of
+   startable idea Buddy asked for. An existing operator is still STRONGER
+   evidence and should score higher -- it is just no longer a prerequisite.
+   Still score LOW for: vague hypotheticals with no described mechanism,
+   big-tech product announcements, and opinion/commentary with no business
+   behind it.
 2. MACHINE-OPERABLE: the day-to-day work could be performed by scheduled,
    autonomous software (research, generation, publishing, outreach,
    fulfillment) rather than by Buddy's hands each day. This is the single
