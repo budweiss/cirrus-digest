@@ -562,20 +562,23 @@ EMAIL_SEEN_PATH = PROJECT_DIR / "config/business_idea_email_seen.json"
 # AI-startable business examples in older articles).
 #
 # Two different jobs, so two different numbers:
-#   * the DAILY run only needs to cover the gap since the last run. 7 days
-#     (was 2) so a few missed runs, or a weekend outage, self-heal instead of
-#     silently dropping articles -- the same "missed run loses data" failure
-#     the vendor-mail watcher was given a 4-day window for.
-#   * a BACKFILL sweep walks a month or more, once, to seed the project.
-# Already-seen Message-IDs are skipped either way, so a backfill costs its
-# emails once and daily runs stay cheap.
-_EMAIL_LOOKBACK_DAYS = 7
+#   * the DAILY run only needs to cover the gap since the last run. 20 days
+#     (was 2) so a missed run, a weekend outage, or a week away self-heals
+#     instead of silently dropping articles -- the same "missed run loses
+#     data" failure the vendor-mail watcher was given a 4-day window for.
+#     Buddy's call, 2026-08-18: "we can go back to the 2/40 or maybe 20/200".
+#   * a BACKFILL sweep walks ~5 weeks, ONCE, to seed the project.
+#
+# A wide daily window is nearly free: already-seen Message-IDs are skipped, so
+# re-scanning 20 days costs one IMAP search per sender and processes only what
+# is genuinely new. The window buys resilience, not repeated work.
+_EMAIL_LOOKBACK_DAYS = 20
 _BACKFILL_LOOKBACK_DAYS = 35        # "at least one month", with slack
 # Per-sender, per-run cap. Applied AFTER the server-side sender filter (S67 --
 # applying it before meant the newest 40 were all promos and 967 Medium emails
 # were never examined). A backfill needs a much higher ceiling or it would
 # trickle a month in at 40/day.
-_MAX_EMAILS_PER_RUN = 40
+_MAX_EMAILS_PER_RUN = 200
 _MAX_EMAILS_BACKFILL = 400
 
 # A sender allowlist is not optional here. The live inboxes are mostly
