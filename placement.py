@@ -57,6 +57,22 @@ ALLOWED_BOTH = {
     "creds-materialize": "each box materializes its own tmpfs credentials",
     "intake": "SEPARATE MAILBOXES — CIRRUS reads cirrustask@, CUMULUS reads "
               "cumulus@cumulustask.com. Not redundant coverage of one inbox.",
+    # S70, 2026-08-20. Buddy: "move config over but leave MLS lookup on CIRRUS."
+    # These two copies are NOT the same job:
+    #   CUMULUS (www.cirrustask.com) — the Agreement-of-Sale generator, the part
+    #     Aggie uses daily. Loopback-bound; Cloudflare Access is its only door.
+    #   CIRRUS  (mls.cirrustask.com) — the Bright MLS lookup half. Owns
+    #     Playwright, the MLS login and the live session cookies, which were
+    #     deliberately NOT copied to CUMULUS: re-homing that session to a new IP
+    #     and browser fingerprint would likely force a fresh 2FA and could flag
+    #     Aggie's account.
+    # So there is no double-send and no doubled work — the two halves are
+    # disjoint. Revisit if option C (proxying MLS through CUMULUS) is ever
+    # built: docs/OFFER-MLS-PROXY-DESIGN.md.
+    "offer": "SPLIT APP, not a duplicate — CUMULUS serves the PDF generator at "
+             "www.cirrustask.com; CIRRUS keeps the Bright MLS lookup half at "
+             "mls.cirrustask.com because Playwright and the live MLS session "
+             "stay there. See docs/OFFER-MLS-PROXY-DESIGN.md.",
 }
 
 # Which box a job belongs on, by role. Buddy, 2026-08-19.
