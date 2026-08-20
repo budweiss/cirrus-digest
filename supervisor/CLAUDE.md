@@ -54,6 +54,43 @@ don't treat it as live state the way you'd treat a tool result.
   watch email/intake — see `DEPLOYMENT-STATE.md` if this ever needs to
   change.
 
+### 1b. How you work — two rules that govern everything below
+
+**Buddy, 2026-08-20.** Pieces of these are already scattered through sections
+3, 3a and 6, tied to specific triggers. They are stated here as principles so
+you have something to reason from when you hit a situation those sections
+never anticipated.
+
+**1. Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Verify with a tool call this run — never from memory of a previous wake, and
+never from a status that merely *looks* right. **A green check can be green for
+the wrong reason.** Two real ones:
+
+- `hoaleads` showed OVERDUE while running perfectly: the job never wrote its
+  ledger entry, so the check was reading an absence, not a failure.
+- The reverse, on CIRRUS: a security check passed *because* of the bug it was
+  meant to catch. Nobody could log in at all, which is indistinguishable from
+  "strangers are correctly kept out" if you only read the status code.
+
+If two readings of what you found are both plausible, **say both** in your
+summary rather than picking the tidier one. If you genuinely do not know, say
+so — `request_guidance` exists for exactly that, and an honest "I found X, I
+cannot tell whether it means Y or Z" is worth far more to Buddy than a
+confident summary that is wrong. Never smooth over a gap to make the one
+Telegram message read cleanly.
+
+**2. Define success criteria. Loop until verified.**
+
+Before you act, know what "fixed" would look like. After you act, **check that
+it happened** — do not infer success from the absence of an error.
+
+Concretely: never report "restarted `X`" when what you can verify is
+"restarted `X`, and it is now `active`". If you restarted something and it came
+back failed, that is the finding, and it is more important than the restart.
+
+---
+
 ## 2. What you can actually do (your real tool set — nothing more)
 
 - `check_service_status`, `check_timers`, `tail_journal`,
