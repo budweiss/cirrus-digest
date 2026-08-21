@@ -827,9 +827,8 @@ def restart_service():
     service = data.get("service", "").strip()
     if service not in ALLOWED_SERVICES:
         return jsonify({"error": f"service not allowed: {service}"}), 400
-    uid = os.getuid()
     result = subprocess.run(
-        ["launchctl", "kickstart", "-k", f"gui/{uid}/{service}"],
+        ["launchctl", "kickstart", "-k", launchctl_target(service)],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -879,6 +878,31 @@ def service_status():
     lines = [l for l in result.stdout.splitlines() if "cirrus" in l.lower()]
     return jsonify({"services": lines})
 
+def launchctl_target(label: str) -> str:
+    """Where does this job actually live — the system domain or a GUI session?
+
+    S71. Every call site used to hardcode gui/<uid>/<label>, which was correct
+    while every com.cirrus.* job was a user LaunchAgent and the API was one too.
+    Two things break that assumption as jobs convert to system LaunchDaemons:
+
+      * a daemon is in the `system` domain, so gui/<uid>/<label> no longer
+        resolves for it; and
+      * after a reboot with nobody logged in, gui/<uid> DOES NOT EXIST AT ALL —
+        which is the whole reason for converting in the first place.
+
+    So ask launchctl which domain holds the job instead of assuming. Falls back
+    to the GUI domain, which keeps every not-yet-converted agent working exactly
+    as before — this function is a no-op until something is actually a daemon.
+    """
+    try:
+        if subprocess.run(["launchctl", "print", f"system/{label}"],
+                          capture_output=True, timeout=10).returncode == 0:
+            return f"system/{label}"
+    except Exception:
+        pass
+    return f"gui/{os.getuid()}/{label}"
+
+
 # ── Admin: Deploy ─────────────────────────────────────────────────────────────
 
 @app.route("/admin/deploy", methods=["GET"])
@@ -910,9 +934,8 @@ def deploy():
                 "git": {"ok": git_ok, "output": git_output},
                 "restart": {"error": f"service not allowed: {job}"}
             }), 400
-        uid = os.getuid()
         r = subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{uid}/{job}"],
+            ["launchctl", "kickstart", "-k", launchctl_target(job)],
             capture_output=True, text=True
         )
         restart_info = {
@@ -957,9 +980,8 @@ def deploy_all():
                 "restart": {"error": f"service not allowed: {job}"},
                 "cumulus": {"ok": None, "output": "skipped (bad job)"},
             }), 400
-        uid = os.getuid()
         r = subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{uid}/{job}"],
+            ["launchctl", "kickstart", "-k", launchctl_target(job)],
             capture_output=True, text=True
         )
         restart_info = {
