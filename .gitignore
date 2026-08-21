@@ -38,3 +38,7 @@ config/business_idea_trial_feeds.json
 # what masked three genuinely untracked modules on 2026-08-19 (S69).
 .run-command
 .run-result
+
+# transient deploy trigger — written by Cowork, consumed and removed by
+# cowork-deploy.sh. Committing it produces a spurious add/delete pair (S71).
+.deploy-job
