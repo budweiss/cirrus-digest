@@ -104,13 +104,29 @@ def launchctl_state():
     things that were fine. A watchdog that is blind to half the machine is worse
     than none, because it manufactures confidence.
     """
-    out = subprocess.run(["launchctl", "list"], capture_output=True,
-                         text=True).stdout
-    # `launchctl print system` lists daemons the plain list may omit.
-    sysout = subprocess.run(["launchctl", "print", "system"],
-                            capture_output=True, text=True).stdout
+    # THREE sources, because no single one sees the whole machine during the
+    # LaunchAgent -> LaunchDaemon migration, and being blind in either direction
+    # makes the watchdog cry wolf:
+    #   * as a GUI agent, it could not see converted daemons  (seen live 11:19,
+    #     reporting a healthy com.cirrus.api as "not loaded" and then failing to
+    #     "repair" it);
+    #   * as a system daemon, `launchctl list` returns the SYSTEM domain, so the
+    #     not-yet-converted GUI agents vanish instead (seen live 11:24, same
+    #     false alarm about com.cirrus.daily / devloop / morningbrief).
+    # Reading all three costs nothing and is correct at every point of the
+    # migration, including both ends of it.
+    def _dump(*args):
+        try:
+            return subprocess.run(["launchctl", *args], capture_output=True,
+                                  text=True, timeout=20).stdout
+        except Exception:
+            return ""
+
+    out = _dump("list")
+    sysout = _dump("print", "system")
+    guiout = _dump("print", f"gui/{os.getuid()}")
     st = {}
-    for line in sysout.splitlines():
+    for line in (sysout + "\n" + guiout).splitlines():
         parts = line.split()
         # rows look like:  <pid|-> <status> com.cirrus.foo
         if len(parts) == 3 and parts[2].startswith("com.cirrus."):
