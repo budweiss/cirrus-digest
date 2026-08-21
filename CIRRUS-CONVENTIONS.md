@@ -27,10 +27,14 @@ before reviewing proposals or writing any code for CIRRUS.
   jobs: `com.cirrus.bot` (KeepAlive, runs the bot loop forever),
   `com.cirrus.daily` (7am daily digest), a weekly digest job (Sunday 7am),
   and `com.cirrus.api` (Flask API on port 5001). Anything that should run
-  periodically gets its own plist in `~/Library/LaunchAgents/` and is
-  triggered with
-  `launchctl kickstart -k gui/$(id -u)/<job-label>`. Don't propose Python
-  `schedule`-library loops or cron — they'd duplicate/conflict with launchd.
+  periodically gets its own plist. **As of 2026-08-21 the always-on jobs are
+  system LaunchDaemons in `/Library/LaunchDaemons/` (started at boot with no
+  login); the calendar jobs are still LaunchAgents in `~/Library/LaunchAgents/`.**
+  Restart with `launchctl kickstart -k <domain>/<job-label>`, where the domain is
+  `system` for a daemon and `gui/$(id -u)` for an agent — **ask launchctl which
+  one holds the job rather than hardcoding it** (see `launchctl_target()` in
+  `cirrus_api.py`). Don't propose Python `schedule`-library loops or cron — they'd
+  duplicate/conflict with launchd.
 
 - **Config lives in `~/projects/cirrus-digest/config/sources.json`
   (`CONFIG["digest"]`, `CONFIG["email"]`, `CONFIG["podcasts"]`) and
@@ -78,8 +82,9 @@ before reviewing proposals or writing any code for CIRRUS.
 - **Deploy flow**: edit locally (in this Cowork folder, which mirrors
   `~/projects/cirrus-digest/` on CIRRUS) → `scp` to CIRRUS → `git add/commit/push`
   (repo `budweiss/cirrus-digest`, gitleaks pre-commit hook blocks secrets) →
-  `launchctl kickstart -k gui/$(id -u)/<job-label>` to restart the affected
-  service. No CI/CD beyond that.
+  `launchctl kickstart -k <domain>/<job-label>` to restart the affected service —
+  `system/` for the converted daemons, `gui/$(id -u)/` for the remaining agents.
+  No CI/CD beyond that.
 
 - **External LLM fallback (added 2026-06-14)**: `cirrus_bot.py`'s `/ask`
   command tries Ollama (qwen2.5:72b) first; if the answer is empty, errors,

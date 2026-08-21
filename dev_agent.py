@@ -785,7 +785,7 @@ def ship(n: int):
         _notify(f"🚀 `{bid}` deployed ({sha}). Restarting: {', '.join(svcs)} …")
         uid = os.getuid()
         for s in svcs:
-            _run(["launchctl", "kickstart", "-k", f"gui/{uid}/{s}"])
+            _run(["launchctl", "kickstart", "-k", launchctl_target(s)])
             time.sleep(2)
 
     # 5. verify: live files compile; restarted services are back
@@ -811,7 +811,7 @@ def ship(n: int):
         _git(["push", "origin", "main"], cwd=PROJECT_DIR)
         uid = os.getuid()
         for s in svcs:
-            _run(["launchctl", "kickstart", "-k", f"gui/{uid}/{s}"])
+            _run(["launchctl", "kickstart", "-k", launchctl_target(s)])
         b["status"] = "rolled-back"
         builds_save(builds)
         _ledger("rollback", bid, result=fail[:80])
@@ -857,6 +857,25 @@ def unhold(n: int):
     builds_save(builds)
     _ledger("unhold", b["id"], detail=f"override council reject: {(b.get('council') or {}).get('notes','')[:80]}")
     return f"🔓 Override recorded — `{b['id']}` un-held. Reply `ship {n}` to deploy it anyway."
+
+
+def launchctl_target(label: str) -> str:
+    """Which domain holds this job — system or the GUI session?
+
+    S72: the THIRD copy of this fix (after cirrus_api and cirrus_watchdog), and
+    the reason it is now linted rather than remembered. dev_agent restarts a
+    service after shipping a build; eight com.cirrus.* jobs became system
+    LaunchDaemons on 2026-08-21, so a hardcoded gui/<uid> target had already
+    stopped resolving for every one of them. Falls back to the GUI domain, so
+    nothing changes for jobs still running as agents.
+    """
+    try:
+        if subprocess.run(["launchctl", "print", f"system/{label}"],
+                          capture_output=True, timeout=10).returncode == 0:
+            return f"system/{label}"
+    except Exception:
+        pass
+    return f"gui/{os.getuid()}/{label}"
 
 
 # ── Goal-loop evaluator (S71) ─────────────────────────────────────────────────
