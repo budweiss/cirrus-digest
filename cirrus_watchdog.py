@@ -95,10 +95,31 @@ def telegram(text: str) -> bool:
 
 # ── checks ────────────────────────────────────────────────────────────────────
 def launchctl_state():
-    """label -> (pid_or_None, exit_code) for com.cirrus.* loaded agents."""
+    """label -> (pid_or_None, exit_code) for every loaded com.cirrus.* job.
+
+    S71: reads BOTH domains. `launchctl list` only reports the caller's own
+    bootstrap namespace, so once jobs began converting to system LaunchDaemons a
+    single call could no longer see all of them — and the watchdog would have
+    reported healthy daemons as "not loaded in launchctl" and tried to repair
+    things that were fine. A watchdog that is blind to half the machine is worse
+    than none, because it manufactures confidence.
+    """
     out = subprocess.run(["launchctl", "list"], capture_output=True,
                          text=True).stdout
+    # `launchctl print system` lists daemons the plain list may omit.
+    sysout = subprocess.run(["launchctl", "print", "system"],
+                            capture_output=True, text=True).stdout
     st = {}
+    for line in sysout.splitlines():
+        parts = line.split()
+        # rows look like:  <pid|-> <status> com.cirrus.foo
+        if len(parts) == 3 and parts[2].startswith("com.cirrus."):
+            pid = None if parts[0] in ("-", "0") else parts[0]
+            try:
+                code = int(parts[1])
+            except ValueError:
+                code = 0
+            st[parts[2]] = (pid, code)
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[2].startswith("com.cirrus."):
@@ -138,9 +159,26 @@ def cloudflared_running() -> bool:
     return r.returncode == 0
 
 
+def launchctl_target(label: str) -> str:
+    """Which domain actually holds this job — system or the GUI session?
+
+    S71: the hardcoded gui/<uid>/<label> was right only while every com.cirrus.*
+    job was a user LaunchAgent AND the watchdog was one too. A converted job
+    lives in `system`, and after a reboot with nobody logged in gui/<uid> does
+    not exist at all. Falls back to the GUI domain, so nothing changes for
+    agents that have not been converted yet.
+    """
+    try:
+        if subprocess.run(["launchctl", "print", f"system/{label}"],
+                          capture_output=True, timeout=10).returncode == 0:
+            return f"system/{label}"
+    except Exception:
+        pass
+    return f"gui/{os.getuid()}/{label}"
+
+
 def kickstart(svc: str):
-    uid = os.getuid()
-    return subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/{svc}"],
+    return subprocess.run(["launchctl", "kickstart", "-k", launchctl_target(svc)],
                           capture_output=True, text=True).returncode == 0
 
 
