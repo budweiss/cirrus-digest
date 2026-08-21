@@ -55,13 +55,18 @@ BUILDS_FILE = PROJECT_DIR / "logs/dev-loop/builds.json"
 
 MAX_BUILDS_PER_RUN  = 2          # dry-runs are ~13 min each — cap the night
 MAX_FILES_PER_PATCH = 4
-MAX_FILE_CONTEXT    = 45_000     # chars of one file sent to the model. NOT an input
-                                 # limit — Sonnet takes far more. It tracks the OUTPUT
-                                 # budget: the builder must return each changed file
-                                 # COMPLETE and max_tokens=16384 is ~65k chars, so a
-                                 # larger file cannot be written back. Raising this
-                                 # without moving to diff-based patches just converts
-                                 # an honest refusal into a truncated reply (S71).
+MAX_FILE_CONTEXT    = 45_000     # WHOLE-FILE rewrite ceiling. NOT an input limit —
+                                 # Sonnet takes far more. It tracks the OUTPUT budget:
+                                 # a whole-file rewrite must be returned COMPLETE and
+                                 # max_tokens=16384 is ~65k chars. Files above this are
+                                 # not refused any more — they go to EDIT mode (S71).
+MAX_EDIT_FILE       = 200_000    # a file we will SHOW for edit mode. Input-only: edits
+                                 # emit just the changed hunks, so the output budget
+                                 # stops being the binding constraint. This is what
+                                 # lets the loop touch cirrus_daily.py (74,827
+                                 # chars) and cirrus_bot.py (92,576) at all —
+                                 # neither had ever been buildable.
+MAX_EDITS_PER_PATCH = 12
 MAX_TOTAL_CONTEXT   = 120_000    # chars of all files sent to the model
 
 # Changed files that force a full daily --dry-run before confirm.
@@ -113,6 +118,59 @@ def validate_patch(files: list):
         if not content or not content.strip():
             return False, f"{path}: empty content (deletions are never automated)"
     return True, "ok"
+
+
+def plan_edits(current: dict, edits: list):
+    """Apply search/replace edits in memory. Pure -> (ok, reason, changed).
+
+    Deliberately NOT a unified diff. A unified diff carries line numbers and
+    context counts, and a model that miscounts them produces a patch `git apply`
+    either rejects or — worse — applies at the wrong offset. Exact-match
+    search/replace has no line numbers to get wrong: it either finds the text or
+    says so.
+
+    Two rules do the safety work:
+      * the `find` text must appear AT LEAST once — a model quoting something
+        that is not in the file is hallucinating, and we say so rather than
+        silently skipping the edit;
+      * it must appear AT MOST once — an ambiguous match could land the change
+        in the wrong place, which is exactly the failure a diff offset produces.
+
+    ATOMIC: every edit is applied to an in-memory copy and nothing is returned
+    unless all of them succeed, so a patch can never be half-written to disk.
+    """
+    if not edits:
+        return False, "no edits", {}
+    if len(edits) > MAX_EDITS_PER_PATCH:
+        return False, f"too many edits ({len(edits)} > {MAX_EDITS_PER_PATCH})", {}
+    out = dict(current)
+    for i, e in enumerate(edits, 1):
+        e = e or {}
+        path, find, repl = e.get("path", ""), e.get("find", ""), e.get("replace", "")
+        if not isinstance(find, str) or not isinstance(repl, str):
+            return False, f"edit {i}: 'find'/'replace' must be strings", {}
+        if path not in out:
+            return False, (f"edit {i}: {path or '(no path)'} was not provided as "
+                           f"context, so its current text is unknown"), {}
+        n = out[path].count(find) if find else 0
+        if not find:
+            return False, f"edit {i} ({path}): empty 'find' — refusing to guess where", {}
+        if n == 0:
+            return False, (f"edit {i} ({path}): the 'find' text does not appear in the "
+                           f"file — it was not copied from the content shown"), {}
+        if n > 1:
+            return False, (f"edit {i} ({path}): the 'find' text appears {n} times — "
+                           f"ambiguous; it needs more surrounding lines to be unique"), {}
+        if find == repl:
+            return False, f"edit {i} ({path}): find and replace are identical (no-op)", {}
+        out[path] = out[path].replace(find, repl, 1)
+    changed = {p: t for p, t in out.items() if t != current.get(p)}
+    if not changed:
+        return False, "edits produced no change", {}
+    for p, t in changed.items():
+        if not t.strip():
+            return False, f"{p}: edits emptied the file (deletions are never automated)", {}
+    return True, "ok", changed
 
 
 def parse_model_json(text: str):
@@ -212,24 +270,41 @@ def _creds():
         return {}
 
 
-def build_prompt(item: dict, file_blobs: dict, conventions: str = ""):
-    """Return (system, user) for the patch-writing model call. Pure."""
+def build_prompt(item: dict, file_blobs: dict, conventions: str = "",
+                 edit_only: set = None):
+    """Return (system, user) for the patch-writing model call. Pure.
+
+    edit_only: paths too large to return whole (S71). They are shown in full but
+    may only be changed through search/replace edits.
+    """
     spec = item.get("dev_spec") or {}
+    edit_only = edit_only or set()
     system = (
         "You are the CIRRUS Dev-Loop build agent. You write a minimal, surgical "
         "patch for the cirrus-digest Python project to implement ONE approved "
         "proposal. Hard rules:\n"
         "1. Reply with a single JSON object, no markdown fences, shaped exactly:\n"
-        '   {"summary": "<one line>", "files": [{"path": "<repo-relative>", '
-        '"content": "<complete new file content>"}], "notes": "<risks/assumptions>"}\n'
-        "2. Return the COMPLETE new content of every file you change (not a diff).\n"
+        '   {"summary": "<one line>",\n'
+        '    "files": [{"path": "<repo-relative>", "content": "<complete new file content>"}],\n'
+        '    "edits": [{"path": "<repo-relative>", "find": "<exact existing text>", '
+        '"replace": "<new text>"}],\n'
+        '    "notes": "<risks/assumptions>"}\n'
+        "   Use \"files\" to rewrite a small file whole; use \"edits\" for surgical "
+        "changes. Either list may be empty, but not both.\n"
+        "2. Files marked [EDIT-ONLY] below are too large to return whole. You MUST "
+        "change them via \"edits\" and MUST NOT list them in \"files\". Any other "
+        "file may use either form.\n"
+        "2b. Every \"find\" must be copied EXACTLY from the content shown, and must "
+        "appear EXACTLY ONCE in that file — include enough surrounding lines to be "
+        "unique. Never use line numbers, and never abbreviate with \"...\". If you "
+        "cannot quote it exactly, do not guess: return CANNOT_BUILD.\n"
         "3. Change as few files and as few lines as possible. Preserve existing "
         "style, comments, and behavior everywhere you are not explicitly changing.\n"
         "4. Never touch credentials, cookies, tokens, config files (except "
         "config/sources.json), launchd plists, or anything under logs/ or digests/.\n"
         "5. Python 3.9 stdlib + requests only; no new dependencies.\n"
         "6. If the proposal cannot be implemented safely within these rules, reply "
-        '{"summary": "CANNOT_BUILD", "files": [], "notes": "<why>"}.'
+        '{"summary": "CANNOT_BUILD", "files": [], "edits": [], "notes": "<why>"}.'
         + ("\n\nProject conventions:\n" + conventions[:4000] if conventions else "")
     )
     parts = [
@@ -241,7 +316,8 @@ def build_prompt(item: dict, file_blobs: dict, conventions: str = ""):
         "Current file contents:",
     ]
     for path, blob in file_blobs.items():
-        parts.append(f"\n===== {path} =====\n{blob}")
+        tag = "  [EDIT-ONLY — too large to return whole; use \"edits\"]" if path in edit_only else ""
+        parts.append(f"\n===== {path} ====={tag}\n{blob}")
     return system, "\n".join(parts)
 
 
@@ -450,6 +526,7 @@ def build_item(item: dict):
         # proposal may legitimately be creating it.
         want = spec.get("files_to_change") or []
         blobs, total, blockers, notes = {}, 0, [], []
+        edit_only = set()
         if not want:
             blockers.append(
                 "the dev_spec names no files_to_change, so there is nothing to "
@@ -460,15 +537,10 @@ def build_item(item: dict):
                 notes.append(f"{p} does not exist yet — treat as a new file")
                 continue
             text = fp.read_text()
-            if len(text) > MAX_FILE_CONTEXT:
+            if len(text) > MAX_EDIT_FILE:
                 blockers.append(
-                    f"{p} is {len(text):,} chars, over MAX_FILE_CONTEXT="
-                    f"{MAX_FILE_CONTEXT:,}. The binding limit is the model's OUTPUT "
-                    f"budget, not its input: build_prompt requires the COMPLETE new "
-                    f"content of every changed file and call_claude_build caps output "
-                    f"at max_tokens=16384 (~65k chars), so a file this size could not "
-                    f"be written back whole even if it were sent whole. Building it "
-                    f"needs diff-based patches, not a bigger context window")
+                    f"{p} is {len(text):,} chars, over MAX_EDIT_FILE="
+                    f"{MAX_EDIT_FILE:,} — too large even to show for a surgical edit")
                 continue
             if total + len(text) > MAX_TOTAL_CONTEXT:
                 blockers.append(
@@ -476,6 +548,14 @@ def build_item(item: dict):
                     f"exhausted; dropping it silently would ask for a rewrite of a "
                     f"file the builder never saw")
                 continue
+            # Over the whole-file ceiling is no longer fatal (S71). The ceiling
+            # tracks the OUTPUT budget — a file that cannot be written back whole
+            # can still be changed surgically, because an edit emits only the
+            # hunk. This is what lets the loop touch the two biggest files in the
+            # project, which it had never once been able to build.
+            if len(text) > MAX_FILE_CONTEXT:
+                edit_only.add(p)
+                _log(f"{bid}: {p} is {len(text):,} chars — EDIT-ONLY mode")
             blobs[p] = text
             total += len(text)
 
@@ -493,29 +573,67 @@ def build_item(item: dict):
         if conv.exists():
             conventions = conv.read_text()
 
-        system, user = build_prompt(item, blobs, conventions)
+        system, user = build_prompt(item, blobs, conventions, edit_only)
         patch = build_model_patch(system, user)
 
-        if patch.get("summary") == "CANNOT_BUILD" or not patch.get("files"):
+        whole = patch.get("files") or []
+        edits = patch.get("edits") or []
+        if patch.get("summary") == "CANNOT_BUILD" or (not whole and not edits):
             rec.update(status="cannot-build",
                        error=str(patch.get("notes", ""))[:300])
             _ledger("build", bid, result=f"CANNOT_BUILD: {patch.get('notes','')[:60]}")
             _cleanup_worktree(bid)
             return rec
 
-        ok, why = validate_patch(patch["files"])
-        if not ok:
-            rec.update(status="blocked", error=f"patch rejected: {why}")
-            _ledger("build", bid, result=f"BLOCKED: {why}")
+        # A whole-file rewrite of an EDIT-ONLY file is the exact failure this
+        # mode exists to prevent: it cannot be returned complete inside
+        # max_tokens, so accepting it would write a truncated file to disk.
+        ignored = sorted({f.get("path", "") for f in whole} & edit_only)
+        if ignored:
+            why = (f"returned whole-file content for {', '.join(ignored)}, which is "
+                   f"too large to write back whole — those must use \"edits\"")
+            rec.update(status="blocked", error=f"patch rejected: {why}"[:300])
+            _ledger("build", bid, result=f"BLOCKED: {why[:60]}")
             _cleanup_worktree(bid)
             return rec
 
+        if whole:
+            ok, why = validate_patch(whole)
+            if not ok:
+                rec.update(status="blocked", error=f"patch rejected: {why}")
+                _ledger("build", bid, result=f"BLOCKED: {why}")
+                _cleanup_worktree(bid)
+                return rec
+
+        # Edits are planned entirely in memory and only then written, so a patch
+        # is never half-applied to the worktree.
+        edited = {}
+        if edits:
+            for e in edits:
+                okp, whyp = patch_path_ok((e or {}).get("path", ""))
+                if not okp:
+                    rec.update(status="blocked",
+                               error=f"patch rejected: {(e or {}).get('path','')}: {whyp}"[:300])
+                    _ledger("build", bid, result=f"BLOCKED: edit path {whyp[:40]}")
+                    _cleanup_worktree(bid)
+                    return rec
+            ok, why, edited = plan_edits(blobs, edits)
+            if not ok:
+                rec.update(status="blocked", error=f"edits rejected: {why}"[:300])
+                _ledger("build", bid, result=f"BLOCKED: {why[:60]}")
+                _cleanup_worktree(bid)
+                return rec
+
         changed = []
-        for f in patch["files"]:
+        for f in whole:
             dest = wt / f["path"]
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(f["content"])
             changed.append(f["path"])
+        for path, text in edited.items():
+            (wt / path).write_text(text)
+            changed.append(path)
+        rec["edits_applied"] = len(edits)
         rec["files"] = changed
         rec["summary"] = str(patch.get("summary", ""))[:200]
         rec["notes"] = str(patch.get("notes", ""))[:300]
@@ -857,6 +975,71 @@ def _streak_reset():
     _streak_save({"count": 0, "since": None, "last_alert_at": 0})
 
 
+def selftest() -> bool:
+    """Offline unit tests for the edit planner: python3 dev_agent.py --selftest
+
+    plan_edits is where a bad patch is supposed to die. It is pure, so it can be
+    exercised with no worktree, no model call and no network — which means there
+    is no excuse for it being unverified.
+    """
+    checks = []
+
+    def ck(name, cond):
+        checks.append((name, bool(cond)))
+
+    F = {"a.py": "import os\ndef one():\n    return 1\ndef two():\n    return 2\n"}
+
+    ok, _, ch = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": "return 11"}])
+    ck("a single edit applies", ok and "return 11" in ch["a.py"])
+    ck("  ...and leaves the rest of the file alone",
+       ok and "def two():" in ch["a.py"] and "import os" in ch["a.py"])
+
+    ok, _, ch = plan_edits({"a.py": "X\n"}, [{"path": "a.py", "find": "X", "replace": "Y"},
+                                             {"path": "a.py", "find": "Y", "replace": "Z"}])
+    ck("a later edit sees the earlier edit's result", ok and ch["a.py"] == "Z\n")
+
+    # The two rules that do the safety work.
+    ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "return 42", "replace": "x"}])
+    ck("text that is not in the file is refused (hallucinated quote)",
+       not ok and "does not appear" in why)
+    ok, why, _ = plan_edits({"a.py": "dup\ndup\n"}, [{"path": "a.py", "find": "dup", "replace": "x"}])
+    ck("an ambiguous match is refused, never applied to the first hit",
+       not ok and "appears 2 times" in why)
+
+    # A patch must never be half-written to disk.
+    ok, why, ch = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": "return 11"},
+                                 {"path": "a.py", "find": "NOT THERE", "replace": "z"}])
+    ck("one bad edit discards the whole patch (atomic)", not ok and ch == {})
+
+    ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "", "replace": "x"}])
+    ck("an empty 'find' is refused rather than guessed at", not ok and "empty 'find'" in why)
+    ok, why, _ = plan_edits(F, [{"path": "nope.py", "find": "x", "replace": "y"}])
+    ck("a path that was never shown is refused", not ok and "not provided as context" in why)
+    ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": "return 1"}])
+    ck("a no-op edit is refused", not ok and "identical" in why)
+    ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": None}])
+    ck("non-string find/replace is refused", not ok and "must be strings" in why)
+    ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "x", "replace": "y"}] * (MAX_EDITS_PER_PATCH + 1))
+    ck("too many edits is refused", not ok and "too many edits" in why)
+
+    ok, _, ch = plan_edits(F, [{"path": "a.py", "find": "def two():\n    return 2\n", "replace": ""}])
+    ck("removing a block is allowed", ok and "def two()" not in ch["a.py"])
+    ok, why, _ = plan_edits({"a.py": "only\n"}, [{"path": "a.py", "find": "only\n", "replace": ""}])
+    ck("emptying a file is refused (deletions are never automated)",
+       not ok and "emptied the file" in why)
+
+    ok, _, ch = plan_edits({"a.py": "X\n", "b.py": "keep\n"},
+                           [{"path": "a.py", "find": "X", "replace": "Y"}])
+    ck("untouched files are not reported as changed", ok and set(ch) == {"a.py"})
+
+    bad = 0
+    for name, good in checks:
+        print(f"  {'ok  ' if good else 'FAIL'}  {name}")
+        bad += 0 if good else 1
+    print(f"all {len(checks)} dev_agent selftests passed" if not bad else f"{bad} FAILED")
+    return bad == 0
+
+
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
 def run_nightly():
     _log("nightly sweep start")
@@ -1030,5 +1213,7 @@ if __name__ == "__main__":
             r = _review_diff(it, df, creds)
             print(f"\n[{label}] verdict={r.get('verdict')} "
                   f"({'/'.join(r.get('members', []))}→{r.get('judge')})\n  {r.get('notes')}")
+    elif cmd == "--selftest":
+        sys.exit(0 if selftest() else 1)
     else:
         print(__doc__)
