@@ -55,7 +55,13 @@ BUILDS_FILE = PROJECT_DIR / "logs/dev-loop/builds.json"
 
 MAX_BUILDS_PER_RUN  = 2          # dry-runs are ~13 min each — cap the night
 MAX_FILES_PER_PATCH = 4
-MAX_FILE_CONTEXT    = 45_000     # chars of one file sent to the model
+MAX_FILE_CONTEXT    = 45_000     # chars of one file sent to the model. NOT an input
+                                 # limit — Sonnet takes far more. It tracks the OUTPUT
+                                 # budget: the builder must return each changed file
+                                 # COMPLETE and max_tokens=16384 is ~65k chars, so a
+                                 # larger file cannot be written back. Raising this
+                                 # without moving to diff-based patches just converts
+                                 # an honest refusal into a truncated reply (S71).
 MAX_TOTAL_CONTEXT   = 120_000    # chars of all files sent to the model
 
 # Changed files that force a full daily --dry-run before confirm.
@@ -416,15 +422,72 @@ def build_item(item: dict):
         if rc != 0:
             raise RuntimeError(f"worktree add failed: {out[:200]}")
 
-        # Context: the spec's guessed files that actually exist (fallback: daily)
-        want = (spec.get("files_to_change") or ["cirrus_daily.py"])
-        blobs, total = {}, 0
+        # Context: the files the spec says will change (S71 — see below).
+        #
+        # Two harness bugs used to live in these six lines, and between them they
+        # caused HALF of all `cannot-build` results. Both were silent, so the
+        # model got blamed for refusing an impossible task:
+        #
+        #  1. `read_text()[:MAX_FILE_CONTEXT]` truncated at 45,000 chars with NO
+        #     marker, while build_prompt tells the model "return the COMPLETE new
+        #     content of every changed file". cirrus_daily.py is 77,004 chars and
+        #     cirrus_bot.py is 94,759 — the two biggest files in the project were
+        #     handed over cut off mid-function. prop-2026-07-19-4 refused, and was
+        #     RIGHT to: "the provided content is truncated ... I cannot safely".
+        #     A file we cannot show whole is a file we cannot ask to be rewritten
+        #     whole, so that is now a build refusal with an honest reason instead
+        #     of a wasted ~13-minute model call ending in a confusing error.
+        #
+        #  2. `or ["cirrus_daily.py"]` silently substituted an unrelated file when
+        #     the spec named none. prop-2026-07-29-1 needed config/sources.json,
+        #     got a truncated cirrus_daily.py, and reported "config/sources.json
+        #     ... its current content was not provided." Guessing wrong is worse
+        #     than saying the spec is incomplete — the fix belongs in whatever
+        #     produced an empty files_to_change, and it can only be fixed if the
+        #     failure names it.
+        #
+        # A named file that does NOT exist is fine and stays non-fatal: the
+        # proposal may legitimately be creating it.
+        want = spec.get("files_to_change") or []
+        blobs, total, blockers, notes = {}, 0, [], []
+        if not want:
+            blockers.append(
+                "the dev_spec names no files_to_change, so there is nothing to "
+                "send the builder (it will not be given an unrelated file to guess from)")
         for p in want:
             fp = wt / p
-            if fp.exists() and total < MAX_TOTAL_CONTEXT:
-                blob = fp.read_text()[:MAX_FILE_CONTEXT]
-                blobs[p] = blob
-                total += len(blob)
+            if not fp.exists():
+                notes.append(f"{p} does not exist yet — treat as a new file")
+                continue
+            text = fp.read_text()
+            if len(text) > MAX_FILE_CONTEXT:
+                blockers.append(
+                    f"{p} is {len(text):,} chars, over MAX_FILE_CONTEXT="
+                    f"{MAX_FILE_CONTEXT:,}. The binding limit is the model's OUTPUT "
+                    f"budget, not its input: build_prompt requires the COMPLETE new "
+                    f"content of every changed file and call_claude_build caps output "
+                    f"at max_tokens=16384 (~65k chars), so a file this size could not "
+                    f"be written back whole even if it were sent whole. Building it "
+                    f"needs diff-based patches, not a bigger context window")
+                continue
+            if total + len(text) > MAX_TOTAL_CONTEXT:
+                blockers.append(
+                    f"{p} skipped — MAX_TOTAL_CONTEXT={MAX_TOTAL_CONTEXT:,} "
+                    f"exhausted; dropping it silently would ask for a rewrite of a "
+                    f"file the builder never saw")
+                continue
+            blobs[p] = text
+            total += len(text)
+
+        if blockers or (want and not blobs and not notes):
+            reason = "; ".join(blockers) or "no usable file context could be assembled"
+            rec.update(status="cannot-build", error=reason[:300])
+            _log(f"{bid}: cannot-build before the model call — {reason[:160]}")
+            _ledger("build", bid, result=f"CANNOT_BUILD (context): {reason[:60]}")
+            _cleanup_worktree(bid)
+            return rec
+        for n in notes:
+            _log(f"{bid}: {n}")
         conventions = ""
         conv = wt / "CIRRUS-CONVENTIONS.md"
         if conv.exists():
