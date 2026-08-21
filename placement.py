@@ -346,6 +346,23 @@ def main():
     if "--selftest" in sys.argv:
         return 0 if selftest() else 1
     a = sys.argv
+    # S72: make the registry AUTHORITATIVE for tooling, not just auditable after
+    # the fact. `--live-units <host>` prints the units the registry says that box
+    # should actually be running, so a command that starts/enables/converts jobs
+    # can gate on ownership instead of on "a plist exists here".
+    #
+    # This is the fix for a real incident: the S72 batch converter enumerated
+    # plists on CIRRUS and bootstrapped all of them, resurrecting billsnow,
+    # billnewdev and pedagogy — which the registry already recorded as `dormant`
+    # on cirrus and `live` on cumulus. The fact was written down; nothing asked.
+    if "--live-units" in a:
+        host = a[a.index("--live-units") + 1].lower()
+        rp = a[a.index("--registry") + 1] if "--registry" in a else \
+            "docs/PROJECT-RUNTIME-REGISTRY.md"
+        for r in parse_registry(Path(rp).read_text()):
+            if r["host"] == host and r["state"] == "live":
+                print(r["unit"])
+        return 0
     rp = a[a.index("--registry") + 1] if "--registry" in a else \
         "docs/PROJECT-RUNTIME-REGISTRY.md"
     registry = parse_registry(Path(rp).read_text())
