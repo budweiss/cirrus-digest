@@ -54,9 +54,15 @@ fi
 
 # Passphrase goes in on STDIN. Never as an argument: arguments are visible to any
 # user via `ps`, which would defeat the point of the file permissions above.
-if diskutil apfs unlockVolume "$VOLUME" \
+# Strip a trailing newline. `security find-generic-password -w` appends one, and
+# the natural way to populate this file is to pipe that straight in without ever
+# displaying the secret — so the common case would otherwise send diskutil a
+# passphrase with an extra byte and fail with 'passphrase rejected', sending
+# someone hunting a password that was actually correct.
+if printf '%s' "$(cat "$PASSFILE")" \
+     | diskutil apfs unlockVolume "$VOLUME" \
         -user "$CRYPTO_USER" \
-        -stdinpassphrase < "$PASSFILE" >/dev/null 2>&1; then
+        -stdinpassphrase >/dev/null 2>&1; then
     log "unlocked and mounted '$VOLUME_NAME' ($VOLUME)"
     exit 0
 fi
