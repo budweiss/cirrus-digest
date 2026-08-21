@@ -52,6 +52,31 @@ URL_RX = re.compile(r'https?://[^\s`\'")\]]+')
 # the model is unavailable, items pass through — the gate must never eat a
 # real proposal. Override the mission text via config/mission.txt.
 RELEVANCE_MIN = 6
+# ── The borderline band (S71) ────────────────────────────────────────────────
+# Buddy asked what to do about items scoring exactly one point under the bar.
+# Reading all six on record, EVERY objection was about vagueness — "lacks
+# concrete tie", "vague on integration", "no concrete comparison" — and none
+# was about being off-mission. So the band is not off-topic work being thrown
+# away; it is on-topic work described too loosely to act on.
+#
+# Lowering RELEVANCE_MIN to 5 would still be wrong: FOUR of the six were host
+# installs (pytest, llama.cpp, Ollama, kiwix), which the dev-loop structurally
+# cannot perform — it writes file patches, it does not install software. Letting
+# them through converts a silent gate rejection into a `cannot-build` that costs
+# an approval tap and a ~13-minute build slot each.
+#
+# So the threshold does NOT move. What changes is that the band stops being
+# DISCARDED: it is parked in the existing deferred lane, where /deferred lists
+# it with the council's reason and /revive promotes any item Buddy judges worth
+# doing. A borderline call belongs to a human, per item — it does not belong in
+# a log nobody reads.
+BORDERLINE_MIN = RELEVANCE_MIN - 1
+
+# Actions needing something installed or run on the HOST, which the builder
+# cannot do. Labelled (not routed) so /deferred says who the item is waiting on.
+OPS_RX = re.compile(
+    r'\b(install|reinstall|uninstall|pull|download|clone|compile|provision|'
+    r'apt|apt-get|brew|pip|npm|docker|flash|reboot|upgrade)\b', re.IGNORECASE)
 MISSION_DEFAULT = """CIRRUS serves Buddy's projects and infrastructure:
 - Local AI infrastructure: CIRRUS (Mac Studio, Ollama/qwen), CUMULUS (DGX
   Spark beta, coming), STRATUS (future prod). Model upgrades ONLY if they fit
@@ -251,7 +276,7 @@ def run(kind: str = "daily"):
     existing_keys = {f"{p['type']}:{p['detail']}" for p in pending}
     existing_details = [p.get("detail", "") for p in pending]
 
-    added, proposed, hardware, filtered = [], [], [], []
+    added, proposed, hardware, filtered, borderline = [], [], [], [], []
     for it in items:
         blob = f"{it.get('detail','')} {it.get('source_line','')}"
         # Mission-relevance gate — BEFORE auto-add and BEFORE proposing, so an
@@ -262,13 +287,24 @@ def run(kind: str = "daily"):
             continue
         score, gate_why = _relevance(it)
         if score < RELEVANCE_MIN:
-            it["status"] = "filtered"
             it["filter_reason"] = f"relevance {score}/10: {gate_why}"
+            if score >= BORDERLINE_MIN:
+                # One point under the bar: park it for a human call rather than
+                # discard it. Reuses the existing deferred lane, so /deferred
+                # and /revive work with no new bot machinery.
+                who = ("needs YOU — a host install, not something the builder "
+                       "can patch" if OPS_RX.search(blob) else "buildable if made specific")
+                it["status"] = "deferred"
+                it["defer_reason"] = f"borderline {score}/10 ({who}): {gate_why[:100]}"
+                it["borderline"] = True
+                borderline.append(it)
+            else:
+                it["status"] = "filtered"
+                filtered.append(it)
             pending.append(it)              # tracked → dedupe blocks re-entry
             existing_keys.add(key0)
             existing_details.append(it["detail"])
             _log_filtered(it, score, gate_why)
-            filtered.append(it)
             continue
         # Auto-add a validated NEW source (feeds only; needs a real URL).
         # Tier-0 auto-apply (Phase 2): dev_loop.may_auto_apply gates this so ONLY
@@ -350,12 +386,14 @@ def run(kind: str = "daily"):
         B.log(f"self_review: self-changes report {rpt.name} {summary}")
     except Exception as e:
         B.log(f"self_review: self-changes report failed (continuing): {e}")
-    _notify(kind, added, proposed, hardware, filtered, _gate_health(pending))
+    _notify(kind, added, proposed, hardware, filtered, _gate_health(pending),
+            borderline)
     _gd, _gl = _gate_health(pending)
     B.log(f"self_review ({kind}): +{len(added)} sources, "
           f"{len(proposed)} proposed, {len(hardware)} hardware/env, "
-          f"{len(filtered)} filtered off-mission "
-          f"[gate {len(proposed)}/{len(proposed) + len(filtered)} passed; "
+          f"{len(filtered)} filtered off-mission, "
+          f"{len(borderline)} borderline parked "
+          f"[gate {len(proposed)}/{len(proposed) + len(filtered) + len(borderline)} passed; "
           f"last pass {_gl or 'never'}] "
           f"[target={dev_loop.TARGET_ENV}]")
 
@@ -380,7 +418,8 @@ def _gate_health(pending):
         return None, last
 
 
-def _notify(kind, added, proposed, hardware, filtered=None, gate=None):
+def _notify(kind, added, proposed, hardware, filtered=None, gate=None,
+            borderline=None):
     d = datetime.now().strftime("%Y-%m-%d")
     lines = [f"🤖 *CIRRUS self-review* ({kind}) — {d}", ""]
     if added:
@@ -418,10 +457,20 @@ def _notify(kind, added, proposed, hardware, filtered=None, gate=None):
                      f"relevance gate (logs/self-review-filtered.md)_")
         # S71: state the RATE, not just the count. A gate rejecting everything
         # and a gate rejecting nothing both look like "some items were filtered".
-        seen = len(filtered) + len(proposed)
+        # Borderline items were scored too — leaving them out would overstate
+        # how harsh the gate is being.
+        seen = len(filtered) + len(proposed) + len(borderline or [])
         if seen:
             pct = round(100 * len(proposed) / seen)
             lines.append(f"   gate pass-rate today: *{len(proposed)}/{seen} ({pct}%)*")
+        lines.append("")
+    if borderline:
+        lines.append(f"🅿️ *{len(borderline)} borderline item(s)* — one point under the "
+                     f"gate, parked rather than dropped:")
+        for it in borderline[:5]:
+            lines.append(f"• {it.get('detail','')[:70]}")
+            lines.append(f"  _{it.get('defer_reason','')[:110]}_")
+        lines.append("_See_ `/deferred` _· promote one with_ `/revive <N>`.")
         lines.append("")
     if gate:
         days, last = gate
@@ -433,7 +482,7 @@ def _notify(kind, added, proposed, hardware, filtered=None, gate=None):
                          f"reaches /approve — check whether the gate is right or the "
                          f"digest input has gone generic.")
             lines.append("")
-    if not (added or proposed or hardware or filtered):
+    if not (added or proposed or hardware or filtered or borderline):
         lines.append("Nothing new to review today.")
     try:
         B.send_message(B.ALLOWED_ID, "\n".join(lines))

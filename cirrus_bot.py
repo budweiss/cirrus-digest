@@ -809,6 +809,23 @@ def cmd_deferred():
     return msg
 
 
+def _ensure_spec(item: dict, pending: list):
+    """Give a revived item a dev_spec if it has none (S71).
+
+    Parked items never got one: make_spec is only called on the propose path.
+    Without it, approving a revived item is a SILENT no-op — execute_action only
+    calls dev_agent.queue_append when dev_spec.tier == 1, so the item is
+    accepted, reported as approved, and never builds. Same disease as the rest
+    of the dev-loop: a dead end that looks like success.
+    """
+    if item.get("dev_spec"):
+        return
+    try:
+        item["dev_spec"] = dev_loop.make_spec(item, len(pending) + 1)
+    except Exception as e:
+        log(f"revive: could not attach dev_spec (continuing): {e}")
+
+
 def cmd_revive(arg: str) -> str:
     """Un-park a deferred item back into /approve.
     `/revive <N>` (index from /deferred) or `/revive cumulus` (all
@@ -828,6 +845,7 @@ def cmd_revive(arg: str) -> str:
         for p in revived:
             p["status"] = "pending"
             p.pop("defer_reason", None)
+            _ensure_spec(p, pending)
         save_pending(pending)
         return (f"♻️ Revived {len(revived)} CUMULUS/hardware item(s) — "
                 f"they're back in /approve.")
@@ -838,6 +856,7 @@ def cmd_revive(arg: str) -> str:
             p = deferred[idx - 1]
             p["status"] = "pending"
             p.pop("defer_reason", None)
+            _ensure_spec(p, pending)
             save_pending(pending)
             return f"♻️ Revived — back in /approve:\n{p.get('detail', '')[:90]}"
         return (f"❌ No deferred item #{idx} — there are {len(deferred)}. "
