@@ -52,6 +52,20 @@ if [ "$MODE" != "600" ] || [ "$OWNER" != "root" ]; then
     exit 1
 fi
 
+# Refuse an EMPTY file. This is not hypothetical: the natural way to populate it
+# is to pipe `security find-generic-password -w`, and that command produces
+# NOTHING when the login keychain has no active session — which on this box is
+# the normal state now. `tee` then writes a perfectly-permissioned empty file.
+# Without this check the script would feed diskutil an empty passphrase and log
+# "passphrase rejected", sending someone to hunt a wrong password when the real
+# problem is that nobody was logged in when they ran the copy.
+if [ ! -s "$PASSFILE" ]; then
+    log "REFUSING: $PASSFILE is EMPTY. Most likely cause: it was populated from"
+    log "  \`security find-generic-password -w\` with nobody logged in, so the login"
+    log "  keychain was locked and produced no output. Re-run it AT THE CONSOLE."
+    exit 1
+fi
+
 # Passphrase goes in on STDIN. Never as an argument: arguments are visible to any
 # user via `ps`, which would defeat the point of the file permissions above.
 # Strip a trailing newline. `security find-generic-password -w` appends one, and
