@@ -43,7 +43,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import dev_loop
@@ -678,13 +678,130 @@ def unhold(n: int):
     return f"🔓 Override recorded — `{b['id']}` un-held. Reply `ship {n}` to deploy it anyway."
 
 
+# ── Goal-loop evaluator (S71) ─────────────────────────────────────────────────
+# "nothing queued for build" is a true statement about the QUEUE. It is NOT a
+# statement about whether the dev-loop is working, and until S71 nothing asked
+# the second question: the sweep logged that line 11 nights running (2026-08-10
+# -> 08-20) and correct-and-empty looked exactly like silently-broken.
+#
+# So on an empty night we now decide whether the empty outcome is EXPLAINED,
+# and escalate when it is not. Borrowed from s17_goal_loop in
+# shareAI-lab/learn-claude-code (docs/LEARN-CLAUDE-CODE-EVAL.md): an evaluator
+# separate from the worker, judging evidence rather than accepting "no error".
+STREAK_FILE    = PROJECT_DIR / "logs/dev-loop/empty-streak.json"
+EMPTY_ALERT_AT = 3      # first alert after this many consecutive empty nights
+EMPTY_REALERT  = 7      # then at most weekly — never nags nightly, never goes silent
+RECENT_DAYS    = 7      # window for "is anything still flowing in?"
+
+
+def _streak_load():
+    try:
+        return json.loads(STREAK_FILE.read_text())
+    except Exception:
+        return {"count": 0, "since": None, "last_alert_at": 0}
+
+
+def _streak_save(d):
+    try:
+        STREAK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STREAK_FILE.write_text(json.dumps(d, indent=2) + "\n")
+    except Exception as e:
+        _log(f"empty-streak write failed: {e}")
+
+
+def _recent(items, days=RECENT_DAYS):
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    return [i for i in items if (i.get("added") or "") >= cutoff]
+
+
+def explain_empty_queue():
+    """Why is there nothing to build? -> (verdict, detail).
+
+    verdict:
+      waiting-on-buddy — Tier-1 proposals are sitting in /approve. Healthy.
+      gate-starved     — candidates arrived but the relevance gate rejected them.
+      no-proposals     — nothing arrived at all. This is the alarming one.
+      unknown          — could not read the evidence; treated as alarming.
+    """
+    try:
+        import cirrus_bot as B
+        pending = B.load_pending()
+    except Exception as e:
+        return "unknown", f"could not read pending approvals: {e}"
+
+    t1 = [p for p in pending
+          if p.get("status") == "pending"
+          and (p.get("dev_spec") or {}).get("tier") == dev_loop.TIER_CONFIRM]
+    if t1:
+        return ("waiting-on-buddy",
+                f"{len(t1)} Tier-1 proposal(s) waiting in /approve — tap to queue a build")
+
+    recent = _recent(pending)
+    filt = [p for p in recent if p.get("status") == "filtered"]
+    if filt:
+        return ("gate-starved",
+                f"{len(filt)} candidate(s) in {RECENT_DAYS}d, all rejected by the "
+                f"mission-relevance gate — 0 reached /approve "
+                f"(logs/self-review-filtered.md)")
+    if not recent:
+        return ("no-proposals",
+                f"0 candidates of ANY kind in {RECENT_DAYS}d — self_review may not be "
+                f"running or the digest produced no action items")
+    return ("no-proposals",
+            f"{len(recent)} candidate(s) in {RECENT_DAYS}d but none became a Tier-1 "
+            f"proposal and none were filtered — the proposal step may be broken")
+
+
+def evaluate_empty_night():
+    """Record the empty night, and alert when it stops being explainable."""
+    verdict, detail = explain_empty_queue()
+    st = _streak_load()
+    st["count"] = int(st.get("count") or 0) + 1
+    if not st.get("since"):
+        st["since"] = datetime.now().strftime("%Y-%m-%d")
+    n = st["count"]
+    _log(f"nothing queued for build [{verdict}] {detail} (empty night #{n}, "
+         f"since {st['since']})")
+
+    last = int(st.get("last_alert_at") or 0)
+    alarming = verdict in ("no-proposals", "unknown")
+    due = (n >= EMPTY_ALERT_AT and not last) or (last and n - last >= EMPTY_REALERT)
+    # A broken pipeline should not wait three nights to speak up.
+    if alarming and not last:
+        due = True
+
+    if due:
+        head = ("⚠️ *Dev-Loop has built nothing for "
+                f"{n} night(s)* (since {st['since']})")
+        body = {
+            "waiting-on-buddy": "This is *not* a fault — it is waiting on you.",
+            "gate-starved": ("Not a fault in the builder. The relevance gate is "
+                             "rejecting everything upstream — check whether the gate "
+                             "is right or the digest input has gone generic."),
+            "no-proposals": "⛔ *This looks like a real break* — nothing is reaching the queue.",
+            "unknown": "⛔ *Could not verify* why. Treating as a break.",
+        }.get(verdict, "")
+        _notify("\n".join([head, "", f"*{verdict}* — {detail}", "", body,
+                            "", "_(Silence here used to look identical to success — S71.)_"]))
+        st["last_alert_at"] = n
+    _streak_save(st)
+
+
+def _streak_reset():
+    st = _streak_load()
+    if int(st.get("count") or 0):
+        _log(f"empty-night streak reset after {st['count']} night(s)")
+    _streak_save({"count": 0, "since": None, "last_alert_at": 0})
+
+
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
 def run_nightly():
     _log("nightly sweep start")
     todo = find_buildable()
     if not todo:
-        _log("nothing queued for build")
+        evaluate_empty_night()      # S71: is an empty queue the RIGHT outcome?
         return
+    _streak_reset()
     picked = todo[:MAX_BUILDS_PER_RUN]
     _log(f"{len(todo)} queued, building {len(picked)} (cap {MAX_BUILDS_PER_RUN})")
     builds = builds_load()

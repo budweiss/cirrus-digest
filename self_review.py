@@ -350,14 +350,37 @@ def run(kind: str = "daily"):
         B.log(f"self_review: self-changes report {rpt.name} {summary}")
     except Exception as e:
         B.log(f"self_review: self-changes report failed (continuing): {e}")
-    _notify(kind, added, proposed, hardware, filtered)
+    _notify(kind, added, proposed, hardware, filtered, _gate_health(pending))
+    _gd, _gl = _gate_health(pending)
     B.log(f"self_review ({kind}): +{len(added)} sources, "
           f"{len(proposed)} proposed, {len(hardware)} hardware/env, "
           f"{len(filtered)} filtered off-mission "
+          f"[gate {len(proposed)}/{len(proposed) + len(filtered)} passed; "
+          f"last pass {_gl or 'never'}] "
           f"[target={dev_loop.TARGET_ENV}]")
 
 
-def _notify(kind, added, proposed, hardware, filtered=None):
+def _gate_health(pending):
+    """(days_since_a_proposal_last_PASSED the gate, that date). (None, None) if never.
+
+    S71: the relevance gate rejected 48 of 50 candidates between 2026-08-08 and
+    08-21 and NOTHING anywhere reported that. The dev-loop starved for 11 nights
+    and the only symptom was a log line that reads exactly like success. A silent
+    96% rejection rate should never require someone to go looking for it.
+    """
+    passed = [p.get("added") for p in pending
+              if (p.get("dev_spec") or {}) and p.get("status") != "filtered"
+              and p.get("added")]
+    if not passed:
+        return None, None
+    last = max(passed)
+    try:
+        return (datetime.now() - datetime.strptime(last, "%Y-%m-%d")).days, last
+    except Exception:
+        return None, last
+
+
+def _notify(kind, added, proposed, hardware, filtered=None, gate=None):
     d = datetime.now().strftime("%Y-%m-%d")
     lines = [f"🤖 *CIRRUS self-review* ({kind}) — {d}", ""]
     if added:
@@ -393,7 +416,23 @@ def _notify(kind, added, proposed, hardware, filtered=None):
     if filtered:
         lines.append(f"🧹 _{len(filtered)} off-mission item(s) filtered by the "
                      f"relevance gate (logs/self-review-filtered.md)_")
+        # S71: state the RATE, not just the count. A gate rejecting everything
+        # and a gate rejecting nothing both look like "some items were filtered".
+        seen = len(filtered) + len(proposed)
+        if seen:
+            pct = round(100 * len(proposed) / seen)
+            lines.append(f"   gate pass-rate today: *{len(proposed)}/{seen} ({pct}%)*")
         lines.append("")
+    if gate:
+        days, last = gate
+        if days is None and last is None:
+            lines.append("⚠️ _No proposal has EVER passed the relevance gate._")
+        elif days is not None and days >= 7:
+            lines.append(f"⚠️ *Nothing has passed the relevance gate in {days} days* "
+                         f"(last: {last}). The dev-loop cannot build what never "
+                         f"reaches /approve — check whether the gate is right or the "
+                         f"digest input has gone generic.")
+            lines.append("")
     if not (added or proposed or hardware or filtered):
         lines.append("Nothing new to review today.")
     try:
