@@ -352,14 +352,19 @@ def compose():
         lines.append("")
 
     # one suggested next action
+    # S73 ordering: losing backup coverage outranks an approval tap. The first
+    # version put `not tm_ok` after `pend`, so a locked backup volume rendered
+    # as "Review the 1 pending /accept item(s)" — the single most important
+    # fact on the page, demoted below a one-tap chore. Caught by running the
+    # FAILING case, not the passing one.
     if not dig["dated_today"]:
         nxt = "Investigate the 7am digest — today's file is missing or misdated."
+    elif not tm_ok:
+        nxt = "Time Machine is not protecting this box — see Backup above."
     elif awaiting:
         nxt = f"Ship or discard {len(awaiting)} built Dev-Loop item(s) — reply /builds."
     elif pend:
         nxt = f"Review the {len(pend)} pending /accept item(s)."
-    elif not tm_ok:
-        nxt = "Time Machine is not protecting this box — see Backup above."
     elif att:
         nxt = "Check the attention flag(s) above."
     else:
