@@ -21,7 +21,9 @@ Usage:
 """
 
 import json
+import os
 import re
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -221,14 +223,84 @@ def gather_attention():
     return flags
 
 # ── Compose ────────────────────────────────────────────────────────────────────
+def gather_timemachine():
+    """Is CIRRUS actually being backed up? -> (line, ok)
+
+    S73 (Buddy): "whatever we need to set to make sure we get daily backups in
+    TM is how we should have this set."
+
+    Configuration alone cannot answer that. AutoBackup=1 and a 24h interval were
+    BOTH already true this morning while the backup volume sat FileVault-locked
+    and unmountable, because CIRRUS now runs with nobody logged in and the
+    unlock key lives in the login keychain. Time Machine had silently stopped,
+    and nothing anywhere would have said so — the brief did not mention it at
+    all. Buddy found out because he asked an unrelated question.
+
+    So the brief now reports three separate facts, because each can be wrong
+    while the others look fine:
+      * is the destination MOUNTED right now (a locked volume vanishes entirely)
+      * how old is the last COMPLETED backup
+      * did the last ATTEMPT succeed (RESULT)
+    A recent backup plus a failing attempt means it JUST started failing — that
+    is the shape S72 saw, and freshness alone called it healthy.
+    """
+    import plistlib
+    from datetime import datetime, timezone
+    try:
+        raw = subprocess.run(
+            ["defaults", "export", "/Library/Preferences/com.apple.TimeMachine.plist", "-"],
+            capture_output=True, timeout=20).stdout
+        d = plistlib.loads(raw)
+        dest = (d.get("Destinations") or [{}])[0]
+    except Exception as e:
+        return f"- ❌ cannot read Time Machine state ({e}) — treat as UNVERIFIED", False
+
+    name = dest.get("LastKnownVolumeName", "?")
+    mounted = os.path.isdir(f"/Volumes/{name}") if name != "?" else False
+    result = dest.get("RESULT")
+    snaps = dest.get("SnapshotDates") or []
+
+    age_days, last_txt = None, "never"
+    if snaps:
+        dt = snaps[-1]
+        if not isinstance(dt, datetime):
+            try:
+                dt = datetime.strptime(str(dt)[:19], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                dt = None
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - dt).days
+            last_txt = dt.astimezone().strftime("%a %d %b %H:%M")
+
+    problems = []
+    if not mounted:
+        problems.append(f"destination '{name}' NOT MOUNTED")
+    if result not in (0, None):
+        problems.append(f"last attempt FAILED (RESULT={result})")
+    if age_days is None:
+        problems.append("no completed backup recorded")
+    elif age_days >= 2:
+        problems.append(f"last backup was {age_days} days ago")
+
+    if problems:
+        return ("- ❌ Time Machine: " + "; ".join(problems)
+                + f" (last completed: {last_txt})"), False
+    return f"- ✅ Time Machine: last backup {last_txt}, destination mounted", True
+
+
 def compose():
     dig = gather_digest()
     act = gather_actions()
     pend = gather_pending()
     awaiting = gather_awaiting_builds()
     att = gather_attention()
+    tm_line, tm_ok = gather_timemachine()
 
-    healthy = dig["dated_today"] and not att and not awaiting
+    # A box with no backup coverage is NOT healthy, however green everything
+    # else looks. This is the fact that was missing entirely until S73.
+    healthy = dig["dated_today"] and not att and not awaiting and tm_ok
     verdict = "✅ CIRRUS healthy" if healthy else "⚠️ Needs a look"
 
     lines = [f"# ☀️ CIRRUS Morning Brief — {DAY_NAME}", "", f"**{verdict}**", "",
@@ -264,6 +336,10 @@ def compose():
     lines += ([f"- {a}" for a in att] if att else ["- Nothing flagged"])
     lines.append("")
 
+    lines.append("**Backup**")
+    lines.append(tm_line)
+    lines.append("")
+
     # scheduled-jobs status (did the CIRRUS jobs run & succeed) — from job_status ledger
     try:
         import job_status
@@ -282,6 +358,8 @@ def compose():
         nxt = f"Ship or discard {len(awaiting)} built Dev-Loop item(s) — reply /builds."
     elif pend:
         nxt = f"Review the {len(pend)} pending /accept item(s)."
+    elif not tm_ok:
+        nxt = "Time Machine is not protecting this box — see Backup above."
     elif att:
         nxt = "Check the attention flag(s) above."
     else:
