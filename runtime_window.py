@@ -111,6 +111,16 @@ JOB = {
     "com.cirrus.morningbrief":       ("light", 1, 3, "composes + sends; MUST BE LAST"),
     "com.cirrus.jobscheck":          ("light", 1, 1, "reads local job status"),
     "com.cirrus.devloop":            ("heavy", 15, 80, "autonomous dev agent, evening"),
+    # S73: the monthly reboots. Buddy chose 08:15 deliberately — AFTER the daily
+    # work finishes (07:30 morning brief is last) rather than before it, so that
+    # if a reboot goes wrong there is a whole day to notice and recover. That
+    # lands inside the Mon-Fri 08:00-16:00 local-use window, which the audit
+    # rightly flagged while both were UNREGISTERED and therefore assumed heavy.
+    # They are not heavy: a reboot moves essentially no data. Profiling them is
+    # the honest fix — leaving a known-good choice permanently flagged is how a
+    # check trains people to ignore it (T9).
+    "com.cirrus.rebootmonthly":      ("light", 2, 1, "reboot: graceful stop then restart, no network work"),
+    "cirrus-rebootmonthly.timer":    ("light", 2, 1, "reboot: graceful stop then restart, no network work"),
     # CUMULUS ------------------------------------------------------------
     "cirrus-hoaleads.timer":         ("heavy", 4, 120, "per-property deep-dive research"),
     "cirrus-billsnow.timer":         ("heavy", 3, 60, "weather + web research, Mondays"),
