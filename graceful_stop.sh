@@ -33,12 +33,24 @@ set -uo pipefail
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
+# Pick a log we can actually WRITE, once, quietly. In the reboot path this runs
+# as root and /var/log is fine; run by hand as buddy it is not, and the first
+# version emitted a "Permission denied" per line — twenty errors while nothing
+# was wrong (T9: ask what your check prints when everything is FINE).
 LOG="${GRACEFUL_STOP_LOG:-/var/log/cirrus-graceful-stop.log}"
+if ! { : >> "$LOG"; } 2>/dev/null; then
+    for alt in "$HOME/projects/cirrus-digest/logs" "$HOME/cirrus-digest/logs" "$HOME"; do
+        [ -d "$alt" ] && { LOG="$alt/graceful-stop.log"; break; }
+    done
+    { : >> "$LOG"; } 2>/dev/null || LOG=/dev/null
+fi
 FAILED=""
 
 log() {
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG" 2>/dev/null
+    local line
+    line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    printf '%s\n' "$line"
+    printf '%s\n' "$line" >> "$LOG" 2>/dev/null
 }
 
 # ── platform ────────────────────────────────────────────────────────────────
