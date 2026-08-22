@@ -36,6 +36,13 @@ DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek"]
 _TIMEOUT = 120
 
 _KEY_FIELD = {
+    # S73: "ollama" is DELIBERATELY absent from DEFAULT_ORDER, and its key field
+    # (ollama_url) is not in credentials.json today. available() filters on that
+    # field, so the local provider cannot be selected by accident — a caller has
+    # to pass order=["ollama"] explicitly. Two independent gates, because this
+    # file is on the path of every heavy job on the box and a routing change
+    # nobody asked for is the worst kind.
+    "ollama":    "ollama_url",
     "anthropic": "anthropic_api_key",
     "gemini":    "gemini_api_key",
     "grok":      "grok_api_key",
@@ -143,7 +150,34 @@ def _deepseek(creds, system, user, max_tokens):
                               key, model, system, user, max_tokens)
 
 
+def _ollama(creds, system, user, max_tokens):
+    """The LOCAL model, via Ollama's OpenAI-compatible endpoint.
+
+    S73. Both boxes hold qwen2.5:72b and neither ever calls it: llm_providers.py
+    had no local backend at all, so 1,218 cloud calls went out in 7 days while
+    two 47 GB models sat idle. This is the missing backend.
+
+    It exists to be MEASURED, not to be routed to. Adding it to DEFAULT_ORDER,
+    or to the council, is a separate decision that should follow evidence — see
+    local_bench.py, which replays real prompts through it and scores the answers
+    against what the cloud returned.
+
+    No API key: Ollama is unauthenticated on loopback. `ollama_url` doubles as
+    the enable flag, which is why it is the key field.
+    """
+    url = creds.get("ollama_url")
+    if not url:
+        raise ProviderError("no ollama_url — local provider not enabled")
+    model = creds.get("ollama_model")
+    if not model:
+        raise ProviderError("no ollama_model set in credentials.json")
+    # Same Chat Completions shape as OpenAI/Grok/DeepSeek; the key is ignored.
+    return _openai_compatible(url.rstrip("/") + "/v1/chat/completions",
+                              "local", model, system, user, max_tokens)
+
+
 _PROVIDERS = {
+    "ollama":    _ollama,
     "anthropic": _anthropic,
     "gemini":    _gemini,
     "grok":      _grok,
