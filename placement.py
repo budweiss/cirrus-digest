@@ -204,6 +204,20 @@ def check(registry, live, unreachable=()):
     registry = [r for r in registry if r["host"] not in unreachable]
     live = [r for r in live if r["host"] not in unreachable]
 
+    # S73: a host the registry knows about, that was NOT reported unreachable,
+    # yet produced ZERO live units, means the inventory FAILED — not that the
+    # box is empty. A syntax error in placement_inventory.sh did exactly this
+    # and the audit answered with "38 PLACEMENT PROBLEM(S)", advising that 38
+    # healthy rows be deleted. The UNREACHABLE banner only covers a host we
+    # could not ssh to; this covers an inventory that ran and said nothing.
+    seen_hosts = {r["host"] for r in live}
+    for host in sorted({r["host"] for r in registry} - seen_hosts - unreachable):
+        problems.append(
+            f"NO INVENTORY the registry lists units on {host} but the inventory "
+            f"returned NONE. That means the inventory failed, not that {host} is "
+            f"empty — check placement_inventory.sh before believing any absence.")
+    registry = [r for r in registry if r["host"] in seen_hosts]
+
     # 1 + 2: declared vs live, per (host, key).
     # Keyed on (host, UNIT), not (host, key). Normalising first collided
     # cirrus-intake.timer with cumulus-intake.service -- two distinct units on
