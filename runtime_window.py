@@ -296,6 +296,14 @@ def audit(jobs):
         for j in jobs:
             if j["job"] == brief["job"]:
                 continue
+            # S73: a REBOOT is not a producer. The rule exists so that jobs whose
+            # results the brief REPORTS run before it; a reboot reports nothing,
+            # and Buddy's explicit policy is that it must run AFTER the daily
+            # work finishes, not before — so a bad reboot has a whole day to be
+            # noticed instead of surfacing when the 03:30 chain has failed.
+            # Flagging it forever would train us to ignore the rule (T9).
+            if "reboot" in j["job"]:
+                continue
             start = j["hour"] * 60 + j["minute"]
             if 0 <= start - bt < 240:
                 violations.append(
