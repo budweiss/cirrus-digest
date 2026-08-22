@@ -15,12 +15,23 @@
 # rather than inferred from the box being reachable — S72 learned that the hard
 # way when a reboot that never happened reported success.
 set -uo pipefail
-PLIST="/Library/LaunchDaemons/com.cirrus.rebootonce.plist"
+
+# S73: one script, two callers. `--keep` means "this is a RECURRING job, leave
+# the plist alone"; the default stays the one-shot behaviour that removes it.
+# A separate monthly script would be the obvious alternative and the wrong one:
+# every fix this file has needed today (the self-bootout, the $HOME abort, the
+# tunnel-stop ordering) would have had to be made twice, and the second copy is
+# the one nobody remembers to fix.
+KEEP=0
+LABEL="com.cirrus.rebootonce"
+if [ "${1:-}" = "--keep" ]; then KEEP=1; LABEL="com.cirrus.rebootmonthly"; fi
+
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 STATE="/var/log/cirrus-scheduled-reboot.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$STATE" 2>/dev/null; }
 
-log "=== scheduled one-time reboot firing ==="
+log "=== scheduled reboot firing ($LABEL) ==="
 log "boot time BEFORE: $(sysctl -n kern.boottime)"
 log "daemons loaded before: $(launchctl print system 2>/dev/null | grep -c 'com\.cirrus\.')"
 log "TM last result before: $(defaults read /Library/Preferences/com.apple.TimeMachine.plist 2>/dev/null | grep -m1 'RESULT' | tr -d ' ,')"
@@ -33,12 +44,16 @@ log "TM last result before: $(defaults read /Library/Preferences/com.apple.TimeM
 # was still on disk, and the box was up 19h later with the ORIGINAL boot time.
 # Removing the plist is the whole disarm we need: the reboot clears the loaded
 # job, and with no plist there is nothing to bootstrap at the next boot.
-rm -f "$PLIST"
-if [ -f "$PLIST" ]; then
-    log "!! could not remove $PLIST — REFUSING to reboot rather than leave a job armed"
-    exit 1
+if [ "$KEEP" = "1" ]; then
+    log "recurring job — plist deliberately left in place"
+else
+    rm -f "$PLIST"
+    if [ -f "$PLIST" ]; then
+        log "!! could not remove $PLIST — REFUSING to reboot rather than leave a job armed"
+        exit 1
+    fi
+    log "disarmed: $PLIST removed"
 fi
-log "disarmed: $PLIST removed"
 
 # S73 (Buddy): bring the long-running jobs down deliberately first, rather than
 # letting the shutdown signal catch them wherever they are. Chiefly this waits
