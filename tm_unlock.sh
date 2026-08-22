@@ -73,19 +73,40 @@ fi
 # displaying the secret — so the common case would otherwise send diskutil a
 # passphrase with an extra byte and fail with 'passphrase rejected', sending
 # someone hunting a password that was actually correct.
-if printf '%s' "$(cat "$PASSFILE")" \
-     | diskutil apfs unlockVolume "$VOLUME" \
-        -user "$CRYPTO_USER" \
-        -stdinpassphrase >/dev/null 2>&1; then
-    log "unlocked and mounted '$VOLUME_NAME' ($VOLUME)"
-    exit 0
-fi
+# S73: RETRY, bounded. At boot this job runs from RunAtLoad, and an external USB
+# volume is not ready to unlock the instant the device node appears. Observed on
+# 2026-08-22: the 14:08:38 boot attempt failed and logged "passphrase rejected"
+# — with a passphrase that had unlocked the same volume at 14:00:47 and unlocked
+# it again 57 seconds later. `diskutil info` already SUCCEEDED at that point, so
+# the existing not-present check could not catch it and the message blamed the
+# one thing that was fine.
+#
+# StartInterval=900 would have healed it within 15 minutes, but that is 15
+# minutes with no backup coverage and a log line accusing the passphrase.
+ATTEMPTS=10
+DELAY=6
+for i in $(seq 1 "$ATTEMPTS"); do
+    if printf '%s' "$(cat "$PASSFILE")" \
+         | diskutil apfs unlockVolume "$VOLUME" \
+            -user "$CRYPTO_USER" \
+            -stdinpassphrase >/dev/null 2>&1; then
+        if [ "$i" -gt 1 ]; then
+            log "unlocked and mounted '$VOLUME_NAME' ($VOLUME) on attempt $i"
+        else
+            log "unlocked and mounted '$VOLUME_NAME' ($VOLUME)"
+        fi
+        exit 0
+    fi
+    # Do not keep retrying something that can never succeed: a genuinely absent
+    # drive is a different fault and is reported immediately.
+    if ! diskutil info "$VOLUME" >/dev/null 2>&1; then
+        log "volume $VOLUME not present — drive detached or renumbered. Re-check with: diskutil apfs list"
+        exit 1
+    fi
+    [ "$i" -lt "$ATTEMPTS" ] && sleep "$DELAY"
+done
 
-# Distinguish "wrong passphrase" from "drive not attached" — they need different
-# fixes, and a single 'failed' would send someone hunting the wrong one.
-if ! diskutil info "$VOLUME" >/dev/null 2>&1; then
-    log "volume $VOLUME not present — drive detached or renumbered. Re-check with: diskutil apfs list"
-else
-    log "unlock FAILED for $VOLUME — passphrase rejected, or the volume is in an unexpected state."
-fi
+log "unlock FAILED for $VOLUME after $ATTEMPTS attempts over $((ATTEMPTS*DELAY))s."
+log "  The volume IS present, so this is most likely a wrong passphrase in"
+log "  $PASSFILE. Set it with set_tm_passphrase.sh, which tests before writing."
 exit 1
