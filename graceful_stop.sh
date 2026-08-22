@@ -171,15 +171,35 @@ if [ "$PLATFORM" = "cirrus" ]; then
     log "-- 3. offer --";  stop_unit com.cirrus.offer "Aggie's app"
     log "-- 4. api --";    stop_unit com.cirrus.api
     log "-- 5. local model --"; stop_ollama
-    log "-- 6. tunnel (LAST — this is the way in) --"; stop_unit com.cirrus.tunnel
+    # The tunnel is deliberately NOT stopped. See the note below.
 else
     log "-- 1. intake --";      stop_unit cumulus-intake.service
     log "-- 2. supervisor --";  stop_unit cumulus-supervisor.service
     log "-- 3. bot --";         stop_unit cirrus-bot.service
     log "-- 4. offer --";       stop_unit cirrus-offer.service "Aggie's app"
     log "-- 5. api --";         stop_unit cirrus-api.service
-    log "-- 6. cloudflared (LAST — this is the way in) --"; stop_unit cloudflared.service
+    # cloudflared is deliberately NOT stopped. See the note below.
 fi
+
+# ── why the tunnel is NOT in the list ───────────────────────────────────────
+# It was, as step 6, "LAST — this is the way in". That was exactly backwards.
+#
+# The runner drives a reboot over `ssh cirrus-cf`, which RIDES the tunnel. So
+# stopping the tunnel killed the very ssh session running this script, and the
+# NEXT ssh — the one that issues `shutdown -r now` — could no longer connect.
+# The box would have been left with every service stopped, the tunnel down, and
+# NO reboot: strictly worse than doing nothing at all.
+#
+# A dry run could never have shown this. Nothing is stopped in a dry run, so the
+# connection never drops. It is an ordering hazard that exists only when the
+# steps really execute.
+#
+# And stopping it bought nothing anyway: cloudflared holds no writable state, so
+# there is no such thing as an unclean stop for it. The reboot takes it down a
+# second later regardless.
+log "-- tunnel/cloudflared: intentionally left running --"
+log "   (it holds no state, and stopping it would kill the connection that"
+log "    issues the reboot — the reboot takes it down a moment later anyway)"
 
 if [ -n "$FAILED" ]; then
     log "=== graceful stop INCOMPLETE — would not stop:$FAILED ==="
