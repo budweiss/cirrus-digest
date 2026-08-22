@@ -165,9 +165,44 @@ def parse_live(text: str):
     return rows
 
 
-def check(registry, live):
+def parse_unreachable(text: str):
+    """Hosts the inventory could not enumerate at all.
+
+    S73: `placement-audit` reported 15 CUMULUS units as MISSING — "remove the
+    row or restore the job" — when the box was healthy and every one of those
+    units was running. The inventory simply could not SSH to it, printed
+    nothing, and an empty section is indistinguishable from an empty box. The
+    advice was to delete a correct registry.
+
+    So the inventory now emits an explicit UNREACHABLE banner, and a host that
+    was never looked at is excluded from every "it is not there" conclusion.
+    """
+    hosts = set()
+    for line in (text or "").splitlines():
+        if "=====" not in line or "UNREACHABLE" not in line.upper():
+            continue
+        up = line.upper()
+        if "CIRRUS" in up:
+            hosts.add("cirrus")
+        elif "CUMULUS" in up:
+            hosts.add("cumulus")
+    return hosts
+
+
+def check(registry, live, unreachable=()):
     """-> (problems, notes). A problem is actionable drift."""
     problems, notes = [], []
+    unreachable = set(unreachable)
+
+    # A box we could not read tells us NOTHING about its units. Drop its rows
+    # from both sides so no absence-based check can fire on them, and say so.
+    for host in sorted(unreachable):
+        problems.append(
+            f"UNREACHABLE could not enumerate {host} — this audit says NOTHING "
+            f"about that box. Fix the connection and re-run; do not act on "
+            f"missing/undeclared units for {host}.")
+    registry = [r for r in registry if r["host"] not in unreachable]
+    live = [r for r in live if r["host"] not in unreachable]
 
     # 1 + 2: declared vs live, per (host, key).
     # Keyed on (host, UNIT), not (host, key). Normalising first collided
@@ -337,6 +372,27 @@ cumulus cirrus-gone.timer       client  04:00   live
     cp, _ = check(coll_reg, coll_live)
     ck("same-key units on one box do not collide", cp, [])
 
+    # S73: an UNREACHABLE box must not produce a single MISSING. This is the
+    # exact input that told us to delete 15 correct rows for a healthy CUMULUS.
+    ur_reg = parse_registry("```registry\n"
+                            "cumulus cirrus-bot.service    infra service live\n"
+                            "cirrus  com.cirrus.api        infra always-on live\n```")
+    ur_text = ("===== CIRRUS: launchd com.cirrus.* =====\n"
+               "  com.cirrus.api                   always-on      LOADED\n"
+               "===== CUMULUS: UNREACHABLE =====\n"
+               "  !! could not ssh to the box\n")
+    ur_live = parse_live(ur_text)
+    ur_hosts = parse_unreachable(ur_text)
+    ck("unreachable host detected", ur_hosts, {"cumulus"})
+    up, _ = check(ur_reg, ur_live, ur_hosts)
+    ck("no MISSING invented for an unread box",
+       any("MISSING" in x for x in up), False)
+    ck("...but the audit says loudly that it could not look",
+       any("UNREACHABLE" in x for x in up), True)
+    # And the reachable half must still be audited normally.
+    ck("reachable host still checked",
+       any("com.cirrus.api" in x for x in up), False)
+
     print()
     print("all placement selftests passed" if not bad else f"{bad} FAILED")
     return bad == 0
@@ -366,12 +422,19 @@ def main():
     rp = a[a.index("--registry") + 1] if "--registry" in a else \
         "docs/PROJECT-RUNTIME-REGISTRY.md"
     registry = parse_registry(Path(rp).read_text())
-    live = parse_live(sys.stdin.read())
+    raw = sys.stdin.read()
+    live = parse_live(raw)
+    unreachable = parse_unreachable(raw)
     print(f"registry rows: {len(registry)}   live units: {len(live)}   "
           f"live+running: {sum(1 for r in live if r['live'])}\n")
-    problems, notes = check(registry, live)
+    problems, notes = check(registry, live, unreachable)
     if problems:
-        print(f"=== {len(problems)} PLACEMENT PROBLEM(S) — registry is out of date ===")
+        # T9: say what is actually wrong. "registry is out of date" is a false
+        # accusation when the only finding is that a box could not be read.
+        why = ("registry is out of date"
+               if any(not x.startswith("UNREACHABLE") for x in problems)
+               else "a box could not be read")
+        print(f"=== {len(problems)} PLACEMENT PROBLEM(S) — {why} ===")
         for p in problems:
             print("  !! " + p)
     else:
