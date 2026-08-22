@@ -192,6 +192,15 @@ def parse_unreachable(text: str):
     return hosts
 
 
+# Placements deliberately decided against the role default, with the reasoning
+# recorded elsewhere. Add to this ONLY with a doc reference — the point is that
+# the decision is written down, not that the warning is annoying.
+SETTLED_PLACEMENT = {
+    "com.cirrus.offer",   # docs/OFFER-MLS-PROXY-DESIGN.md — split app, MLS half
+                          # needs Playwright + the live session on CIRRUS
+}
+
+
 def check(registry, live, unreachable=()):
     """-> (problems, notes). A problem is actionable drift."""
     problems, notes = [], []
@@ -285,6 +294,16 @@ def check(registry, live, unreachable=()):
     # pushed to CUMULUS; a dev job on CUMULUS is the reverse mistake.
     for r in registry:
         want = ROLE_HOME.get(r["role"])
+        # S73: a placement already DECIDED and written down should not be
+        # re-proposed on every run. The OFFER split is deliberate — CUMULUS
+        # serves the PDF generator, CIRRUS keeps the Bright MLS lookup because
+        # Playwright and the live MLS session stay here
+        # (docs/OFFER-MLS-PROXY-DESIGN.md), and the both-ok line directly above
+        # already says so. Advising "candidate to move" underneath it is
+        # wallpaper: a recommendation that never changes teaches people to skim
+        # past the section that also carries the real ones (T9).
+        if r["unit"] in SETTLED_PLACEMENT:
+            continue
         if want and want not in ("both",) and want != r["host"] and r["state"] != "dormant":
             notes.append(
                 f"placement  {r['host']}/{r['unit']} is role '{r['role']}', which "
@@ -315,14 +334,16 @@ def selftest() -> bool:
 cirrus  com.cirrus.daily        buddy   02:00   live
 cumulus cirrus-hoaleads.timer   client  03:00   live
 cirrus  com.cirrus.offer        client  always-on live
+cirrus  com.cirrus.clientjob    client  09:00   live
 cumulus cirrus-gone.timer       client  04:00   live
 ```
 """)
-    ck("registry rows", len(reg), 4)
+    ck("registry rows", len(reg), 5)
 
     live = parse_live("""===== CIRRUS: launchd com.cirrus.* =====
   com.cirrus.daily                 02:00          LOADED
   com.cirrus.offer                 always-on      LOADED
+  com.cirrus.clientjob             09:00          LOADED
   com.cirrus.newthing              06:00          LOADED
   com.cirrus.billsnow              04:00 wd1      dormant
   com.cirrus.modelhealth           05:30          LOADED
@@ -332,7 +353,7 @@ cumulus cirrus-gone.timer       client  04:00   live
   cirrus-billsnow.timer            Mon 04:00:00         ENABLED
   cirrus-modelhealth.timer         *-*-* 05:30:00       ENABLED
 """)
-    ck("live rows", len(live), 8)
+    ck("live rows", len(live), 9)
 
     p, n = check(reg, live)
     j = " | ".join(p)
@@ -346,9 +367,15 @@ cumulus cirrus-gone.timer       client  04:00   live
        any("ON BOTH" in x and "modelhealth" in x for x in p), False)
     ck("...but is explained in notes",
        any("both-ok" in x and "modelhealth" in x for x in n), True)
-    # A client job on CIRRUS is the move-to-CUMULUS candidate.
+    # A client job on CIRRUS is the move-to-CUMULUS candidate...
     ck("client job on cirrus flagged as candidate",
-       any("placement" in x and "offer" in x for x in n), True)
+       any("placement" in x and "clientjob" in x for x in n), True)
+    # ...but a placement already DECIDED and documented is not re-proposed every
+    # run. S73: com.cirrus.offer is a deliberate split (Playwright + the live
+    # MLS session must stay on CIRRUS). Both halves are tested, because
+    # exempting one job must not disable the rule for the rest.
+    ck("settled placement NOT re-proposed",
+       any("placement" in x and "offer" in x and "candidate to move" in x for x in n), False)
     # A box-local job must never be recommended for a move: the CUMULUS
     # supervisor supervises CUMULUS.
     bl = parse_registry("```registry\n"
