@@ -51,6 +51,9 @@ ALLOWED_BOTH = {
     "netsample": "each box samples its own counters; the whole point is per-box",
     "watchdog": "each box watches its own services",
     "deadman": "each box proves its own liveness",
+    "rebootmonthly": ("each box reboots ITSELF, on DIFFERENT days (CIRRUS the 1st, "
+                      "CUMULUS the 15th) — staggered on purpose so the two are "
+                      "never down together. One box owning both would be the bug"),
     "api": "each box serves its own admin API",
     "bot": "each box runs its own Telegram bot",
     "tunnel": "each box exposes itself",
