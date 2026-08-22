@@ -40,6 +40,24 @@ if [ -f "$PLIST" ]; then
 fi
 log "disarmed: $PLIST removed"
 
+# S73 (Buddy): bring the long-running jobs down deliberately first, rather than
+# letting the shutdown signal catch them wherever they are. Chiefly this waits
+# for intake to be BETWEEN CYCLES so its IMAP cursor is not interrupted mid-poll.
+# Deliberately NON-BLOCKING: a job that will not stop is recorded and we reboot
+# anyway — refusing to reboot because something is stuck recreates the other
+# failure this file already had, a reboot that silently never happened.
+GRACEFUL="$HOME/projects/cirrus-digest/graceful_stop.sh"
+if [ -x "$GRACEFUL" ]; then
+    log "graceful stop: bringing jobs down in order"
+    if bash "$GRACEFUL" >>"$STATE" 2>&1; then
+        log "graceful stop: all jobs down cleanly"
+    else
+        log "!! graceful stop INCOMPLETE (see lines above) — rebooting anyway"
+    fi
+else
+    log "!! $GRACEFUL missing — rebooting without a graceful stop"
+fi
+
 log "rebooting now"
 sync
 /sbin/shutdown -r now
