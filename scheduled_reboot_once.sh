@@ -26,7 +26,13 @@ log "daemons loaded before: $(launchctl print system 2>/dev/null | grep -c 'com\
 log "TM last result before: $(defaults read /Library/Preferences/com.apple.TimeMachine.plist 2>/dev/null | grep -m1 'RESULT' | tr -d ' ,')"
 
 # Disarm BEFORE rebooting, so this can never fire twice.
-launchctl bootout "system/com.cirrus.rebootonce" 2>/dev/null
+#
+# S73: do NOT `launchctl bootout` our own label here. This script IS the job, so
+# bootout terminates the process that is running it — on 2026-08-22 the reboot
+# silently never happened: the log stops one line before "disarmed", the plist
+# was still on disk, and the box was up 19h later with the ORIGINAL boot time.
+# Removing the plist is the whole disarm we need: the reboot clears the loaded
+# job, and with no plist there is nothing to bootstrap at the next boot.
 rm -f "$PLIST"
 if [ -f "$PLIST" ]; then
     log "!! could not remove $PLIST — REFUSING to reboot rather than leave a job armed"
@@ -37,3 +43,12 @@ log "disarmed: $PLIST removed"
 log "rebooting now"
 sync
 /sbin/shutdown -r now
+SHUT_RC=$?
+[ "$SHUT_RC" -ne 0 ] && log "!! /sbin/shutdown returned $SHUT_RC — reboot NOT initiated"
+
+# If we are still alive well past the point where the box should be going down,
+# say so IN THE LOG. A reboot that fails silently is the exact defect this file
+# was written to prove against, and it hit this file itself.
+sleep 90
+log "!! still running 90s after /sbin/shutdown — the reboot did NOT take effect"
+exit 1
