@@ -39,7 +39,11 @@ DRY=0
 # was wrong (T9: ask what your check prints when everything is FINE).
 LOG="${GRACEFUL_STOP_LOG:-/var/log/cirrus-graceful-stop.log}"
 if ! { : >> "$LOG"; } 2>/dev/null; then
-    for alt in "$HOME/projects/cirrus-digest/logs" "$HOME/cirrus-digest/logs" "$HOME"; do
+    # Also no $HOME here. This line survived a `sudo env -i` test only because
+    # root CAN write /var/log, so the branch never ran — the right context but
+    # the wrong branch. Derive from $0 like the caller does.
+    SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+    for alt in "$SELF_DIR/logs" "$SELF_DIR" /tmp; do
         [ -d "$alt" ] && { LOG="$alt/graceful-stop.log"; break; }
     done
     { : >> "$LOG"; } 2>/dev/null || LOG=/dev/null

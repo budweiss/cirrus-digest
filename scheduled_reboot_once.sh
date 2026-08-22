@@ -46,7 +46,12 @@ log "disarmed: $PLIST removed"
 # Deliberately NON-BLOCKING: a job that will not stop is recorded and we reboot
 # anyway — refusing to reboot because something is stuck recreates the other
 # failure this file already had, a reboot that silently never happened.
-GRACEFUL="$HOME/projects/cirrus-digest/graceful_stop.sh"
+# S73: NOT "$HOME/..." — a LaunchDaemon inherits no HOME unless its plist sets
+# EnvironmentVariables, and this plist does not. With `set -u` that is an
+# instant abort: the 13:30 run logged "disarmed" and died on the very next line,
+# so the reboot did not happen AGAIN — this time because of the graceful-stop
+# wiring added to make it safer. Derive from $0, which launchd always provides.
+GRACEFUL="$(cd "$(dirname "$0")" && pwd)/graceful_stop.sh"
 if [ -x "$GRACEFUL" ]; then
     log "graceful stop: bringing jobs down in order"
     if bash "$GRACEFUL" >>"$STATE" 2>&1; then
