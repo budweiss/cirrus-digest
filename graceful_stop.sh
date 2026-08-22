@@ -63,7 +63,13 @@ case "$(uname -s)" in
     Linux)  PLATFORM=cumulus ;;
     *)      log "!! unknown platform $(uname -s) — refusing to guess"; exit 1 ;;
 esac
-log "=== graceful stop on $PLATFORM ${DRY:+(dry run)} ==="
+# NOT ${DRY:+...} — DRY is "0" in live mode, which is NON-EMPTY, so that form
+# printed "(dry run)" on every run. The 13:47 reboot's log therefore said
+# "=== graceful stop on cirrus (dry run) ===" while it really did stop intake,
+# bot, offer and api. A log that mislabels a destructive run as a rehearsal is
+# the worst kind of check that lies (T9).
+DRYLABEL=""; [ "$DRY" = "1" ] && DRYLABEL=" (dry run)"
+log "=== graceful stop on $PLATFORM$DRYLABEL ==="
 
 # ── intake: wait for a SAFE POINT, not just any point ───────────────────────
 # Only implemented for CIRRUS, where the shape is verified: com.cirrus.intake
