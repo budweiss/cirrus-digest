@@ -132,7 +132,22 @@ stop_ollama() {
         log "  ollama: unloading $m"
         ollama stop "$m" >/dev/null 2>&1
     done
-    launchctl bootout "gui/$(id -u)/com.ollama.serve" 2>/dev/null
+    # T12, caught by trap-lint on this very file: `gui/$(id -u)` is WRONG here.
+    # In the reboot path this script runs as ROOT, so id -u is 0 and gui/0 has no
+    # aqua session — the bootout would have silently done nothing. Resolve the
+    # real console user, and check system/ FIRST so this keeps working after
+    # com.ollama.serve is converted to a LaunchDaemon (which it needs to be: as a
+    # user agent it does not come back after a login-less boot at all).
+    local target uid
+    if sudo launchctl print system/com.ollama.serve >/dev/null 2>&1; then
+        target="system/com.ollama.serve"
+    else
+        uid=$(stat -f %u /dev/console 2>/dev/null)
+        [ -z "$uid" ] && uid=$(id -u)
+        target="gui/$uid/com.ollama.serve"
+    fi
+    log "  ollama: stopping $target"
+    sudo launchctl bootout "$target" 2>/dev/null || launchctl bootout "$target" 2>/dev/null
     sleep 2
     if pgrep -f "ollama serve" >/dev/null 2>&1; then
         log "  !! WOULD NOT STOP: com.ollama.serve"
