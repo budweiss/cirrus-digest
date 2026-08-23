@@ -255,6 +255,23 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
                      f"let me know which one you mean? {names}")
         if len(matches) == 1:
             entity = matches[0]
+            # S74 FEEDBACK SIGNAL. The client asking about an entity IS the
+            # outcome signal — he is telling us which of 2,444 leads matter,
+            # without being asked to rate anything. Bill's KB had recorded ZERO
+            # lead_state transitions before this, so nothing downstream could
+            # learn which research was worth doing.
+            #
+            # Wrapped and non-raising BY DESIGN: this is instrumentation on a
+            # path that answers a client's email. A logging failure must never
+            # cost Bill his reply. record_outcome() also swallows internally —
+            # two layers, deliberately, because the failure mode is silent and
+            # client-facing.
+            try:
+                entity_kb.record_outcome(
+                    kb_project, entity["slug"], "client_asked",
+                    note=(question or "")[:200], db_path=db_path)
+            except Exception:
+                pass
             if creds and wants_fresh_research(question):
                 try:
                     ctx = KB_RESEARCH_CONTEXT.get(kb_project, {})

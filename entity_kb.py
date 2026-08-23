@@ -80,7 +80,65 @@ def _connect(project: str, db_path: str = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(project, db_path)))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """Additive, idempotent column adds. SCHEMA uses CREATE TABLE IF NOT EXISTS,
+    which does nothing to a table that already exists — so new columns need this.
+
+    S74: the outcome columns. Bill's KB held 2,444 entities and had recorded
+    ZERO lead_state transitions — the system researched and filed, and nothing
+    ever came back about whether a lead went anywhere. Without that, no loop
+    over this data can improve: there is nothing to select on.
+
+    Deliberately NOT a "useful?" flag for a human to click. An outcome column
+    nothing writes to is decorative, which is the exact failure found in the
+    business-ideas scorer on 2026-08-22 (fit_score was 9 on 27 of 35 rows, so
+    min(fit, survival) was one-dimensional). The writer is task_solver.py: when
+    the client emails asking about an entity, THAT is the signal — he is telling
+    us which of 2,444 leads matter, without being asked to rate anything.
+    """
+    have = {r[1] for r in conn.execute("PRAGMA table_info(entity_events)")}
+    for col, decl in (("outcome", "TEXT"),
+                      ("outcome_at", "TEXT"),
+                      ("outcome_note", "TEXT")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE entity_events ADD COLUMN {col} {decl}")
+    conn.commit()
+
+
+def record_outcome(project: str, slug: str, outcome: str, note: str = "",
+                   db_path: str = None) -> bool:
+    """Ledger that something actually HAPPENED to an entity. -> True if recorded.
+
+    outcome is caller-defined; today's writer uses 'client_asked'. Recorded as
+    its own event rather than mutating an existing one, so the history stays
+    append-only and a wrong outcome can be superseded, never silently rewritten.
+
+    NEVER RAISES. This is instrumentation on a client-facing path — a logging
+    failure must not break the answer Bill is waiting for.
+    """
+    try:
+        conn = _connect(project, db_path)
+        row = conn.execute(
+            "SELECT id FROM entities WHERE project=? AND slug=?", (project, slug)
+        ).fetchone()
+        if not row:
+            return False
+        now = _now()
+        conn.execute(
+            "INSERT INTO entity_events (project, entity_id, event_type, "
+            "signal_kind, summary, occurred_at, recorded_at, outcome, "
+            "outcome_at, outcome_note) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (project, row["id"], "outcome", outcome, note or outcome,
+             now, now, outcome, now, note))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 
 def _now() -> str:
