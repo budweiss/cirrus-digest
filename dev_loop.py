@@ -265,7 +265,40 @@ def ticket_create(requester: str, projects, title: str, detail: str = "",
     ledger_append({"event": "ticket", "id": ticket["id"],
                    "tier_name": ticket["tier_name"],
                    "detail": f"{requester}: {title}", "result": status}, pd)
+
+    # S74 (Buddy): "if it requires help then it would defer to us getting
+    # together." It was deferring — silently. A ticket that needs a human was
+    # written to a file and nobody was told, so a client question we could not
+    # answer waited until somebody happened to look.
+    #
+    # Only 'session' and 'refused' notify. 'queued' is picked up by the dev
+    # agent unattended, and paging a human for work that is already handled is
+    # how a notification channel gets muted.
+    if status in ("session", "refused"):
+        try:
+            _notify_ticket(requester, title, status, ticket.get("id", ""), pd)
+        except Exception:
+            pass          # never let a notification failure lose the ticket
     return ticket
+
+
+def _notify_ticket(requester, title, status, tid, pd):
+    """Telegram, best-effort. Bot token goes in the POST body, never the URL —
+    a URL is argv and that is how a token leaked on 2026-08-22 (T21)."""
+    import urllib.parse, urllib.request
+    creds = json.loads((Path(pd) / "config" / "credentials.json").read_text())
+    tok, chat = creds.get("telegram_bot_token"), creds.get("telegram_user_id")
+    if not tok or not chat:
+        return
+    what = ("needs a working session" if status == "session"
+            else "was REFUSED by the risk gate")
+    msg = (f"\U0001F3AB Ticket {tid} {what}\n"
+           f"from: {requester}\n{title[:180]}\n\n"
+           f"Nothing is blocked on the client's side \u2014 they got a reply. "
+           f"This is the part that needs you.")
+    data = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
+    urllib.request.urlopen(urllib.request.Request(
+        f"https://api.telegram.org/bot{tok}/sendMessage", data=data), timeout=20)
 
 
 def ticket_load(project_dir=None, status: str = ""):
