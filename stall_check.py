@@ -177,12 +177,18 @@ def check_score_variance(min_rows=10):
         for k, vs in vals.items():
             if len(vs) < min_rows:
                 continue
-            uniq = len(set(vs))
-            if uniq <= 1:
-                flat.append(f"{k} is a single value across {len(vs)} rows")
-            elif uniq == 2 and max(set(vs), key=vs.count) and \
-                    vs.count(max(set(vs), key=vs.count)) / len(vs) > 0.9:
-                flat.append(f"{k} is >90% one value across {len(vs)} rows")
+            # Threshold set from the REAL case, not a guess. The first version
+            # used >90% and would have missed the finding that motivated this
+            # whole check: business-ideas `fit_score` is 9 on 27 of 35 rows —
+            # 77%. A field that answers the same way three times in four is not
+            # discriminating, whatever its theoretical range. Tested against
+            # that exact data before shipping.
+            dom = max(set(vs), key=vs.count)
+            share = vs.count(dom) / len(vs)
+            if len(set(vs)) <= 1:
+                flat.append(f"{k}: one value ({dom}) across all {len(vs)} rows")
+            elif share >= 0.70:
+                flat.append(f"{k}: {share:.0%} of {len(vs)} rows are {dom}")
         if flat:
             out.append(_res(STALL, f"variance[{proj}]",
                             "; ".join(flat) + " — a dimension with no variance is not selecting"))
