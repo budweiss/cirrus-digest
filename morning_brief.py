@@ -31,6 +31,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ── Config / paths (mirror send_digest.py) ─────────────────────────────────────
 PROJECT_DIR  = Path.home() / "projects/cirrus-digest"
 CONFIG_PATH  = PROJECT_DIR / "config/sources.json"
@@ -290,6 +292,26 @@ def gather_timemachine():
     return f"- ✅ Time Machine: last backup {last_txt}, destination mounted", True
 
 
+def gather_stalls():
+    """S74: what should be moving and isn't. -> (lines, ok)
+
+    Deliberately NOT folded into the verdict. A stall is usually a slow-burn
+    finding — "no outcomes recorded" is true for weeks and turning the brief red
+    every morning for it would train Buddy to skim past the header, which is the
+    one thing that must stay meaningful. It reports; it does not shout.
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable, os.path.join(REPO_DIR, "stall_check.py"), "--brief"],
+            capture_output=True, text=True, timeout=90)
+        lines = [l for l in (r.stdout or "").splitlines() if l.strip().startswith("-")]
+        return (lines or ["- ✅ nothing stalled"]), (r.returncode == 0)
+    except Exception as e:
+        # A checker that cannot run must say so, not vanish. That silence is
+        # exactly the failure this whole check exists to catch.
+        return [f"- ⚠️ stall check could not run ({e})"], False
+
+
 def compose():
     dig = gather_digest()
     act = gather_actions()
@@ -334,6 +356,11 @@ def compose():
 
     lines.append("**Attention**")
     lines += ([f"- {a}" for a in att] if att else ["- Nothing flagged"])
+    lines.append("")
+
+    st_lines, _st_ok = gather_stalls()
+    lines.append("**Stalled?**")
+    lines += st_lines
     lines.append("")
 
     lines.append("**Backup**")
