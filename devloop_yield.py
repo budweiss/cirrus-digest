@@ -89,6 +89,20 @@ def _sha_reverted(sha):
         return False, f"could not verify ({e})"
 
 
+# S74: measure a RECENT WINDOW as well as all-time.
+#
+# The first version averaged every build ever made, which made it report
+# problems we had already fixed. Both "harness fault" failures it flagged were
+# dated 20 and 30 July; S71 fixed that exact bug on 21 August by adding edit
+# mode for files too large to rewrite whole (cirrus_daily.py is 77k chars, the
+# old ceiling was 45k). The metric was pointing the loop at a ghost.
+#
+# A fitness function that includes pre-fix history does not just understate the
+# score — it actively misdirects, because the loop optimises toward whatever the
+# number blames. Recent is what you steer by; all-time is context.
+WINDOW_DAYS = 30
+
+
 def compute():
     try:
         builds = json.load(open(BUILDS))
@@ -120,8 +134,13 @@ def compute():
                 why = f"only {age.days}d old — not yet judged"
             else:
                 survived = not reverted
+        try:
+            created = datetime.strptime(b.get("created", "")[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            created = None
         rows.append(dict(id=b.get("id"), status=st, fault=fault,
-                         survived=survived, why=why))
+                         survived=survived, why=why, created=created,
+                         recent=bool(created and (now - created).days <= WINDOW_DAYS)))
     return rows, None
 
 
@@ -164,6 +183,23 @@ def main():
               "\n     The loop cannot fix these itself — it is being asked to rewrite"
               "\n     files it was never shown, or shown truncated. Fix the harness"
               "\n     before optimising anything else; this is free yield. **")
+
+    rec = [r for r in rows if r["recent"]]
+    if rec:
+        r_ship = [r for r in rec if r["status"] == "shipped"]
+        r_judg = [r for r in r_ship if r["survived"] is not None]
+        r_surv = [r for r in r_judg if r["survived"]]
+        r_harn = [r for r in rec if r["fault"] == "harness"]
+        print(f"\n== LAST {WINDOW_DAYS} DAYS — steer by this, not by all-time ==")
+        print(f"  builds: {len(rec)}   shipped: {len(r_ship)}   "
+              f"survived: {len(r_surv)}   harness faults: {len(r_harn)}")
+        if len(rec):
+            print(f"  recent yield = {len(r_surv)}/{len(rec)} = {len(r_surv)/len(rec):.0%}")
+        if not r_harn and [r for r in rows if r["fault"] == "harness"]:
+            print("  NOTE: all harness faults are OUTSIDE this window — they were"
+                  "\n        fixed (S71 edit mode, 2026-08-21). Do not act on them.")
+    else:
+        print(f"\n== LAST {WINDOW_DAYS} DAYS: no builds. Nothing recent to steer by. ==")
 
     print(f"\n  SAMPLE SIZE: n={n}."
           + ("" if n >= MIN_N_FOR_TREND else
