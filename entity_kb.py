@@ -141,6 +141,40 @@ def record_outcome(project: str, slug: str, outcome: str, note: str = "",
         return False
 
 
+def delete_entity(project: str, slug: str, db_path: str = None) -> dict:
+    """Remove one entity and its whole event history. Returns EVERYTHING that
+    was deleted, so the caller can write a restore file BEFORE committing --
+    this is the only destructive operation in this module and the CRM is a
+    client's, so it must never be possible to run it and be unable to say
+    exactly what went.
+
+    Returns {} if the slug does not exist (idempotent, safe to re-run).
+
+    Deletes events first: entity_events.entity_id references entities(id), so
+    the other order can strand orphan rows on a connection without foreign
+    keys enforced (SQLite defaults to OFF).
+    """
+    conn = _connect(project, db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM entities WHERE project=? AND slug=?", (project, slug)
+        ).fetchone()
+        if not row:
+            return {}
+        ent = _row_to_entity(row)
+        events = [dict(r) for r in conn.execute(
+            "SELECT * FROM entity_events WHERE project=? AND entity_id=?",
+            (project, row["id"])).fetchall()]
+        conn.execute("DELETE FROM entity_events WHERE project=? AND entity_id=?",
+                     (project, row["id"]))
+        conn.execute("DELETE FROM entities WHERE project=? AND slug=?",
+                     (project, slug))
+        conn.commit()
+        return {"entity": ent, "events": events}
+    finally:
+        conn.close()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
