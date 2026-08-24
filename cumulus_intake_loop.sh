@@ -17,8 +17,29 @@ set -u
 export INTAKE_ACCOUNT_LABEL=cumulus-research
 cd /home/buddy/cirrus-digest
 FAST_POLL_FILE="config/intake_fast_poll_until.txt"
+# S76: consecutive-failure detection. intake.py exits 1 on config errors (e.g.
+# sources.json losing the cumulus-research account after a repo pull) BEFORE its
+# own scan-retry alerting can run, so the loop retried silently every cycle for
+# 2h with the inbox unwatched. Three straight failures now send one Telegram per
+# streak via intake.telegram(); counter resets on the first clean run.
+FAILS=0
 while true; do
-    .venv/bin/python3 intake.py || echo "intake.py failed (exit $?), will retry next cycle" >&2
+    if .venv/bin/python3 intake.py; then
+        FAILS=0
+    else
+        rc=$?
+        FAILS=$((FAILS+1))
+        echo "intake.py failed (exit $rc), consecutive failures: $FAILS, will retry next cycle" >&2
+        if [ "$FAILS" -eq 3 ]; then
+            .venv/bin/python3 - >&2 <<'PY' || true
+import intake
+creds = intake.load_json(intake.CREDS_PATH) or {}
+intake.telegram("CUMULUS intake ALERT: intake.py has failed 3 cycles in a row - "
+                "cumulus@cumulustask.com is NOT being watched. See "
+                "journalctl -u cumulus-intake.service for the error.", creds)
+PY
+        fi
+    fi
     now=$(date +%s)
     until_ts=0
     if [ -f "$FAST_POLL_FILE" ]; then
