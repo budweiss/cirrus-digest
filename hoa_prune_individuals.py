@@ -70,9 +70,23 @@ _ASSOC_RX = re.compile(
 # No person's name contains SEC / PHASE / BLDG / LOT, so this is a safe rescue
 # in a way a generic word list would not be. Found only because the destructive
 # path is dry-run-by-default and the output was read before running it live.
+# Reviewing the full 89-name dry-run by hand found five more of these:
+# "Concord Manor  Blk A" / "Blk E" (BLK, the abbreviation BLOCK missed),
+# "Bunker Hill Centre I", "G & C Lane Road", "Limestone Hills H-2".
+# The asymmetry decides how aggressive this list should be: leaving an
+# individual in the CRM is mild (the digest filter keeps them out of Bill's
+# mail anyway), while deleting a real community is destroying client data.
+# So this errs toward rescuing, and any name it spares is reported, not hidden.
+#
+# ESTATES is PLURAL-ONLY on purpose: "Somebody Estate" is a deceased person's
+# estate and SHOULD go, while "Foxhill Estates" is a subdivision.
 _PLACE_RX = re.compile(
-    r"\b(SEC|SECT|SECTION|PHASE|PH|CONDO|CONDOS|UNIT|UNITS|BLDG|BUILDING|"
-    r"BLOCK|LOT|LOTS|TRACT|PLAT|POD|PARCEL|VILLAGE|APTS|APARTMENTS)\b",
+    r"(\b(SEC|SECT|SECTION|PHASE|PH|CONDO|CONDOS|UNIT|UNITS|BLDG|BUILDING|"
+    r"BLOCK|BLK|LOT|LOTS|TRACT|PLAT|POD|PARCEL|VILLAGE|APTS|APARTMENTS|"
+    r"CENTRE|CENTER|ROAD|LANE|STREET|AVENUE|BOULEVARD|HIGHWAY|TERRACE|"
+    r"SQUARE|PLAZA|ESTATES|ACRES|HEIGHTS|COMMONS|CROSSING|LANDING|"
+    r"SUBDIVISION|DEVELOPMENT|COURT|CIRCLE)\b"
+    r"|\b[A-Z]-\d+\b)",                    # a section designator like H-2
     re.IGNORECASE)
 
 
@@ -170,7 +184,12 @@ def selftest() -> bool:
     try:
         for n in ("RHOADS KATHLEEN A", "RHOADES WILLIAM W", "HOADLEY RONALD L",
                   "HOAG PAULA Z", "DINH HOA VIET & LIEU THI",
-                  "RHOADS BETTY LOUISE TTEE REV TR", "HOAG DAVID W TTEE"):
+                  "RHOADS BETTY LOUISE TTEE REV TR", "HOAG DAVID W TTEE",
+                  # a deceased person's estate is still a person, and the
+                  # singular ESTATE must not be rescued by plural ESTATES
+                  "Aikman Fairfax H Estate", "The Estate Of Isabel S Ryan",
+                  "Peel Estate Of Mary T", "Ochoa Patricia A Portillo",
+                  "Quan Tuong T & Mai & Hoang"):
             checks.append((f"individual rejected :: {n[:30]}", looks_like_a_person(n)))
         for n in ("CAPE SHORES HOMEOWNERS ASSOCIATION", "BAYSIDE HOA",
                   "HOA OF CHIMNEY HILL", "APPLE ARBOR PROPERTY OWNERS",
@@ -179,7 +198,11 @@ def selftest() -> bool:
                   # the four the first live-CRM dry-run nearly deleted
                   "Westover Hills Sec C", "Cooper Farm Sec A",
                   "North Hills Sec A", "Darley Green Condo I",
-                  "Willow Grove Mill Sec 2", "Brandywine Hundred Ph 3"):
+                  "Willow Grove Mill Sec 2", "Brandywine Hundred Ph 3",
+                  # found by reading the full 89-name dry-run by hand
+                  "Concord Manor  Blk A", "Concord Manor  Blk E",
+                  "Bunker Hill Centre I", "G & C Lane Road",
+                  "Limestone Hills H-2"):
             checks.append((f"association kept :: {n[:30]}", not looks_like_a_person(n)))
 
         entity_kb.upsert_entity(PROJECT, "rhoads-a", "Rhoads Kathleen A",
