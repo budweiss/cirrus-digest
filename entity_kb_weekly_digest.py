@@ -206,8 +206,15 @@ def _detail_block(ent: dict) -> str:
         out.append(f"  HOA contact:       {parts}{tag}")
 
     # 3. MANAGER -- may be anywhere. An out-of-state manager is the lead.
+    # "Managed by: Unknown" is worse than no line: it looks like a researched
+    # finding and says nothing. Placeholders are treated as absent.
+    _NOTHING = {"unknown", "none", "n/a", "na", "tbd", "pending", "-", "?"}
     mgmt = (st.get("current_mgmt_co") or "").strip()
     mgmt_status = (st.get("mgmt_status") or "").strip()
+    if mgmt.lower() in _NOTHING:
+        mgmt = ""
+    if mgmt_status.lower() in _NOTHING:
+        mgmt_status = ""
     if mgmt:
         out.append(f"  Managed by:        {mgmt}")
     elif mgmt_status:
@@ -581,6 +588,10 @@ def selftest() -> bool:
         checks.append(("manager is labelled separately from location",
                        "Property location: Magnolia, DE 19962 (Kent County)" in mgr
                        and "Managed by:        FirstService Residential" in mgr))
+        unk = _detail_block({"state": {"county": "Kent",
+                                       "current_mgmt_co": "Unknown"}})
+        checks.append(("a placeholder manager prints NO line, not 'Unknown'",
+                       "Managed by:" not in unk))
         oos = _detail_block({"state": {"county": "New Castle",
                                        "property_city": "MIDDLETOWN",
                                        "property_state": "DE",
