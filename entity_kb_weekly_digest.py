@@ -148,6 +148,37 @@ def _signal_is_out_of_state(kind: str, summary: str) -> bool:
     return True
 
 
+# Buddy, 2026-08-24: "include the address of these properties." The CRM has NO
+# property street address -- property_address / street_address / site_address /
+# address / location / physical_address are populated on 0 of 2,444 entities.
+# What it has is `mailing_address` on 26%, and 94 of those are in ANOTHER STATE
+# (MD 45, PA 17, TX 10, VA 10, NY 4, ...) because an HOA's mail often goes to
+# its management company. Chimney Hill is the worked example: county=Kent, and
+# the only address on file is 1326 Fretz Drive, Edmond, OK -- the out-of-state
+# manager. Printing that as "the address" would put an Oklahoma address under a
+# Delaware property, which is the exact confusion this report is meant to end.
+#
+# So: LOCATION is stated from the county, which is authoritative (99.8%
+# coverage, sourced from county GIS / corporate records). Any mailing address
+# is shown separately and LABELLED as mail, with its state, so an out-of-state
+# one reads as the manager's office and never as where the property sits.
+
+def _location_line(ent: dict) -> str:
+    st = (ent or {}).get("state") or {}
+    county = (st.get("county") or "").strip()
+    loc = f"{county} County, DE" if county else "county not recorded"
+    bits = [f"  Location: {loc}"]
+
+    addr = (st.get("mailing_address") or "").strip()
+    city = (st.get("mailing_city") or "").strip()
+    mstate = (st.get("mailing_state") or "").strip().upper()
+    if addr or city:
+        parts = ", ".join(x for x in (addr, city, mstate) if x)
+        tag = "" if mstate in ("DE", "") else "  [out-of-state — this is the mail/manager address, not the property]"
+        bits.append(f"  Mailing address: {parts}{tag}")
+    return "\n".join(bits)
+
+
 def compose_digest(kb_projects: list, since: str, db_path: str = None,
                    opportunities_only: bool = False) -> str:
     """Builds the plain-text digest body from entity_kb events across one
@@ -212,6 +243,12 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
 
             total_events += len(evs)
             lines.append(group["name"])
+            if opportunities_only:
+                try:
+                    ent = entity_kb.get_entity(kb_project, slug, db_path=db_path)
+                except Exception:
+                    ent = None
+                lines.append(_location_line(ent))
             for ev in sorted(evs, key=lambda e: e["occurred_at"]):
                 date = (ev.get("occurred_at") or "")[:10]
                 if ev["event_type"] == "signal":
@@ -225,6 +262,8 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
     plural = "s" if total_events != 1 else ""
 
     if opportunities_only:
+        # community headers are the only unindented lines; location lines and
+        # findings are both indented, so this still counts communities.
         n_comm = sum(1 for l in lines if l and not l.startswith("  "))
         header = (f"Delaware HOAs with an opportunity this week "
                   f"({n_comm} communit{'ies' if n_comm != 1 else 'y'}, "
@@ -462,6 +501,35 @@ def selftest() -> bool:
         for kind, txt in run_from_elsewhere:
             checks.append((f"managed/owned out of state is KEPT :: {txt[:38]}",
                            _signal_is_out_of_state(kind, txt) is False))
+
+        # ── location line (S75): county is the authority; a mailing address
+        # is labelled as mail and flagged when it is out of state.
+        de_loc = _location_line({"state": {"county": "Sussex",
+                                           "mailing_address": "PO BOX 208",
+                                           "mailing_city": "LEWES",
+                                           "mailing_state": "DE"}})
+        checks.append(("location states the DE county",
+                       "Sussex County, DE" in de_loc))
+        checks.append(("a DE mailing address is shown unflagged",
+                       "PO BOX 208, LEWES, DE" in de_loc
+                       and "out-of-state" not in de_loc))
+
+        ok_loc = _location_line({"state": {"county": "Kent",
+                                           "mailing_address": "1326 Fretz Drive",
+                                           "mailing_city": "Edmond",
+                                           "mailing_state": "OK"}})
+        checks.append(("Chimney Hill case: location is DELAWARE, not Oklahoma",
+                       "Kent County, DE" in ok_loc))
+        checks.append(("an out-of-state mailing address is LABELLED, not passed "
+                       "off as the property location",
+                       "Edmond, OK" in ok_loc and "out-of-state" in ok_loc
+                       and "not the property" in ok_loc))
+
+        bare = _location_line({"state": {}})
+        checks.append(("a missing county says so rather than implying Delaware",
+                       "county not recorded" in bare))
+        checks.append(("no address stored -> no mailing line invented",
+                       "Mailing address" not in bare))
 
         checks.append(("a plain Delaware finding is never rejected",
                        _signal_is_out_of_state(
