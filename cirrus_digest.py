@@ -694,6 +694,20 @@ def weekly_pipeline_metrics() -> str:
         lines.append(f"**Links:** {totals.get('links_ok', 0)} fetched ok, "
                      f"{totals.get('links_paywalled', 0)} paywalled, "
                      f"{totals.get('links_failed', 0)} failed.")
+        # S75: name the causes. "960 failed" sat in this report for weeks
+        # because a number with no reason attached cannot be acted on --
+        # and most of them are not fetch failures at all: the page downloads
+        # fine and the extractor finds nothing usable.
+        fails = {k[len("linkfail_"):]: v for k, v in totals.items()
+                 if k.startswith("linkfail_") and isinstance(v, int) and v}
+        if fails:
+            worst = sorted(fails.items(), key=lambda kv: -kv[1])
+            lines.append("  - failure causes: " + ", ".join(
+                f"{v} {k}" for k, v in worst))
+            if fails.get("no-extractable-text"):
+                lines.append("  - _no-extractable-text = the page fetched fine "
+                             "(HTTP 200) but no article body was found; that is "
+                             "a parser gap, not a blocked request._")
     else:
         lines.append("**Pipeline:** no daily metrics files yet (they start "
                      "accumulating with the next daily run).")

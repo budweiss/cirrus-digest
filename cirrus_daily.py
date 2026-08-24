@@ -752,6 +752,21 @@ RUN_STATS: dict = {}
 def bump(key: str, n: int = 1):
     RUN_STATS[key] = RUN_STATS.get(key, 0) + n
 
+# S75: WHY a fetch failed, set by fetch_article_content() on the way out.
+# Sunday's metrics said "791 ok, 4 paywalled, 960 failed" with no reason on any
+# of the 960, because every failure path in fetch_article_content returns the
+# same empty string. Reconstructing the reasons from daily.log showed only 151
+# were request failures — the other ~800 fetched fine (HTTP 200) and simply had
+# no extractable text, which is a PARSER problem wearing a network problem's
+# name. A number you cannot act on is the same defect as the empty error string
+# that made modelhealth fail nightly (T26).
+#
+# A module global rather than a changed return signature: fetch_article_content
+# has four call sites and this keeps the diff to the two functions that own the
+# information.
+_LAST_FETCH_REASON = ""
+
+
 def record_link_visit(url: str, status: str, context: str = "", chars: int = 0):
     """Record a fetched URL. status: 'ok' | 'paywalled' | 'failed'."""
     _VISITED_LINKS.append({
@@ -759,6 +774,8 @@ def record_link_visit(url: str, status: str, context: str = "", chars: int = 0):
         "status": status,
         "context": context[:80],
         "chars": chars,
+        # only meaningful for 'failed'; harmless elsewhere
+        "reason": _LAST_FETCH_REASON if status == "failed" else "",
     })
 
 # URL patterns that are never worth following (trackers, social, nav, images)
@@ -851,6 +868,8 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
 
     Timeout defaults to 30s — internet is free at 7am, no rush needed.
     """
+    global _LAST_FETCH_REASON
+    _LAST_FETCH_REASON = ""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -905,9 +924,11 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
                 return text[:MAX_ARTICLE], is_paywalled
 
     except requests.exceptions.Timeout:
+        _LAST_FETCH_REASON = "timeout"
         log(f"    Fetch timed out: {url[:70]}")
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code
+        _LAST_FETCH_REASON = f"http-{status}"
         log(f"    Fetch HTTP error {status}: {url[:70]}")
         # S66: a 401/403 on a WATCHLISTED (subscription) domain is an access
         # failure on content Buddy pays for -- treat it exactly like a
@@ -924,8 +945,14 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         if status in (401, 403):
             flag_cookie_refresh(url)
     except Exception as e:
+        _LAST_FETCH_REASON = f"exception: {type(e).__name__}"
         log(f"    Fetch error: {e}")
 
+    if not _LAST_FETCH_REASON:
+        # Fell through every selector and the paragraph fallback WITHOUT an
+        # exception: the request succeeded and the parser found nothing usable.
+        # This is the ~85% class that left no log line at all before S75.
+        _LAST_FETCH_REASON = "no-extractable-text"
     return "", False
 
 
@@ -1543,8 +1570,20 @@ def write_digest(items, summaries):
         for v in _VISITED_LINKS:
             link_counts[v["status"]] = link_counts.get(v["status"], 0) + 1
 
+        # S75: break the "failed" bucket down by CAUSE. A bare count of 960 was
+        # unactionable and so went unactioned for weeks; the causes need
+        # different fixes entirely (a 403 is an expired cookie, a 404 is a dead
+        # source, and no-extractable-text is a PARSER gap on a page that
+        # downloaded perfectly well).
+        fail_reasons: dict = {}
+        for v in _VISITED_LINKS:
+            if v["status"] == "failed":
+                r = (v.get("reason") or "unclassified").split(":")[0].strip()
+                fail_reasons[r] = fail_reasons.get(r, 0) + 1
+
         stats = dict(RUN_STATS)
         stats.update({f"links_{k}": n for k, n in link_counts.items()})
+        stats.update({f"linkfail_{k}": n for k, n in fail_reasons.items()})
         stats["items_in_digest"] = len(items)
         stats["date"] = date_str
 
