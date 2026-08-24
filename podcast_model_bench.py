@@ -116,8 +116,16 @@ def do_summarize(model):
     except Exception:
         pass
 
-    import cirrus_digest as D
-    cap = D.MAX_EPISODE * 10
+    # Read the cap from config directly rather than importing cirrus_digest:
+    # the summarize path needs ONE constant, and importing the module drags in
+    # feedparser, which CUMULUS does not have. A benchmark that only runs on the
+    # box that happens to have the digest's deps is not a comparison.
+    cap = 20000
+    try:
+        cfg = json.loads((HERE / "config" / "sources.json").read_text())
+        cap = int(cfg.get("digest", {}).get("max_episode_length", 2000)) * 10
+    except Exception:
+        pass
     content = text[:cap]
     item = {"content": f"[TRANSCRIBED]\n{content}",
             "source": meta.get("feed", "bench"),
@@ -128,11 +136,7 @@ def do_summarize(model):
     # Build the digest's REAL prompt, minus the network-bound enrichment steps
     # (reference fetching and RAG) so the comparison isolates the MODEL and is
     # reproducible. Both are identical across the three runs either way.
-    prompt = D.EPISODE_PROMPT_TEMPLATE.format(
-        item_type=item["type"], rag_context="",
-        source=item["source"], subject=item["subject"],
-        content=item["content"]) if hasattr(D, "EPISODE_PROMPT_TEMPLATE") else None
-    if prompt is None:
+    if True:
         # cirrus_digest builds the prompt inline; reproduce its shape faithfully.
         prompt = (
             "You are CIRRUS, an AI assistant monitoring developments in "
