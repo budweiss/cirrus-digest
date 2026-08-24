@@ -1633,6 +1633,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # Post-run: index new digest, extract action items, check disk space, send email
+    post_ok, post_note = True, "digest built + emailed"
     try:
         from cirrus_rag import index_digest
         from extract_actions import extract_from_latest
@@ -1651,6 +1652,7 @@ if __name__ == "__main__":
         sys.argv = ["send_digest.py", "daily"]
         send_email()
     except Exception as e:
+        post_ok, post_note = False, f"post-run step failed: {e}"[:160]
         log(f"Post-run step error: {e}")
 
     # Self-improvement pass — auto-add validated sources, propose the rest,
@@ -1671,3 +1673,14 @@ if __name__ == "__main__":
         routing_watch_latest("daily")
     except Exception as e:
         log(f"Routing-watch error: {e}")
+
+    # S75: this job never wrote to the run ledger, so jobscheck-report and the
+    # morning brief were silent about the heaviest job on the box — and silence
+    # is indistinguishable from health in a green report (S74 finding).
+    # Recorded last, and best-effort: job_status.record never raises, and a
+    # monitoring write must not be able to break the job it monitors.
+    try:
+        import job_status
+        job_status.record("daily", post_ok, post_note)
+    except Exception as e:
+        log(f"(job_status unavailable: {e})")

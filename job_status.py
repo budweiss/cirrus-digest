@@ -51,6 +51,13 @@ CADENCE_H = {
     "businessideaideate": 26,   # daily 07:55 -- council generation
     "businessideareport": 26,   # daily 08:15 -- the email Buddy actually reads
     "businessideafeeds":  26,   # daily 07:40 -- judge trials (+ discover on Sundays)
+    # S75: the two HEAVIEST jobs were absent from this table and never called
+    # record(), so jobscheck-report and the morning brief said nothing about
+    # them at all -- and a report that omits a job reads exactly like a report
+    # where that job is fine (S74 found this; the S74 stall detector exists
+    # because "could not check" must never render as "healthy").
+    "daily":         26,        # daily 02:00
+    "digest":        24 * 8,    # weekly Sunday 02:30 + grace
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
