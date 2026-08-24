@@ -217,6 +217,98 @@ def check_council_diversity(n=10):
     return _res(OK, "council diversity", f"{len(set(recent))} distinct judges in last {n}")
 
 
+def check_prompt_cache(min_calls=20):
+    """Is prompt caching actually READING BACK, or only ever writing?
+
+    S75. Caching was switched on for Anthropic after a live probe proved the
+    mechanism works. That is NOT proof our workload benefits: a cache only pays
+    when the prefix repeats byte-identically between calls. If every call writes
+    a cache and none ever reads one, we are paying the 1.25x write premium for
+    nothing — strictly WORSE than leaving it off.
+
+    This exists so that a fix I made cannot quietly turn out to be a cost
+    increase while everyone assumes it was a saving.
+    """
+    path = os.path.join(REPO, "logs", "llm_cache_usage.jsonl")
+    if not os.path.exists(path):
+        return _res(UNKNOWN, "prompt cache",
+                    f"no ledger at {path} — NOT the same as 'no caching problem'")
+    reqs = writes = reads = 0
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not d.get("cache_requested"):
+                    continue
+                reqs += 1
+                writes += d.get("cache_write") or 0
+                reads += d.get("cache_read") or 0
+    except Exception as e:
+        return _res(UNKNOWN, "prompt cache", f"ledger unreadable ({e})")
+
+    if reqs < min_calls:
+        return _res(UNKNOWN, "prompt cache",
+                    f"only {reqs} cache-eligible call(s) — below {min_calls}, "
+                    "too few to judge")
+    if reads == 0:
+        return _res(STALL, "prompt cache",
+                    f"{reqs} calls wrote {writes:,} cached tokens and read back "
+                    "ZERO — prefixes are not repeating, so caching is currently "
+                    "a COST INCREASE, not a saving")
+    ratio = reads / max(1, reads + writes)
+    return _res(OK, "prompt cache",
+                f"{reads:,} read vs {writes:,} written ({ratio:.0%} reuse) "
+                f"over {reqs} calls")
+
+
+def check_link_extraction(max_fail_ratio=0.40):
+    """Are we spending most of the fetch budget on links we cannot read?
+
+    S75. The weekly report carried "960 failed" for weeks with no cause
+    attached, and it turned out ~85% were not fetch failures at all: the page
+    returned HTTP 200 and the parser found no article body. Causes are recorded
+    now, so this watches the ratio rather than waiting for someone to notice a
+    big number again.
+    """
+    files = sorted(glob.glob(os.path.join(REPO, "digests", "metrics", "daily-*.json")),
+                   reverse=True)[:3]
+    if not files:
+        return _res(UNKNOWN, "link extraction",
+                    "no daily metrics files — cannot tell, which is not 'fine'")
+    ok = failed = 0
+    reasons = {}
+    for fp in files:
+        try:
+            d = json.load(open(fp))
+        except Exception:
+            continue
+        ok += d.get("links_ok", 0) or 0
+        failed += d.get("links_failed", 0) or 0
+        for k, v in d.items():
+            if k.startswith("linkfail_") and isinstance(v, int):
+                reasons[k[len("linkfail_"):]] = reasons.get(k[len("linkfail_"):], 0) + v
+    total = ok + failed
+    if total == 0:
+        return _res(UNKNOWN, "link extraction",
+                    "metrics files present but no link counts in them")
+    ratio = failed / total
+    if not reasons and failed:
+        return _res(UNKNOWN, "link extraction",
+                    f"{failed} of {total} failed but NO cause recorded — the "
+                    "reason field is not being written")
+    top = sorted(reasons.items(), key=lambda kv: -kv[1])[:3]
+    detail = ", ".join(f"{v} {k}" for k, v in top)
+    if ratio > max_fail_ratio:
+        return _res(STALL, "link extraction",
+                    f"{failed} of {total} link fetches unusable ({ratio:.0%}) — {detail}")
+    return _res(OK, "link extraction",
+                f"{failed} of {total} unusable ({ratio:.0%}) — {detail}" if reasons
+                else f"{failed} of {total} unusable ({ratio:.0%})")
+
+
 def run_all():
     res = []
     res.append(check_devloop_builds())
@@ -224,6 +316,8 @@ def run_all():
     res += check_kb_outcomes()
     res += check_score_variance()
     res.append(check_council_diversity())
+    res.append(check_prompt_cache())
+    res.append(check_link_extraction())
     return res
 
 

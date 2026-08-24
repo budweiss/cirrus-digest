@@ -787,12 +787,44 @@ _SKIP_URL_PATTERNS = [
     "/tag/", "/category/", "/author/", "/feed", "?utm_",
 ]
 
+# Hosts that consistently BLOCK us with bot protection. Fetching them only
+# spends time to collect a 403, so we skip them outright. Deliberately separate
+# from _SKIP_URL_PATTERNS above, which is about links that were never articles
+# (trackers, nav, social) rather than articles we are refused.
+#
+# ADD TO THIS FROM EVIDENCE, not suspicion: runner `link-failure-report` ranks
+# hosts by HTTP-error + timeout count over a window, which is exactly the case
+# for adding one. Removing a host is just as valid if it starts working again.
+_BLOCKED_HOSTS = {
+    # 49 x HTTP 403 in the week to 2026-08-24 — the worst host in the pipeline
+    # by a factor of five. Buddy's call to stop fetching it (S75).
+    "producthunt.com",
+}
+
+
+def host_of(url: str) -> str:
+    """Registrable-ish host, lowercased, with a leading 'www.' removed.
+
+    NOT `netloc.lstrip("www.")` — lstrip strips CHARACTERS, not a prefix, so it
+    turns wired.com into ired.com, weforum.org into eforum.org and world.org
+    into orld.org. That form was live in the paywall report, which has
+    therefore been telling us to add cookies for domains that do not exist.
+    """
+    h = urlparse(url).netloc.lower()
+    if ":" in h:
+        h = h.split(":", 1)[0]
+    return h[4:] if h.startswith("www.") else h
+
+
 def is_article_url(url: str) -> bool:
     """Return True if a URL looks like an article (not a tracker/social/nav link)."""
     if not url.startswith("http"):
         return False
     url_lower = url.lower()
     if any(pat in url_lower for pat in _SKIP_URL_PATTERNS):
+        return False
+    host = host_of(url)
+    if host in _BLOCKED_HOSTS or any(host.endswith("." + b) for b in _BLOCKED_HOSTS):
         return False
     path = urlparse(url).path.rstrip("/")
     return len(path) > 5  # must have a non-trivial path, not just a homepage
@@ -1550,7 +1582,7 @@ def write_digest(items, summaries):
                 f.write(f"- {em} {v['url']}{size}{ctx}\n")
 
             paywalled_domains = sorted({
-                urlparse(v["url"]).netloc.lstrip("www.")
+                host_of(v["url"])
                 for v in _VISITED_LINKS if v["status"] == "paywalled"
             })
             if paywalled_domains:
