@@ -1599,7 +1599,20 @@ def write_digest(items, summaries):
                 f"{stats.get('emails_errored', 0)} errors)\n")
         f.write(f"- **Links fetched:** {link_counts['ok']} ok, "
                 f"{link_counts['paywalled']} paywalled, "
-                f"{link_counts['failed']} failed\n\n")
+                f"{link_counts['failed']} failed\n")
+        # S75: show WHY, daily, right where the number is. Without this the
+        # count is unactionable — which is why ~960/week sat unexamined. Most
+        # are not blocked requests: the page returns HTTP 200 and the extractor
+        # finds no article body.
+        if fail_reasons:
+            f.write("  - failure causes: " + ", ".join(
+                f"{v} {k}" for k, v in sorted(fail_reasons.items(),
+                                              key=lambda kv: -kv[1])) + "\n")
+            if fail_reasons.get("no-extractable-text"):
+                f.write("  - _no-extractable-text: fetched fine (HTTP 200), no "
+                        "article body found — a parser gap, not a blocked "
+                        "request._\n")
+        f.write("\n")
         f.write("---\n\n")
 
         f.write(f"*End of daily digest — {date_str}*\n")
