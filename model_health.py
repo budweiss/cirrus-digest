@@ -42,6 +42,13 @@ import llm_providers as L   # noqa: E402
 CREDS_PATH = HERE / "config" / "credentials.json"
 DRY = "--dry-run" in sys.argv
 
+# Budget for the liveness probe. NOT 5 (S75): reasoning-first models spend the
+# budget on reasoning before emitting any text, so DeepSeek V4 returns an EMPTY
+# string at max_tokens=5 and answers "OK" from 20 up — measured on CIRRUS,
+# 2026-08-24. A probe tighter than the smallest model's reasoning preamble
+# reports a healthy provider as broken every single day.
+PROBE_TOKENS = 64
+
 # provider -> the credentials.json field holding its model
 MODEL_FIELD = {
     "anthropic": "claude_model",
@@ -87,8 +94,16 @@ def test_model(provider, creds, model):
         c["claude_dev_model"] = ""      # ensure claude_model is the one used
     try:
         r = L.call(provider, "health check", "Reply with the single word OK.",
-                   c, max_tokens=5, retries=1)
-        return (bool((r or "").strip()), "")
+                   c, max_tokens=PROBE_TOKENS, retries=1)
+        txt = (r or "").strip()
+        if txt:
+            return (True, "")
+        # The call SUCCEEDED but returned no text. This used to return
+        # ("", False) — an empty err matches neither MODEL_ERR nor BILLING_ERR,
+        # so it fell through to `errored` and printed a reason-less failure.
+        # Say what happened, so the next reader is not left guessing.
+        return (False, f"empty response at max_tokens={PROBE_TOKENS} — the "
+                       f"call succeeded but the model emitted no text")
     except Exception as e:
         return (False, str(e))
 
@@ -283,6 +298,12 @@ def selftest():
         ("xAI 403: no credits — add funds to continue", False, True),
         ("HTTP 401: invalid x-api-key", False, False),          # auth -> plain error
         ("read operation timed out", False, False),             # network -> plain error
+        # S75: an empty reply is a plain error, NOT a model swap and NOT a
+        # funding problem. Swapping models would be wrong (the model works, the
+        # budget was too small) and the old code emitted "" here, which showed
+        # up as a failure with no reason at all.
+        ("empty response at max_tokens=64 — the call succeeded but the model "
+         "emitted no text", False, False),
     ]
     fails = 0
     for txt, exp_model, exp_fund in cases:
