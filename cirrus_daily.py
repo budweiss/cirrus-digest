@@ -26,7 +26,7 @@ from contextlib import contextmanager
 DRY_RUN = "--dry-run" in sys.argv
 from datetime import datetime, timedelta
 from email.header import decode_header
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from pathlib import Path
@@ -837,13 +837,35 @@ def is_article_url(url: str) -> bool:
 SELF_ADDRESSES = [
     "buddy.weiss@icloud.com", "weiss_buddy@yahoo.com",
     "buddy.weiss@outlook.com", "cirrustask@gmail.com",
+    # S75, Buddy 2026-08-24. NOTE: bud.weiss@ is a SEPARATE address from
+    # buddy.weiss@ above, not a duplicate — flagged to Buddy on adding, because
+    # one character apart on a filter-bypass list is worth confirming.
+    "weissbuddy61@gmail.com", "bud.weiss@outlook.com",
 ]
 RESEARCH_SUBJECT_TAG = "research:"
 
+
 def is_research_request(from_lower: str, subject: str) -> bool:
-    if any(a in from_lower for a in SELF_ADDRESSES):
+    """Is this an explicit 'please look into this' from Buddy?
+
+    Matching is on the PARSED address, exactly — not a substring of the raw
+    header. `from_lower` is the whole From line, so the old
+    `any(a in from_lower ...)` test also matched the DISPLAY NAME: anyone could
+    set theirs to "buddy.weiss@outlook.com" and be granted the research path,
+    which bypasses the keyword gate, extracts EVERY url including trackers, and
+    fetches them. Same unanchored-substring mistake that put 135 private
+    individuals into Bill's CRM via FULLNAME LIKE '%HOA%' (S75).
+
+    Hardened when the list was widened from 4 addresses to 6 — a bypass matters
+    more the more keys fit the lock.
+    """
+    addr = (parseaddr(from_lower or "")[1] or "").strip().lower()
+    if addr and addr in _SELF_ADDRESS_SET:
         return True
     return (subject or "").strip().lower().startswith(RESEARCH_SUBJECT_TAG)
+
+
+_SELF_ADDRESS_SET = {a.strip().lower() for a in SELF_ADDRESSES}
 
 def research_candidate_urls(raw_body: str) -> list:
     """Every real URL in an email (plain-text OR html), WITHOUT the article/skip
