@@ -288,6 +288,9 @@
     "ollama_model": "qwen2.5:14b",
     "ollama_host": "http://localhost:11434",
     "max_article_length": 3000,
-    "max_episode_length": 2000
+    "max_episode_length": 2000,
+    "podcast_model": "qwen3-coder:30b",
+    "podcast_host": "buddy@192.168.0.204",
+    "podcast_remote_timeout": 300
   }
 }

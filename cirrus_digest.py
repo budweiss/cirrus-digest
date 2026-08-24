@@ -94,16 +94,80 @@ def ollama_summarize(prompt, timeout=120, model=None):
 # Override via config sources.json digest.podcast_model.
 PODCAST_MODEL = DIGEST_CFG.get("podcast_model", "llama3.2:3b")
 
+# S75. Optional: run the podcast summary on ANOTHER box over SSH.
+# CUMULUS has qwen3-coder:30b (MoE) which measured BETTER AND FASTER than the
+# 14B on a real 20k-char transcript (10.5s vs 15.2s; 1377 vs 708 chars, and it
+# kept the $18-vs-$200 figures the 3B dropped entirely).
+#
+# WHY SSH AND NOT HTTP: CUMULUS's Ollama is bound to 127.0.0.1 (verified
+# 2026-08-24 — CIRRUS gets HTTP 000 to both cumulus1 and 192.168.0.204).
+# Rebinding it to the LAN would expose an UNAUTHENTICATED model server to every
+# device on the network, so we reuse the existing S57 SSH trust instead: no new
+# listener, no persistent tunnel, no new credential.
+#
+# The prompt goes over STDIN (`--data-binary @-`), never on the command line —
+# a 20,000-char transcript would blow the argument limit.
+PODCAST_HOST = DIGEST_CFG.get("podcast_host", "")
+PODCAST_REMOTE_TIMEOUT = int(DIGEST_CFG.get("podcast_remote_timeout", 300))
+
+
+def _remote_ollama(prompt, model, host, timeout=PODCAST_REMOTE_TIMEOUT):
+    """Summarize on `host` via its LOCAL Ollama, over SSH. Returns text or None.
+
+    NEVER raises: every failure returns None so the caller falls back to the
+    local model. A digest item must never be blanked by a cross-box hop.
+    """
+    payload = json.dumps({"model": model, "prompt": prompt, "stream": False,
+                          "options": {"num_ctx": 8192}})
+    remote_cmd = (
+        f"curl -s -m {timeout} -X POST http://127.0.0.1:11434/api/generate "
+        f"-H 'Content-Type: application/json' --data-binary @-"
+    )
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote_cmd],
+            input=payload, capture_output=True, text=True, timeout=timeout + 30)
+    except Exception as e:
+        log(f"  remote podcast summary ({host}) failed: {str(e)[:160]}")
+        return None
+    if r.returncode != 0:
+        log(f"  remote podcast summary ({host}) rc={r.returncode}: {r.stderr[:200]}")
+        return None
+    try:
+        out = (json.loads(r.stdout).get("response") or "").strip()
+    except Exception as e:
+        log(f"  remote podcast summary ({host}) unparseable: {str(e)[:120]}")
+        return None
+    if not out:
+        # An empty reply is a FAILURE, not a short answer (T26).
+        log(f"  remote podcast summary ({host}) returned EMPTY — falling back")
+        return None
+    return out
+
 
 def summarize_with_fallback(prompt, item_type, timeout=120):
     """Use PODCAST_MODEL for podcasts, MODEL otherwise; on failure/empty
     output, retry once with the main MODEL so a missing small model can
-    never blank out a digest item."""
-    if item_type == "podcast" and PODCAST_MODEL != MODEL:
-        out = ollama_summarize(prompt, timeout=timeout, model=PODCAST_MODEL)
-        if out and not out.startswith("[Summarization error"):
-            return out
-        log(f"podcast model {PODCAST_MODEL} unavailable/failed — falling back to {MODEL}")
+    never blank out a digest item.
+
+    S75: podcasts may be routed to PODCAST_HOST (another box) first. The
+    fallback chain is deliberate and ordered — remote, then local podcast
+    model, then the main model — so losing the network degrades the summary
+    rather than losing the item.
+    """
+    if item_type == "podcast":
+        if PODCAST_HOST:
+            out = _remote_ollama(prompt, PODCAST_MODEL, PODCAST_HOST)
+            if out:
+                log(f"  podcast summarized on {PODCAST_HOST} with {PODCAST_MODEL}")
+                return out
+            log(f"  remote {PODCAST_MODEL} on {PODCAST_HOST} unavailable "
+                f"— falling back to local")
+        if PODCAST_MODEL != MODEL and not PODCAST_HOST:
+            out = ollama_summarize(prompt, timeout=timeout, model=PODCAST_MODEL)
+            if out and not out.startswith("[Summarization error"):
+                return out
+            log(f"podcast model {PODCAST_MODEL} unavailable/failed — falling back to {MODEL}")
     return ollama_summarize(prompt, timeout=timeout)
 
 
