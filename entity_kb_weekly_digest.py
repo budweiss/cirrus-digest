@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import json
+import re
 import smtplib
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
@@ -29,6 +30,14 @@ WEEKLY_DIGEST_RECIPIENTS = {
         "to": "whutchins@knightpropertysvs.com",
         "kb_projects": ["hoa_leads_bill"],
         "label": "Delaware HOA research",
+        # S75 (Buddy, 2026-08-24): "only properties that are in Delaware, only
+        # list properties where we have opportunities." The 2026-08-24 send was
+        # 1,328 "updates" of which 1,296 were field_change bookkeeping (637
+        # confidence_basis + 637 lead_confidence from one bulk re-scoring pass)
+        # -- a 75 KB email in which 96% was internal noise and the 32 real
+        # findings were unfindable. Two of those 32 were about a New York
+        # village and a Maryland town that share a name with a Delaware HOA.
+        "opportunities_only": True,
     },
     # S66: Buddy's own new-project shortlist (business_idea_scan.py), not a
     # client -- "to" is Buddy himself, so CC_ADDR below just double-lists him
@@ -42,25 +51,144 @@ WEEKLY_DIGEST_RECIPIENTS = {
 }
 
 
-def compose_digest(kb_projects: list, since: str, db_path: str = None) -> str:
+# ── Opportunity / locality filtering (S75) ────────────────────────────────────
+# Only applied to clients whose config sets "opportunities_only". The
+# business-ideas digest is deliberately unaffected: it wants everything.
+#
+# signal_kind is CALLER-DEFINED free text and the research model invents it, so
+# both spellings of the same idea occur ("management-change" and
+# "management_company_change"). Normalise before matching.
+
+def _norm_kind(kind: str) -> str:
+    return re.sub(r"[\s_]+", "-", (kind or "").strip().lower())
+
+
+# A finding Bill can act on: distress, a management shake-up, or an HOA whose
+# manager is out of state (an explicit local-PM pitch).
+OPPORTUNITY_KINDS = {
+    "complaint", "distress", "litigation", "lawsuit",
+    "special-assessment", "rfp", "bid-request",
+    "mgmt-change", "management-change", "management-company-change",
+    "out-of-state-mgmt",
+}
+
+# Real findings that are NOT opportunities -- identity confirmations, dues
+# amounts, board email addresses. Useful data for the CRM; not a reason to
+# call anyone. Listed explicitly so that a kind which is in NEITHER set is
+# reported as unclassified rather than silently dropped (T8/T23: every value
+# the filter accepts must have a decided path, and a dropped finding nobody
+# hears about is indistinguishable from no finding).
+INFORMATIONAL_KINDS = {
+    "identification", "operational-detail", "governance-contact",
+    "governance-info", "policy-change", "leadership-change", "other",
+}
+
+_NON_DE_STATE_RX = re.compile(
+    r"\b(Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|"
+    r"Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|"
+    r"Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|"
+    r"Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|"
+    r"New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
+    r"Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|"
+    r"Virginia|Washington|West Virginia|Wisconsin|Wyoming)\b", re.IGNORECASE)
+_DELAWARE_RX = re.compile(r"\bDelaware\b|\bDE\b")
+
+DE_COUNTIES = {"kent", "sussex", "new castle"}
+
+
+def _is_delaware_entity(project: str, slug: str, summaries: list,
+                        db_path: str = None) -> bool:
+    """Delaware is decided per ENTITY, not per finding. These communities come
+    from the Kent / Sussex / New Castle county HOA registries, so a stored
+    county IS the authority. Falls back to the findings' own text when the
+    county was never captured (5 of 14 entities in the 2026-08-24 window had
+    no county but were plainly Delaware in their text)."""
+    try:
+        ent = entity_kb.get_entity(project, slug, db_path=db_path) or {}
+    except Exception:
+        ent = {}
+    county = ((ent.get("state") or {}).get("county") or "").strip().lower()
+    if county in DE_COUNTIES:
+        return True
+    return any(_DELAWARE_RX.search(t or "") for t in summaries)
+
+
+def _signal_is_out_of_state(kind: str, summary: str) -> bool:
+    """Reject a finding whose SUBJECT is somewhere else -- the failure that put
+    a New York village mayor and a Maryland town commission in a Delaware HOA
+    report. Exempt out-of-state-mgmt: naming another state is that kind's whole
+    meaning ("manager is in Maryland" is the lead, not a mismatch)."""
+    if _norm_kind(kind) == "out-of-state-mgmt":
+        return False
+    text = summary or ""
+    return bool(_NON_DE_STATE_RX.search(text)) and not _DELAWARE_RX.search(text)
+
+
+def compose_digest(kb_projects: list, since: str, db_path: str = None,
+                   opportunities_only: bool = False) -> str:
     """Builds the plain-text digest body from entity_kb events across one
     or more projects since a given timestamp. Returns '' if there's
     genuinely nothing to report -- caller decides whether to send at all
-    (a client should never get an empty "nothing happened" email)."""
+    (a client should never get an empty "nothing happened" email).
+
+    opportunities_only (S75, Buddy's ask for Bill): keep only Delaware
+    communities, and only findings he can act on. Drops every field_change --
+    "lead_confidence updated" tells a client nothing -- keeps opportunity
+    signals, and reports what it withheld instead of withholding it silently.
+    """
     lines = []
     total_events = 0
+    n_field, n_info, n_offstate = 0, 0, 0
+    unclassified = {}
+
     for kb_project in kb_projects:
         events = entity_kb.get_events(kb_project, since=since, db_path=db_path)
         if not events:
             continue
-        total_events += len(events)
+
         by_entity = {}
         for ev in events:
             by_entity.setdefault(ev["slug"], {"name": ev["name"], "events": []})
             by_entity[ev["slug"]]["events"].append(ev)
-        for _slug, group in sorted(by_entity.items(), key=lambda kv: kv[1]["name"]):
+
+        for slug, group in sorted(by_entity.items(), key=lambda kv: kv[1]["name"]):
+            evs = group["events"]
+
+            if opportunities_only:
+                sigs = [e for e in evs if e.get("event_type") == "signal"]
+                n_field += len(evs) - len(sigs)
+
+                summaries = [e.get("summary") or "" for e in sigs]
+                if not sigs or not _is_delaware_entity(kb_project, slug, summaries,
+                                                       db_path=db_path):
+                    n_offstate += len(sigs)
+                    continue
+
+                keep = []
+                for e in sigs:
+                    kind = _norm_kind(e.get("signal_kind"))
+                    if kind not in OPPORTUNITY_KINDS:
+                        if kind in INFORMATIONAL_KINDS:
+                            n_info += 1
+                        else:
+                            # Neither list knows this kind. Count it by name so a
+                            # new one surfaces instead of vanishing.
+                            unclassified[kind or "(none)"] = \
+                                unclassified.get(kind or "(none)", 0) + 1
+                        continue
+                    if _signal_is_out_of_state(e.get("signal_kind"),
+                                               e.get("summary")):
+                        n_offstate += 1
+                        continue
+                    keep.append(e)
+                evs = keep
+
+            if not evs:
+                continue
+
+            total_events += len(evs)
             lines.append(group["name"])
-            for ev in sorted(group["events"], key=lambda e: e["occurred_at"]):
+            for ev in sorted(evs, key=lambda e: e["occurred_at"]):
                 date = (ev.get("occurred_at") or "")[:10]
                 if ev["event_type"] == "signal":
                     lines.append(f"  - {date}: {ev.get('summary', '')}")
@@ -71,6 +199,28 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None) -> str:
     if total_events == 0:
         return ""
     plural = "s" if total_events != 1 else ""
+
+    if opportunities_only:
+        n_comm = sum(1 for l in lines if l and not l.startswith("  "))
+        header = (f"Delaware HOAs with an opportunity this week "
+                  f"({n_comm} communit{'ies' if n_comm != 1 else 'y'}, "
+                  f"{total_events} finding{plural}):\n\n")
+        body = header + "\n".join(lines).strip()
+        held = []
+        if n_field:
+            held.append(f"{n_field} internal record update(s)")
+        if n_info:
+            held.append(f"{n_info} informational finding(s)")
+        if n_offstate:
+            held.append(f"{n_offstate} finding(s) not confirmed as Delaware")
+        if unclassified:
+            held.append(f"{sum(unclassified.values())} of an unrecognised type "
+                        f"({', '.join(sorted(unclassified))})")
+        if held:
+            body += ("\n\n---\nNot shown: " + "; ".join(held) +
+                     ". These are kept in the CRM.")
+        return body
+
     header = f"This week's research findings ({total_events} update{plural}):\n\n"
     return header + "\n".join(lines).strip()
 
@@ -107,7 +257,8 @@ def run(client: str, dry_run: bool = False, db_path: str = None,
 
     window = days or cfg.get("days", 7)
     since = (datetime.now() - timedelta(days=window)).strftime("%Y-%m-%d 00:00:00")
-    body = compose_digest(cfg["kb_projects"], since, db_path=db_path)
+    body = compose_digest(cfg["kb_projects"], since, db_path=db_path,
+                          opportunities_only=cfg.get("opportunities_only", False))
     if not body:
         return {"sent": False, "reason": f"nothing to report in the last {window}d"}
 
@@ -181,6 +332,82 @@ def selftest() -> bool:
                        WEEKLY_DIGEST_RECIPIENTS["buddy-business"].get("days") == 1))
         checks.append(("bill keeps the weekly default (no days override)",
                        "days" not in WEEKLY_DIGEST_RECIPIENTS["bill"]))
+
+        # ── S75: opportunities_only, tested against the REAL 2026-08-24 cases ──
+        # Every scenario below is one that actually reached Bill's inbox.
+        entity_kb.upsert_entity("hoa_leads_bill", "greens-wyoming",
+                                "The Greens at Wyoming",
+                                fields={"county": "Kent"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "greens-wyoming", "complaint",
+                             "Delaware HOA in Kent County with residents "
+                             "fighting for control and court action.",
+                             occurred_at=now, db_path=db_path)
+        # the bulk re-scoring pass that made up 96% of the 2026-08-24 email
+        entity_kb.upsert_entity("hoa_leads_bill", "greens-wyoming",
+                                "The Greens at Wyoming",
+                                fields={"lead_confidence": "0.8"},
+                                occurred_at=now, db_path=db_path)
+        # a New York village mayor, filed under a Delaware HOA's name
+        entity_kb.upsert_entity("hoa_leads_bill", "chestnut-ridge",
+                                "Chestnut Ridge",
+                                fields={"county": "Kent"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "chestnut-ridge",
+                             "leadership_change",
+                             "Mayor Rosario Presti appointed Chaim Rose to the "
+                             "village board of trustees.",
+                             occurred_at=now, db_path=db_path)
+        # a Maryland town commission, likewise
+        entity_kb.upsert_entity("hoa_leads_bill", "church-creek", "Church Creek",
+                                fields={"county": "Kent"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "church-creek", "governance_info",
+                             "Church Creek, Maryland is governed by a town "
+                             "commission with Mayor Robert L. Herbert",
+                             occurred_at=now, db_path=db_path)
+        # Willowwood: names MARYLAND and is a REAL lead -- the manager is the
+        # thing that is out of state. Must survive the locality filter.
+        entity_kb.upsert_entity("hoa_leads_bill", "willowwood", "Willowwood",
+                                fields={"county": "Kent"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "willowwood", "out-of-state-mgmt",
+                             "Currently managed by an out-of-state company "
+                             "(management contact references MARYLAND) - "
+                             "potential local-PM pitch opportunity.",
+                             occurred_at=now, db_path=db_path)
+        # a kind neither list knows -- must be REPORTED, never silently dropped
+        entity_kb.upsert_entity("hoa_leads_bill", "novel-kind", "Novel Kind HOA",
+                                fields={"county": "Sussex"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "novel-kind", "brand-new-kind",
+                             "Delaware HOA with something we have not seen.",
+                             occurred_at=now, db_path=db_path)
+
+        opp = compose_digest(["hoa_leads_bill"], since_week, db_path=db_path,
+                             opportunities_only=True)
+        checks.append(("opportunity signal is kept",
+                       "fighting for control" in opp))
+        checks.append(("field_change bookkeeping is dropped",
+                       "lead_confidence updated" not in opp
+                       and "county updated" not in opp))
+        checks.append(("a New York village mayor is NOT in a Delaware report",
+                       "Rosario Presti" not in opp and "Chestnut Ridge" not in opp))
+        checks.append(("a Maryland town commission is NOT in a Delaware report",
+                       "Robert L. Herbert" not in opp and "Church Creek" not in opp))
+        checks.append(("out-of-state-mgmt survives despite naming MARYLAND",
+                       "local-PM pitch" in opp and "Willowwood" in opp))
+        checks.append(("an unrecognised kind is REPORTED, not silently dropped",
+                       "unrecognised type" in opp and "brand-new-kind" in opp))
+        checks.append(("the withheld-counts footer is present",
+                       "Not shown:" in opp and "internal record update" in opp))
+        checks.append(("header counts communities, not raw events",
+                       "Delaware HOAs with an opportunity" in opp))
+
+        # the other client must be untouched -- it wants everything
+        unfiltered = compose_digest(["hoa_leads_bill"], since_week,
+                                    db_path=db_path, opportunities_only=False)
+        checks.append(("opportunities_only=False still returns everything",
+                       "Rosario Presti" in unfiltered
+                       and "lead_confidence updated" in unfiltered))
+        checks.append(("buddy-business is NOT opportunity-filtered",
+                       WEEKLY_DIGEST_RECIPIENTS["buddy-business"]
+                       .get("opportunities_only", False) is False))
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
