@@ -31,6 +31,8 @@ Public API
 import json
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
+from pathlib import Path
 
 DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek"]
 _TIMEOUT = 120
@@ -82,18 +84,70 @@ def _openai_compatible(url, key, model, system, user, max_tokens):
 
 
 # ── per-provider adapters (build request + parse reply) ─────────────────────────
+# ── prompt caching (S75) ─────────────────────────────────────────────────────
+# docs/PAID-ACCESS-REGISTRY.md has flagged "Prompt caching OFF = a cost-savings
+# lever if needed later" since 2026-08-10, and nothing in this repo has ever set
+# cache_control. Anthropic is our largest LLM line, and every call re-sends the
+# whole system prompt at full input price.
+#
+# Anthropic will not cache a prefix below ~1024 tokens; it silently ignores
+# cache_control rather than erroring. Gating on length keeps short calls on the
+# exact request shape they already use, so the change is confined to the calls
+# that can actually benefit.
+_CACHE_MIN_CHARS = 4000        # ~1k tokens, Anthropic's minimum cacheable prefix
+_CACHE_LEDGER = Path.home() / "projects/cirrus-digest/logs/llm_cache_usage.jsonl"
+
+
+def _record_usage(provider, model, usage, cached):
+    """Append one line of token accounting. NEVER raises.
+
+    Exists because turning caching on and ASSUMING it worked is exactly the
+    failure this project keeps auditing. Caching only pays when the prefix
+    repeats byte-identically; if `cache_read` stays at 0 across a week, the
+    prefixes are not repeating and the lever is worthless HERE regardless of
+    what it does elsewhere. This ledger is what makes that answerable.
+    """
+    try:
+        rec = {
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "provider": provider,
+            "model": model,
+            "cache_requested": bool(cached),
+            "input": usage.get("input_tokens"),
+            "output": usage.get("output_tokens"),
+            "cache_write": usage.get("cache_creation_input_tokens"),
+            "cache_read": usage.get("cache_read_input_tokens"),
+        }
+        _CACHE_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(_CACHE_LEDGER, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
 def _anthropic(creds, system, user, max_tokens):
     key = creds.get("anthropic_api_key")
     if not key:
         raise ProviderError("no anthropic_api_key")
     model = creds.get("claude_dev_model") or creds.get("claude_model") or "claude-sonnet-5"
+
+    # creds["prompt_cache"] = false is the off switch if this ever misbehaves.
+    want_cache = (creds.get("prompt_cache", True)
+                  and len(system or "") >= _CACHE_MIN_CHARS)
+    if want_cache:
+        sys_field = [{"type": "text", "text": system,
+                      "cache_control": {"type": "ephemeral"}}]
+    else:
+        sys_field = system
+
     resp = _http_post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": key, "anthropic-version": "2023-06-01",
          "content-type": "application/json"},
-        {"model": model, "max_tokens": max_tokens, "system": system,
+        {"model": model, "max_tokens": max_tokens, "system": sys_field,
          "messages": [{"role": "user", "content": user}]},
     )
+    _record_usage("anthropic", model, resp.get("usage") or {}, want_cache)
     return "".join(b.get("text", "") for b in resp.get("content", [])
                    if b.get("type") == "text")
 
