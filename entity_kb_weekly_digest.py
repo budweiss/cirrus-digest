@@ -163,20 +163,61 @@ def _signal_is_out_of_state(kind: str, summary: str) -> bool:
 # is shown separately and LABELLED as mail, with its state, so an out-of-state
 # one reads as the manager's office and never as where the property sits.
 
-def _location_line(ent: dict) -> str:
-    st = (ent or {}).get("state") or {}
-    county = (st.get("county") or "").strip()
-    loc = f"{county} County, DE" if county else "county not recorded"
-    bits = [f"  Location: {loc}"]
+def _detail_block(ent: dict) -> str:
+    """Buddy, 2026-08-24: "note the difference between a property location,
+    manager, and HOA info." They are three different things and were being run
+    together, which is how an Oklahoma management address ended up reading as a
+    Delaware property's address. Each gets its own labelled line:
 
+      Property location  WHERE THE HOMES ARE.      County GIS. Always Delaware.
+      HOA contact        Where the association     May be a PO box.
+                         gets its post.
+      Managed by         Who runs it.              May be in any state; that is
+                                                   a PITCH, not a problem.
+    """
+    st = (ent or {}).get("state") or {}
+    out = []
+
+    # 1. PROPERTY LOCATION -- the authoritative one.
+    city = (st.get("property_city") or "").strip()
+    pstate = (st.get("property_state") or "").strip()
+    pzip = (st.get("property_zip") or "").strip()
+    county = (st.get("county") or "").strip()
+    if city and pstate:
+        loc = f"{city.title()}, {pstate} {pzip}".strip()
+        if county:
+            loc += f" ({county} County)"
+    elif county:
+        loc = f"{county} County, DE"
+    else:
+        loc = "not yet confirmed"
+    out.append(f"  Property location: {loc}")
+    streets = (st.get("property_streets") or "").strip()
+    if streets:
+        out.append(f"    streets: {streets}")
+
+    # 2. HOA CONTACT -- the association's own mail. Not the property.
     addr = (st.get("mailing_address") or "").strip()
-    city = (st.get("mailing_city") or "").strip()
+    mcity = (st.get("mailing_city") or "").strip()
     mstate = (st.get("mailing_state") or "").strip().upper()
-    if addr or city:
-        parts = ", ".join(x for x in (addr, city, mstate) if x)
-        tag = "" if mstate in ("DE", "") else "  [out-of-state — this is the mail/manager address, not the property]"
-        bits.append(f"  Mailing address: {parts}{tag}")
-    return "\n".join(bits)
+    if addr or mcity:
+        parts = ", ".join(x for x in (addr, mcity, mstate) if x)
+        tag = "" if mstate in ("DE", "") else "   [out of state — association mail, NOT the property]"
+        out.append(f"  HOA contact:       {parts}{tag}")
+
+    # 3. MANAGER -- may be anywhere. An out-of-state manager is the lead.
+    mgmt = (st.get("current_mgmt_co") or "").strip()
+    mgmt_status = (st.get("mgmt_status") or "").strip()
+    if mgmt:
+        out.append(f"  Managed by:        {mgmt}")
+    elif mgmt_status:
+        out.append(f"  Managed by:        {mgmt_status}")
+
+    owners_oos = (st.get("owners_out_of_state") or "").strip()
+    if owners_oos:
+        out.append(f"    note: {owners_oos} unit owner(s) live out of state "
+                   f"(the property is in Delaware)")
+    return "\n".join(out)
 
 
 def compose_digest(kb_projects: list, since: str, db_path: str = None,
@@ -248,7 +289,7 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
                     ent = entity_kb.get_entity(kb_project, slug, db_path=db_path)
                 except Exception:
                     ent = None
-                lines.append(_location_line(ent))
+                lines.append(_detail_block(ent))
             for ev in sorted(evs, key=lambda e: e["occurred_at"]):
                 date = (ev.get("occurred_at") or "")[:10]
                 if ev["event_type"] == "signal":
@@ -504,17 +545,19 @@ def selftest() -> bool:
 
         # ── location line (S75): county is the authority; a mailing address
         # is labelled as mail and flagged when it is out of state.
-        de_loc = _location_line({"state": {"county": "Sussex",
+        de_loc = _detail_block({"state": {"county": "Sussex",
                                            "mailing_address": "PO BOX 208",
                                            "mailing_city": "LEWES",
                                            "mailing_state": "DE"}})
         checks.append(("location states the DE county",
                        "Sussex County, DE" in de_loc))
+        checks.append(("property location and HOA contact are LABELLED apart",
+                       "Property location:" in de_loc and "HOA contact:" in de_loc))
         checks.append(("a DE mailing address is shown unflagged",
                        "PO BOX 208, LEWES, DE" in de_loc
-                       and "out-of-state" not in de_loc))
+                       and "out of state" not in de_loc))
 
-        ok_loc = _location_line({"state": {"county": "Kent",
+        ok_loc = _detail_block({"state": {"county": "Kent",
                                            "mailing_address": "1326 Fretz Drive",
                                            "mailing_city": "Edmond",
                                            "mailing_state": "OK"}})
@@ -522,14 +565,29 @@ def selftest() -> bool:
                        "Kent County, DE" in ok_loc))
         checks.append(("an out-of-state mailing address is LABELLED, not passed "
                        "off as the property location",
-                       "Edmond, OK" in ok_loc and "out-of-state" in ok_loc
-                       and "not the property" in ok_loc))
+                       "Edmond, OK" in ok_loc and "out of state" in ok_loc
+                       and "NOT the property" in ok_loc))
 
-        bare = _location_line({"state": {}})
-        checks.append(("a missing county says so rather than implying Delaware",
-                       "county not recorded" in bare))
-        checks.append(("no address stored -> no mailing line invented",
-                       "Mailing address" not in bare))
+        bare = _detail_block({"state": {}})
+        checks.append(("no location data says so rather than implying Delaware",
+                       "not yet confirmed" in bare))
+        checks.append(("no address stored -> no HOA contact line invented",
+                       "HOA contact:" not in bare))
+        mgr = _detail_block({"state": {"county": "Kent",
+                                       "current_mgmt_co": "FirstService Residential",
+                                       "property_city": "MAGNOLIA",
+                                       "property_state": "DE",
+                                       "property_zip": "19962"}})
+        checks.append(("manager is labelled separately from location",
+                       "Property location: Magnolia, DE 19962 (Kent County)" in mgr
+                       and "Managed by:        FirstService Residential" in mgr))
+        oos = _detail_block({"state": {"county": "New Castle",
+                                       "property_city": "MIDDLETOWN",
+                                       "property_state": "DE",
+                                       "owners_out_of_state": "10"}})
+        checks.append(("out-of-state OWNERS are noted without moving the property",
+                       "10 unit owner(s) live out of state" in oos
+                       and "the property is in Delaware" in oos))
 
         checks.append(("a plain Delaware finding is never rejected",
                        _signal_is_out_of_state(
