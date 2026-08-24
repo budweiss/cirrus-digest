@@ -837,9 +837,11 @@ def is_article_url(url: str) -> bool:
 SELF_ADDRESSES = [
     "buddy.weiss@icloud.com", "weiss_buddy@yahoo.com",
     "buddy.weiss@outlook.com", "cirrustask@gmail.com",
-    # S75, Buddy 2026-08-24. NOTE: bud.weiss@ is a SEPARATE address from
-    # buddy.weiss@ above, not a duplicate — flagged to Buddy on adding, because
-    # one character apart on a filter-bypass list is worth confirming.
+    # S75, Buddy 2026-08-24. bud.weiss@ and buddy.weiss@ are BOTH REAL and BOTH
+    # HIS — confirmed by Buddy on the day, after being queried precisely because
+    # two near-identical addresses on a filter-bypass list look like a typo.
+    # DO NOT "tidy" one away: they are two separate mailboxes, and removing the
+    # wrong one silently stops his research emails being recognised.
     "weissbuddy61@gmail.com", "bud.weiss@outlook.com",
 ]
 RESEARCH_SUBJECT_TAG = "research:"
