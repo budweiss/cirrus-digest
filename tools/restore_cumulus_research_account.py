@@ -30,8 +30,22 @@ if any(a.get("label") == LABEL for a in accts):
 bak = json.load(open(BAK))
 found = [a for a in bak.get("email", {}).get("accounts", []) if a.get("label") == LABEL]
 if not found:
-    print(f"ERROR: '{LABEL}' not in {BAK} either — restore by hand from S63 notes")
-    sys.exit(1)
+    # S76: the bak-localize copy turned out to predate the entry, so carry the
+    # reconstruction here. Fields per CUMULUS.md S63 (address + credential_key,
+    # confirmed by live IMAP login then) and END-USER-DIRECT-INTAKE.md (Google
+    # Workspace account -> Gmail IMAP endpoint); shape mirrors gmail-research.
+    print(f"'{LABEL}' not in {BAK} — using the reconstructed S63 entry")
+    found = [{
+        "label": LABEL,
+        "address": "cumulus@cumulustask.com",
+        "imap_server": "imap.gmail.com",
+        "imap_port": 993,
+        "credential_key": "outlook_password",
+        "enabled": True,
+        "_note": "CUMULUS end-user direct intake (S63) - watched by "
+                 "cumulus-intake.service. LOCAL-ONLY, never in git; restore "
+                 "via tools/restore_cumulus_research_account.py (S76).",
+    }]
 
 shutil.copy(CUR, f"{CUR}.bak-{date.today().isoformat()}")
 accts.append(found[0])
