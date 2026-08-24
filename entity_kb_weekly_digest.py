@@ -113,15 +113,39 @@ def _is_delaware_entity(project: str, slug: str, summaries: list,
     return any(_DELAWARE_RX.search(t or "") for t in summaries)
 
 
+# Buddy, 2026-08-24: "it should only be properties located in Delaware. They
+# can be managed or owned out of state." So another state's name disqualifies a
+# finding only when it describes WHERE THE PROPERTY IS -- never when it
+# describes who manages, owns, developed or banks it. An HOA in Milford run
+# from Maryland is a lead; that is the entire out-of-state-mgmt pitch.
+_MGMT_CONTEXT_RX = re.compile(
+    r"(manage(d|ment|r|s)?|property manager|PM\b|owner|owned|ownership|"
+    r"developer|developed|builder|landlord|contractor|vendor|law firm|"
+    r"attorney|counsel|headquarter|based in|located out of|area code|"
+    r"corporate|parent company|billing)", re.IGNORECASE)
+
+
 def _signal_is_out_of_state(kind: str, summary: str) -> bool:
-    """Reject a finding whose SUBJECT is somewhere else -- the failure that put
-    a New York village mayor and a Maryland town commission in a Delaware HOA
-    report. Exempt out-of-state-mgmt: naming another state is that kind's whole
-    meaning ("manager is in Maryland" is the lead, not a mismatch)."""
+    """True only when the FINDING'S SUBJECT looks like it sits outside Delaware
+    -- the failure that put a New York village mayor and a Maryland town
+    commission into a Delaware HOA report.
+
+    Management and ownership are explicitly NOT disqualifying (Buddy's rule).
+    Two independent reasons a state name is allowed to appear:
+      * the kind is out-of-state-mgmt -- naming another state IS its meaning;
+      * the sentence is talking about management/ownership/developers, so the
+        other state describes the company, not the property.
+    """
     if _norm_kind(kind) == "out-of-state-mgmt":
         return False
     text = summary or ""
-    return bool(_NON_DE_STATE_RX.search(text)) and not _DELAWARE_RX.search(text)
+    if not _NON_DE_STATE_RX.search(text):
+        return False          # no other state named at all
+    if _DELAWARE_RX.search(text):
+        return False          # affirms Delaware itself
+    if _MGMT_CONTEXT_RX.search(text):
+        return False          # the other state describes WHO RUNS it, not WHERE it is
+    return True
 
 
 def compose_digest(kb_projects: list, since: str, db_path: str = None,
@@ -408,6 +432,42 @@ def selftest() -> bool:
         checks.append(("buddy-business is NOT opportunity-filtered",
                        WEEKLY_DIGEST_RECIPIENTS["buddy-business"]
                        .get("opportunities_only", False) is False))
+
+        # ── Buddy's rule, 2026-08-24: located in Delaware; managed or owned
+        # out of state is FINE. Unit-test the predicate directly, both ways.
+        located_elsewhere = [
+            ("governance_info",
+             "Church Creek, Maryland is governed by a town commission."),
+            ("complaint",
+             "The community sits in Ocean City, Maryland and has flooding."),
+        ]
+        for kind, txt in located_elsewhere:
+            checks.append((f"property located out of state is rejected :: {txt[:38]}",
+                           _signal_is_out_of_state(kind, txt) is True))
+
+        run_from_elsewhere = [
+            ("out-of-state-mgmt",
+             "Managed by an out-of-state company (references MARYLAND) - "
+             "potential local-PM pitch opportunity."),
+            ("complaint",
+             "Residents complain the property manager is based in "
+             "Pennsylvania and never visits the Delaware site."),
+            ("complaint",
+             "The developer, a New Jersey builder, left drainage unfinished."),
+            ("management-change",
+             "Association fired its Virginia-based management company."),
+            ("complaint",
+             "Owner is a Texas investment group; dues have doubled."),
+        ]
+        for kind, txt in run_from_elsewhere:
+            checks.append((f"managed/owned out of state is KEPT :: {txt[:38]}",
+                           _signal_is_out_of_state(kind, txt) is False))
+
+        checks.append(("a plain Delaware finding is never rejected",
+                       _signal_is_out_of_state(
+                           "complaint",
+                           "Delaware HOA in Kent County with resident litigation.")
+                       is False))
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
