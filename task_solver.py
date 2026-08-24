@@ -227,6 +227,36 @@ def wants_fresh_research(text: str) -> bool:
     return bool(_REFRESH_RX.search(text))
 
 
+# S75. The outcome signal only fires when EXACTLY ONE entity matches. An
+# ambiguous question and a question that matches nothing both record nothing —
+# so "Bill asks about leads constantly but search never matches him one" looks
+# identical to "Bill has not asked." Both render as ZERO, and the stall detector
+# was calling that a stall every morning without being able to tell which.
+#
+# This ledgers the ATTEMPT, so the two are distinguishable: no attempts means
+# the signal has had no opportunity (not a fault), while attempts with zero
+# outcomes means matching is broken (very much a fault). Same file-relative
+# path convention as entity_kb.DATA_DIR so it resolves on either box.
+_ASK_LEDGER = Path(__file__).parent / "logs" / "kb_question_attempts.jsonl"
+
+
+def _record_question_attempt(kb_project: str, n_matches: int, recorded: bool,
+                             question: str = "") -> None:
+    """NEVER raises — instrumentation on the path that answers a client email."""
+    try:
+        _ASK_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(_ASK_LEDGER, "a") as f:
+            f.write(json.dumps({
+                "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "project": kb_project,
+                "matches": n_matches,
+                "outcome_recorded": bool(recorded),
+                "q": (question or "")[:120],
+            }) + "\n")
+    except Exception:
+        pass
+
+
 def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> str | None:
     """If the question plausibly names something already researched (per
     the sender's project -> entity_kb project mapping above), answer from
@@ -250,9 +280,15 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
         except Exception:
             continue
         if len(matches) > 1:
+            _record_question_attempt(kb_project, len(matches), False, question)
             names = "; ".join(m["name"] for m in matches)
             return (f"I found a few possible matches in our records — could you "
                      f"let me know which one you mean? {names}")
+        if not matches:
+            # No match is an ATTEMPT too — and a run of these is the shape of a
+            # broken search, which is exactly what must not stay invisible.
+            _record_question_attempt(kb_project, 0, False, question)
+            continue
         if len(matches) == 1:
             entity = matches[0]
             # S74 FEEDBACK SIGNAL. The client asking about an entity IS the
@@ -266,12 +302,14 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
             # cost Bill his reply. record_outcome() also swallows internally —
             # two layers, deliberately, because the failure mode is silent and
             # client-facing.
+            recorded = False
             try:
-                entity_kb.record_outcome(
+                recorded = bool(entity_kb.record_outcome(
                     kb_project, entity["slug"], "client_asked",
-                    note=(question or "")[:200], db_path=db_path)
+                    note=(question or "")[:200], db_path=db_path))
             except Exception:
                 pass
+            _record_question_attempt(kb_project, 1, recorded, question)
             if creds and wants_fresh_research(question):
                 try:
                     ctx = KB_RESEARCH_CONTEXT.get(kb_project, {})

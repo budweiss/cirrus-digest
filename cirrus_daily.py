@@ -1457,8 +1457,35 @@ def fetch_emails(credentials):
 
 # ── Summarizer ────────────────────────────────────────────────────────────────
 
+# Below this, there is nothing to summarise. S75: "Research openbrain" arrived
+# with an EMPTY body — only the "Get Outlook for iOS" signature — and no link
+# yielded readable content. summarize_item still ran, and because the prompt
+# carries a RAG "RELEVANT PAST KNOWLEDGE" block built from subject + content,
+# the only substance in the prompt WAS that block. The model dutifully
+# summarised it: Buddy got a confident paragraph about Moonshot AI's Kimi K3
+# (an unrelated item from the same day's digest) filed under his own research
+# request, complete with a CIRRUS NOTE recommending action on it.
+#
+# An empty input must produce an explicit "nothing to report", never a fluent
+# answer assembled from whatever else was in context. This is the same rule as
+# T26 (an empty LLM reply is a failure, not a pass) and the same rule the
+# digest filter now applies to Bill — and it also saves an LLM call.
+MIN_SUMMARIZABLE_CHARS = 120
+
+
 def summarize_item(item):
     """Summarize a single article, enriched with RAG context from past digests."""
+    content = (item.get("content") or "").strip()
+    if len(content) < MIN_SUMMARIZABLE_CHARS:
+        log(f"  NO CONTENT to summarize ({len(content)} chars): "
+            f"{str(item.get('subject'))[:60]}")
+        bump("items_no_content")
+        return (f"**NO CONTENT TO SUMMARIZE.** The source had "
+                f"{len(content)} character(s) of usable text and no link "
+                f"yielded readable content, so nothing was researched and "
+                f"nothing below is a finding. If this was a research request, "
+                f"resend it with a working link or paste the text in the body.")
+
     # Try to get relevant past knowledge
     rag_context = ""
     try:

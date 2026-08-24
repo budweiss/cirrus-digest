@@ -112,6 +112,38 @@ def _kb_dbs():
     return sorted(glob.glob(os.path.join(REPO, "data", "entity_kb", "*.db")))
 
 
+def _question_attempts(project):
+    """How many client questions actually reached this KB? -> dict or None.
+
+    None means the ledger does not exist, which is NOT the same as zero
+    attempts and must not be reported as if it were.
+    """
+    path = os.path.join(REPO, "logs", "kb_question_attempts.jsonl")
+    if not os.path.exists(path):
+        return None
+    out = {"attempts": 0, "no_match": 0, "ambiguous": 0, "recorded": 0}
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("project") != project:
+                    continue
+                out["attempts"] += 1
+                m = d.get("matches")
+                if m == 0:
+                    out["no_match"] += 1
+                elif isinstance(m, int) and m > 1:
+                    out["ambiguous"] += 1
+                if d.get("outcome_recorded"):
+                    out["recorded"] += 1
+    except Exception:
+        return None
+    return out
+
+
 def check_kb_outcomes(days=7):
     dbs = _kb_dbs()
     if not dbs:
@@ -134,8 +166,29 @@ def check_kb_outcomes(days=7):
             out.append(_res(UNKNOWN, f"outcomes[{proj}]", f"unreadable ({e})"))
             continue
         if not n:
-            out.append(_res(STALL, f"outcomes[{proj}]",
-                            "ZERO outcomes ever recorded — nothing downstream can learn"))
+            # S75: zero outcomes has TWO very different causes, and calling both
+            # a stall every morning is how a check gets ignored (T9). The
+            # outcome only fires when exactly one entity matches a client's
+            # question, so distinguish "nobody has asked yet" (no fault, and
+            # nothing to fix) from "they asked and matching never worked"
+            # (a real fault, and invisible until now).
+            att = _question_attempts(proj)
+            if att is None:
+                out.append(_res(UNKNOWN, f"outcomes[{proj}]",
+                                "zero outcomes, and no attempt ledger to say "
+                                "whether the signal has had any opportunity"))
+            elif att["attempts"] == 0:
+                out.append(_res(UNKNOWN, f"outcomes[{proj}]",
+                                "zero outcomes, but the client has asked about "
+                                "0 entities — the signal has had NO opportunity "
+                                "yet, so this is waiting, not stalled"))
+            else:
+                out.append(_res(STALL, f"outcomes[{proj}]",
+                                f"{att['attempts']} client question(s) reached the "
+                                f"KB and NONE produced an outcome "
+                                f"({att['no_match']} matched nothing, "
+                                f"{att['ambiguous']} were ambiguous) — matching "
+                                f"is broken, not merely quiet"))
             continue
         age = _age_days(row[0]) if row and row[0] else None
         if age is not None and age > days:
