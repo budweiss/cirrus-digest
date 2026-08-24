@@ -1164,6 +1164,35 @@ _MONITOR_TAIL = re.compile(
     r'\bto\s+(the\s+list\s+of\s+)?(tools\s+to\s+)?(monitor|watch|track)\b'
     r'|\binclude\s+monitoring\b', re.IGNORECASE)
 
+# S75, Buddy 2026-08-24. _MONITOR_TAIL matches the PURPOSE clause, not the
+# action — so "Add RSS source 'AI Security Podcast' TO MONITOR agent security
+# trends" was thrown out as a wishlist even though it names a concrete,
+# reversible change with a specific target. That is why the dev-loop ran 31
+# candidates through the gate in a week and shipped none, and why it has built
+# twice in fifteen days: the digest's improvement notes are almost entirely
+# "add feed X" / "pull model Y", and every one of them ends in a purpose clause.
+#
+# Adding a source or pulling a named model IS an action: it has a definite
+# target, it either succeeds or fails, and it is trivially undone. So a
+# concrete, NAMED source/model change is exempted from the purpose-clause
+# rejection. The target must be real — a quoted name, a URL, or a model:tag —
+# so "add a source to monitor things" is still refused, and _FAKE_IDENTIFIER
+# still catches invented ones.
+_CONCRETE_SOURCE_ACTION = re.compile(
+    r'\b(add|append|register|subscribe(?:\s+to)?)\b[^.]{0,60}'
+    r'\b(rss|feed|podcast|newsletter|source|sources\.json)\b'
+    r'|\b(ollama\s+pull|pull)\b\s+[\w.\-]+:[\w.\-]+'
+    r'|\badd\b[^.]{0,40}\bto\s+sources\.json\b', re.IGNORECASE)
+_NAMED_TARGET = re.compile(
+    r'"[^"]{2,}"|\'[^\']{2,}\'|https?://\S+|\b[\w.\-]+:[\w.\-]+\b'
+    r'|\b[\w-]+\.(com|org|net|io|ai|dev|fm|xml)\b', re.IGNORECASE)
+
+
+def _is_concrete_source_change(detail: str) -> bool:
+    """A named source/model change is an action, not a monitoring wish."""
+    return bool(_CONCRETE_SOURCE_ACTION.search(detail or "")
+                and _NAMED_TARGET.search(detail or ""))
+
 # Hallucinated/placeholder identifiers the summarizer invents when the source
 # was vague: "deepseek:model-x:size-y", "<name>", "example.com", "foo". A fake
 # tag can never be pulled/added, so these are pure queue noise (2026-07-15).
@@ -1199,7 +1228,7 @@ def _skip_reason(item: dict) -> str:
         return "vague verb — no concrete step"
     if _NO_SPECIFIC_TOOL.search(detail):
         return "no specific tool/source named"
-    if _MONITOR_TAIL.search(detail):
+    if _MONITOR_TAIL.search(detail) and not _is_concrete_source_change(detail):
         return "monitoring wishlist — news is not an action"
     if (_non_english_ratio(detail) > 0.15
             or _non_english_ratio(item.get("why", "")) > 0.3):

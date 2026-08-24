@@ -53,6 +53,43 @@ from datetime import datetime, timedelta, timezone
 REPO = os.path.dirname(os.path.abspath(__file__))
 
 OK, STALL, UNKNOWN = "ok", "stall", "unknown"
+# S75. A finding that is REAL, KNOWN and DELIBERATELY NOT BEING FIXED needs its
+# own state. Reporting it as STALLED every morning is how the whole panel stops
+# being read (T9) — but silencing it entirely loses the finding. ACCEPTED keeps
+# it visible, records WHO decided and WHEN to look again, and does not count
+# toward the alarm total.
+ACCEPTED = "accepted"
+
+# key -> (who/when decided, why, review-on). The review date is the point: an
+# acceptance with no expiry is just a silence with extra steps.
+ACCEPTED_FINDINGS = {
+    "variance[business_ideas]": (
+        "Buddy, 2026-08-23",
+        "business-ideas scoring stays AS IS; the fit_score finding is recorded "
+        "for information, not as a change to make",
+        "2026-09-23",
+    ),
+}
+
+
+def _apply_acceptance(r):
+    """Downgrade a STALL that Buddy has explicitly accepted, and say so.
+
+    Never hides it: the finding still prints, with who accepted it and when to
+    revisit. Past the review date it reverts to a STALL, because an acceptance
+    that never expires is indistinguishable from having forgotten.
+    """
+    entry = ACCEPTED_FINDINGS.get(r["name"])
+    if not entry or r["state"] != STALL:
+        return r
+    who, why, review_on = entry
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today > review_on:
+        r["msg"] = (f"{r['msg']} — ACCEPTANCE EXPIRED (was accepted by {who}, "
+                    f"review was due {review_on}); decide again")
+        return r
+    return _res(ACCEPTED, r["name"],
+                f"{r['msg']} — ACCEPTED by {who}: {why}. Review on {review_on}")
 
 
 def _res(state, name, msg):
@@ -245,6 +282,7 @@ def check_score_variance(min_rows=10):
         if flat:
             out.append(_res(STALL, f"variance[{proj}]",
                             "; ".join(flat) + " — a dimension with no variance is not selecting"))
+            out[-1] = _apply_acceptance(out[-1])
         else:
             out.append(_res(OK, f"variance[{proj}]", f"{len(vals)} scored field(s) vary"))
     return out
@@ -393,10 +431,14 @@ def main():
 
     print("== stall check ==\n")
     for r in res:
-        mark = {OK: "  ok     ", STALL: "  STALL  ", UNKNOWN: "  unknown"}[r["state"]]
+        mark = {OK: "  ok     ", STALL: "  STALL  ", UNKNOWN: "  unknown",
+                ACCEPTED: "  accept "}[r["state"]]
         print(f"{mark} {r['name']:22} {r['msg']}")
-    print(f"\n  {len(res)} signal(s): {len(res)-len(stalls)-len(unknown)} ok, "
-          f"{len(stalls)} stalled, {len(unknown)} UNCHECKED")
+    accepted = [r for r in res if r["state"] == ACCEPTED]
+    print(f"\n  {len(res)} signal(s): "
+          f"{len(res)-len(stalls)-len(unknown)-len(accepted)} ok, "
+          f"{len(stalls)} stalled, {len(unknown)} UNCHECKED, "
+          f"{len(accepted)} accepted")
     if unknown:
         print("\n  UNCHECKED is not OK. Each one is a signal we cannot see, which is")
         print("  the exact condition that let six problems survive for weeks.")

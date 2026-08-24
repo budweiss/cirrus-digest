@@ -844,6 +844,8 @@ SELF_ADDRESSES = [
     # wrong one silently stops his research emails being recognised.
     "weissbuddy61@gmail.com", "bud.weiss@outlook.com",
 ]
+# Convention Buddy types on research mail. No longer a code path of its
+# own (see is_research_request) — kept as the documented convention.
 RESEARCH_SUBJECT_TAG = "research:"
 
 
@@ -861,10 +863,17 @@ def is_research_request(from_lower: str, subject: str) -> bool:
     Hardened when the list was widened from 4 addresses to 6 — a bypass matters
     more the more keys fit the lock.
     """
+    # S75, Buddy 2026-08-24: the "research:" subject tag used to qualify on its
+    # own, from ANY sender — handing a stranger the research path: keyword gate
+    # bypassed, EVERY url extracted including trackers, all of them fetched.
+    # It must now come from one of Buddy's own addresses.
+    #
+    # Note the tag is thereby SUBSUMED, not merely restricted: a self-address
+    # already qualified regardless of subject, so "self-address AND/OR tag"
+    # collapses to the address test. RESEARCH_SUBJECT_TAG is kept below only as
+    # documentation of the convention Buddy still types; nothing branches on it.
     addr = (parseaddr(from_lower or "")[1] or "").strip().lower()
-    if addr and addr in _SELF_ADDRESS_SET:
-        return True
-    return (subject or "").strip().lower().startswith(RESEARCH_SUBJECT_TAG)
+    return bool(addr) and addr in _SELF_ADDRESS_SET
 
 
 _SELF_ADDRESS_SET = {a.strip().lower() for a in SELF_ADDRESSES}
