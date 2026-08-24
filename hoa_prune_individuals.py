@@ -59,10 +59,26 @@ _ASSOC_RX = re.compile(
     r"(HOMEOWNER|OWNERS ASSOC|ASSOCIATION|MAINTENANCE|CONDOMINIUM|"
     r"PROPERTY OWNERS|COUNCIL OF CO|\bPOA\b)", re.IGNORECASE)
 
+# A SUBDIVISION SECTION DESIGNATOR looks exactly like a middle initial.
+# The first dry-run against the real CRM selected "Westover Hills Sec C",
+# "Cooper Farm Sec A", "North Hills Sec A" and "Darley Green Condo I" for
+# deletion -- "Hills Sec C" and "Green Condo I" match the <word> <word>
+# <single-capital> person shape perfectly. These are real leads, and deleting
+# them would have been the most expensive kind of false positive: silent, and
+# in the direction of losing client data.
+#
+# No person's name contains SEC / PHASE / BLDG / LOT, so this is a safe rescue
+# in a way a generic word list would not be. Found only because the destructive
+# path is dry-run-by-default and the output was read before running it live.
+_PLACE_RX = re.compile(
+    r"\b(SEC|SECT|SECTION|PHASE|PH|CONDO|CONDOS|UNIT|UNITS|BLDG|BUILDING|"
+    r"BLOCK|LOT|LOTS|TRACT|PLAT|POD|PARCEL|VILLAGE|APTS|APARTMENTS)\b",
+    re.IGNORECASE)
+
 
 def looks_like_a_person(name: str) -> bool:
     n = (name or "").strip()
-    if _ASSOC_RX.search(n):
+    if _ASSOC_RX.search(n) or _PLACE_RX.search(n):
         return False
     return bool(_PERSON_RX.search(n))
 
@@ -159,7 +175,11 @@ def selftest() -> bool:
         for n in ("CAPE SHORES HOMEOWNERS ASSOCIATION", "BAYSIDE HOA",
                   "HOA OF CHIMNEY HILL", "APPLE ARBOR PROPERTY OWNERS",
                   "SMITH FARM HOA", "LE PARC CONDOMINIUM COUNCIL OF CO OWNERS",
-                  "ATLANTIS II CONDOMINIUM ASSOCIATION"):
+                  "ATLANTIS II CONDOMINIUM ASSOCIATION",
+                  # the four the first live-CRM dry-run nearly deleted
+                  "Westover Hills Sec C", "Cooper Farm Sec A",
+                  "North Hills Sec A", "Darley Green Condo I",
+                  "Willow Grove Mill Sec 2", "Brandywine Hundred Ph 3"):
             checks.append((f"association kept :: {n[:30]}", not looks_like_a_person(n)))
 
         entity_kb.upsert_entity(PROJECT, "rhoads-a", "Rhoads Kathleen A",
