@@ -395,7 +395,11 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
         subj if subj.lower().startswith("re:") else f"Re: {subj}",
         ack_body(rec),
         # Bare address, as this ack has always sent -- clients recognise it.
-        from_name=False, on_error="false",
+        # watch_promises=False (S78): an ack is a template that says we received
+        # the mail. It promises nothing specific, and its standing "we'll get
+        # back to you" would open a promise on EVERY inbound -- which is noise,
+        # not observation. The real promise is in the reply that follows.
+        from_name=False, on_error="false", watch_promises=False,
         log=lambda m: log(f"ack to {to_addr}: {m}"))
 
 

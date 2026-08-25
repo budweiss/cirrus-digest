@@ -857,8 +857,10 @@ def send_email(subject, body_md, cfg, creds):
     to_addr = d["recipient"]
     cc = [a for a in d.get("cc", []) if a and a != to_addr]
     from_email = creds["outlook_email"]     # legacy-misnamed Gmail sender
+    # watch_promises=False (S78): recurring generated digest, same reasoning as
+    # entity_kb_weekly_digest -- a templated phrase would open a promise daily.
     mailer.send(from_email, creds["outlook_password"], to_addr, subject,
-                body_md, cc=cc, creds=creds, log=log)
+                body_md, cc=cc, creds=creds, log=log, watch_promises=False)
     log(f"emailed digest to {to_addr}" + (f" cc {cc}" if cc else ""))
 
 

@@ -87,9 +87,15 @@ def main() -> int:
             print(f"  {line}")
         return 0
 
+    # S78 — `client=name` is what puts this send in the promise ledger. This is
+    # the path a human stages by hand, and it went unwatched until now: the
+    # 2026-08-25 workbook email offered Bill a further New Castle backlog and
+    # the ledger showed "0 open promises" the whole time it sat in his inbox.
+    # A promise made deliberately is no less a promise than one a model wrote.
     mailer.send(from_email, password, to_addr, subject, body,
                 cc=CC_ADDR, attachments=[attach] if attach else None,
-                creds=creds)
+                creds=creds, client=name,
+                project=(entry.get("projects") or ["general"])[0])
 
     print(f"sent '{subject}' to {name} (cc Buddy)"
           + (f" with attachment {Path(attach_rel).name}" if attach_rel else ""))

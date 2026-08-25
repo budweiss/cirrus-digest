@@ -344,9 +344,15 @@ def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
     """Thin shim over mailer.send, kept so the call sites below read unchanged.
     The old body ended in a bare `except: return False` -- a client email that
     never arrived was indistinguishable from one that did. mailer logs it."""
+    # watch_promises=False (S78): this is a RECURRING generated digest, not a
+    # conversation. Its template carries standing phrases ("we'll keep watching
+    # these", the working-rates note) that trip the promise prefilter, so
+    # watching it would open a fresh phantom promise every single week and
+    # train everyone to ignore the overdue list. A promise made in a digest is
+    # a template change, and template changes get reviewed by a human.
     return mailer.send(from_email, password, to_addr, subject, body,
                        cc=cc_addr, attachments=attachments, from_name=False,
-                       on_error="false", log=print)
+                       on_error="false", log=print, watch_promises=False)
 
 
 def run(client: str, dry_run: bool = False, db_path: str = None,

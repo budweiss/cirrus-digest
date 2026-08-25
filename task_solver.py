@@ -76,6 +76,7 @@ import dev_loop
 import ensemble
 import entity_kb
 import llm_providers
+import promise_detect
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 SOURCES_OVERLAY = PROJECT_DIR / "config/sources.local.json"
@@ -164,9 +165,14 @@ def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
     """Thin shim over mailer.send, kept so the call sites below read unchanged.
     The old body ended in a bare `except: return False` -- a client email that
     never arrived was indistinguishable from one that did. mailer logs it."""
+    # watch_promises=False (S78): NOT because this path is unwatched -- it is
+    # the original watched path -- but because solve_and_answer() calls
+    # _record_promise() itself, with the intake record in hand (requester,
+    # project, message_id). Letting mailer detect as well would open the same
+    # promise twice.
     return mailer.send(from_email, password, to_addr, subject, body,
                        cc=cc_addr, from_name=False, on_error="false",
-                       log=print)
+                       log=print, watch_promises=False)
 
 
 # Maps an intake sender's "projects" tag (config/intake_senders.json) to the
@@ -429,120 +435,24 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
 
 
 # ── Promise detection (S78) ──────────────────────────────────────────────────
-# We record that mail arrived and that a reply left. Until now we recorded
-# nothing about whether the thing we SAID we would do got done -- which is how
-# Bill's 224-row workbook was offered, agreed to, and never built, with every
-# health check green throughout.
-#
-# Local-first with escalation, which is the architecture Buddy asked for in the
-# S77 handoff: qwen2.5:72b decides, and only an unusable verdict goes to a
-# foundation model. Every decision records WHICH model made it, so
-# client_promises.escalation_rate() produces the evidence the S73 _ollama
-# docstring asked for before anything gets routed to the local model.
-
-# Most outbound answers are a KB recap and promise nothing. This prefilter
-# keeps the common case free -- no local call, no cloud call, no latency on a
-# client's reply. It is deliberately loose: a false positive costs one cheap
-# local call, a false negative costs a dropped promise.
-_PROMISE_HINT_RX = re.compile(
-    r"\b(we(?:'| wi)?ll|i(?:'| wi)?ll|we can (?:send|build|put|pull|get)"
-    r"|we will|let us know and we|happy to (?:send|build|put)"
-    r"|send (?:you|it|that|those|the)|clean (?:it|that) up"
-    r"|cross[- ]reference|next week|by (?:monday|tuesday|wednesday|thursday|friday))\b",
-    re.IGNORECASE)
-
-_PROMISE_SYSTEM = (
-    "You read one outbound email that a business has just sent to its client. "
-    "Decide ONE thing: does it commit the business to producing or sending "
-    "something in the FUTURE that has not been delivered in this same email?\n"
-    "Answer with strict JSON and nothing else: "
-    '{\"promise\": true|false, \"what\": \"<short description of the deliverable, '
-    'or empty>\"}\n'
-    "Rules: an email that ATTACHES or CONTAINS the thing is not a promise. "
-    "Answering a question is not a promise. An offer conditional on the client "
-    "saying yes IS a promise. Pleasantries are not promises."
-)
-
-
-def _parse_promise_json(raw: str):
-    """Model output -> (is_promise, what) or None if unusable."""
-    if not raw:
-        return None
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not m:
-        return None
-    try:
-        d = json.loads(m.group(0))
-    except Exception:
-        return None
-    if not isinstance(d, dict) or "promise" not in d:
-        return None
-    return bool(d.get("promise")), str(d.get("what") or "").strip()
-
-
-def detect_promise(text: str, creds: dict) -> dict | None:
-    """Returns {"what":..., "by":..., "escalated":bool} or None.
-
-    NEVER raises: called after a client's reply has already been sent, so a
-    failure here must cost bookkeeping, not the client.
-    """
-    try:
-        if not text or not _PROMISE_HINT_RX.search(text):
-            return None
-        user = f"The outbound email:\n\n{text[:6000]}"
-
-        # 1. Local first. Absent ollama_url this raises and we fall through --
-        #    which is the correct behaviour on a box where it is not enabled.
-        try:
-            raw = llm_providers.call("ollama", _PROMISE_SYSTEM, user, creds,
-                                     max_tokens=300, retries=0)
-            parsed = _parse_promise_json(raw)
-            if parsed is not None:
-                is_p, what = parsed
-                if not is_p:
-                    return None
-                if what:
-                    return {"what": what, "by": "ollama", "escalated": False}
-                # A "yes" with no deliverable named is not usable -- escalate
-                # rather than open a promise nobody can act on.
-        except Exception:
-            pass
-
-        # 2. Escalate. single mode = first keyed provider in the configured order.
-        try:
-            provider, raw = llm_providers.escalate(
-                _PROMISE_SYSTEM, user, creds, max_tokens=300, mode="single")
-            parsed = _parse_promise_json(raw)
-            if parsed is None:
-                return None
-            is_p, what = parsed
-            if is_p and what:
-                return {"what": what, "by": provider, "escalated": True}
-        except Exception:
-            pass
-        return None
-    except Exception:
-        return None
+# Moved to promise_detect.py so EVERY client send passes through it, not just
+# this one. See that module for why: hooking only the auto-answer path left
+# hand-staged client mail unwatched, and the ledger reported "0 open promises"
+# with a live one in Bill's inbox. Re-exported here because the names are part
+# of this module's selftest and its call sites.
+_PROMISE_HINT_RX = promise_detect._PROMISE_HINT_RX
+_parse_promise_json = promise_detect._parse_promise_json
+detect_promise = promise_detect.detect_promise
 
 
 def _record_promise(rec: dict, text: str, creds: dict, orig_subject: str) -> None:
-    """Non-raising wrapper -- see detect_promise."""
-    try:
-        found = detect_promise(text, creds)
-        if not found:
-            return
-        pid = client_promises.open_promise(
-            client=rec.get("requester") or "",
-            project=(rec.get("projects") or ["general"])[0],
-            subject=orig_subject or rec.get("title", ""),
-            promise=found["what"],
-            message_id=rec.get("message_id", ""),
-            detected_by=found["by"], escalated=found["escalated"])
-        if pid:
-            print(f"  → promise recorded ({pid}, via {found['by']}"
-                  f"{', escalated' if found['escalated'] else ''}): {found['what'][:90]}")
-    except Exception:
-        pass
+    """Non-raising wrapper -- see promise_detect.record()."""
+    promise_detect.record(
+        text, creds,
+        client=rec.get("requester") or "",
+        project=(rec.get("projects") or ["general"])[0],
+        subject=orig_subject or rec.get("title", ""),
+        message_id=rec.get("message_id", ""), log=print)
 
 
 def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) -> dict:

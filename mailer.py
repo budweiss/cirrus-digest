@@ -56,6 +56,43 @@ def sender_name(from_email: str, creds: dict = None) -> str:
     return configured or "ASSISTANT"
 
 
+def resolve_client(to, project="general", senders_path=None):
+    """Which allowlisted client is this addressed to? (name, project) or (None, ...).
+
+    S78. This is what makes promise-watching **opt-out rather than opt-in**. If
+    a caller had to name the client, a new client-facing send site could simply
+    forget to -- which is precisely how the first gap happened: detection was
+    wired into the auto-answer path and nothing else, so hand-staged mail went
+    unwatched and the ledger reported "0 open promises" with a live one in a
+    client's inbox.
+
+    Resolving from the recipient means any mail to a known client is watched by
+    default, and a caller that should NOT be watched (a recurring automated
+    digest) has to say so explicitly. Forgetting now fails toward more
+    observation instead of less.
+
+    The allowlist is deliberately absent from git and may not exist on a given
+    box; that is a normal state, not an error, and returns (None, project).
+    """
+    try:
+        import json
+        f = Path(senders_path) if senders_path else (
+            Path(__file__).resolve().parent / "config/intake_senders.json")
+        if not f.exists():
+            return None, project
+        senders = json.loads(f.read_text())
+        wanted = {str(a).strip().lower() for a in _as_list(to)}
+        for name, entry in senders.items():
+            if not isinstance(entry, dict):
+                continue
+            for addr in entry.get("emails") or []:
+                if str(addr).strip().lower() in wanted:
+                    return name, (entry.get("projects") or [project])[0]
+    except Exception:
+        pass
+    return None, project
+
+
 def _as_list(v) -> list:
     if not v:
         return []
@@ -106,7 +143,8 @@ def build(from_email, to, subject, body, cc=None, html=None,
 
 def send(from_email, password, to, subject, body, cc=None, html=None,
          attachments=None, from_name=True, creds=None, dry_run=False,
-         on_error="raise", log=print):
+         on_error="raise", log=print, watch_promises=True, client=None,
+         project="general", message_id=""):
     """Send one message. Returns True on success.
 
     on_error="raise"  -- propagate (callers that must fail loudly: the daily
@@ -116,6 +154,21 @@ def send(from_email, password, to, subject, body, cc=None, html=None,
                          line is the point: the old bare `except: return False`
                          made a failed client send indistinguishable from a
                          successful one.
+
+    watch_promises    -- S78. After a successful send, check whether the body
+                         commits us to a future deliverable and open a row in
+                         the promise ledger if so. **Defaults ON, and callers
+                         opt OUT.** That direction is deliberate: the first
+                         version of promise detection was wired into the
+                         auto-answer path only, so mail staged by hand went
+                         unwatched and the ledger reported "0 open promises"
+                         while a live one sat in a client's inbox. Opt-in would
+                         reproduce that the next time somebody adds a send
+                         site; opt-out fails safe.
+
+                         `client` names the ledger row. Without it there is
+                         nobody to owe, so detection is skipped -- that is what
+                         makes internal mail free without a special case.
     """
     msg, recipients = build(from_email, to, subject, body, cc=cc, html=html,
                             attachments=attachments, from_name=from_name,
@@ -136,6 +189,19 @@ def send(from_email, password, to, subject, body, cc=None, html=None,
             s.ehlo()
             s.login(from_email, password)
             s.sendmail(from_email, recipients, msg.as_string())
+        # AFTER the send, and non-raising by construction: bookkeeping must
+        # never turn into a client-visible failure, and must never make a
+        # delivered mail look undelivered.
+        if watch_promises:
+            try:
+                who, proj = (client, project) if client else resolve_client(to, project)
+                if who:
+                    import promise_detect
+                    promise_detect.record(body, creds or {}, client=who,
+                                          subject=subject, project=proj,
+                                          message_id=message_id, log=log)
+            except Exception:
+                pass
         return True
     except Exception as e:
         if log:
@@ -154,6 +220,40 @@ def selftest() -> int:
         print(f"  {'PASS' if cond else 'FAIL'}  {name}")
         if not cond:
             failures += 1
+
+    # S78 — promise watching. These decide whether a commitment to a client is
+    # SEEN at all, so they are tested rather than assumed. The negative cases
+    # matter most: a watcher that fires on every recurring digest gets muted,
+    # and a muted watcher reports "0 open promises" forever.
+    import json as _json
+    import tempfile as _tf
+    # A temp file, NEVER the real config/intake_senders.json. The first draft of
+    # this test wrote the live allowlist and restored it in a finally block --
+    # on a file that gates client intake, is not in git, and is hand-maintained
+    # by Buddy on the box. A crash between write and restore would have left
+    # intake admitting the wrong senders, or none. A test must not be able to
+    # damage the thing it is testing around.
+    with _tf.TemporaryDirectory() as _td:
+        _cfg = Path(_td) / "intake_senders.json"
+        _cfg.write_text(_json.dumps({
+            "bill": {"emails": ["bill@example.com"], "projects": ["property-management"]},
+            "alyssa": {"emails": ["a@example.com"], "projects": ["pedagogy"]},
+        }))
+        check("a known client is resolved from the recipient, unprompted",
+              resolve_client("bill@example.com", senders_path=_cfg)
+              == ("bill", "property-management"))
+        check("case and padding do not defeat the match",
+              resolve_client("  BILL@Example.com ", senders_path=_cfg)[0] == "bill")
+        check("a client in a list of recipients is still found",
+              resolve_client(["someone@else.com", "bill@example.com"],
+                             senders_path=_cfg)[0] == "bill")
+        check("an unknown recipient resolves to nobody — internal mail is free",
+              resolve_client("buddy.weiss@outlook.com", senders_path=_cfg)[0] is None)
+        check("no recipient resolves to nobody rather than crashing",
+              resolve_client(None, senders_path=_cfg)[0] is None)
+        check("a MISSING allowlist is a normal state, not an error",
+              resolve_client("bill@example.com",
+                             senders_path=Path(_td) / "gone.json")[0] is None)
 
     check("cumulus address signs as CUMULUS",
           sender_name("cumulus@cumulustask.com") == "CUMULUS")
