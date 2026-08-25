@@ -19,6 +19,34 @@ MIN_UNITS = 50
 COUNTIES = {"Kent County", "Sussex County"}   # Kent + Sussex per Buddy (S47)
 OUT = Path(__file__).resolve().parent / "out"
 
+# 2026-08-25 (S78) — THE SOURCE SPELLS COUNTY NAMES TWO WAYS. Layer 4 carries
+# both "Sussex County" (373 rows) and "Sussex_County" (35), both "Kent County"
+# (131) and "Kent_County" (6). An exact-string `in COUNTIES` test silently
+# dropped every underscore row -- 41 in total, and 36 of them dated 2023 or
+# later, i.e. the NEWEST records in the layer. Bill's feed has been quietly
+# missing recent PLUS project areas for as long as the source has used that
+# spelling. Compare normalised, so a punctuation change at the source cannot
+# decide what a client sees.
+COUNTIES_NORM = {c.lower().replace("_", " ").strip() for c in COUNTIES}
+
+# A source-side ID reset must never reach a client as "new leads this week".
+# On 2026-08-24 layer 4 republished with fresh GLOBALIDs; every one of its 504
+# historical projects failed the "have I seen this id" test at once, and Bill
+# was emailed 504 "new" leads dating back to 2004. The diff was working exactly
+# as written -- it has no notion of a source that renumbers itself.
+#
+# So: an implausible number of new leads is treated as EVIDENCE OF A RESET, not
+# as news. Nothing is discarded (the rows go to plus_reset_backlog.json for a
+# human), and nothing is emailed. Same shape as every other guard here: the
+# quiet wrong answer is the one worth catching.
+MAX_PLAUSIBLE_NEW = 60
+
+
+def county_ok(attrs) -> bool:
+    """Is this row in one of the target counties, however the source spells it?"""
+    return (str(attrs.get("COUNTY") or "").lower().replace("_", " ").strip()
+            in COUNTIES_NORM)
+
 
 def fetch_layer(layer, where, order):
     rows, offset = [], 0
@@ -53,19 +81,19 @@ def main():
 
     # Layer 2 — Development Applications (current pipeline; residential >= MIN_UNITS)
     da = [a for a in fetch_layer(2, f"R_NR='R' AND R_UNITS>={MIN_UNITS}", "P_YEAR DESC")
-          if (a.get("COUNTY") or "") in COUNTIES]
+          if county_ok(a)]
     da.sort(key=lambda a: (a.get("P_YEAR") or ""), reverse=True)
 
     # Layer 3 — Building Permits (residential >= MIN_UNITS = large multifamily
     # buildings ACTIVELY under construction now; single-lot permits drop out)
     bp = [a for a in fetch_layer(3, f"R_NR='R' AND R_UNITS>={MIN_UNITS}", "P_YEAR DESC")
-          if (a.get("COUNTY") or "") in COUNTIES]
+          if county_ok(a)]
     bp.sort(key=lambda a: (a.get("P_YEAR") or ""), reverse=True)
 
     # Layer 4 — PLUS Project Areas (historical major residential; built communities
     # now at/near developer→homeowner turnover = ready PM targets)
     plus = [a for a in fetch_layer(4, f"RESIDENTIAL_UNITS>={MIN_UNITS}", "PLUS_ID DESC")
-            if (a.get("COUNTY") or "") in COUNTIES]
+            if county_ok(a)]
     for a in plus:
         a["PLUS_YEAR"] = (a.get("PLUS_ID") or "")[:4]
     plus.sort(key=lambda a: (a.get("PLUS_ID") or ""), reverse=True)
@@ -86,22 +114,74 @@ def main():
     else:
         new = [dict(kind=k, **a) for k, a in tagged
                if a.get("GLOBALID") and a["GLOBALID"] not in prev]
+
+    # See MAX_PLAUSIBLE_NEW. A genuine week produces a handful of leads; 504 is
+    # a source that renumbered itself. Absorb the new ids into the baseline so
+    # the reset happens exactly once, park the rows where a human can read them,
+    # and report ZERO new -- which is what stops the weekly job emailing.
+    reset = prev is not None and len(new) > MAX_PLAUSIBLE_NEW
+    if reset:
+        (OUT / "plus_reset_backlog.json").write_text(json.dumps(new, indent=1))
+        print(f"*** SUSPECTED SOURCE RESET: {len(new)} rows failed the seen-id "
+              f"test in one run (ceiling {MAX_PLAUSIBLE_NEW}). These are almost "
+              f"certainly renumbered records, not new leads.")
+        print(f"*** Nothing emailed. The rows are parked in "
+              f"out/plus_reset_backlog.json and the baseline has absorbed them.")
+        print(f"*** If they ARE genuinely new, send them deliberately — do not "
+              f"just re-run and hope.")
+        new = []
+
     seen_file.write_text(json.dumps(sorted(i for i in cur_ids if i)))
     (OUT / "plus_new.json").write_text(json.dumps(new, indent=1))
-    print(f"NEW since last run: {len(new)}" + (" (baseline established)" if prev is None else ""))
+    print(f"NEW since last run: {len(new)}"
+          + (" (baseline established)" if prev is None else "")
+          + (" (SOURCE RESET SUPPRESSED — see above)" if reset else ""))
 
-    print(f"Building Permits (residential >= {MIN_UNITS}u, Kent+Sussex): {len(bp)}")
+    CLABEL = " + ".join(sorted(c.replace(" County", "") for c in COUNTIES))
+    print(f"Building Permits (residential >= {MIN_UNITS}u, {CLABEL}): {len(bp)}")
     print("  by year:", dict(sorted(Counter((a.get('P_YEAR') or '?') for a in bp).items(), reverse=True)))
 
-    print(f"Development Applications (residential >= {MIN_UNITS}u, Kent+Sussex): {len(da)}")
+    print(f"Development Applications (residential >= {MIN_UNITS}u, {CLABEL}): {len(da)}")
     print("  by county:", dict(Counter(a["COUNTY"] for a in da)))
     print("  by year  :", dict(sorted(Counter((a.get('P_YEAR') or '?') for a in da).items(), reverse=True)))
     for a in da[:12]:
         print(f"    {a.get('P_YEAR','?'):5} | {a.get('COUNTY',''):13} | {str(a.get('R_UNITS','?')):>6}u | "
               f"{a.get('RECTYPE',''):18} | {(a.get('NOTES') or '').replace(chr(10),' / ')[:45]}")
-    print(f"\nPLUS Project Areas (historical >= {MIN_UNITS}u, Kent+Sussex): {len(plus)}")
+    print(f"\nPLUS Project Areas (historical >= {MIN_UNITS}u, {CLABEL}): {len(plus)}")
     print("  by year:", dict(sorted(Counter((a.get('PLUS_YEAR') or '?') for a in plus).items(), reverse=True)))
 
 
+def selftest() -> int:
+    """Offline: no network, no files. The two rules that decide what a CLIENT
+    is told, both of which have already failed in production once.
+    """
+    bad = 0
+
+    def check(label, ok):
+        nonlocal bad
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}")
+        if not ok:
+            bad += 1
+
+    check("a plain county name matches", county_ok({"COUNTY": "Kent County"}))
+    check("the UNDERSCORE spelling matches too — 41 rows were dropped by an "
+          "exact-string test", county_ok({"COUNTY": "Sussex_County"}))
+    check("case and padding do not matter", county_ok({"COUNTY": " sussex county "}))
+    check("a county we do not cover is still excluded",
+          not county_ok({"COUNTY": "New Castle County"}))
+    check("...including its underscore spelling",
+          not county_ok({"COUNTY": "New_Castle_County"}))
+    check("a missing county is excluded, not admitted", not county_ok({}))
+    check("a None county does not crash", not county_ok({"COUNTY": None}))
+
+    check("the reset ceiling is below the 504 that actually shipped",
+          MAX_PLAUSIBLE_NEW < 504)
+    check("...and above a plausible busy week", MAX_PLAUSIBLE_NEW > 20)
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     main()
