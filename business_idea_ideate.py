@@ -72,6 +72,20 @@ LENSES = [
                  "deeper than anyone doing it by hand.",
     },
     {
+        "key": "volume-work",
+        "focus": "WORK ALREADY BEING PAID FOR, BY THE UNIT -- Buddy's stated target "
+                 "(2026-08-25). Find a recurring pile of work some business already "
+                 "pays to get through: converting files between formats, translating "
+                 "or localising, transcribing, captioning, OCR of scanned or "
+                 "handwritten material, extracting structured records from documents, "
+                 "normalising or enriching a product catalogue, tagging or writing alt "
+                 "text for image libraries. The customer sends volume, we return "
+                 "finished output, they pay per page/word/minute/record. Anchor every "
+                 "proposal to the CURRENT going rate for that work -- a published "
+                 "per-unit price is the whole point. We build and run the pipeline; no "
+                 "human touches each unit.",
+    },
+    {
         "key": "wildcard",
         "focus": "Deliberately unconventional ideas that do not fit the categories above. "
                  "Take real swings -- unusual niches, overlooked markets, novel "

@@ -138,7 +138,31 @@ merely assist with. Score how good a candidate THIS article/case-study is as a
 blueprint for such a business.
 
 Score HIGH when all of these hold:
-0. SOMEONE WILL PAY -- THE FIRST TEST, ABOVE ALL OTHERS. Buddy, 2026-08-25:
+0a. THE SHAPE BUDDY ACTUALLY WANTS (2026-08-25, his words): "I am not looking
+   to sell a product but have a need I can fill where they need this product
+   developed and run. Example, say someone wants a format converted from one
+   format to another. They would pay so much per volume. That is something we
+   can do. Different languages too."
+
+   So the target is WORK THAT IS ALREADY BEING PAID FOR, BY THE UNIT --
+   conversion, translation, transcription, extraction, tagging, normalisation,
+   captioning, OCR of scanned material -- where a customer has a recurring pile
+   of it, currently pays someone or something to get through it, and would pay
+   us per page / per word / per minute / per record instead. We build and run
+   the pipeline; the machine does the work, not Buddy.
+
+   Score HIGHEST when the work has a PUBLISHED GOING RATE per unit (translation
+   per word, transcription per audio minute, data extraction per record). A
+   published rate is the strongest demand evidence that exists: it proves both
+   that the work is bought and what it is worth, with no guessing.
+
+   NOTE this is NOT the excluded "done-for-you agency labor" below. That
+   exclusion is about billing BUDDY'S HOURS. Per-volume machine throughput with
+   no human in the loop is exactly the shape wanted -- do not reject it under
+   that rule.
+
+0. SOMEONE WILL PAY -- and not as a guess. "They would probably pay $X" is
+   worthless. Buddy, 2026-08-25:
    "We need an idea first that will sell." Name WHO the buyer is, what they
    currently do instead, and what evidence exists that this buyer already
    spends money on this problem -- an operating competitor with customers, a
@@ -203,8 +227,10 @@ Score LOW / reject:
 - Anything in property management, HOAs, real estate, snow removal, or
   seasonal home services. Buddy already operates in these sectors and
   explicitly wants this venture to be UNRELATED to them.
-- Businesses whose core is human consulting, done-for-you agency labor, or
-  anything billing Buddy's own hours.
+- Businesses whose core is human consulting or anything billing BUDDY'S OWN
+  HOURS. (Per-volume work performed BY THE MACHINE is wanted -- see 0a. The
+  test is whether throughput needs Buddy's hands, not whether the customer is
+  buying work.)
 - General AI industry news, funding rounds, model releases, or company
   announcements with no startable business for an individual.
 - Pure how-to/productivity tips, or opinion pieces with no concrete
