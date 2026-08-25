@@ -852,22 +852,13 @@ def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
 # ── Email + Telegram ──────────────────────────────────────────────────────────
 
 def send_email(subject, body_md, cfg, creds):
-    import smtplib
+    import mailer
     d = cfg["digest"]
     to_addr = d["recipient"]
     cc = [a for a in d.get("cc", []) if a and a != to_addr]
     from_email = creds["outlook_email"]     # legacy-misnamed Gmail sender
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
-    msg["To"] = to_addr
-    if cc:
-        msg["Cc"] = ", ".join(cc)
-    msg.attach(MIMEText(body_md, "plain"))
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as s:
-        s.ehlo(); s.starttls(); s.ehlo()
-        s.login(from_email, creds["outlook_password"])
-        s.sendmail(from_email, [to_addr] + cc, msg.as_string())
+    mailer.send(from_email, creds["outlook_password"], to_addr, subject,
+                body_md, cc=cc, creds=creds, log=log)
     log(f"emailed digest to {to_addr}" + (f" cc {cc}" if cc else ""))
 
 

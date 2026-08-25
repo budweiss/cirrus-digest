@@ -7,11 +7,9 @@ from cirrustask@outlook.com to Buddy.Weiss@outlook.com
 
 import json
 import shutil
-import smtplib
+import mailer
 import sys
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -31,11 +29,11 @@ LOG_DIR     = Path(DIGEST_CFG["log_dir"])
 ACTIONS_DIR = OUTPUT_DIR / "actions"
 WHISPER_CACHE = Path.home() / ".cache" / "whisper"
 
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT   = 587
+# SMTP host/port/timeout now live in mailer.py — one definition, one place to
+# change. FROM_NAME is gone too: mailer.sender_name() derives it from the
+# sending address, so a CUMULUS box can no longer sign its mail as CIRRUS.
 FROM_EMAIL  = CREDS["outlook_email"]
 FROM_PASS   = CREDS["outlook_password"]
-FROM_NAME   = CREDS.get("mail_from_name", "CIRRUS")   # email From display name; per box (CIRRUS/CUMULUS)
 TO_EMAIL    = "Buddy.Weiss@outlook.com"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -196,15 +194,6 @@ def send_email(subject: str, body: str):
     """Send email via Outlook SMTP."""
     log(f"Sending email: {subject}")
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"{FROM_NAME} <{FROM_EMAIL}>"
-    msg["To"]      = TO_EMAIL
-
-    # Plain text version
-    msg.attach(MIMEText(body, "plain"))
-
-    # HTML version
     html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -226,19 +215,10 @@ def send_email(subject: str, body: str):
 {markdown_to_html(body)}
 </body>
 </html>"""
-    msg.attach(MIMEText(html_body, "html"))
 
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(FROM_EMAIL, FROM_PASS)
-            server.sendmail(FROM_EMAIL, TO_EMAIL, msg.as_string())
-        log(f"Email sent successfully to {TO_EMAIL}")
-    except Exception as e:
-        log(f"Email send failed: {e}")
-        raise
+    mailer.send(FROM_EMAIL, FROM_PASS, TO_EMAIL, subject, body,
+                html=html_body, creds=CREDS, log=log)
+    log(f"Email sent successfully to {TO_EMAIL}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

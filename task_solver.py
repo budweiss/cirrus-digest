@@ -64,11 +64,10 @@ import email.utils
 import imaplib
 import json
 import re
-import smtplib
+import mailer
 import urllib.request
 from datetime import datetime, timedelta
 from email.header import decode_header
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import deep_research
@@ -160,21 +159,12 @@ def _quality_ok(text: str) -> bool:
 
 def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
                subject: str, body: str) -> bool:
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = to_addr
-        if cc_addr:
-            msg["Cc"] = cc_addr
-        recipients = [to_addr] + ([cc_addr] if cc_addr else [])
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
-            server.ehlo(); server.starttls(); server.ehlo()
-            server.login(from_email, password)
-            server.sendmail(from_email, recipients, msg.as_string())
-        return True
-    except Exception:
-        return False
+    """Thin shim over mailer.send, kept so the call sites below read unchanged.
+    The old body ended in a bare `except: return False` -- a client email that
+    never arrived was indistinguishable from one that did. mailer logs it."""
+    return mailer.send(from_email, password, to_addr, subject, body,
+                       cc=cc_addr, from_name=False, on_error="false",
+                       log=print)
 
 
 # Maps an intake sender's "projects" tag (config/intake_senders.json) to the
@@ -477,7 +467,7 @@ def classify_capability(rec: dict) -> str:
 # ── Resend: find + redeliver our own past sent mail ──────────────────────────
 
 IMAP_SERVER = "imap.gmail.com"          # same Gmail infra the outbound side
-                                        # uses (smtplib.SMTP("smtp.gmail.com"))
+                                        # uses (see mailer.SMTP_SERVER)
 MAX_RESEND = 30                         # cap a single batch — avoid a flood
 SELF_EXCLUDE_MINUTES = 10               # skip anything sent in this run's own
                                         # ack window (else the ack we just

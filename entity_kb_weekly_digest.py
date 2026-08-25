@@ -12,9 +12,8 @@ Usage:
 import argparse
 import json
 import re
-import smtplib
+import mailer
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import entity_kb
@@ -338,21 +337,12 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
 
 def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
                subject: str, body: str) -> bool:
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = to_addr
-        if cc_addr:
-            msg["Cc"] = cc_addr
-        recipients = [to_addr] + ([cc_addr] if cc_addr else [])
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
-            server.ehlo(); server.starttls(); server.ehlo()
-            server.login(from_email, password)
-            server.sendmail(from_email, recipients, msg.as_string())
-        return True
-    except Exception:
-        return False
+    """Thin shim over mailer.send, kept so the call sites below read unchanged.
+    The old body ended in a bare `except: return False` -- a client email that
+    never arrived was indistinguishable from one that did. mailer logs it."""
+    return mailer.send(from_email, password, to_addr, subject, body,
+                       cc=cc_addr, from_name=False, on_error="false",
+                       log=print)
 
 
 def run(client: str, dry_run: bool = False, db_path: str = None,

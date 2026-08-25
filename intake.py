@@ -35,7 +35,6 @@ import imaplib
 import json
 import os
 import re
-import smtplib
 import socket
 import sys
 import time
@@ -43,10 +42,10 @@ import urllib.request
 import node_info                                    # S56: sign as the running node
 from datetime import datetime, timedelta
 from email.header import decode_header
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import dev_loop
+import mailer
 import task_solver
 
 # ── Paths & config ────────────────────────────────────────────────────────────
@@ -389,22 +388,14 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
     """SMTP ack from the research inbox. NOTE: creds keys outlook_* are
     legacy-misnamed — they hold the cirrustask@gmail.com sender (see
     COWORK-CONVENTIONS.md)."""
-    try:
-        from_email = creds["outlook_email"]
-        password = creds["outlook_password"]
-        msg = MIMEText(ack_body(rec))
-        subj = orig_subject or rec["title"]
-        msg["Subject"] = subj if subj.lower().startswith("re:") else f"Re: {subj}"
-        msg["From"] = from_email
-        msg["To"] = to_addr
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
-            server.ehlo(); server.starttls(); server.ehlo()
-            server.login(from_email, password)
-            server.sendmail(from_email, [to_addr], msg.as_string())
-        return True
-    except Exception as e:
-        log(f"ack send failed to {to_addr}: {e}")
-        return False
+    subj = orig_subject or rec["title"]
+    return mailer.send(
+        creds["outlook_email"], creds["outlook_password"], to_addr,
+        subj if subj.lower().startswith("re:") else f"Re: {subj}",
+        ack_body(rec),
+        # Bare address, as this ack has always sent -- clients recognise it.
+        from_name=False, on_error="false",
+        log=lambda m: log(f"ack to {to_addr}: {m}"))
 
 
 def telegram(text: str, creds: dict) -> bool:

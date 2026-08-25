@@ -23,14 +23,10 @@ Usage:  python3 client_mail.py <sender_name> <body_file> [attachment]
 """
 
 import json
-import mimetypes
-import smtplib
 import sys
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email import encoders
 from pathlib import Path
+
+import mailer
 
 # Resolve from THIS file, not a hardcoded home-relative path: the app lives at
 # ~/projects/cirrus-digest on CIRRUS and /home/buddy/cirrus-digest on CUMULUS,
@@ -38,25 +34,6 @@ from pathlib import Path
 # a client whose thread arrived there has to be answered from (S77).
 PROJECT_DIR = Path(__file__).resolve().parent
 CC_ADDR = "Buddy.Weiss@outlook.com"
-
-
-def _sender_name(creds: dict, from_email: str) -> str:
-    """The display name must never be a hardcoded default that can be wrong.
-    A client's reply has to come back signed by the BOX they wrote to, never as
-    Buddy and never as the other box (Buddy, 2026-08-25). An explicit
-    mail_from_name wins; otherwise derive it from the sending address, which is
-    itself the box identity — cumulus@cumulustask.com can only be CUMULUS."""
-    name = str(creds.get("mail_from_name") or "").strip()
-    addr = (from_email or "").lower()
-    for box in ("cumulus", "stratus", "cirrus"):
-        if box in addr:
-            # An explicit name that contradicts the sending address is stale
-            # config, not intent — the address is the ground truth.
-            if name and box not in name.lower():
-                print(f"note: mail_from_name={name!r} disagrees with {from_email} "
-                      f"— using {box.upper()}")
-            return box.upper()
-    return name or "ASSISTANT"
 
 
 def _safe_in_project(rel: str) -> Path:
@@ -85,53 +62,34 @@ def main() -> int:
         return 1
     to_addr = entry["emails"][0]
 
+    attach = _safe_in_project(attach_rel) if attach_rel else None
+    creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
+    from_email = creds["outlook_email"]   # legacy-misnamed: the Gmail sender
+    password = creds["outlook_password"]
+
     body = _safe_in_project(body_rel).read_text()
     subject = ""
     if body.lower().startswith("subject:"):
         first, _, rest = body.partition("\n")
         subject = first.split(":", 1)[1].strip()
         body = rest.lstrip("\n")
-    subject = subject or "A note from CIRRUS"
-
-    creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
-    from_email = creds["outlook_email"]   # legacy-misnamed: the Gmail sender
-    password = creds["outlook_password"]
-
-    if attach_rel:
-        msg = MIMEMultipart("mixed")
-        msg.attach(MIMEText(body))
-        apath = _safe_in_project(attach_rel)
-        ctype, _ = mimetypes.guess_type(apath.name)
-        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
-        part = MIMEBase(maintype, subtype or "octet-stream")
-        part.set_payload(apath.read_bytes())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", "attachment", filename=apath.name)
-        msg.attach(part)
-    else:
-        msg = MIMEText(body)
-
-    msg["Subject"] = subject
-    msg["From"] = f'{_sender_name(creds, from_email)} <{from_email}>'
-    msg["To"] = to_addr
-    msg["Cc"] = CC_ADDR
+    # Not a hardcoded box name either: the fallback subject follows the sender.
+    subject = subject or f"A note from {mailer.sender_name(from_email, creds)}"
 
     if dry_run:
         # An external send is irreversible, so the FROM LINE gets read before
         # it goes, not inferred from config (S77).
-        print("DRY RUN — nothing sent")
-        for h in ("From", "To", "Cc", "Subject"):
-            print(f"  {h}: {msg[h]}")
-        print(f"  Attachment: {attach_rel or '(none)'}")
+        mailer.send(from_email, password, to_addr, subject, body,
+                    cc=CC_ADDR, attachments=[attach] if attach else None,
+                    creds=creds, dry_run=True)
         print("  --- body (first 15 lines) ---")
         for line in body.splitlines()[:15]:
             print(f"  {line}")
         return 0
 
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
-        server.ehlo(); server.starttls(); server.ehlo()
-        server.login(from_email, password)
-        server.sendmail(from_email, [to_addr, CC_ADDR], msg.as_string())
+    mailer.send(from_email, password, to_addr, subject, body,
+                cc=CC_ADDR, attachments=[attach] if attach else None,
+                creds=creds)
 
     print(f"sent '{subject}' to {name} (cc Buddy)"
           + (f" with attachment {Path(attach_rel).name}" if attach_rel else ""))
