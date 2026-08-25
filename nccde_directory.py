@@ -52,6 +52,32 @@ PHONE_RX = re.compile(r'Phone:\s*<a href="tel:[^"]*">([^<]+)</a>')
 LINK_RX = re.compile(r'Link:\s*<a href="([^"]+)"')
 
 
+# The directory's own "<Company>, MC" suffix is the explicit marker for a
+# professionally managed community -- but it is NOT applied consistently.
+# "Neighborhood Resources LLC, Steve Blanchies" carries no MC and covers ~10
+# communities; on the suffix alone every one of them landed in Bill's PROSPECT
+# list, which would have had him cold-pitching a competitor at that
+# competitor's own email address (caught 2026-08-25 by reading the workbook
+# before it went out, not by any check).
+_COMPANY_RX = re.compile(
+    r"\b(LLC|L\.L\.C|INC|CORP|CO|COMPANY|MANAGEMENT|MGMT|PROPERTIES|PROPERTY|"
+    r"SERVICES|REALTY|GROUP|ASSOCIA|PARTNERS|ADVISORS)\b", re.IGNORECASE)
+
+
+def _classify_contact(contact: str):
+    """(is_managed, why). The 'why' is carried into the workbook so a judgement
+    call is auditable by the person acting on it, rather than a bare boolean."""
+    c = (contact or "").strip()
+    if re.search(r",\s*MC$", c):
+        return True, "directory 'MC' marker"
+    if _COMPANY_RX.search(c):
+        return True, "contact is a company name"
+    if re.search(r",\s*(President|Treasurer|Chair|Vice President|Secretary)\b",
+                 c, re.IGNORECASE):
+        return False, "named officer listed"
+    return False, "no company or officer marker — UNVERIFIED, check before use"
+
+
 def fetch(url: str = URL) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=60) as r:
@@ -74,12 +100,12 @@ def parse(page: str) -> list:
         ph = PHONE_RX.search(body)
         ln = LINK_RX.search(body)
         contact = parts[0] if parts else ""
+        managed, basis = _classify_contact(contact)
         rec = {
             "name": html.unescape(m.group("name")).strip(),
             "contact": contact,
-            # "<Company>, MC" is the directory's own marker for a community
-            # being professionally managed -- i.e. NOT a prospect for Bill.
-            "managed": bool(re.search(r",\s*MC$", contact)),
+            "managed": managed,
+            "managed_basis": basis,
             "address": ", ".join(parts[1:]),
             "phone": ph.group(1).strip() if ph else "",
             "email": f"{em.group(1)}@{em.group(2)}" if em else "",
@@ -129,13 +155,15 @@ def workbook(recs: list, path: str) -> str:
 
     wb = Workbook()
     sheet(wb, "Prospects (self-managed)",
-          ["Association", "Contact", "Email", "Phone", "Address", "Website"],
+          ["Association", "Contact", "Email", "Phone", "Address", "Website",
+           "Why we think it is self-managed"],
           [[r["name"], r["contact"], r["email"], r["phone"], r["address"],
-            r["website"]] for r in prospects])
+            r["website"], r.get("managed_basis", "")] for r in prospects])
     sheet(wb, "Already managed",
-          ["Association", "Management company", "Email", "Phone", "Address"],
-          [[r["name"], r["contact"], r["email"], r["phone"], r["address"]]
-           for r in managed])
+          ["Association", "Management company", "Email", "Phone", "Address",
+           "How identified"],
+          [[r["name"], r["contact"], r["email"], r["phone"], r["address"],
+            r.get("managed_basis", "")] for r in managed])
 
     from collections import Counter
     counts = Counter(r["contact"] for r in managed)
@@ -216,9 +244,11 @@ def import_new(project: str, recs: list, apply: bool) -> dict:
         }
         if r["managed"]:
             fields["current_mgmt_co"] = r["contact"]
-            fields["mgmt_status"] = f"professionally managed ({r['contact']})"
+            fields["mgmt_status"] = (f"professionally managed ({r['contact']}) "
+                                     f"[{r.get('managed_basis', '')}]")
         else:
-            fields["mgmt_status"] = "self-managed (no management company listed)"
+            fields["mgmt_status"] = ("self-managed (no management company listed) "
+                                     f"[{r.get('managed_basis', '')}]")
             if r["contact"]:
                 fields["board_contact"] = r["contact"]
         for k, v in (("board_email", r["email"]), ("board_phone", r["phone"]),
@@ -270,9 +300,11 @@ def enrich(project: str, recs: list, apply: bool) -> int:
         fields = {}
         if r["managed"]:
             fields["current_mgmt_co"] = r["contact"]
-            fields["mgmt_status"] = f"professionally managed ({r['contact']})"
+            fields["mgmt_status"] = (f"professionally managed ({r['contact']}) "
+                                     f"[{r.get('managed_basis', '')}]")
         else:
-            fields["mgmt_status"] = "self-managed (no management company listed)"
+            fields["mgmt_status"] = ("self-managed (no management company listed) "
+                                     f"[{r.get('managed_basis', '')}]")
             if r["contact"]:
                 fields["board_contact"] = r["contact"]
         # Never blank out something we already hold with something we don't.
