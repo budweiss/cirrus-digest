@@ -302,6 +302,20 @@ def is_reply_subject(subject: str) -> bool:
     return bool(_REPLY_SUBJECT_RX.match(subject or ""))
 
 
+def disambiguation_label(m: dict) -> str:
+    """A match, labelled so a human can actually pick between them.
+
+    2026-08-25 (S78). Delaware reuses community names across counties, and this
+    CRM now holds TWO associations called "Hunters Ridge" -- Kent's warm lead
+    and New Castle's directory row, deliberately kept apart after the first was
+    overwritten by the second. A bare-name list would have asked Bill
+    "which one do you mean? Hunters Ridge; Hunters Ridge", which is not a
+    question anyone can answer. County is what distinguishes them, so say it.
+    """
+    county = str((m.get("state") or {}).get("county", "")).strip()
+    return f"{m['name']} ({county} County)" if county else m["name"]
+
+
 def decisive_match(matches: list, question: str) -> dict | None:
     """One hit out of several can still be decisive: the client named it
     verbatim and the rest only share common words. Returns that entity when
@@ -343,7 +357,7 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
             decisive = decisive_match(matches, question)
             if decisive is None:
                 _record_question_attempt(kb_project, len(matches), False, question)
-                names = "; ".join(m["name"] for m in matches)
+                names = "; ".join(disambiguation_label(m) for m in matches)
                 return (f"I found a few possible matches in our records — could you "
                          f"let me know which one you mean? {names}")
             matches = [decisive]
@@ -882,6 +896,23 @@ def selftest() -> int:
         answer = try_entity_kb_answer(rec_both_named, db_path=db_path)
         check("two names spelled out verbatim still earns the clarifying question",
               answer is not None and "which one you mean" in answer)
+
+        # S78 — two same-named associations in two counties is now a REAL
+        # state of this CRM, not a hypothetical. The question we ask about them
+        # has to be answerable.
+        check("a disambiguation label carries the county",
+              disambiguation_label({"name": "Hunters Ridge",
+                                    "state": {"county": "Kent"}})
+              == "Hunters Ridge (Kent County)")
+        check("no county on file falls back to the bare name",
+              disambiguation_label({"name": "Back Creek", "state": {}})
+              == "Back Creek")
+        check("a missing state dict does not crash the label",
+              disambiguation_label({"name": "Back Creek"}) == "Back Creek")
+        check("two same-named matches are told apart",
+              len({disambiguation_label({"name": "Hunters Ridge",
+                                         "state": {"county": c}})
+                   for c in ("Kent", "New Castle")}) == 2)
 
         # S78 — the regression that re-sent Bill a recap he already had. The
         # subject still says "Back Creek" because it is a reply; his own words
