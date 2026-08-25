@@ -40,6 +40,25 @@ PROJECT_DIR = Path(__file__).resolve().parent
 CC_ADDR = "Buddy.Weiss@outlook.com"
 
 
+def _sender_name(creds: dict, from_email: str) -> str:
+    """The display name must never be a hardcoded default that can be wrong.
+    A client's reply has to come back signed by the BOX they wrote to, never as
+    Buddy and never as the other box (Buddy, 2026-08-25). An explicit
+    mail_from_name wins; otherwise derive it from the sending address, which is
+    itself the box identity — cumulus@cumulustask.com can only be CUMULUS."""
+    name = str(creds.get("mail_from_name") or "").strip()
+    addr = (from_email or "").lower()
+    for box in ("cumulus", "stratus", "cirrus"):
+        if box in addr:
+            # An explicit name that contradicts the sending address is stale
+            # config, not intent — the address is the ground truth.
+            if name and box not in name.lower():
+                print(f"note: mail_from_name={name!r} disagrees with {from_email} "
+                      f"— using {box.upper()}")
+            return box.upper()
+    return name or "ASSISTANT"
+
+
 def _safe_in_project(rel: str) -> Path:
     p = (PROJECT_DIR / rel).resolve()
     if not str(p).startswith(str(PROJECT_DIR.resolve())):
@@ -50,12 +69,14 @@ def _safe_in_project(rel: str) -> Path:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print("usage: client_mail.py <sender_name> <body_file> [attachment]")
+    if len([a for a in sys.argv[1:] if a != "--dry-run"]) < 2:
+        print("usage: client_mail.py <sender_name> <body_file> [attachment] [--dry-run]")
         return 2
 
-    name, body_rel = sys.argv[1].strip().lower(), sys.argv[2]
-    attach_rel = sys.argv[3].strip() if len(sys.argv) > 3 and sys.argv[3].strip() else ""
+    argv = [a for a in sys.argv[1:] if a != "--dry-run"]
+    dry_run = "--dry-run" in sys.argv
+    name, body_rel = argv[0].strip().lower(), argv[1]
+    attach_rel = argv[2].strip() if len(argv) > 2 and argv[2].strip() else ""
 
     senders = json.loads((PROJECT_DIR / "config/intake_senders.json").read_text())
     entry = senders.get(name)
@@ -91,9 +112,21 @@ def main() -> int:
         msg = MIMEText(body)
 
     msg["Subject"] = subject
-    msg["From"] = f'{creds.get("mail_from_name", "CIRRUS")} <{from_email}>'
+    msg["From"] = f'{_sender_name(creds, from_email)} <{from_email}>'
     msg["To"] = to_addr
     msg["Cc"] = CC_ADDR
+
+    if dry_run:
+        # An external send is irreversible, so the FROM LINE gets read before
+        # it goes, not inferred from config (S77).
+        print("DRY RUN — nothing sent")
+        for h in ("From", "To", "Cc", "Subject"):
+            print(f"  {h}: {msg[h]}")
+        print(f"  Attachment: {attach_rel or '(none)'}")
+        print("  --- body (first 15 lines) ---")
+        for line in body.splitlines()[:15]:
+            print(f"  {line}")
+        return 0
 
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as server:
         server.ehlo(); server.starttls(); server.ehlo()
