@@ -42,6 +42,7 @@ SECRET_TOKEN = _creds.get("api_token", "")
 # requires, the same "narrow, explicit allowlist" principle already applied
 # to its systemd/sudoers grant on cumulus1.
 SUPERVISOR_TM_TOKEN = _creds.get("supervisor_tm_token", "")
+SUPERVISOR_WATCH_TOKEN = _creds.get("supervisor_watch_token", "")
 
 ALLOWED_SERVICES = {
     "com.cirrus.bot",
@@ -68,6 +69,16 @@ def require_supervisor_token():
     token = request.headers.get("X-API-Token", "") or request.args.get("token", "")
     if not SUPERVISOR_TM_TOKEN or token != SUPERVISOR_TM_TOKEN:
         abort(403, description="Invalid or missing supervisor token.")
+
+def require_watch_token():
+    """Auth for the client-conversation digest (S78). A THIRD token, separate
+    from both the main admin token and the Time Machine one, so each credential
+    still maps to exactly one surface: a leak of this one exposes client
+    conversation metadata and nothing else -- no deploys, no approvals, no
+    backup control."""
+    token = request.headers.get("X-API-Token", "") or request.args.get("token", "")
+    if not SUPERVISOR_WATCH_TOKEN or token != SUPERVISOR_WATCH_TOKEN:
+        abort(403, description="Invalid or missing supervisor watch token.")
 
 @app.after_request
 def no_cache(response):
@@ -869,6 +880,64 @@ def tm_status():
         "destination": "OWC Envoy Pro FX",
         "checked_at": datetime.now().isoformat(),
     })
+
+@app.route("/admin/client-watch", methods=["GET"])
+def client_watch_status():
+    """S78 — READ-ONLY client-conversation digest, for Skywarden on CUMULUS.
+
+    WHY THIS EXISTS. Skywarden runs on CUMULUS and reads CUMULUS files, so
+    everything it learned about client conversations in S78 stopped at the box
+    boundary. Meanwhile com.cirrus.intake is LIVE here and reads a DIFFERENT
+    mailbox -- CIRRUS can answer a client entirely on its own. Every promise,
+    duplicate answer and stalled thread on this box was therefore invisible to
+    the only thing watching, and a supervisor that reports healthy while half
+    the estate is unobserved is worse than one that admits it cannot see.
+
+    Its OWN token, not the Time Machine one. require_supervisor_token() is
+    documented on the promise that leaking it exposes backup status and nothing
+    else; this route returns client names, subjects and promise text, so
+    reusing that token would quietly turn that promise into a falsehood. A
+    separate credential keeps "one token, one surface" true.
+
+    Read-only: no writes, no sends, no state change of any kind.
+    """
+    require_watch_token()
+    hours = request.args.get("hours", "168")
+    try:
+        hours = max(1, min(int(hours), 24 * 365))
+    except ValueError:
+        hours = 168
+
+    out = {"box": "CIRRUS", "hours": hours, "checked_at": datetime.now().isoformat()}
+    try:
+        import client_promises
+        import client_watch
+    except Exception as e:
+        # An import failure must NOT return an empty-but-valid digest -- the
+        # caller would read it as "CIRRUS is clean". Same rule as the CUMULUS
+        # probe: a check that could not run says so.
+        return jsonify({**out, "error": f"import failed: {type(e).__name__}: {e}"}), 500
+
+    def fold(name, fn):
+        try:
+            out[name] = fn()
+        except Exception as e:
+            out.setdefault("errors", {})[name] = f"{type(e).__name__}: {e}"
+
+    fold("promises_overdue", lambda: [
+        {"client": p.get("client"), "state": p.get("state"),
+         "age_hours": p.get("age_hours"), "sla_hours": p.get("sla_hours"),
+         "promise": str(p.get("promise"))[:160],
+         "subject": str(p.get("subject"))[:100]}
+        for p in client_promises.overdue()])
+    fold("promises_open", lambda: len(client_promises.list_promises(state="open")))
+    fold("promises_confirmed",
+         lambda: len(client_promises.list_promises(state="confirmed")))
+    fold("duplicate_answers", lambda: client_watch.duplicate_answers(hours=hours))
+    fold("stalled_threads", lambda: client_watch.stalled_threads())
+    fold("high_value_overwrites",
+         lambda: client_watch.high_value_overwrites(hours=hours))
+    return jsonify(json.loads(json.dumps(out, default=str)))
 
 @app.route("/admin/service/status", methods=["GET"])
 def service_status():
