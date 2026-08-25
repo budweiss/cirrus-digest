@@ -336,6 +336,9 @@ def _load_brave_key() -> str:
     return _BRAVE_KEY
 
 
+_BRAVE_MAX_QUERY_CHARS = 380   # Brave's documented cap is 400; leave headroom
+
+
 def brave_search(query: str, max_results: int = 3) -> list[str]:
     """Primary web search — Brave Search API (paid, reliable). Returns top result
     URLs; empty on no-key / error / quota, so the caller falls back to Gemini. A
@@ -343,6 +346,16 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
     key = _load_brave_key()
     if not key or (_SPEND and _SPEND.is_paused("brave")):
         return []
+    # Brave rejects an over-long query with 422 Unprocessable Entity, which the
+    # except-block below turns into a silent fall-through to Gemini -- a paid
+    # provider quietly replaced because the QUERY was malformed, not because
+    # Brave was down. Callers that pass a whole sub-question hit this (2026-08-25,
+    # research_task.py). Trim to the documented limit on a word boundary; a
+    # shortened query still searches, a 422 returns nothing at all.
+    if len(query) > _BRAVE_MAX_QUERY_CHARS:
+        cut = query[:_BRAVE_MAX_QUERY_CHARS]
+        query = cut[:cut.rfind(" ")] if " " in cut else cut
+        log(f"    Brave query trimmed to {len(query)} chars (API limit)")
     _count_search("brave", "daily_digest", "ok")   # provisional; corrected below
     try:
         with hard_deadline(20, "brave_search"):

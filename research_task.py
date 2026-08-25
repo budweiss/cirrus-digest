@@ -103,9 +103,17 @@ def gather(subq, creds):
         return out, f"search failed: {e}"
     for u in urls[:MAX_FETCH]:
         try:
-            body, ok = cirrus_daily.fetch_article_content(u)
-            if ok and body:
-                out.append({"url": u, "text": body[:6000]})
+            # fetch_article_content returns (content, IS_PAYWALLED) -- every
+            # other call site in the repo names it `paywalled`. This one called
+            # it `ok` and gated on it, so a clean fetch (text, False) was thrown
+            # away and only PAYWALLED pages could ever become sources. Net
+            # effect since S74: every run reported 0 sources and the council
+            # synthesised from nothing, which reads exactly like "the web has
+            # nothing on this" (2026-08-25, found on Bill's Back Creek lookup).
+            body, paywalled = cirrus_daily.fetch_article_content(u)
+            if body:
+                out.append({"url": u, "text": body[:6000],
+                            "paywalled": bool(paywalled)})
         except Exception:
             continue
     return out, None
@@ -119,7 +127,8 @@ def synthesise(question, requirements, findings, creds):
         if not docs:
             ev.append("  (nothing retrieved — treat this angle as UNCHECKED)")
         for d in docs:
-            ev.append(f"  SOURCE {d['url']}\n  {d['text'][:2500]}")
+            tag = " (PAYWALLED — partial text)" if d.get("paywalled") else ""
+            ev.append(f"  SOURCE {d['url']}{tag}\n  {d['text'][:2500]}")
     reqs = "\n".join(f"- {r}" for r in requirements) or "(none stated)"
 
     sys_p = (
@@ -234,7 +243,27 @@ def main():
                     or "- (nothing retrieved — UNCHECKED)\n")
 
     print(f"\nreport: {path}   ({sourced} sources, {time.time()-t0:.0f}s)")
-    notify(f"🔎 Research done: {question[:80]}\n{sourced} sources\n{os.path.basename(path)}", creds)
+
+    # Detection, not just a number. Searches that RETURN results and then yield
+    # zero sources is the signature of a broken fetch path, not a hard topic --
+    # the shape that hid the paywalled/ok bug above for a month. Say so, in the
+    # report and in the Telegram, so the next zero-source run is a question
+    # rather than a shrug.
+    warn = ""
+    if subs and sourced == 0:
+        warn = ("\n\n> **WARNING — 0 sources retrieved across every sub-question.** "
+                "The findings below are UNGROUNDED: the council answered from its "
+                "own priors, not from anything read. Searches returning results "
+                "while nothing is fetched usually means the fetch path is broken, "
+                "not that the topic is unfindable. Check `logs/research-task.log` "
+                "for fetch errors before trusting or discarding this report.")
+        with open(path, "a") as f:
+            f.write(warn + "\n")
+        print("  !! 0 sources across all sub-questions — report is UNGROUNDED")
+
+    notify(f"🔎 Research done: {question[:80]}\n{sourced} sources"
+           + (" — UNGROUNDED, fetch path suspect" if warn else "")
+           + f"\n{os.path.basename(path)}", creds)
     return 0
 
 
