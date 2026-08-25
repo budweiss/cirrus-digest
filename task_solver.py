@@ -963,9 +963,15 @@ if __name__ == "__main__":
     # cumulus-entity-recap. Reads creds; makes a model call; writes nothing.
     if len(sys.argv) > 2 and sys.argv[1] == "detect":
         import base64
-        creds_path = PROJECT_DIR / "config/credentials.json"
+        # Module-relative FIRST. PROJECT_DIR is ~/projects/cirrus-digest, which
+        # is CIRRUS's layout; on CUMULUS the app lives at ~/cirrus-digest. Reading
+        # PROJECT_DIR first made this probe report "local provider enabled:
+        # False" while the running code's own config had it enabled -- the same
+        # class of mistake as client_mail.py's hardcoded PROJECT_DIR (S77). The
+        # config that matters is the one next to the code being run.
+        creds_path = Path(__file__).parent / "config/credentials.json"
         if not creds_path.exists():
-            creds_path = Path(__file__).parent / "config/credentials.json"
+            creds_path = PROJECT_DIR / "config/credentials.json"
         creds = json.loads(creds_path.read_text())
         text = base64.b64decode(sys.argv[2]).decode()
         print("local provider enabled:", bool(creds.get("ollama_url")),
