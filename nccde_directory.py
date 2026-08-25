@@ -93,6 +93,67 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
+DIRECTORY_SOURCE = "nccde_association_directory"
+
+
+def import_new(project: str, recs: list, apply: bool) -> dict:
+    """Create entities for directory rows this project does not have yet.
+
+    Kept SEPARATE from enrich() and separately tagged (Buddy, 2026-08-25): the
+    project's existing leads come from parcel/plat provenance, and a lead that
+    silently appears from a second source with no marker would make
+    `confidence_basis` meaningless and would surface in a client digest with no
+    explanation of where it came from.
+    """
+    import entity_kb
+
+    have = {_norm(e["name"]) for e in entity_kb.list_entities(project)}
+    created, skipped = [], 0
+    for r in recs:
+        if _norm(r["name"]) in have:
+            skipped += 1
+            continue
+        fields = {
+            "source": DIRECTORY_SOURCE,
+            "county": "New Castle",
+            "type": "HOA",
+            "directory_source": ("New Castle County Community Association "
+                                 "Directory (public, county-maintained)"),
+            "confidence_basis": (
+                "Listed in the New Castle County Community Association "
+                "Directory. The association and its contact are county-published; "
+                "NO parcel, acreage or owner data has been matched to it yet."),
+            "lead_confidence": "medium",
+        }
+        if r["managed"]:
+            fields["current_mgmt_co"] = r["contact"]
+            fields["mgmt_status"] = f"professionally managed ({r['contact']})"
+        else:
+            fields["mgmt_status"] = "self-managed (no management company listed)"
+            if r["contact"]:
+                fields["board_contact"] = r["contact"]
+        for k, v in (("board_email", r["email"]), ("board_phone", r["phone"]),
+                     ("website", r["website"]), ("mailing_address", r["address"])):
+            if v:
+                fields[k] = v
+
+        if not apply:
+            created.append(r["name"])
+            continue
+        entity_kb.upsert_entity(project, entity_kb.slugify(r["name"]), r["name"],
+                                entity_type="hoa", fields=fields,
+                                lead_state="new")
+        created.append(r["name"])
+
+    print(f"{'IMPORTED' if apply else 'WOULD IMPORT'}: {len(created)} new "
+          f"(already present: {skipped})")
+    for n in created[:15]:
+        print(f"    + {n}")
+    if len(created) > 15:
+        print(f"    ... and {len(created) - 15} more")
+    return {"created": len(created), "skipped": skipped}
+
+
 def enrich(project: str, recs: list, apply: bool) -> int:
     """Write directory officer/management details onto entities we already
     track. Only ever UPDATES an existing entity -- the directory is a contact
@@ -171,11 +232,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out")
     ap.add_argument("--enrich", metavar="PROJECT")
+    ap.add_argument("--import-new", metavar="PROJECT", dest="import_new",
+                    help="create entities for directory rows not already tracked, "
+                         "tagged source=" + DIRECTORY_SOURCE)
     ap.add_argument("--apply", action="store_true",
                     help="with --enrich: actually write (default is a dry run)")
     ap.add_argument("--url", default=URL)
     a = ap.parse_args()
-    if not a.out and not a.enrich:
+    if not a.out and not a.enrich and not a.import_new:
         a.out = "out/nccde_associations.json"
 
     page = fetch(a.url)
@@ -208,6 +272,9 @@ def main() -> int:
     print(f"  with email: {sum(bool(r['email']) for r in recs)}"
           f" | with phone: {sum(bool(r['phone']) for r in recs)}")
 
+    if a.import_new:
+        print()
+        import_new(a.import_new, recs, a.apply)
     if a.enrich:
         print()
         return enrich(a.enrich, recs, a.apply)

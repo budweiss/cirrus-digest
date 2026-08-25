@@ -282,9 +282,30 @@ def run(chunk_size: int = DEFAULT_CHUNK_SIZE, dry_run: bool = False, db_path: st
     except Exception as e:
         return {"ok": False, "reason": f"no creds: {e}"}
 
+    # S77 (Buddy): the county's PUBLIC association directory is now part of the
+    # DAILY run, not a one-off pull, so a board turnover or a newly registered
+    # association reaches the CRM without anyone remembering to re-run it. It
+    # goes FIRST: discovery and refresh below should see the contacts this adds.
+    # Non-fatal by design -- if the county site is down, the rest of the day's
+    # research must still happen.
+    directory = {"ok": False, "reason": "not run"}
+    try:
+        import nccde_directory
+        recs = nccde_directory.parse(nccde_directory.fetch())
+        if not recs:
+            raise RuntimeError("county directory returned 0 rows")
+        imported = nccde_directory.import_new(KB_PROJECT, recs, apply=not dry_run)
+        nccde_directory.enrich(KB_PROJECT, recs, apply=not dry_run)
+        directory = {"ok": True, "rows": len(recs),
+                     "imported": imported.get("created", 0)}
+    except Exception as e:
+        directory = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+        print(f"[warn] county directory step failed (continuing): {e}")
+
     discovery = run_discovery(creds, dry_run=dry_run, db_path=db_path)
     refresh = run_refresh(chunk_size, creds, dry_run=dry_run, db_path=db_path)
-    return {"ok": True, "dry_run": dry_run, "discovery": discovery, "refresh": refresh}
+    return {"ok": True, "dry_run": dry_run, "directory": directory,
+            "discovery": discovery, "refresh": refresh}
 
 
 def selftest() -> bool:
@@ -383,7 +404,14 @@ if __name__ == "__main__":
                 f"{len(d.get('new_entities', []))} new, "
                 f"{len(d.get('updated_entities', []))} updated, "
                 f"{rf.get('refreshed', 0)} refreshed, "
-                f"{rf.get('found_new_info', 0)} found_new_info")
+                f"{rf.get('found_new_info', 0)} found_new_info"
+                # A failed directory step must not hide inside an otherwise
+                # green line -- it is the only part that reaches the client
+                # with a NAME on it.
+                + (f", directory {outcome.get('directory', {}).get('rows', 0)} rows"
+                   if outcome.get("directory", {}).get("ok")
+                   else f", DIRECTORY FAILED: "
+                        f"{outcome.get('directory', {}).get('reason', '?')[:60]}"))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     sys.exit(0 if outcome.get("ok") else 1)
