@@ -89,6 +89,95 @@ def parse(page: str) -> list:
     return out
 
 
+SOURCE_URL = URL
+CAVEAT = (
+    "New Castle County publishes this directory with an explicit disclaimer "
+    "that it makes no warranty as to accuracy, and entries go stale when a "
+    "board turns over. Treat every contact as a strong starting point, not a "
+    "verified contact list — confirm before anything goes on a contract.")
+
+
+def workbook(recs: list, path: str) -> str:
+    """Bill's lead workbook. Ordered the way it will actually be worked:
+    self-managed communities WITH a reachable contact first, because those are
+    the ones he can act on today. Competitors get their own tab -- knowing
+    Aspen holds 11 is as useful as any single prospect."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    def sheet(wb, title, headers, rows):
+        ws = wb.create_sheet(title) if wb.sheetnames != ["Sheet"] else wb.active
+        ws.title = title
+        ws.append(headers)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for r in rows:
+            ws.append(r)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for i, h in enumerate(headers, 1):
+            width = max([len(str(h))] + [len(str(r[i - 1] or "")) for r in rows] or [10])
+            ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 12), 60)
+        return ws
+
+    prospects = [r for r in recs if not r["managed"]]
+    # reachable first: email beats phone beats neither
+    prospects.sort(key=lambda r: (not r["email"], not r["phone"], r["name"].lower()))
+    managed = sorted((r for r in recs if r["managed"]),
+                     key=lambda r: (r["contact"].lower(), r["name"].lower()))
+
+    wb = Workbook()
+    sheet(wb, "Prospects (self-managed)",
+          ["Association", "Contact", "Email", "Phone", "Address", "Website"],
+          [[r["name"], r["contact"], r["email"], r["phone"], r["address"],
+            r["website"]] for r in prospects])
+    sheet(wb, "Already managed",
+          ["Association", "Management company", "Email", "Phone", "Address"],
+          [[r["name"], r["contact"], r["email"], r["phone"], r["address"]]
+           for r in managed])
+
+    from collections import Counter
+    counts = Counter(r["contact"] for r in managed)
+    sheet(wb, "Who holds what",
+          ["Management company", "Communities held"],
+          [[k, v] for k, v in counts.most_common()])
+
+    ws = wb.create_sheet("Source & caveats")
+    for row in [
+        ["Source", "New Castle County Community Association Directory"],
+        ["URL", SOURCE_URL],
+        ["Access", "Public. No account required."],
+        ["Total associations", len(recs)],
+        ["Self-managed (prospects)", len(prospects)],
+        ["Professionally managed", len(managed)],
+        ["With an email on file", sum(1 for r in recs if r["email"])],
+        ["With a phone on file", sum(1 for r in recs if r["phone"])],
+        ["Caveat", CAVEAT],
+    ]:
+        ws.append(row)
+    ws["A1"].font = Font(bold=True)
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 100
+
+    import os
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    wb.save(path)
+    return path
+
+
+def build_workbook(path: str) -> str:
+    """fetch -> parse -> workbook, with the same count guard as main()."""
+    page = fetch()
+    recs = parse(page)
+    expected = re.search(r"of (\d+) Listing", page)
+    if not recs or (expected and len(recs) != int(expected.group(1))):
+        raise RuntimeError(
+            f"directory parse mismatch: page says "
+            f"{expected.group(1) if expected else '?'}, parsed {len(recs)}")
+    return workbook(recs, path)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
@@ -231,6 +320,8 @@ def enrich(project: str, recs: list, apply: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out")
+    ap.add_argument("--workbook", metavar="XLSX",
+                    help="write the client lead workbook (.xlsx)")
     ap.add_argument("--enrich", metavar="PROJECT")
     ap.add_argument("--import-new", metavar="PROJECT", dest="import_new",
                     help="create entities for directory rows not already tracked, "
@@ -239,7 +330,7 @@ def main() -> int:
                     help="with --enrich: actually write (default is a dry run)")
     ap.add_argument("--url", default=URL)
     a = ap.parse_args()
-    if not a.out and not a.enrich and not a.import_new:
+    if not a.out and not a.enrich and not a.import_new and not a.workbook:
         a.out = "out/nccde_associations.json"
 
     page = fetch(a.url)
@@ -271,6 +362,9 @@ def main() -> int:
     print(f"  already professionally managed (competitors): {managed}")
     print(f"  with email: {sum(bool(r['email']) for r in recs)}"
           f" | with phone: {sum(bool(r['phone']) for r in recs)}")
+
+    if a.workbook:
+        print(f"workbook -> {workbook(recs, a.workbook)}")
 
     if a.import_new:
         print()
