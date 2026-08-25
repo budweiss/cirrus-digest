@@ -136,8 +136,15 @@ def enrich(project: str, recs: list, apply: bool) -> int:
                                       "Directory (public, county-maintained)")
 
         if not apply:
-            print(f"  WOULD UPDATE {e['name']}: {sorted(fields)}")
-            changed += 1
+            # DIFF against what is stored, don't just count the match. A dry run
+            # that reports "109 would change" every time, including straight
+            # after a successful apply, can never tell you there is nothing to
+            # do -- and a report that is never quiet gets ignored (T9).
+            cur = (entity_kb.get_entity(project, e["slug"]) or {}).get("state", {})
+            diff = sorted(k for k, v in fields.items() if cur.get(k) != v)
+            if diff:
+                changed += 1
+                print(f"  WOULD UPDATE {e['name']}: {diff}")
             continue
         res = entity_kb.upsert_entity(project, e["slug"], e["name"], fields=fields)
         if res.get("changed_fields"):
@@ -147,7 +154,8 @@ def enrich(project: str, recs: list, apply: bool) -> int:
     print(f"\n{'APPLIED' if apply else 'DRY RUN'} — project '{project}'")
     print(f"  entities in project : {len(entities)}")
     print(f"  matched to directory: {matched}")
-    print(f"  with field changes  : {changed}")
+    print(f"  with field changes  : {changed}"
+          + ("  (already up to date)" if matched and not changed else ""))
     print(f"  ambiguous (skipped) : {len(ambiguous)}"
           + (f" -> {ambiguous[:5]}" if ambiguous else ""))
     print(f"  no directory entry  : {unmatched}")
