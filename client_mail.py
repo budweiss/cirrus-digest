@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-CIRRUS client mail — send a staged file to a named intake sender, cc Buddy.
-==========================================================================
+Client mail — send a staged file to a named intake sender, cc Buddy.
+=====================================================================
+Runs on whichever box the thread belongs to. The From address and the
+signature come from that box's own credentials.json (mail_from_name), so a
+reply always comes back from where the client wrote to (Buddy, 2026-08-25).
 EXTERNAL SEND: only ever invoked via the runner on Buddy's explicit ask
 (same policy as bill-update). Safety rails:
 - Recipient must be a sender defined in config/intake_senders.json — the
@@ -29,7 +32,11 @@ from email.mime.text import MIMEText
 from email import encoders
 from pathlib import Path
 
-PROJECT_DIR = Path.home() / "projects/cirrus-digest"
+# Resolve from THIS file, not a hardcoded home-relative path: the app lives at
+# ~/projects/cirrus-digest on CIRRUS and /home/buddy/cirrus-digest on CUMULUS,
+# so the old constant made this module unrunnable on CUMULUS — which is where
+# a client whose thread arrived there has to be answered from (S77).
+PROJECT_DIR = Path(__file__).resolve().parent
 CC_ADDR = "Buddy.Weiss@outlook.com"
 
 
