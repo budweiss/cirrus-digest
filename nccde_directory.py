@@ -286,10 +286,24 @@ def enrich(project: str, recs: list, apply: bool) -> int:
 
     entities = entity_kb.list_entities(project)
     matched, changed, ambiguous, unmatched = 0, 0, [], 0
+    wrong_county = []
     for e in entities:
         hits = by_norm.get(_norm(e["name"]), [])
         if not hits:
             unmatched += 1
+            continue
+        # 2026-08-25 (S78) — THIS IS A NEW CASTLE COUNTY DIRECTORY. An exact NAME
+        # match is not an identity match: Delaware reuses community names across
+        # counties, and this project already rejects same-name-different-STATE
+        # hits for exactly that reason. Without a county guard the directory row
+        # for New Castle's "Hunters Ridge" overwrote the researched president of
+        # KENT's "Hunters Ridge" -- a warm, tier-A lead -- with a stranger's
+        # name. Mailing that board would have reached the wrong association.
+        # An entity with no county on file is still eligible; only a KNOWN other
+        # county is disqualifying.
+        ent_county = str((e.get("state") or {}).get("county", "")).strip()
+        if ent_county and _norm(ent_county) != _norm("New Castle"):
+            wrong_county.append(f"{e['name']} (on file as {ent_county})")
             continue
         if len(hits) > 1:
             ambiguous.append(e["name"])
@@ -341,6 +355,11 @@ def enrich(project: str, recs: list, apply: bool) -> int:
     print(f"  ambiguous (skipped) : {len(ambiguous)}"
           + (f" -> {ambiguous[:5]}" if ambiguous else ""))
     print(f"  no directory entry  : {unmatched}")
+    # Never silent: a skip the operator cannot see is how the Hunters Ridge
+    # overwrite survived a dry run that reported "0 ambiguous" (T8/T9).
+    print(f"  name matched but WRONG COUNTY (skipped): {len(wrong_county)}")
+    for w in wrong_county:
+        print(f"    - {w}")
     # Say what was NOT covered. A directory row we could not place is a lead
     # this project simply does not know about yet.
     placed = {_norm(e["name"]) for e in entities}
