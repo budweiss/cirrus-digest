@@ -149,7 +149,21 @@ def main():
     # and report ZERO new -- which is what stops the weekly job emailing.
     reset = prev is not None and len(new) > MAX_PLAUSIBLE_NEW
     if reset:
-        (OUT / "plus_reset_backlog.json").write_text(json.dumps(new, indent=1))
+        # Self-describing ON PURPOSE. A bare list of 545 rows in a file called
+        # "backlog" reads like 545 leads somebody owes a client. It is the
+        # opposite: rows the guard decided were NOT news. Say so in the file.
+        (OUT / "plus_reset_backlog.json").write_text(json.dumps({
+            "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+            "what_this_is": (
+                "Rows that failed the seen-id test in one run, in numbers too "
+                "large to be real news. The source almost certainly renumbered "
+                "itself. They were NOT emailed and the baseline has absorbed "
+                "them. This is a record for a human, NOT a queue of work owed "
+                "to anyone."),
+            "count": len(new),
+            "ceiling": MAX_PLAUSIBLE_NEW,
+            "rows": new,
+        }, indent=1))
         print(f"*** SUSPECTED SOURCE RESET: {len(new)} rows failed the seen-id "
               f"test in one run (ceiling {MAX_PLAUSIBLE_NEW}). These are almost "
               f"certainly renumbered records, not new leads.")
