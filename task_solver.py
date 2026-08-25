@@ -257,6 +257,45 @@ def _record_question_attempt(kb_project: str, n_matches: int, recorded: bool,
         pass
 
 
+# 2026-08-25 (S77) — Bill asked which Back Creek we meant, answered "the one in
+# Middletown, New Castle County", and got the SAME question back an hour later.
+# Two separate defects made that loop unbreakable, so both are fixed here:
+#
+#   1. intake collapses a body to one line, so the quoted previous reply — which
+#      LISTS every candidate name — became part of the search text. Every name
+#      we offered was then "named by the client", guaranteeing >1 match forever.
+#   2. even on clean text, the search is substring-based: "Back Creek" also hits
+#      "Highlands At Back Creek" on word overlap. A verbatim name match scored
+#      110 and the overlap hits scored 2, but len(matches) > 1 threw that away.
+#
+# The client's clarification could not narrow the set no matter what he wrote.
+_QUOTE_CUT_RX = re.compile(
+    r"(\s>\s)"                          # a quote marker, post whitespace-collapse
+    r"|(\bOn\b.{0,120}?\bwrote:)"       # "On <date>, <someone> wrote:"
+    r"|(-{2,}\s*Original Message)",       # Outlook-style quote header
+    re.IGNORECASE | re.DOTALL)
+
+
+def strip_quoted_reply(text: str) -> str:
+    """The client's OWN words only — everything from the first quote marker on
+    is what WE said last time. Used solely to build the entity-search text; the
+    full body still reaches the council and the backlog record unchanged."""
+    m = _QUOTE_CUT_RX.search(text or "")
+    return (text[:m.start()] if m else (text or "")).strip()
+
+
+def decisive_match(matches: list, question: str) -> dict | None:
+    """One hit out of several can still be decisive: the client named it
+    verbatim and the rest only share common words. Returns that entity when
+    EXACTLY one match is named verbatim — a genuinely ambiguous set (two names
+    both spelled out) still earns the disambiguation question."""
+    q = entity_kb._normalize(question)
+    named = [m for m in matches
+             if (entity_kb._normalize(m["name"]) and entity_kb._normalize(m["name"]) in q)
+             or (m["slug"].replace("-", " ") in q)]
+    return named[0] if len(named) == 1 else None
+
+
 def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> str | None:
     """If the question plausibly names something already researched (per
     the sender's project -> entity_kb project mapping above), answer from
@@ -272,7 +311,7 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
     passes creds, so it never triggers live network/LLM calls). `db_path`
     overrides entity_kb's default per-project path -- only ever passed by
     selftest(), never by the live call site."""
-    question = f"{rec.get('title', '')} {rec.get('body_head', '')}"
+    question = f"{rec.get('title', '')} {strip_quoted_reply(rec.get('body_head', ''))}"
     kb_projects = {PROJECT_TO_KB[p] for p in rec.get("projects", []) if p in PROJECT_TO_KB}
     for kb_project in kb_projects:
         try:
@@ -280,10 +319,13 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
         except Exception:
             continue
         if len(matches) > 1:
-            _record_question_attempt(kb_project, len(matches), False, question)
-            names = "; ".join(m["name"] for m in matches)
-            return (f"I found a few possible matches in our records — could you "
-                     f"let me know which one you mean? {names}")
+            decisive = decisive_match(matches, question)
+            if decisive is None:
+                _record_question_attempt(kb_project, len(matches), False, question)
+                names = "; ".join(m["name"] for m in matches)
+                return (f"I found a few possible matches in our records — could you "
+                         f"let me know which one you mean? {names}")
+            matches = [decisive]
         if not matches:
             # No match is an ATTEMPT too — and a run of these is the shape of a
             # broken search, which is exactly what must not stay invisible.
@@ -659,6 +701,46 @@ def selftest() -> int:
               wants_fresh_research("Can you refresh your research on this one?"))
         check("a plain lookup question does NOT read as a refresh request",
               not wants_fresh_research("What do you have on Mermaid Run?"))
+
+        # S77 — the Back Creek loop. Three overlapping names, exactly as they
+        # sit in Bill's real KB: any answer he gives contains "Back Creek", so
+        # substring search always returns all three. Before the fix he got the
+        # same "which one do you mean?" back after answering it.
+        entity_kb.upsert_entity(kb_project, "back-creek", "Back Creek",
+                                fields={"county": "New Castle",
+                                        "board_contact": "Dana Reilly, President"},
+                                lead_state="warm", db_path=db_path)
+        entity_kb.upsert_entity(kb_project, "highlands-at-back-creek",
+                                "Highlands At Back Creek", db_path=db_path)
+        entity_kb.upsert_entity(kb_project, "copperleaf-at-back-creek-west",
+                                "Copperleaf At Back Creek West", db_path=db_path)
+
+        check("quoted previous reply is cut from the entity-search text",
+              "Back Creek; Highlands" not in strip_quoted_reply(
+                  "It is in Middletown. > On Aug 24 cumulus wrote: > which one "
+                  "do you mean? Back Creek; Highlands At Back Creek"))
+        check("an unquoted body is left alone",
+              strip_quoted_reply("It is in Middletown Delaware.")
+              == "It is in Middletown Delaware.")
+
+        rec_reply = {"projects": ["property-management"], "title": "Re: New Delaware leads",
+                     "body_head": ("There is a community just called back creek. It is in "
+                                   "Middletown Delaware in new castle county. > On Aug 24, "
+                                   "2026, at 10:37 PM, cumulus@cumulustask.com wrote: > I "
+                                   "found a few possible matches in our records, could you "
+                                   "let me know which one you mean? Back Creek; Highlands "
+                                   "At Back Creek; Copperleaf At Back Creek West")}
+        answer = try_entity_kb_answer(rec_reply, db_path=db_path)
+        check("a clarifying reply is ANSWERED, not asked the same question again",
+              answer is not None and "which one you mean" not in answer
+              and "Dana Reilly" in answer)
+
+        rec_both_named = {"projects": ["property-management"], "title": "REQUEST",
+                          "body_head": ("What do you have on Highlands At Back Creek and "
+                                        "Copperleaf At Back Creek West?")}
+        answer = try_entity_kb_answer(rec_both_named, db_path=db_path)
+        check("two names spelled out verbatim still earns the clarifying question",
+              answer is not None and "which one you mean" in answer)
 
         # Refresh phrasing WITHOUT creds must never trigger a live search --
         # falls through to the plain on-file recap, same as a non-refresh ask.
