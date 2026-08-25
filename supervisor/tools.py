@@ -124,6 +124,137 @@ def check_open_client_promises() -> str:
     return out
 
 
+def _client_watch():
+    """Import the app's read-only conversation folds, or raise."""
+    sys.path.insert(0, str(APP_DIR))
+    import client_watch
+    return client_watch
+
+
+def _unreadable(tool: str, e: Exception) -> str:
+    """One phrasing for "this check did not run", used by all three folds.
+
+    Kept separate from a clean result ON PURPOSE. Every silent outage this
+    project has paid for looked like a check that could not run and said
+    nothing -- indistinguishable, in a Telegram summary, from a check that ran
+    and found nothing. These words are deliberately not reassuring.
+    """
+    out = (f"UNREADABLE: {tool} could not run ({e}). This is NOT a clean "
+           f"result -- treat it as a check that did not happen.")
+    ledger_append({"event": "check", "tool": tool, "tier_name": "read-only",
+                   "detail": "", "result": out[:200]})
+    return out
+
+
+def check_duplicate_client_answers(hours: int = 168) -> str:
+    """Did we send a client the same answer twice on one thread? Read-only.
+
+    S78. On 2026-08-25 Bill asked a follow-up and was sent back the recap he
+    already had, two seconds later. The subject-line defect that caused it is
+    fixed; this watches the SYMPTOM, because a duplicate answer is what several
+    different answer-path faults all look like from the client's chair.
+
+    Reports only. Re-answering a client is a client send, and client sends are
+    in your NEVER tier.
+    """
+    try:
+        cw = _client_watch()
+        hits = cw.duplicate_answers(hours=hours)
+    except Exception as e:
+        return _unreadable("check_duplicate_client_answers", e)
+
+    if not hits:
+        out = f"OK — no repeated answers on any client thread in the last {hours}h."
+    else:
+        lines = [f"{len(hits)} repeated client answer(s):"]
+        for h in hits:
+            lines.append(
+                f"  • {h['requester']} — {h['count']}x {h['kind']} on "
+                f"\"{str(h.get('title') or h['thread'])[:70]}\" "
+                f"({h['gap_hours']}h apart, last {h['last']})")
+        lines.append("Do NOT re-answer or correct this yourself — report it.")
+        out = "\n".join(lines)
+
+    ledger_append({"event": "check", "tool": "check_duplicate_client_answers",
+                   "tier_name": "read-only", "detail": f"{hours}h",
+                   "result": out[:200]})
+    return out
+
+
+def check_thread_stalls(hours: int = 48) -> str:
+    """Has a client written and had nothing substantive back? Read-only.
+
+    An ack does not count, which is the whole point: Bill's go-ahead was
+    acknowledged within seconds and the work it authorised was never done.
+
+    Some hits are expected and are marked so — a build or research request is
+    SUPPOSED to become queued work rather than an instant reply. A hit where a
+    reply was expected is the one that matters.
+    """
+    try:
+        cw = _client_watch()
+        stalls = cw.stalled_threads(hours=hours)
+    except Exception as e:
+        return _unreadable("check_thread_stalls", e)
+
+    if not stalls:
+        out = f"OK — no client message older than {hours}h is still unanswered."
+    else:
+        waiting = [s for s in stalls if s["expected_reply"]]
+        lines = [f"{len(stalls)} client thread(s) with no substantive reply "
+                 f"({len(waiting)} where a reply was expected):"]
+        for s in stalls:
+            flag = "REPLY EXPECTED" if s["expected_reply"] else f"queued as {s['kind']}"
+            lines.append(
+                f"  • {s['requester']} — \"{str(s.get('title') or s['thread'])[:70]}\" "
+                f"[{s['age_hours']}h, {flag}]")
+        lines.append("You cannot answer a client. Report it; use "
+                     "request_guidance if you cannot tell what is blocking.")
+        out = "\n".join(lines)
+
+    ledger_append({"event": "check", "tool": "check_thread_stalls",
+                   "tier_name": "read-only", "detail": f"{hours}h",
+                   "result": out[:200]})
+    return out
+
+
+def check_high_value_field_overwrites(hours: int = 168) -> str:
+    """Was a researched fact on a lead the client is working overwritten?
+
+    S78. A bulk directory job replaced the researched board president of a
+    warm, tier-A lead with a same-named association's officer from another
+    county, and the dry run reported "0 ambiguous". Mailing that board would
+    have reached a stranger.
+
+    ESCALATE, NEVER REVERT. Which of two values is correct is a judgment call
+    about client data, and that is not yours to make -- report the old and new
+    values so a human can decide.
+    """
+    try:
+        cw = _client_watch()
+        hits = cw.high_value_overwrites(hours=hours)
+    except Exception as e:
+        return _unreadable("check_high_value_field_overwrites", e)
+
+    if not hits:
+        out = (f"OK — no researched field on a warm-or-better lead was "
+               f"overwritten in the last {hours}h.")
+    else:
+        lines = [f"{len(hits)} overwrite(s) of a researched field on a "
+                 f"warm-or-better lead:"]
+        for h in hits:
+            lines.append(f"  • {h['name']} [{h['lead_state']}] {h['field']}: "
+                         f"\"{h['old']}\" -> \"{h['new']}\" ({h['occurred_at']})")
+        lines.append("Report only. Do NOT revert — which value is right is a "
+                     "judgment call about client data, not your call.")
+        out = "\n".join(lines)
+
+    ledger_append({"event": "check", "tool": "check_high_value_field_overwrites",
+                   "tier_name": "read-only", "detail": f"{hours}h",
+                   "result": out[:200]})
+    return out
+
+
 def check_timers() -> str:
     """List all systemd timers with next/last-fire times. Read-only, no sudo."""
     r = _run(["systemctl", "list-timers", "--all", "--no-pager"])

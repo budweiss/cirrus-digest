@@ -302,6 +302,29 @@ def is_reply_subject(subject: str) -> bool:
     return bool(_REPLY_SUBJECT_RX.match(subject or ""))
 
 
+# S78 — two hashes, deliberately. `answer_sha` catches the same words sent
+# twice after whitespace/case drift. `answer_skeleton_sha` strips digits too,
+# so a recap regenerated with a fresh date or a bumped count still collides
+# with its predecessor -- which is the shape a repeated KB recap actually
+# takes. Neither stores the client's words; the ledger is not the place for
+# them, and a fingerprint is all a duplicate check needs.
+_WS_RX = re.compile(r"\s+")
+_PUNCT_RX = re.compile(r"[^a-z0-9 ]+")
+
+
+def _answer_fingerprint(text: str) -> dict:
+    """Hashes of an outbound body, for the duplicate-answer check."""
+    import hashlib
+    norm = _PUNCT_RX.sub(" ", _WS_RX.sub(" ", (text or "").lower())).strip()
+    norm = _WS_RX.sub(" ", norm)
+    skeleton = _WS_RX.sub(" ", re.sub(r"\d+", "", norm)).strip()
+    return {
+        "answer_sha": hashlib.sha256(norm.encode()).hexdigest()[:16],
+        "answer_skeleton_sha": hashlib.sha256(skeleton.encode()).hexdigest()[:16],
+        "answer_len": len(text or ""),
+    }
+
+
 def disambiguation_label(m: dict) -> str:
     """A match, labelled so a human can actually pick between them.
 
@@ -574,6 +597,13 @@ def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) ->
         "event": "auto-answered", "requester": rec.get("requester"),
         "title": rec.get("title"), "cost_usd": result["cost_usd"],
         "degraded": meta.get("degraded"), "members": meta.get("members"),
+        # S78 — what we actually SAID, fingerprinted. Until now this row
+        # recorded that a reply left and nothing about its content, so the one
+        # bug a client would notice first -- being sent the same answer twice --
+        # left no trace anyone could check. Bill got the Back Creek recap he
+        # already had and the ledger looked identical to a good day.
+        # Hashes, not text: this file is not the place for a client's words.
+        **_answer_fingerprint(text), "thread": client_promises.thread_key(subj),
     }, PROJECT_DIR)
     return result
 

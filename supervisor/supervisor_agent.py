@@ -98,6 +98,35 @@ def _build_mcp_tools():
         return {"content": [{"type": "text",
                               "text": tools.check_open_client_promises()}]}
 
+    @tool("check_duplicate_client_answers",
+          "Check whether a client was sent the same answer twice on one thread "
+          "(read-only). Reports only — re-answering or correcting a client is a "
+          "client send, which is never your call.", {"hours": int})
+    async def _check_duplicate_client_answers(args):
+        return {"content": [{"type": "text",
+                              "text": tools.check_duplicate_client_answers(
+                                  args.get("hours", 168))}]}
+
+    @tool("check_thread_stalls",
+          "Check for client messages with no substantive reply (an ack does not "
+          "count) (read-only). Hits marked 'queued as build/research' are "
+          "expected; 'REPLY EXPECTED' is the one that matters. You cannot answer "
+          "a client — report it, or use request_guidance if it is unclear what "
+          "is blocking.", {"hours": int})
+    async def _check_thread_stalls(args):
+        return {"content": [{"type": "text",
+                              "text": tools.check_thread_stalls(args.get("hours", 48))}]}
+
+    @tool("check_high_value_field_overwrites",
+          "Check whether a researched field (board contact, email, management "
+          "company) on a warm-or-better client lead was overwritten with a "
+          "different value (read-only). ESCALATE, NEVER REVERT — which value is "
+          "correct is a judgment call about client data.", {"hours": int})
+    async def _check_high_value_field_overwrites(args):
+        return {"content": [{"type": "text",
+                              "text": tools.check_high_value_field_overwrites(
+                                  args.get("hours", 168))}]}
+
     @tool("check_credentials_health",
           "Verify CUMULUS credentials.json currently parses (read-only, never returns values)", {})
     async def _check_credentials_health(args):
@@ -141,7 +170,8 @@ def _build_mcp_tools():
                               "text": tools.request_guidance(args["issue"], args["question"])}]}
 
     return [_check_service_status, _check_timers, _tail_journal,
-            _check_open_client_promises,
+            _check_open_client_promises, _check_duplicate_client_answers,
+            _check_thread_stalls, _check_high_value_field_overwrites,
             _check_credentials_health, _check_cirrus_timemachine,
             _restart_service, _reset_failed, _send_telegram,
             _request_opus_upgrade, _request_guidance]

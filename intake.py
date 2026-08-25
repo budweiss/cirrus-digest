@@ -690,6 +690,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 "event": "user-intake", "requester": entry["name"],
                 "title": rec["title"], "tier": rec["tier"],
                 "status": rec["status"], "spec_id": rec["dev_spec"]["id"],
+                # S78 — the RAW subject's thread key, not rec["title"]: research
+                # kinds retitle themselves from the body, which would put the
+                # inbound and its own reply on two different threads and make a
+                # stalled conversation unmatchable. Same key task_solver stamps
+                # on the outbound row, computed by the same function.
+                "thread": client_promises.thread_key(subject),
+                "kind": rec["kind"],
             }, PROJECT_DIR)
             # Route by kind: research requests become focus topics for the
             # project's research digest; answer requests (S63) are solved
