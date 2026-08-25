@@ -42,6 +42,7 @@ USAGE
     research_task.py --brief b.md --dry-run     # plan only, no searches, no spend
 """
 import argparse
+import re
 import json
 import os
 import sys
@@ -94,9 +95,34 @@ def decompose(question, requirements, creds):
 
 
 def gather(subq, creds):
-    """search -> fetch. Returns [{url, text}] with whatever actually came back."""
+    """search -> fetch. Returns [{url, text}] with whatever actually came back.
+
+    S77: a sub-question that names a known primary source now OPENS IT DIRECTLY
+    instead of searching around it. Two runs on 2026-08-25 reported every
+    per-unit rate as UNSOURCED while the vendors publish those rates on public
+    pages -- search returned blog posts *about* pricing and never the pricing.
+    The registry lives in opportunity_scout.PRIMARY_SOURCES so there is one
+    list, not two."""
     import cirrus_daily
     out = []
+    try:
+        import opportunity_scout
+        low = (subq or "").lower()
+        # Tokenise the KEY on any non-alphanumeric run. Splitting only on "-"
+        # left "transcription/captioning" as one token containing a space, so
+        # a question literally asking about transcription matched nothing.
+        direct = [k for k in opportunity_scout.PRIMARY_SOURCES
+                  if any(len(w) > 3 and w in low
+                         for w in re.split(r"[^a-z0-9]+", k))]
+        for key in direct[:2]:
+            url = opportunity_scout.PRIMARY_SOURCES[key]
+            body, _paywalled = cirrus_daily.fetch_article_content(url)
+            if body:
+                out.append({"url": url, "text": body[:6000], "paywalled": False})
+                print(f"    primary source [{key}] opened directly: {url}")
+    except Exception as e:
+        print(f"    primary-source step skipped ({type(e).__name__}: {e})")
+
     try:
         urls = cirrus_daily.search_web(subq, max_results=MAX_RESULTS) or []
     except Exception as e:
