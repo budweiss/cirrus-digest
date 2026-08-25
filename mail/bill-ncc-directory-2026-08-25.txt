@@ -1,0 +1,42 @@
+Hi Bill,
+
+Here is the New Castle County workbook you asked for, attached.
+
+What's in it: every community association in New Castle County's own public
+Community Association Directory, matched against the lead database we keep for
+you, and sorted the way you wanted it -- the self-managed ones with an email
+address are at the top.
+
+  Tier 1  self-managed, board email on file ....... 79   <- start here
+  Tier 2  self-managed, no email yet .............. 99
+  Tier 3  already professionally managed .......... 45   (competitors, not prospects)
+  Total .......................................... 223
+
+There is a separate tab with just the 79 Tier 1 associations, so you can work
+straight down that list without filtering anything.
+
+Two things you should know, because they affect what you can do with it.
+
+First, the county directory lists 224 associations and this workbook has 223.
+The missing one is a New Castle association called Hunters Ridge. There is a
+community with the same name in Kent County that is already one of your warm
+leads, and the two briefly got merged in our records. We separated them again,
+so your Kent record is correct and carries its own board president. The New
+Castle Hunters Ridge does not have its own record yet -- we will build it.
+
+Second, you asked us to cross-reference this against the new-development leads
+we email you each week. We did, and there is no overlap -- but the reason is
+worth knowing. That development feed is built from Kent and Sussex county
+planning records. It has no New Castle rows in it at all, so there is nothing
+for these 223 associations to line up against. Extending that feed to cover New
+Castle is a separate piece of work. Say the word and we will scope it for you.
+
+On accuracy: the officer names, emails and phone numbers come from the county's
+own public directory, which the county publishes without any warranty. Parcel
+counts, streets and ZIPs come from the New Castle County parcel layer. Where a
+field is blank, we do not have it -- we have not guessed at anything.
+
+Let us know how you want to work the Tier 1 list and we can help with the
+outreach.
+
+-- CUMULUS (Buddy's assistant)
