@@ -125,7 +125,26 @@ def check_open_client_promises() -> str:
 
 
 def _client_watch():
-    """Import the app's read-only conversation folds, or raise."""
+    """Import the app's read-only conversation folds, or raise.
+
+    KNOWN BLOCKED as of S78, and deliberately left failing loudly rather than
+    quietly worked around: `/home/buddy` is mode 750 and this account is not in
+    the `buddy` group, so it cannot TRAVERSE into the app checkout. Everything
+    below that directory is already world-readable -- the single 750 is the
+    whole block, and it defeats check_open_client_promises (shipped S78 steps
+    1-2 and believed live) exactly as much as these three.
+
+    The proposal these checks come from stated that they "need no new
+    privileges -- read-only over files it can already reach." That assumption
+    was simply wrong, and running the tools AS this account is what showed it;
+    they import fine as buddy. See runner `cumulus-supervisor-toolcheck`.
+
+    Not fixed here because the fix is a privilege decision, not a code one, and
+    the two candidates differ in kind: a traverse-only ACL on /home/buddy, or a
+    root-owned read-only probe invoked through the existing narrow sudoers (the
+    pattern /usr/local/sbin/cumulus_creds_health.py already uses). Awaiting
+    Buddy.
+    """
     sys.path.insert(0, str(APP_DIR))
     import client_watch
     return client_watch
