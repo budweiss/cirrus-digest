@@ -123,22 +123,71 @@ def past_failures(db_path: str = None) -> str:
         "liability -- if any of those hold, propose something else entirely."
     )
 
+# The failure memory above blocks a repeated IDEA. It never blocked a repeated
+# SHAPE -- so 41 of the first 43 proposals were "watch a public data source and
+# sell alerts", each with a different subject and therefore never flagged as a
+# duplicate. This counts the shape and puts the number in front of the model.
+_MONITOR_RX = re.compile(
+    r"\b(watch|watchdog|monitor|tracker|alert|feed|digest|radar|ledger|wire|"
+    r"index|scanner|briefing|bulletin|early.warning)\b", re.IGNORECASE)
+
+
+def shape_census(db_path: str = None) -> str:
+    try:
+        ents = entity_kb.list_entities(KB_PROJECT, db_path=db_path)
+    except Exception:
+        return ""
+    if not ents:
+        return ""
+    monitoring = [e for e in ents if _MONITOR_RX.search(e["name"] or "")]
+    if not monitoring:
+        return ""
+    pct = round(100 * len(monitoring) / len(ents))
+    return (
+        f"SHAPE SATURATION WARNING: {len(monitoring)} of {len(ents)} ideas this "
+        f"pipeline has EVER produced ({pct}%) are the same business shape -- "
+        f"monitor a public data source, emit alerts/digests/a tracker to "
+        f"subscribers. Buddy has rejected that shape wholesale. Changing the "
+        f"data source does NOT make it a different business. Do not propose it "
+        f"again in any subject area. If your idea's name would naturally contain "
+        f"Watch, Monitor, Tracker, Alert, Feed, Digest, Radar, Ledger, Index or "
+        f"Briefing, it is the wrong shape -- propose something else entirely.\n\n"
+        f"Shapes we have NONE of, for contrast: a product someone OWNS after "
+        f"buying, an audience business with sponsors, a marketplace, a tool that "
+        f"does a job on the customer's own material, a service sold to consumers "
+        f"rather than companies."
+    )
+
+
 _IDEAS_PER_LENS = 4
 
 
-def _gen_prompt(lens: dict, lessons: str = "") -> str:
+def _gen_prompt(lens: dict, lessons: str = "", census: str = "") -> str:
     return (
         f"{MISSION}\n\n{CAPABILITIES}\n\n"
+        + (f"{census}\n\n" if census else "")
         + (f"{lessons}\n\n" if lessons else "") +
         f"LENS FOR THIS REQUEST: {lens['focus']}\n\n"
         f"Propose exactly {_IDEAS_PER_LENS} specific businesses fitting this lens. "
         f"Be concrete: name a real niche, a real customer, a real revenue mechanism. "
-        f"'An AI newsletter' is useless; 'a daily automated briefing on FDA device "
-        f"recalls sold to medical-device compliance teams' is useful.\n\n"
+        f"'An AI newsletter' is useless.\n\n"
+        # The example here used to be 'a daily automated briefing on FDA device
+        # recalls sold to medical-device compliance teams'. The pipeline then
+        # generated 'FDA Medical Device Recall Daily' -- and 40 more of the same
+        # shape. A worked example is not an illustration, it is an instruction.
+        # It is now deliberately a shape we have NONE of (2026-08-25).
+        f"Good shape: 'a paid archive of hard-to-find sewing patterns for "
+        f"vintage sizes, redrafted to modern measurements, sold per-pattern to "
+        f"home sewers' -- a specific buyer, a thing they own afterwards, and no "
+        f"dependence on watching anyone else's behaviour.\n\n"
         f"Respond as JSON only, no prose, no markdown fences:\n"
         f'{{"ideas": [{{"name": "<short distinctive name, 3-8 words>", '
         f'"what": "<what it does and for whom, 1-2 sentences>", '
         f'"who_pays": "<who the paying customer is and roughly what they would pay>", '
+        f'"demand_evidence": "<WHO ALREADY PAYS FOR SOMETHING LIKE THIS TODAY -- '
+        f'name a competitor with customers, a paid product, a marketplace with '
+        f'sales, or a creator publishing income. If you cannot name one, say '
+        f'NONE and expect to be rejected>", '
         f'"autonomous_loop": "<what the scheduled software actually does each day, '
         f'end to end, with no human in the loop>", '
         f'"needs_building": "<what does not exist yet and would have to be built>", '
@@ -226,7 +275,7 @@ def _idea_as_text(idea: dict) -> str:
             f"Why now: {idea.get('why_now', '')}")
 
 
-def generate(lens: dict, creds: dict, lessons: str = "") -> list:
+def generate(lens: dict, creds: dict, lessons: str = "", census: str = "") -> list:
     """Council-generate candidate ideas for one lens. Returns [] on any
     failure -- one dead lens must not abort the whole run."""
     try:
@@ -235,7 +284,7 @@ def generate(lens: dict, creds: dict, lessons: str = "") -> list:
         # _IDEAS_PER_LENS ideas with six fields each, and 3000 truncated it
         # mid-array live (S66). The salvage parser covers the rest.
         _meta, text = ensemble.best_answer(
-            _GEN_SYSTEM, _gen_prompt(lens, lessons), creds, max_tokens=8000,
+            _GEN_SYSTEM, _gen_prompt(lens, lessons, census), creds, max_tokens=8000,
             task="business-idea-ideate", mode="council")
         return _parse_ideas(text)
     except Exception as e:
@@ -271,12 +320,15 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
     result = {"generated": 0, "admitted": [], "corroborated": [], "rejected": []}
 
     lessons = past_failures(db_path=db_path)
+    census = shape_census(db_path=db_path)
+    if census:
+        print(f"  {census.splitlines()[0]}")
     if lessons:
         print(f"[memory] feeding back {lessons.count(chr(10) + '- ')} past failure(s)")
 
     for lens in lenses:
         print(f"[lens] {lens['key']}...")
-        ideas = generate(lens, creds, lessons)
+        ideas = generate(lens, creds, lessons, census)
         result["generated"] += len(ideas)
         for idea in ideas:
             name = (idea.get("name") or "").strip()
@@ -423,6 +475,24 @@ def selftest() -> bool:
                        "incumbent already owns this" in lessons))
         checks.append(("a surviving candidate is NOT fed back as a failure",
                        "Live Idea" not in lessons))
+        # S77: the shape census. The failure memory above blocks a repeated
+        # IDEA; this is what blocks a repeated SHAPE.
+        entity_kb.upsert_entity(KB_PROJECT, "fda-recall-daily",
+                                "FDA Medical Device Recall Daily",
+                                db_path=_db, lead_state="rejected")
+        entity_kb.upsert_entity(KB_PROJECT, "trademark-watch",
+                                "USPTO Trademark Squatter Watch",
+                                db_path=_db, lead_state="rejected")
+        cen = shape_census(db_path=_db)
+        checks.append(("monitoring-shaped names are counted", "SHAPE SATURATION" in cen))
+        checks.append(("the census names the banned words", "Tracker" in cen))
+        checks.append(("the census reaches the generation prompt",
+                       "SHAPE SATURATION" in _gen_prompt(LENSES[0], "", cen)))
+        checks.append(("demand evidence is a required output field",
+                       "demand_evidence" in _gen_prompt(LENSES[0])))
+        checks.append(("the worked example is no longer a monitoring product",
+                       "FDA device" not in _gen_prompt(LENSES[0])))
+
         checks.append(("lessons reach the generation prompt",
                        "Dead Idea" in _gen_prompt(LENSES[0], lessons)))
     finally:

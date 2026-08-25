@@ -138,6 +138,22 @@ merely assist with. Score how good a candidate THIS article/case-study is as a
 blueprint for such a business.
 
 Score HIGH when all of these hold:
+0. SOMEONE WILL PAY -- THE FIRST TEST, ABOVE ALL OTHERS. Buddy, 2026-08-25:
+   "We need an idea first that will sell." Name WHO the buyer is, what they
+   currently do instead, and what evidence exists that this buyer already
+   spends money on this problem -- an operating competitor with customers, a
+   paid product in the space, a marketplace with sales, a creator publishing
+   income. "A business would find this useful" is NOT demand. If you cannot
+   name a buyer and point at money already changing hands for something like
+   it, score LOW no matter how elegant the automation is.
+
+   *Why this outranks everything: through 2026-08-25 this criterion did not
+   exist and criterion 2 below was marked "the single most important". 41 of
+   the first 43 generated ideas were the same shape -- monitor a public feed,
+   sell alerts -- because that shape maximises automatability. Buddy rejected
+   the entire set. Optimising for what a machine can run, without asking who
+   buys, reliably produces unsellable products.*
+
 1. CONCRETE: a specific product, service or workflow described in enough
    detail to act on -- either an actually-operating business, OR a buildable
    blueprint (a build-guide, walkthrough, or clearly-described unmet need).
@@ -154,8 +170,9 @@ Score HIGH when all of these hold:
    behind it.
 2. MACHINE-OPERABLE: the day-to-day work could be performed by scheduled,
    autonomous software (research, generation, publishing, outreach,
-   fulfillment) rather than by Buddy's hands each day. This is the single
-   most important criterion. A business that merely "uses AI tools" while
+   fulfillment) rather than by Buddy's hands each day. Important, but SECOND
+   to demand -- an automatable product nobody buys is worth nothing, while a
+   sellable one that needs some manual work can be automated later. A business that merely "uses AI tools" while
    still requiring daily human labor per unit of output scores LOW.
    Automated media -- YouTube/shorts/podcast/audio/video pipelines that
    generate and publish on a schedule -- is explicitly IN SCOPE and of high
@@ -170,6 +187,19 @@ Score HIGH when all of these hold:
    is NOT a limiting factor and should not lower a score.
 
 Score LOW / reject:
+- ★ POLICING OTHER PEOPLE'S CONDUCT. Buddy, 2026-08-25: "most of these have me
+  reporting back to some companies of things that are being misused. like a
+  snitch. I am not looking to get into this." Reject anything whose product is
+  detecting third-party wrongdoing and telling them or an authority about it:
+  compliance/violation monitoring, infringement or squatter watching, recall
+  and enforcement trackers, "we found a problem with your company" outreach,
+  bounty or whistleblower models. This is a hard exclusion, not a scoring
+  penalty.
+- ★ ANOTHER MONITORING FEED. A product whose core is "watch a public data
+  source and emit alerts/digests/a tracker to subscribers" is now SATURATED IN
+  THIS PIPELINE'S OWN OUTPUT -- 41 of the first 43 ideas were this. Score LOW
+  unless it is clearly distinct in KIND, not merely in subject matter. Changing
+  the data source does not make it a different business.
 - Anything in property management, HOAs, real estate, snow removal, or
   seasonal home services. Buddy already operates in these sectors and
   explicitly wants this venture to be UNRELATED to them.
@@ -206,7 +236,15 @@ CAPABILITIES = """CAPABILITIES ALREADY BUILT AND RUNNING (as of 2026-08):
   and an audit ledger -- it monitors and repairs the other pipelines.
 - Full CI/CD: git-based deploy to both machines, rollback, secret encryption.
 
-NOT YET BUILT (possible, but count as real build work in your assessment):
+BUDGET (Buddy, 2026-08-25): "we can spend money on APIs, and if we get a hit or
+something is working, we can bring this in-house to streamline the cost." So a
+paid API for video, voice, images or payments is an ACCEPTABLE dependency, not a
+mark against an idea. Do not down-score something for needing a service we would
+have to pay for -- running it on our own hardware is a later cost optimisation,
+not a precondition. Judge the idea on whether it SELLS.
+
+NOT YET BUILT (real build work, but see BUDGET above -- a paid API closes most
+of these quickly):
 - Video generation/editing, text-to-speech/voice, image generation.
 - Payment processing, billing, subscriptions.
 - Any public-facing consumer web product or mobile app.
