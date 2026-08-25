@@ -312,6 +312,28 @@ def selftest() -> int:
     return 1 if failures else 0
 
 
+def report() -> int:
+    """Human-readable state of the ledger. Used by the on-box verification and
+    handy for a quick 'what do we owe anyone' from a session."""
+    offered = list_promises(state="open")
+    owed = list_promises(state="confirmed")
+    late = overdue()
+    print(f"ledger: {LEDGER}")
+    print(f"  offered, awaiting the client's answer : {len(offered)}")
+    print(f"  confirmed, we owe them the thing      : {len(owed)}")
+    print(f"  OVERDUE                               : {len(late)}")
+    print(f"  detection escalation                  : {escalation_rate()}")
+    for p in late:
+        print(f"  OVERDUE {p['client']} [{p['state']}, {p['age_hours']}h]: "
+              f"{str(p['promise'])[:100]}")
+    for p in owed:
+        if p not in late:
+            print(f"  owed {p['client']}: {str(p['promise'])[:100]}")
+    return 0
+
+
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "report":
+        sys.exit(report())
     sys.exit(selftest())
