@@ -82,41 +82,39 @@ def check_open_client_promises() -> str:
     and stays there. The right action on a hit is send_telegram, or
     request_guidance if it is unclear what is blocking.
     """
+    # S78 — was a direct `import client_promises` off APP_DIR, which could
+    # never have worked: this account cannot traverse /home/buddy. It shipped in
+    # steps 1-2 reporting "UNREADABLE" on every run, and nobody noticed, because
+    # it was only ever tested as buddy. Goes through the root-owned probe now,
+    # same as the three checks below it. See _client_digest().
     try:
-        sys.path.insert(0, str(APP_DIR))
-        import client_promises
+        d = _client_digest()
+        late = d["promises_overdue"]
+        owed = d["promises_confirmed"]
+        n_open = d["promises_open"]
     except Exception as e:
-        # An import failure must NOT read as "nothing is overdue" (T8). That is
-        # the shape of every silent-clean-check outage this project has paid for.
-        out = (f"UNREADABLE: could not load the promise ledger ({e}). This is "
+        out = (f"UNREADABLE: could not read the promise ledger ({e}). This is "
                f"NOT a clean result -- treat it as a check that did not run.")
         ledger_append({"event": "check", "tool": "check_open_client_promises",
                        "tier_name": "read-only", "detail": "",
                        "result": out[:200]})
         return out
 
-    try:
-        late = client_promises.overdue()
-        owed = client_promises.list_promises(state="confirmed")
-        if not late:
-            n_open = len(client_promises.list_promises(state="open"))
-            out = (f"OK — nothing overdue. {n_open} promise(s) offered and "
-                   f"awaiting the client's answer, {len(owed)} confirmed and "
-                   f"within SLA.")
-        else:
-            lines = [f"{len(late)} client promise(s) OVERDUE:"]
-            for p in late:
-                lines.append(
-                    f"  • {p.get('client')} — \"{str(p.get('promise'))[:110]}\" "
-                    f"[{p.get('state')}, {p.get('age_hours')}h old, "
-                    f"SLA {p.get('sla_hours')}h] on thread "
-                    f"\"{str(p.get('subject'))[:70]}\"")
-            lines.append("You cannot deliver these yourself — client work is "
-                         "not your call. Report them to Buddy.")
-            out = "\n".join(lines)
-    except Exception as e:
-        out = (f"UNREADABLE: the promise ledger failed to fold ({e}). NOT a "
-               f"clean result.")
+    if not late:
+        out = (f"OK — nothing overdue. {n_open} promise(s) offered and "
+               f"awaiting the client's answer, {owed} confirmed and "
+               f"within SLA.")
+    else:
+        lines = [f"{len(late)} client promise(s) OVERDUE:"]
+        for p in late:
+            lines.append(
+                f"  • {p.get('client')} — \"{str(p.get('promise'))[:110]}\" "
+                f"[{p.get('state')}, {p.get('age_hours')}h old, "
+                f"SLA {p.get('sla_hours')}h] on thread "
+                f"\"{str(p.get('subject'))[:70]}\"")
+        lines.append("You cannot deliver these yourself — client work is "
+                     "not your call. Report them to Buddy.")
+        out = "\n".join(lines)
 
     ledger_append({"event": "check", "tool": "check_open_client_promises",
                    "tier_name": "read-only", "detail": "",
@@ -124,30 +122,37 @@ def check_open_client_promises() -> str:
     return out
 
 
-def _client_watch():
-    """Import the app's read-only conversation folds, or raise.
+CLIENT_WATCH_PROBE = "/usr/local/sbin/cumulus_client_watch.py"
 
-    KNOWN BLOCKED as of S78, and deliberately left failing loudly rather than
-    quietly worked around: `/home/buddy` is mode 750 and this account is not in
-    the `buddy` group, so it cannot TRAVERSE into the app checkout. Everything
-    below that directory is already world-readable -- the single 750 is the
-    whole block, and it defeats check_open_client_promises (shipped S78 steps
-    1-2 and believed live) exactly as much as these three.
 
-    The proposal these checks come from stated that they "need no new
-    privileges -- read-only over files it can already reach." That assumption
-    was simply wrong, and running the tools AS this account is what showed it;
-    they import fine as buddy. See runner `cumulus-supervisor-toolcheck`.
+def _client_digest(hours: int = 168) -> dict:
+    """Read the client-conversation digest via the root-owned probe, or raise.
 
-    Not fixed here because the fix is a privilege decision, not a code one, and
-    the two candidates differ in kind: a traverse-only ACL on /home/buddy, or a
-    root-owned read-only probe invoked through the existing narrow sudoers (the
-    pattern /usr/local/sbin/cumulus_creds_health.py already uses). Awaiting
-    Buddy.
+    NOT a direct import, and that is the whole point. This account cannot
+    traverse /home/buddy (mode 750), so importing the app modules fails no
+    matter what the file modes below that directory are -- which is exactly how
+    all four of these checks shipped unable to run while looking installed.
+    The sudoers file has documented that constraint since S63 for credentials;
+    it was simply not applied here.
+
+    The probe is root-owned, mode 755, outside anything this account can write,
+    and returns a fixed JSON digest of counts and labels. Chosen over widening
+    filesystem access: the agent gets an answer, never a filesystem.
     """
-    sys.path.insert(0, str(APP_DIR))
-    import client_watch
-    return client_watch
+    r = _run(["sudo", "-n", "-u", "buddy", CLIENT_WATCH_PROBE, str(int(hours))],
+             timeout=60)
+    body = (r.stdout or "").strip()
+    if not body:
+        raise RuntimeError(
+            f"probe produced no output (rc={r.returncode}): "
+            f"{(r.stderr or '').strip()[:200]}")
+    try:
+        data = json.loads(body)
+    except Exception as e:
+        raise RuntimeError(f"probe output was not JSON ({e}): {body[:200]}")
+    if data.get("error"):
+        raise RuntimeError(data["error"])
+    return data
 
 
 def _unreadable(tool: str, e: Exception) -> str:
@@ -177,8 +182,8 @@ def check_duplicate_client_answers(hours: int = 168) -> str:
     in your NEVER tier.
     """
     try:
-        cw = _client_watch()
-        hits = cw.duplicate_answers(hours=hours)
+        d = _client_digest(hours)
+        hits = d["duplicate_answers"]
     except Exception as e:
         return _unreadable("check_duplicate_client_answers", e)
 
@@ -211,8 +216,7 @@ def check_thread_stalls(hours: int = 48) -> str:
     reply was expected is the one that matters.
     """
     try:
-        cw = _client_watch()
-        stalls = cw.stalled_threads(hours=hours)
+        stalls = _client_digest()["stalled_threads"]
     except Exception as e:
         return _unreadable("check_thread_stalls", e)
 
@@ -250,8 +254,7 @@ def check_high_value_field_overwrites(hours: int = 168) -> str:
     values so a human can decide.
     """
     try:
-        cw = _client_watch()
-        hits = cw.high_value_overwrites(hours=hours)
+        hits = _client_digest(hours)["high_value_overwrites"]
     except Exception as e:
         return _unreadable("check_high_value_field_overwrites", e)
 

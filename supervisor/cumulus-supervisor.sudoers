@@ -31,3 +31,18 @@ cumulus-supervisor ALL=(root) NOPASSWD: SUPERVISOR_RESTART, SUPERVISOR_RESET
 # script is fixed, root-owned, mode 755 — cumulus-supervisor cannot edit it,
 # so this does not grant arbitrary code execution as buddy.
 cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_creds_health.py
+
+# Read-only client-conversation probe (S78). Same shape and same reason as the
+# credential probe above: the four checks that watch client conversations
+# (promises, duplicate answers, thread stalls, field overwrites) all import
+# modules under /home/buddy, which this account cannot traverse. They shipped
+# unable to run, and reported "UNREADABLE" every time.
+#
+# Chosen over widening filesystem access on purpose. This grants ONE fixed,
+# root-owned, non-editable script producing ONE fixed JSON digest -- counts and
+# labels, never a client's prose. It is not a general read of the checkout, and
+# the agent cannot repoint it. Adding cumulus-supervisor to the `buddy` group
+# would have been far worse: cirrus-digest is 775 and its files 664, so that
+# grants WRITE on the app checkout to a read-only agent.
+cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_client_watch.py, \
+    /usr/local/sbin/cumulus_client_watch.py [0-9]*
