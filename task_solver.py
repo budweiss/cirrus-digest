@@ -274,6 +274,32 @@ def strip_quoted_reply(text: str) -> str:
     return (text[:m.start()] if m else (text or "")).strip()
 
 
+# 2026-08-25 (S78) — WHOSE WORDS ARE THESE? The entity search used to be built
+# from `title + body`. On a REPLY the title is OURS echoed back ("Re: <the
+# subject WE chose>"), so every follow-up on a thread kept resolving to the
+# entity the thread STARTED about, whatever the client actually wrote.
+#
+# It cost Bill a real answer. He replied "yes — clean it up and send the whole
+# 224 as a workbook" on a thread subjected "Re: Back Creek — the president,
+# plus every HOA contact in New Castle County", and got the Back Creek recap he
+# already had, two seconds later. His own words matched nothing, which was the
+# correct signal: this is not a question the KB can answer. The subject
+# overrode it.
+#
+# So a subject counts as the client's words only when the client chose it — a
+# fresh email. A reply is searched on its stripped body alone, and a reply that
+# names nothing falls through to the council, where the full body (quotes and
+# all) gives the thread its context.
+_REPLY_SUBJECT_RX = re.compile(r"^\s*(re|fwd?|aw|antw|res)\s*(\[\d+\])?\s*:",
+                               re.IGNORECASE)
+
+
+def is_reply_subject(subject: str) -> bool:
+    """True when this subject line is ours coming back, not the client's own
+    words — the one case where the subject must not seed the entity search."""
+    return bool(_REPLY_SUBJECT_RX.match(subject or ""))
+
+
 def decisive_match(matches: list, question: str) -> dict | None:
     """One hit out of several can still be decisive: the client named it
     verbatim and the rest only share common words. Returns that entity when
@@ -301,7 +327,10 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
     passes creds, so it never triggers live network/LLM calls). `db_path`
     overrides entity_kb's default per-project path -- only ever passed by
     selftest(), never by the live call site."""
-    question = f"{rec.get('title', '')} {strip_quoted_reply(rec.get('body_head', ''))}"
+    title = rec.get("title", "") or ""
+    body_q = strip_quoted_reply(rec.get("body_head", ""))
+    # See is_reply_subject() above: on a reply the subject is ours, not his.
+    question = body_q if is_reply_subject(title) else f"{title} {body_q}".strip()
     kb_projects = {PROJECT_TO_KB[p] for p in rec.get("projects", []) if p in PROJECT_TO_KB}
     for kb_project in kb_projects:
         try:
@@ -731,6 +760,35 @@ def selftest() -> int:
         answer = try_entity_kb_answer(rec_both_named, db_path=db_path)
         check("two names spelled out verbatim still earns the clarifying question",
               answer is not None and "which one you mean" in answer)
+
+        # S78 — the regression that re-sent Bill a recap he already had. The
+        # subject still says "Back Creek" because it is a reply; his own words
+        # are a go-ahead on a BUILD and name no entity at all. The KB must
+        # decline it, not answer the subject line.
+        check("a reply subject is recognised as ours, not the client's words",
+              is_reply_subject("Re: Back Creek - the president")
+              and is_reply_subject("RE: x") and is_reply_subject("Fwd: x"))
+        check("a fresh subject is the client's own words",
+              not is_reply_subject("REQUEST: recap on Back Creek")
+              and not is_reply_subject("Reserve at Back Creek update"))
+
+        rec_go_ahead = {"projects": ["property-management"],
+                        "title": "Re: Back Creek - the president, plus every HOA "
+                                 "contact in New Castle County",
+                        "body_head": ("clean it up and send you the whole 224 as a "
+                                      "workbook, sorted so the self-managed ones with "
+                                      "an email are at the top.")}
+        check("a reply naming no entity is NOT answered from the subject line",
+              try_entity_kb_answer(rec_go_ahead, db_path=db_path) is None)
+
+        # The other half of the same rule: a FRESH email may still be carried by
+        # its subject, because the client wrote that subject himself.
+        rec_subject_carried = {"projects": ["property-management"],
+                               "title": "Back Creek board contact",
+                               "body_head": "Any update on this one?"}
+        answer = try_entity_kb_answer(rec_subject_carried, db_path=db_path)
+        check("a fresh email's subject can still carry the entity",
+              answer is not None and "Dana Reilly" in answer)
 
         # Refresh phrasing WITHOUT creds must never trigger a live search --
         # falls through to the plain on-file recap, same as a non-refresh ask.
