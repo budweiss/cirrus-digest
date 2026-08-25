@@ -14,6 +14,7 @@ Design rules (CUMULUS.md sec 8a, sec 4):
 """
 import json
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,6 +22,9 @@ from pathlib import Path
 from ledger import TIER_AUTO, TIER_NAME, ledger_append
 
 SECRETS_PATH = Path("/opt/cumulus-supervisor/state/secrets.json")
+# The app checkout Skywarden READS from (never writes to). Only used by
+# check_open_client_promises, which imports the promise ledger module.
+APP_DIR = Path("/home/buddy/cirrus-digest")
 
 # Must match /etc/sudoers.d/cumulus-supervisor's Cmnd_Alias lists exactly.
 ALLOWED_UNITS = {
@@ -61,6 +65,61 @@ def check_service_status(unit: str) -> str:
     out = (r.stdout or r.stderr).strip()
     ledger_append({"event": "check", "tool": "check_service_status",
                    "tier_name": "read-only", "detail": unit,
+                   "result": out[:200]})
+    return out
+
+
+def check_open_client_promises() -> str:
+    """What have we told a client we would do, and not done? Read-only.
+
+    S78. Skywarden watches services, and every service was healthy on the day
+    CUMULUS offered Bill a 224-row workbook, took his "yes", and never built it.
+    The machine was fine; the CONVERSATION broke, and nothing was looking at
+    conversations. This is that check.
+
+    It reports, it does not fix. Delivering a client deliverable -- and any
+    client send at all -- is firmly in the NEVER tier of the operating contract
+    and stays there. The right action on a hit is send_telegram, or
+    request_guidance if it is unclear what is blocking.
+    """
+    try:
+        sys.path.insert(0, str(APP_DIR))
+        import client_promises
+    except Exception as e:
+        # An import failure must NOT read as "nothing is overdue" (T8). That is
+        # the shape of every silent-clean-check outage this project has paid for.
+        out = (f"UNREADABLE: could not load the promise ledger ({e}). This is "
+               f"NOT a clean result -- treat it as a check that did not run.")
+        ledger_append({"event": "check", "tool": "check_open_client_promises",
+                       "tier_name": "read-only", "detail": "",
+                       "result": out[:200]})
+        return out
+
+    try:
+        late = client_promises.overdue()
+        owed = client_promises.list_promises(state="confirmed")
+        if not late:
+            n_open = len(client_promises.list_promises(state="open"))
+            out = (f"OK — nothing overdue. {n_open} promise(s) offered and "
+                   f"awaiting the client's answer, {len(owed)} confirmed and "
+                   f"within SLA.")
+        else:
+            lines = [f"{len(late)} client promise(s) OVERDUE:"]
+            for p in late:
+                lines.append(
+                    f"  • {p.get('client')} — \"{str(p.get('promise'))[:110]}\" "
+                    f"[{p.get('state')}, {p.get('age_hours')}h old, "
+                    f"SLA {p.get('sla_hours')}h] on thread "
+                    f"\"{str(p.get('subject'))[:70]}\"")
+            lines.append("You cannot deliver these yourself — client work is "
+                         "not your call. Report them to Buddy.")
+            out = "\n".join(lines)
+    except Exception as e:
+        out = (f"UNREADABLE: the promise ledger failed to fold ({e}). NOT a "
+               f"clean result.")
+
+    ledger_append({"event": "check", "tool": "check_open_client_promises",
+                   "tier_name": "read-only", "detail": "",
                    "result": out[:200]})
     return out
 

@@ -44,6 +44,7 @@ from datetime import datetime, timedelta
 from email.header import decode_header
 from pathlib import Path
 
+import client_promises
 import dev_loop
 import mailer
 import task_solver
@@ -537,6 +538,40 @@ def bump_count(state: dict, sender_name: str):
 
 # ── Main run ──────────────────────────────────────────────────────────────────
 
+# ── Confirmations (S78) ──────────────────────────────────────────────────────
+# Bill replied "yes -- clean it up and send it" to an offer we had made, and
+# intake had no category for that. request_kind was one of build / research /
+# answer / feedback / resend, and a go-ahead is none of them, so it fell through
+# to 'answer' and the KB dutifully sent him a recap he already had. The work he
+# had just approved was never queued.
+#
+# A confirmation is deliberately narrow, because the cost of the two errors is
+# not symmetric: mistaking a real question for a confirmation would leave a
+# client unanswered, while missing a confirmation only leaves it routed the way
+# it is routed today. So all three must hold:
+#   1. we actually owe this client something on THIS thread, and
+#   2. the client's own words (quotes stripped) ask no question, and
+#   3. the client's own words are not empty.
+# Anything with a question mark keeps its normal routing, even mid-thread.
+
+
+def is_confirmation(name: str, subject: str, body: str) -> list:
+    """Returns the open promises this message confirms ([] if it is not one)."""
+    try:
+        own_words = task_solver.strip_quoted_reply(body or "")
+        if "?" in own_words:
+            return []
+        # Stripping quotes can leave behind the quote punctuation itself. A body
+        # of ">" is a client who wrote nothing, not a client who said yes --
+        # and treating it as a go-ahead would queue work nobody asked for.
+        own_words = own_words.lstrip("> \t").strip()
+        if len(re.sub(r"[^A-Za-z0-9]", "", own_words)) < 2:
+            return []
+        return client_promises.open_for_thread(name, subject or "")
+    except Exception:
+        return []
+
+
 def run(dry_run: bool = False, rescan: bool = False) -> int:
     allowlist = load_allowlist()
     if not allowlist:
@@ -621,6 +656,14 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             cap = task_solver.classify_capability(rec)
             if cap == "resend":
                 rec["kind"] = "resend"
+        # S78: a go-ahead on something we already offered. Checked AFTER the
+        # capability triage (an explicit "resend me X" is more specific) and
+        # BEFORE the research safety net, so a confirmation is never rewritten
+        # into a focus topic.
+        confirms = is_confirmation(entry["name"], subject, body)
+        if confirms and rec["kind"] not in ("feedback", "resend"):
+            rec["kind"] = "confirmation"
+            rec["confirms"] = [p["id"] for p in confirms]
         # Safety net: a sender on a research-only project (e.g. pedagogy)
         # ALWAYS routes as research, even if their request_kind is mis-set to
         # 'build'. Guarantees literacy requests reach the topic queue instead
@@ -662,6 +705,32 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         log(f"  → focus topic queued for '{proj}'")
                     except Exception as e:
                         log(f"  topic append failed (backlog still recorded): {e}")
+                elif rec["kind"] == "confirmation":
+                    # Answers nothing. The client did not ask a question -- he
+                    # said yes. So mark what he agreed to and QUEUE THE WORK.
+                    for p in confirms:
+                        client_promises.confirm_promise(
+                            p["id"], note=rec["body_head"][:200])
+                        log(f"  → confirmation of promise {p['id']}: "
+                            f"{p['promise'][:80]}")
+                        try:
+                            ticket = dev_loop.ticket_create(
+                                entry["name"], entry["projects"],
+                                f"DELIVER (client confirmed): {p['promise'][:120]}",
+                                f"{entry['name']} confirmed this on the thread "
+                                f"'{p['subject']}'. We promised: {p['promise']}. "
+                                f"His words: {rec['body_head'][:300]}",
+                                origin="client-confirmation",
+                                project_dir=PROJECT_DIR)
+                            rec["ticket_id"] = ticket["id"]
+                            log(f"  → delivery ticket {ticket['id']} queued")
+                        except Exception as e:
+                            # A confirmation that loses its ticket is the exact
+                            # failure this branch exists to prevent, so it is
+                            # loud rather than swallowed.
+                            log(f"  ⚠️ TICKET FAILED for confirmed promise "
+                                f"{p['id']}: {e} — promise stays owed and will "
+                                f"be reported as overdue")
                 elif rec["kind"] == "answer":
                     log("  → answer request — solving live after ack (below)")
                 elif rec["kind"] == "resend":
@@ -845,6 +914,50 @@ def selftest() -> int:
         check("kind default build", al3["b@k.com"]["request_kind"] == "build")
         check("invalid kind falls back to build", al3["x@y.com"]["request_kind"] == "build")
         check("answer kind parsed (S63)", al3["ag2@re.com"]["request_kind"] == "answer")
+
+        # S78 — the confirmation gate. Uses a temp ledger so the box's real one
+        # is never touched by a selftest.
+        import client_promises as _cp
+        _fd, _tmp = tempfile.mkstemp(suffix=".jsonl")
+        os.close(_fd)
+        _lp = Path(_tmp)
+        _real = _cp.LEDGER
+        _cp.LEDGER = _lp
+        try:
+            SUBJ = "Back Creek - the president, plus every HOA contact"
+            check("no promise on file -> a reply is NOT a confirmation",
+                  is_confirmation("bill", "Re: " + SUBJ, "yes go ahead") == [])
+
+            _cp.open_promise("bill", "property-management", SUBJ,
+                             "send the whole 224 as a workbook")
+
+            # THE case: Bill's actual words, on the actual reply subject.
+            check("a go-ahead on a thread we owe IS a confirmation",
+                  len(is_confirmation(
+                      "bill", "Re: " + SUBJ,
+                      "clean it up and send you the whole 224 as a workbook, "
+                      "sorted so the self-managed ones with an email are at the "
+                      "top. > On Aug 25, CUMULUS wrote: > clean it up and send "
+                      "you the whole 224 as a workbook")) == 1)
+
+            check("a QUESTION on the same thread keeps normal routing",
+                  is_confirmation("bill", "Re: " + SUBJ,
+                                  "Can you also add the phone numbers?") == [])
+            check("an empty reply is not a confirmation",
+                  is_confirmation("bill", "Re: " + SUBJ, "   ") == [])
+            check("a reply that is ONLY our quoted text is not a confirmation",
+                  is_confirmation("bill", "Re: " + SUBJ,
+                                  "> On Aug 25, CUMULUS wrote: > send the 224") == [])
+            check("another client's reply on a same-named thread is not",
+                  is_confirmation("aggie", "Re: " + SUBJ, "yes go ahead") == [])
+
+            _cp.close_promise(_cp.list_promises(state="open")[0]["id"], by="test")
+            check("once delivered, the same reply is no longer a confirmation",
+                  is_confirmation("bill", "Re: " + SUBJ, "yes go ahead") == [])
+        finally:
+            _cp.LEDGER = _real
+            if os.path.exists(_tmp):
+                os.unlink(_tmp)
 
     # research ack copy
     rec_r = classify("alyssa", ["pedagogy"], "REQUEST: multisyllabic decoding strategies", "")

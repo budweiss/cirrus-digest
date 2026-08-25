@@ -89,6 +89,15 @@ def _build_mcp_tools():
         return {"content": [{"type": "text",
                               "text": tools.tail_journal(args["unit"], args.get("lines", 40))}]}
 
+    @tool("check_open_client_promises",
+          "Check what we have told a client we would do and not yet delivered "
+          "(read-only). Reports overdue promises; you cannot deliver them "
+          "yourself — client work is never your call. Report to Buddy, or use "
+          "request_guidance if it is unclear what is blocking.", {})
+    async def _check_open_client_promises(args):
+        return {"content": [{"type": "text",
+                              "text": tools.check_open_client_promises()}]}
+
     @tool("check_credentials_health",
           "Verify CUMULUS credentials.json currently parses (read-only, never returns values)", {})
     async def _check_credentials_health(args):
@@ -132,6 +141,7 @@ def _build_mcp_tools():
                               "text": tools.request_guidance(args["issue"], args["question"])}]}
 
     return [_check_service_status, _check_timers, _tail_journal,
+            _check_open_client_promises,
             _check_credentials_health, _check_cirrus_timemachine,
             _restart_service, _reset_failed, _send_telegram,
             _request_opus_upgrade, _request_guidance]
