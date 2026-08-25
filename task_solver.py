@@ -957,4 +957,21 @@ def selftest() -> int:
 
 if __name__ == "__main__":
     import sys
+    # `detect` — LIVE probe of the promise detector against a piece of text, so
+    # what the classifier decides can be reviewed directly instead of inferred
+    # from whether a promise later appeared. Same reasoning as S77's
+    # cumulus-entity-recap. Reads creds; makes a model call; writes nothing.
+    if len(sys.argv) > 2 and sys.argv[1] == "detect":
+        import base64
+        creds_path = PROJECT_DIR / "config/credentials.json"
+        if not creds_path.exists():
+            creds_path = Path(__file__).parent / "config/credentials.json"
+        creds = json.loads(creds_path.read_text())
+        text = base64.b64decode(sys.argv[2]).decode()
+        print("local provider enabled:", bool(creds.get("ollama_url")),
+              "| model:", creds.get("ollama_model"))
+        print("prefilter hit:", bool(_PROMISE_HINT_RX.search(text)))
+        out = detect_promise(text, creds)
+        print("verdict:", json.dumps(out) if out else "no promise")
+        sys.exit(0)
     sys.exit(selftest())
