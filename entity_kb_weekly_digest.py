@@ -37,6 +37,10 @@ WEEKLY_DIGEST_RECIPIENTS = {
         # findings were unfindable. Two of those 32 were about a New York
         # village and a Maryland town that share a name with a Delaware HOA.
         "opportunities_only": True,
+        # S77 (Buddy, 2026-08-25): attach the New Castle County association
+        # contact workbook to Bill's Monday email. Rebuilt from the county
+        # directory at send time, so he never gets a stale copy.
+        "attach_workbook": "nccde",
     },
     # S66: Buddy's own new-project shortlist (business_idea_scan.py), not a
     # client -- "to" is Buddy himself, so CC_ADDR below just double-lists him
@@ -336,13 +340,13 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
 
 
 def _send_mail(from_email: str, password: str, to_addr: str, cc_addr: str,
-               subject: str, body: str) -> bool:
+               subject: str, body: str, attachments=None) -> bool:
     """Thin shim over mailer.send, kept so the call sites below read unchanged.
     The old body ended in a bare `except: return False` -- a client email that
     never arrived was indistinguishable from one that did. mailer logs it."""
     return mailer.send(from_email, password, to_addr, subject, body,
-                       cc=cc_addr, from_name=False, on_error="false",
-                       log=print)
+                       cc=cc_addr, attachments=attachments, from_name=False,
+                       on_error="false", log=print)
 
 
 def run(client: str, dry_run: bool = False, db_path: str = None,
@@ -367,6 +371,16 @@ def run(client: str, dry_run: bool = False, db_path: str = None,
     subject = f"{cadence} {cfg['label']} update — {datetime.now():%Y-%m-%d}"
     if dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")
+        if cfg.get("attach_workbook") == "nccde":
+            try:
+                import nccde_directory
+                import os
+                path = str(PROJECT_DIR / "out" / "DRYRUN-NCC-HOA-Contacts.xlsx")
+                nccde_directory.build_workbook(path)
+                print(f"\n[dry-run] WOULD ATTACH: {os.path.basename(path)} "
+                      f"({os.path.getsize(path)} bytes)")
+            except Exception as e:
+                print(f"\n[dry-run] workbook build FAILED: {e}")
         return {"sent": False, "reason": "dry-run"}
 
     try:
@@ -374,9 +388,25 @@ def run(client: str, dry_run: bool = False, db_path: str = None,
     except Exception as e:
         return {"sent": False, "reason": f"no creds: {e}"}
 
+    # Attachment is built FRESH at send time, not read from a cached file, so a
+    # stale workbook can never go to a client. If the county site is down we
+    # send the digest WITHOUT it and say so in the result -- a missing
+    # attachment must not cost Bill his whole Monday email.
+    attachments, attach_note = None, ""
+    if cfg.get("attach_workbook") == "nccde":
+        try:
+            import nccde_directory
+            path = str(PROJECT_DIR / "out" /
+                       f"NCC-HOA-Contacts-{datetime.now():%Y-%m-%d}.xlsx")
+            attachments = [nccde_directory.build_workbook(path)]
+        except Exception as e:
+            attach_note = f"workbook build FAILED: {type(e).__name__}: {e}"
+            print(f"[warn] {attach_note} — sending digest without it")
+
     ok = _send_mail(creds.get("outlook_email", ""), creds.get("outlook_password", ""),
-                    cfg["to"], CC_ADDR, subject, body)
-    return {"sent": ok, "reason": "" if ok else "send failed"}
+                    cfg["to"], CC_ADDR, subject, body, attachments=attachments)
+    return {"sent": ok, "reason": ("" if ok else "send failed"),
+            "attached": bool(attachments), "attach_note": attach_note}
 
 
 def selftest() -> bool:
