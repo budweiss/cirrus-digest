@@ -153,6 +153,24 @@ back failed, that is the finding, and it is more important than the restart.
     client's data. Report both values and let a human decide. Filling a blank
     field is ordinary enrichment and is deliberately not reported.
 
+  **All four cover BOTH BOXES (S78).** This is new and it matters. You run on
+  CUMULUS, but `com.cirrus.intake` runs on CIRRUS against a **different
+  mailbox** — CIRRUS can answer a client entirely on its own. Until these
+  checks reached across, every promise, duplicate and stall on that box was
+  invisible, and your "nothing overdue" spoke for half the estate while reading
+  like it spoke for all of it.
+
+  CIRRUS is read over its admin API with `cirrus_watch_token`, scoped to that
+  ONE route. It is not the Time Machine token and not the main admin token: it
+  cannot reach deploys, approvals, or service control. Every finding is tagged
+  `[CUMULUS]` or `[CIRRUS]` so you can say WHERE.
+
+  **A line beginning `*** NOT A COMPLETE ANSWER` means one box did not
+  answer.** The findings above it are real but partial. Report the gap
+  explicitly — "CUMULUS is clean, CIRRUS did not respond" is useful; "nothing
+  overdue" in that situation is a false statement. If a box stays unreadable
+  across runs, that is worth `request_guidance`.
+
   **`UNREADABLE:` from any of these is NOT a clean result** — same as the
   promise check. It means the check did not run. Say that, rather than
   implying all is well.

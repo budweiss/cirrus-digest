@@ -82,39 +82,36 @@ def check_open_client_promises() -> str:
     and stays there. The right action on a hit is send_telegram, or
     request_guidance if it is unclear what is blocking.
     """
-    # S78 — was a direct `import client_promises` off APP_DIR, which could
-    # never have worked: this account cannot traverse /home/buddy. It shipped in
-    # steps 1-2 reporting "UNREADABLE" on every run, and nobody noticed, because
-    # it was only ever tested as buddy. Goes through the root-owned probe now,
-    # same as the three checks below it. See _client_digest().
-    try:
-        d = _client_digest()
-        late = d["promises_overdue"]
-        owed = d["promises_confirmed"]
-        n_open = d["promises_open"]
-    except Exception as e:
-        out = (f"UNREADABLE: could not read the promise ledger ({e}). This is "
-               f"NOT a clean result -- treat it as a check that did not run.")
-        ledger_append({"event": "check", "tool": "check_open_client_promises",
-                       "tier_name": "read-only", "detail": "",
-                       "result": out[:200]})
-        return out
+    # S78 — two things were wrong here and both are fixed. It used to `import
+    # client_promises` off APP_DIR, which could never work (this account cannot
+    # traverse /home/buddy), so it shipped reporting UNREADABLE on every run.
+    # And it only ever looked at CUMULUS, while CIRRUS answers a different
+    # mailbox of its own. Both boxes now, through their scoped read paths.
+    late, notes = _both_boxes(48, "promises_overdue")
+    counts = []
+    for box, fn in (("CUMULUS", _client_digest), ("CIRRUS", _cirrus_digest)):
+        try:
+            d = fn()
+            counts.append(f"{box}: {d.get('promises_open', 0)} offered, "
+                          f"{d.get('promises_confirmed', 0)} confirmed")
+        except Exception:
+            pass          # already reported by _both_boxes as a note
 
     if not late:
-        out = (f"OK — nothing overdue. {n_open} promise(s) offered and "
-               f"awaiting the client's answer, {owed} confirmed and "
-               f"within SLA.")
+        out = "OK — nothing overdue. " + "; ".join(counts)
     else:
         lines = [f"{len(late)} client promise(s) OVERDUE:"]
-        for p in late:
+        for pr in late:
             lines.append(
-                f"  • {p.get('client')} — \"{str(p.get('promise'))[:110]}\" "
-                f"[{p.get('state')}, {p.get('age_hours')}h old, "
-                f"SLA {p.get('sla_hours')}h] on thread "
-                f"\"{str(p.get('subject'))[:70]}\"")
+                f"  • [{pr.get('_box')}] {pr.get('client')} — "
+                f"\"{str(pr.get('promise'))[:110]}\" "
+                f"[{pr.get('state')}, {pr.get('age_hours')}h old, "
+                f"SLA {pr.get('sla_hours')}h] on thread "
+                f"\"{str(pr.get('subject'))[:70]}\"")
         lines.append("You cannot deliver these yourself — client work is "
                      "not your call. Report them to Buddy.")
         out = "\n".join(lines)
+    out = _verdict(out, late, notes, out)
 
     ledger_append({"event": "check", "tool": "check_open_client_promises",
                    "tier_name": "read-only", "detail": "",
@@ -155,6 +152,65 @@ def _client_digest(hours: int = 168) -> dict:
     return data
 
 
+CIRRUS_WATCH_URL = "https://cirrus.cirrustask.com/admin/client-watch"
+
+
+def _cirrus_digest(hours: int = 168) -> dict:
+    """The same digest, from CIRRUS. Raises if it cannot be read.
+
+    S78. Every client-conversation check below used to answer for CUMULUS only,
+    while com.cirrus.intake runs LIVE on CIRRUS against a DIFFERENT mailbox --
+    so CIRRUS can answer a client entirely on its own and nothing was watching
+    it. A check that silently covers one box of two is the same failure this
+    project keeps paying for: a guard on one path and not its twin, which reads
+    as covered.
+
+    Uses `cirrus_watch_token`, scoped to this ONE route -- not the Time Machine
+    token and not the main admin token. It cannot reach deploys or approvals.
+    """
+    import urllib.error
+    import urllib.request
+
+    token = _load_secrets()["cirrus_watch_token"]
+    # Explicit User-Agent: Cloudflare in front of cirrus.cirrustask.com blocks
+    # urllib's default, same as check_cirrus_timemachine already handles.
+    req = urllib.request.Request(
+        f"{CIRRUS_WATCH_URL}?hours={int(hours)}",
+        headers={"User-Agent": "CUMULUS-supervisor/1.0", "X-API-Token": token})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode())
+    if data.get("error"):
+        raise RuntimeError(f"CIRRUS reported: {data['error']}")
+    return data
+
+
+def _both_boxes(hours: int, key: str):
+    """(rows, notes) for one check across BOTH boxes, each row tagged.
+
+    A box that cannot be read contributes a NOTE, never silence. If CIRRUS is
+    unreachable the check says so in its own output rather than returning a
+    confident CUMULUS-only "OK" -- the caller must be able to tell "both boxes
+    are clean" from "one box is clean and the other did not answer".
+    """
+    rows, notes = [], []
+    for box, fn in (("CUMULUS", _client_digest), ("CIRRUS", _cirrus_digest)):
+        try:
+            for r in (fn(hours).get(key) or []):
+                rows.append({**r, "_box": box})
+        except Exception as e:
+            notes.append(f"{box} UNREADABLE ({type(e).__name__}: {e})")
+    return rows, notes
+
+
+def _verdict(label: str, rows: list, notes: list, clean: str) -> str:
+    """Shared shape: findings first, then any box that could not be read."""
+    out = clean if not rows else label
+    if notes:
+        out += ("\n*** NOT A COMPLETE ANSWER — " + "; ".join(notes)
+                + ". Treat these boxes as unchecked, not clean.")
+    return out
+
+
 def _unreadable(tool: str, e: Exception) -> str:
     """One phrasing for "this check did not run", used by all three folds.
 
@@ -181,23 +237,19 @@ def check_duplicate_client_answers(hours: int = 168) -> str:
     Reports only. Re-answering a client is a client send, and client sends are
     in your NEVER tier.
     """
-    try:
-        d = _client_digest(hours)
-        hits = d["duplicate_answers"]
-    except Exception as e:
-        return _unreadable("check_duplicate_client_answers", e)
-
+    hits, notes = _both_boxes(hours, "duplicate_answers")
     if not hits:
-        out = f"OK — no repeated answers on any client thread in the last {hours}h."
+        out = f"OK — no repeated answers on any client thread (both boxes, {hours}h)."
     else:
         lines = [f"{len(hits)} repeated client answer(s):"]
         for h in hits:
             lines.append(
-                f"  • {h['requester']} — {h['count']}x {h['kind']} on "
-                f"\"{str(h.get('title') or h['thread'])[:70]}\" "
+                f"  • [{h.get('_box')}] {h['requester']} — {h['count']}x "
+                f"{h['kind']} on \"{str(h.get('title') or h['thread'])[:70]}\" "
                 f"({h['gap_hours']}h apart, last {h['last']})")
         lines.append("Do NOT re-answer or correct this yourself — report it.")
         out = "\n".join(lines)
+    out = _verdict(out, hits, notes, out)
 
     ledger_append({"event": "check", "tool": "check_duplicate_client_answers",
                    "tier_name": "read-only", "detail": f"{hours}h",
@@ -215,25 +267,24 @@ def check_thread_stalls(hours: int = 48) -> str:
     SUPPOSED to become queued work rather than an instant reply. A hit where a
     reply was expected is the one that matters.
     """
-    try:
-        stalls = _client_digest()["stalled_threads"]
-    except Exception as e:
-        return _unreadable("check_thread_stalls", e)
-
+    stalls, notes = _both_boxes(hours, "stalled_threads")
     if not stalls:
-        out = f"OK — no client message older than {hours}h is still unanswered."
+        out = (f"OK — no client message older than {hours}h is still "
+               f"unanswered, on either box.")
     else:
-        waiting = [s for s in stalls if s["expected_reply"]]
+        waiting = [x for x in stalls if x["expected_reply"]]
         lines = [f"{len(stalls)} client thread(s) with no substantive reply "
                  f"({len(waiting)} where a reply was expected):"]
-        for s in stalls:
-            flag = "REPLY EXPECTED" if s["expected_reply"] else f"queued as {s['kind']}"
+        for x in stalls:
+            flag = "REPLY EXPECTED" if x["expected_reply"] else f"queued as {x['kind']}"
             lines.append(
-                f"  • {s['requester']} — \"{str(s.get('title') or s['thread'])[:70]}\" "
-                f"[{s['age_hours']}h, {flag}]")
+                f"  • [{x.get('_box')}] {x['requester']} — "
+                f"\"{str(x.get('title') or x['thread'])[:70]}\" "
+                f"[{x['age_hours']}h, {flag}]")
         lines.append("You cannot answer a client. Report it; use "
                      "request_guidance if you cannot tell what is blocking.")
         out = "\n".join(lines)
+    out = _verdict(out, stalls, notes, out)
 
     ledger_append({"event": "check", "tool": "check_thread_stalls",
                    "tier_name": "read-only", "detail": f"{hours}h",
@@ -253,23 +304,21 @@ def check_high_value_field_overwrites(hours: int = 168) -> str:
     about client data, and that is not yours to make -- report the old and new
     values so a human can decide.
     """
-    try:
-        hits = _client_digest(hours)["high_value_overwrites"]
-    except Exception as e:
-        return _unreadable("check_high_value_field_overwrites", e)
-
+    hits, notes = _both_boxes(hours, "high_value_overwrites")
     if not hits:
         out = (f"OK — no researched field on a warm-or-better lead was "
-               f"overwritten in the last {hours}h.")
+               f"overwritten on either box in the last {hours}h.")
     else:
         lines = [f"{len(hits)} overwrite(s) of a researched field on a "
                  f"warm-or-better lead:"]
         for h in hits:
-            lines.append(f"  • {h['name']} [{h['lead_state']}] {h['field']}: "
-                         f"\"{h['old']}\" -> \"{h['new']}\" ({h['occurred_at']})")
+            lines.append(f"  • [{h.get('_box')}] {h['name']} [{h['lead_state']}] "
+                         f"{h['field']}: \"{h['old']}\" -> \"{h['new']}\" "
+                         f"({h['occurred_at']})")
         lines.append("Report only. Do NOT revert — which value is right is a "
                      "judgment call about client data, not your call.")
         out = "\n".join(lines)
+    out = _verdict(out, hits, notes, out)
 
     ledger_append({"event": "check", "tool": "check_high_value_field_overwrites",
                    "tier_name": "read-only", "detail": f"{hours}h",
