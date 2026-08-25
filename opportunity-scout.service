@@ -1,0 +1,16 @@
+[Unit]
+Description=Opportunity scout (S77) — nightly divergent multi-LLM business-idea brainstorm
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/opportunity_scout.py
+
+[Install]
+WantedBy=multi-user.target

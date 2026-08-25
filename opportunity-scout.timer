@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the opportunity scout nightly
+
+# 02:00 — inside the preferred 02:00-06:00 window (docs/RUNTIME-WINDOWS.md),
+# a clear hour before cirrus-hoaleads at 03:00, and long before the 07:30
+# morning brief so the night's thinking is there to read at breakfast.
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
