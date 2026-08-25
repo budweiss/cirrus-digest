@@ -211,6 +211,52 @@ def _norm(s: str) -> str:
 
 
 DIRECTORY_SOURCE = "nccde_association_directory"
+NCC = "New Castle"
+
+
+def _county_ok(entity: dict) -> bool:
+    """Can a NEW CASTLE directory row bind to this entity at all?
+
+    The one rule that matters in this file, and it now lives in ONE place.
+    S78 added it to enrich()'s update path after New Castle's "Hunters Ridge"
+    overwrote the researched president of KENT's "Hunters Ridge" -- a warm,
+    tier-A lead. It was NOT added to the two name-only sets below, and that
+    half-fix cost the client a row: the same directory row was refused an
+    update (right) and then counted as "already present" by import_new (wrong),
+    while enrich's closing "rows with no entity here" line -- the one that
+    exists to say what was NOT covered -- reported 0.
+
+    A row may be rejected as the wrong county, or counted as already covered.
+    It must never be both. An entity with no county on file is still eligible;
+    only a KNOWN other county disqualifies.
+    """
+    c = str((entity.get("state") or {}).get("county", "")).strip()
+    return not c or _norm(c) == _norm(NCC)
+
+
+def _bindable_names(entities: list) -> set:
+    """Normalised names a New Castle directory row may legitimately match."""
+    return {_norm(e["name"]) for e in entities if _county_ok(e)}
+
+
+def _free_slug(name: str, taken: set) -> str:
+    """A slug that is not already somebody else's.
+
+    slugify() is derived from the name alone, so two same-named associations in
+    two counties yield the SAME slug -- and upsert_entity() on a taken slug
+    UPDATES that entity rather than creating one. Importing New Castle's
+    "Hunters Ridge" under the bare slug would therefore have overwritten Kent's,
+    which is precisely the corruption the county guard was added to stop. The
+    guard would have been bypassed by the path meant to honour it.
+    """
+    import entity_kb
+    slug = entity_kb.slugify(name)
+    if slug not in taken:
+        return slug
+    cand, n = slug + "-new-castle", 2
+    while cand in taken:
+        cand, n = f"{slug}-new-castle-{n}", n + 1
+    return cand
 
 
 def import_new(project: str, recs: list, apply: bool) -> dict:
@@ -224,12 +270,20 @@ def import_new(project: str, recs: list, apply: bool) -> dict:
     """
     import entity_kb
 
-    have = {_norm(e["name"]) for e in entity_kb.list_entities(project)}
-    created, skipped = [], 0
+    entities = entity_kb.list_entities(project)
+    # See _county_ok(): a same-named entity in ANOTHER county is not this
+    # association, so it must not make this row look already-covered.
+    have = _bindable_names(entities)
+    taken = {e["slug"] for e in entities}
+    created, skipped, renamed = [], 0, []
     for r in recs:
         if _norm(r["name"]) in have:
             skipped += 1
             continue
+        slug = _free_slug(r["name"], taken)
+        if slug != entity_kb.slugify(r["name"]):
+            renamed.append(f"{r['name']} -> {slug}")
+        taken.add(slug)
         fields = {
             "source": DIRECTORY_SOURCE,
             "county": "New Castle",
@@ -259,7 +313,7 @@ def import_new(project: str, recs: list, apply: bool) -> dict:
         if not apply:
             created.append(r["name"])
             continue
-        entity_kb.upsert_entity(project, entity_kb.slugify(r["name"]), r["name"],
+        entity_kb.upsert_entity(project, slug, r["name"],
                                 entity_type="hoa", fields=fields,
                                 lead_state="new")
         created.append(r["name"])
@@ -270,7 +324,14 @@ def import_new(project: str, recs: list, apply: bool) -> dict:
         print(f"    + {n}")
     if len(created) > 15:
         print(f"    ... and {len(created) - 15} more")
-    return {"created": len(created), "skipped": skipped}
+    # Never silent: a slug that had to be disambiguated means this project now
+    # holds two same-named associations in different counties. Say so.
+    if renamed:
+        print(f"  name already used by another county's entity, "
+              f"imported under a distinct slug: {len(renamed)}")
+        for x in renamed:
+            print(f"    ~ {x}")
+    return {"created": len(created), "skipped": skipped, "renamed": len(renamed)}
 
 
 def enrich(project: str, recs: list, apply: bool) -> int:
@@ -362,13 +423,87 @@ def enrich(project: str, recs: list, apply: bool) -> int:
         print(f"    - {w}")
     # Say what was NOT covered. A directory row we could not place is a lead
     # this project simply does not know about yet.
-    placed = {_norm(e["name"]) for e in entities}
+    # Same rule as import_new: an entity in another county does not "place" a
+    # New Castle row. Using a bare name set here reported 0 uncovered rows while
+    # Hunters Ridge sat uncovered -- a false all-clear on the one line whose
+    # whole job is to say what was missed.
+    placed = _bindable_names(entities)
     orphan = [r["name"] for r in recs if _norm(r["name"]) not in placed]
     print(f"  directory rows with no entity here: {len(orphan)}")
+    for o in orphan[:10]:
+        print(f"    ! {o}")
+    if len(orphan) > 10:
+        print(f"    ... and {len(orphan) - 10} more")
     return 0
 
 
+def selftest() -> int:
+    """Offline unit tests for the county/slug rules.
+
+    S78. These three functions decide whether a client gains a lead, loses one,
+    or has a researched contact overwritten by a stranger in another county, and
+    until now nothing tested them -- the half-fix that dropped Hunters Ridge
+    shipped through a dry run that printed a clean "0". Detection first: an
+    instruction to be careful can be skipped, a check cannot.
+
+    Needs entity_kb only for slugify(), and is LOUD if it cannot import it --
+    a slug test that silently falls back to its own slugifier would be testing
+    the wrong function and passing.
+    """
+    try:
+        import entity_kb
+    except Exception as e:
+        print(f"  FAIL  cannot import entity_kb ({e}) -- run this on the box, "
+              f"where the real slugify() lives")
+        return 1
+
+    bad = 0
+
+    def check(label, ok):
+        nonlocal bad
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}")
+        if not ok:
+            bad += 1
+
+    ncc = {"name": "Back Creek", "slug": "back-creek",
+           "state": {"county": "New Castle"}}
+    kent = {"name": "Hunters Ridge", "slug": "hunters-ridge",
+            "state": {"county": "Kent"}}
+    blank = {"name": "Somewhere", "slug": "somewhere", "state": {}}
+
+    check("a New Castle entity is bindable", _county_ok(ncc))
+    check("a KENT entity is NOT bindable", not _county_ok(kent))
+    check("an entity with no county on file is still bindable", _county_ok(blank))
+    check("an entity with no state dict at all does not crash",
+          _county_ok({"name": "x", "slug": "x"}))
+
+    # The exact row that was lost. Kent's Hunters Ridge must not make the New
+    # Castle directory row look already-covered.
+    names = _bindable_names([ncc, kent, blank])
+    check("a wrong-county name is excluded from the bindable set",
+          _norm("Hunters Ridge") not in names)
+    check("a right-county name is included", _norm("Back Creek") in names)
+    check("an unknown-county name is included", _norm("Somewhere") in names)
+
+    # ... and must not have its slug handed to the importer either.
+    taken = {"hunters-ridge", "back-creek"}
+    check("a free slug is used as-is", _free_slug("Brand New Place", taken)
+          == entity_kb.slugify("Brand New Place"))
+    hr = _free_slug("Hunters Ridge", taken)
+    check("a taken slug is NOT reused (would overwrite the other county)",
+          hr != "hunters-ridge")
+    check("the disambiguated slug names the county", hr == "hunters-ridge-new-castle")
+    check("a second collision keeps counting",
+          _free_slug("Hunters Ridge", taken | {"hunters-ridge-new-castle"})
+          == "hunters-ridge-new-castle-2")
+
+    print("\nALL PASS" if not bad else f"\n{bad} FAILED")
+    return 1 if bad else 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return selftest()
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out")
     ap.add_argument("--workbook", metavar="XLSX",
