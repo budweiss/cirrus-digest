@@ -41,6 +41,34 @@ COUNTIES_NORM = {c.lower().replace("_", " ").strip() for c in COUNTIES}
 # quiet wrong answer is the one worth catching.
 MAX_PLAUSIBLE_NEW = 60
 
+# 2026-08-25 (S78) — GLOBALID IS NOT AN IDENTITY ON EVERY LAYER. The guard above
+# fired on its first real run and caught all 545 layer-4 rows, including the 504
+# that had been seen the week before: the PLUS Project Areas layer is reissued
+# with fresh GLOBALIDs on every republish. So layer 4 would have produced a
+# full-layer false positive EVERY time the source updated, not just once. Bill's
+# 504-lead email was the steady state, not an accident.
+#
+# PLUS_ID is the project's own identifier and survives a republish, so it is the
+# key for that layer. Layers 2 and 3 did not churn (the 2026-08-24 run flagged
+# exactly the 504 layer-4 rows and nothing else), so GLOBALID stands there.
+# The guard remains as a backstop for the next layer that does this.
+IDENTITY_FIELD = {
+    "PLUS (built)": "PLUS_ID",
+    "Dev Application": "GLOBALID",
+    "Building Permit": "GLOBALID",
+}
+
+
+def identity(kind: str, attrs) -> str:
+    """The stable id for one row, or "" if this row cannot be tracked.
+
+    Falls back to GLOBALID rather than to nothing: an untrackable row would be
+    reported as new on every single run, which is the loudest possible way to
+    be wrong at a client.
+    """
+    key = IDENTITY_FIELD.get(kind, "GLOBALID")
+    return str(attrs.get(key) or attrs.get("GLOBALID") or "")
+
 
 def county_ok(attrs) -> bool:
     """Is this row in one of the target counties, however the source spells it?"""
@@ -107,13 +135,13 @@ def main():
     tagged = ([("Dev Application", a) for a in da]
               + [("Building Permit", a) for a in bp]
               + [("PLUS (built)", a) for a in plus])
-    cur_ids = {a.get("GLOBALID") for _, a in tagged if a.get("GLOBALID")}
+    cur_ids = {identity(k, a) for k, a in tagged if identity(k, a)}
     prev = set(json.loads(seen_file.read_text())) if seen_file.exists() else None
     if prev is None:
         new = []
     else:
         new = [dict(kind=k, **a) for k, a in tagged
-               if a.get("GLOBALID") and a["GLOBALID"] not in prev]
+               if identity(k, a) and identity(k, a) not in prev]
 
     # See MAX_PLAUSIBLE_NEW. A genuine week produces a handful of leads; 504 is
     # a source that renumbered itself. Absorb the new ids into the baseline so
@@ -131,7 +159,7 @@ def main():
               f"just re-run and hope.")
         new = []
 
-    seen_file.write_text(json.dumps(sorted(i for i in cur_ids if i)))
+    seen_file.write_text(json.dumps(sorted(str(i) for i in cur_ids if i)))
     (OUT / "plus_new.json").write_text(json.dumps(new, indent=1))
     print(f"NEW since last run: {len(new)}"
           + (" (baseline established)" if prev is None else "")
@@ -173,6 +201,16 @@ def selftest() -> int:
           not county_ok({"COUNTY": "New_Castle_County"}))
     check("a missing county is excluded, not admitted", not county_ok({}))
     check("a None county does not crash", not county_ok({"COUNTY": None}))
+
+    check("a PLUS row is tracked by PLUS_ID, which survives a republish",
+          identity("PLUS (built)", {"PLUS_ID": "2024-01-01", "GLOBALID": "{churns}"})
+          == "2024-01-01")
+    check("a dev application is still tracked by GLOBALID",
+          identity("Dev Application", {"GLOBALID": "{abc}"}) == "{abc}")
+    check("a PLUS row with no PLUS_ID falls back rather than becoming untrackable",
+          identity("PLUS (built)", {"GLOBALID": "{abc}"}) == "{abc}")
+    check("a row with no id at all is reported as untrackable, not as new",
+          identity("PLUS (built)", {}) == "")
 
     check("the reset ceiling is below the 504 that actually shipped",
           MAX_PLAUSIBLE_NEW < 504)
