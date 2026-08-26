@@ -165,6 +165,10 @@ Return ONLY a JSON array, no prose. Each element:
 {"name": "the act or performer name",
  "category": "one of: nostalgia music, classic rock, military / patriotic,
               regional / market, tribute, other music",
+ "style": "the kind of music, from: hip hop / rap, rock, classic rock, country,
+           pop, r&b / soul, gospel, latin, metal, jazz, marching / military,
+           other. Use '' if the sources do not make it clear -- a guessed style
+           gets an act wrongly filtered out of a client's list.",
  "level": "pro" | "college" | "both" | "unknown",
  "clients": "the teams/venues/events it performed for, comma separated",
  "booking_contact": "agency, phone, email or site if stated, else ''",
@@ -260,6 +264,7 @@ def parse_acts(raw: str) -> list | None:
         out.append({
             "name": name[:120],
             "category": str(item.get("category") or "other").strip()[:40],
+            "style": str(item.get("style") or "").strip()[:40],
             "level": str(item.get("level") or "unknown").strip()[:20],
             "clients": str(item.get("clients") or "").strip()[:400],
             "booking_contact": str(item.get("booking_contact") or "").strip()[:200],
@@ -314,6 +319,7 @@ def _fields_for(act: dict, angle: str, model: str, escalated: bool,
         "type": "halftime act",
         "pool": pool,
         "category": act["category"],
+        "style": act.get("style", ""),
         "level": act["level"],
         "clients": act["clients"],
         "booking_contact": act["booking_contact"],
@@ -467,9 +473,9 @@ def selftest() -> int:
     check("a non-list JSON returns None", parse_acts('{"name": "x"}') is None)
     check("an entry with no name is dropped",
           parse_acts('[{"category": "dog show"}, {"name": "Real Act"}]')
-          == [{"name": "Real Act", "category": "other", "level": "unknown",
-               "clients": "", "booking_contact": "", "fee_note": "",
-               "home_base": "", "evidence": ""}])
+          == [{"name": "Real Act", "category": "other", "style": "",
+               "level": "unknown", "clients": "", "booking_contact": "",
+               "fee_note": "", "home_base": "", "evidence": ""}])
 
     # --- rotation covers the whole matrix without a stored cursor -------
     seen = set()
@@ -499,6 +505,14 @@ def selftest() -> int:
           "NEVER invent a contact, a fee" in _MUSIC_SYSTEM)
     check("anthem-only appearances are excluded from the music pool",
           "anthem-only" in _MUSIC_SYSTEM)
+    check("the music prompt asks for a style, which the rap rule needs",
+          '"style"' in _MUSIC_SYSTEM)
+    check("the prompt tells the model an EMPTY style is better than a guess",
+          "a guessed style" in _MUSIC_SYSTEM)
+    _st = parse_acts('[{"name":"A","style":"hip hop / rap"}]')
+    check("style survives parsing", _st and _st[0]["style"] == "hip hop / rap")
+    check("a missing style parses as empty, not as a guess",
+          parse_acts('[{"name":"B"}]')[0]["style"] == "")
     check("the variety prompt still excludes touring concerts",
           "concerts by touring musicians" in _EXTRACT_SYSTEM)
     _sample = {"name": "x", "category": "c", "level": "pro", "clients": "",

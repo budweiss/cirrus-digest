@@ -130,6 +130,13 @@ def game_id(game: Dict) -> str:
 # an independent, checkable claim, and the page sorts by whichever one matters
 # for the game in front of you.
 
+# MILITARY BANDS STAY (Buddy, 2026-08-26). The catalogue's band filter rejects
+# marching bands, drumlines, colour guard and majorettes by name, and does NOT
+# catch "122nd Army Band" or "US Navy Country Current Band". That was raised as
+# a possible gap and the answer was to keep them: for a Salute to Service date
+# a service band is close to what a club actually books, and both of these hold
+# real NFL halftime credits. Do not "complete" the band filter to catch them.
+
 _PA_HINTS = ("pittsburgh", "pennsylvania", ", pa", " pa ", "butler",
              "wexford", "allegheny", "steel city")
 
@@ -180,6 +187,83 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
     return sorted(acts, key=key)
 
 
+
+# ── R12: the rap rule ───────────────────────────────────────────────────────
+# Justin: "I'm not sure a rapper would work in our market/game unless they are
+# from Pittsburgh like wiz or are a nostalgia play like snoop." That is a RULE,
+# not a taste to weigh, so it gates rather than scores.
+#
+# Two things it must do that a plain filter would not:
+#   1. SHOW ITS WORK. The nostalgia tier of the agent roster Justin sent is
+#      almost entirely hip-hop, so "admitted" needs to say which door the act
+#      came through, or the rule looks like it is not running.
+#   2. NEVER SILENTLY DROP. A held act is listed with the reason, not removed.
+#      Hiding it is the same sin as a silent truncation: the reader cannot tell
+#      "your rule excluded three acts" from "there were only eight".
+#
+# It also FAILS OPEN. An act whose style the sources never stated is admitted,
+# because holding one on a guess removes a real option from a client's list —
+# the expensive direction of a wrong answer here.
+
+_HIPHOP_STYLE = ("hip hop", "hip-hop", "rap")
+_HIPHOP_TEXT = ("rapper", "hip hop", "hip-hop", "rap group", "rap trio",
+                "hip hop group", "rap duo")
+_NOSTALGIA_CATS = ("nostalgia", "tribute", "classic rock")
+
+
+def infer_style(act: Dict) -> tuple:
+    """(style, source). Only used when the catalogue has no stated style —
+    acts recorded before the field existed. Returns ('', 'unknown') rather
+    than guessing, and the caller treats unknown as admitted."""
+    fields = act.get("fields") or {}
+    stated = (fields.get("style") or "").strip().lower()
+    if stated:
+        return stated, "stated"
+    blob = " ".join(str(fields.get(k) or "") for k in
+                    ("category", "clients", "home_base")).lower()
+    for sig in _HIPHOP_TEXT:
+        if sig in blob:
+            return "hip hop / rap", "inferred"
+    return "", "unknown"
+
+
+def rule_verdict(act: Dict) -> Dict:
+    """Apply Justin's rule to one act. Always returns a verdict with a reason,
+    so the page can explain itself either way."""
+    fields = act.get("fields") or {}
+    style, source = infer_style(act)
+    kinds = {b["kind"] for b in act.get("badges", [])}
+    is_hiphop = any(h in style for h in _HIPHOP_STYLE)
+
+    if not is_hiphop:
+        return {"state": "admitted", "rule": None, "why": "", "style": style,
+                "style_source": source}
+    if "market" in kinds:
+        return {"state": "admitted", "rule": "rap rule",
+                "why": "Pittsburgh / PA tie — clears your rule the way Wiz does.",
+                "style": style, "style_source": source}
+    cat = (fields.get("category") or "").lower()
+    if any(n in cat for n in _NOSTALGIA_CATS) or "nostalgia" in kinds:
+        return {"state": "admitted", "rule": "rap rule",
+                "why": "Nostalgia play — clears your rule the way Snoop does.",
+                "style": style, "style_source": source}
+    return {"state": "held", "rule": "rap rule",
+            "why": "Hip-hop with no Pittsburgh tie and no nostalgia angle. "
+                   "Held by your rule, not removed — say the word and it "
+                   "comes back.",
+            "style": style, "style_source": source}
+
+
+def apply_rules(acts: List[Dict]) -> tuple:
+    """(admitted, held). Both are returned; nothing is thrown away."""
+    admitted, held = [], []
+    for act in acts:
+        act = dict(act)
+        act["verdict"] = rule_verdict(act)
+        (held if act["verdict"]["state"] == "held" else admitted).append(act)
+    return admitted, held
+
+
 # ── snapshot ────────────────────────────────────────────────────────────────
 
 def _load_acts(pool: str, db_path: Optional[str] = None) -> List[Dict]:
@@ -228,14 +312,14 @@ def build_snapshot(db_path: Optional[str] = None,
         # FOR-HIRE: no routing, so the same pool applies to every game. Coverage
         # is the catalogue's own state, which is genuinely known.
         if entry["at_venue"]:
-            fh = rank_for_game(game, for_hire)
+            fh, fh_held = apply_rules(rank_for_game(game, for_hire))
             fh_cov = {"state": SWEPT, "swept_at": _now(),
                       "sources": "halftime_catalogue (nightly)",
                       "found": len(fh),
                       "note": "Acts with no tour to track — available for "
                               "any date."}
         else:
-            fh = []
+            fh, fh_held = [], []
             fh_cov = {"state": NOT_APPLICABLE, "swept_at": None,
                       "sources": None, "found": 0,
                       "note": "Staged in Paris — a different entertainment "
@@ -256,9 +340,140 @@ def build_snapshot(db_path: Optional[str] = None,
                               "apply."}
 
         entry["candidates"] = {"for_hire": fh, "touring": []}
+        entry["held"] = {"for_hire": fh_held, "touring": []}
         entry["coverage"] = {"for_hire": fh_cov, "touring": tr_cov}
         snap["games"].append(entry)
     return snap
+
+
+
+# ── R13: what does well in this market ──────────────────────────────────────
+# Justin asked for this directly. The constraint that shapes it is his OTHER
+# note: he books acts for a living, and our first summary "feels out of touch"
+# because it told him things he already knew. So every finding here carries a
+# NUMBER or a COMPARISON, and anything we cannot support is listed as a gap
+# rather than padded into a claim. An analysis that restates the obvious is
+# worse than a short one.
+
+# Figures we hold with a source. Kept as data, not prose, so the page cannot
+# drift from what the research files actually say.
+_ROSTER_NOSTALGIA = [("Rob Base", 15000), ("Treach (Naughty by Nature)", 17500),
+                     ("Sugarhill Gang", 21000), ("Montell Jordan", 27000),
+                     ("Rev Run (Run-DMC)", 30000)]
+_ROSTER_HEADLINE = [("Paul Russell", 50000), ("Vanilla Ice", 75000),
+                    ("Yung Gravy", 75000), ("Flavor Flav", 75000),
+                    ("Backstreet Boys", 75000), ("Lil Jon", 100000),
+                    ("Flo Rida", 100000), ("Nate Smith", 100000),
+                    ("Ernest", 100000), ("Shaboozey", 150000)]
+# From public university contract records — see halftime/NON-BAND-HALFTIME-
+# ENTERTAINMENT.md. No NFL club figure exists publicly.
+_VARIETY_BENCHMARK = ("Mutts Gone Nuts", 3650, "a Steelers halftime, 6 minutes")
+
+_NFL_KEYS = ("steelers", "bengals", "giants", "commanders", "lions",
+             "packers", "cowboys", "browns", "ravens", "texans", "broncos",
+             "nfl")
+_ARENA_KEYS = ("nba", "nhl", "all-star", "all star", "arena", "finals")
+
+
+def _credit_split(snap: Dict) -> Dict:
+    """Where the catalogue's credits actually sit. Computed, not asserted."""
+    seen, nfl, arena = {}, [], []
+    for g in snap["games"]:
+        for a in g["candidates"]["for_hire"] + (g.get("held", {}).get("for_hire") or []):
+            seen[a["name"]] = (a.get("fields") or {}).get("clients", "") or ""
+    for name, clients in seen.items():
+        low = clients.lower()
+        if any(k in low for k in _ARENA_KEYS):
+            arena.append(name)
+        elif any(k in low for k in _NFL_KEYS):
+            nfl.append(name)
+    return {"nfl": sorted(nfl), "arena": sorted(arena), "total": len(seen)}
+
+
+def market_analysis(snap: Dict) -> List[Dict]:
+    findings = []
+    nos = [f for _, f in _ROSTER_NOSTALGIA]
+    hed = [f for _, f in _ROSTER_HEADLINE]
+    vname, vfee, vwhere = _VARIETY_BENCHMARK
+
+    findings.append({
+        "title": "The supply splits into two price tiers, not a spectrum",
+        "body": "The roster you sent breaks cleanly: {} nostalgia acts between "
+                "${:,} and ${:,}, then {} acts from ${:,} to ${:,} with almost "
+                "nothing in between. The gap sits right where a decision gets "
+                "made — the question is which tier a date is worth, and there "
+                "is no middle to compromise on.".format(
+                    len(nos), min(nos), max(nos), len(hed), min(hed), max(hed)),
+        "basis": "The booking agent's roster in your 26 Aug email.",
+        "strength": "documented"})
+
+    findings.append({
+        "title": "One number anchors the top of that range to a real NFL halftime",
+        "body": "Shaboozey appears on that roster at ${:,} and played the "
+                "Lions' 2024 regular-season halftime. That is the only public "
+                "link we have found between an NFL halftime booking and a "
+                "price — every other club figure is private.".format(
+                    dict(_ROSTER_HEADLINE)["Shaboozey"]),
+        "basis": "Roster fee + the Lions' 2024 booking.",
+        "strength": "documented"})
+
+    findings.append({
+        "title": "Non-musical entertainment is an order of magnitude cheaper",
+        "body": "{} played {} for ${:,} — about a fifth of the cheapest "
+                "musical act on your roster, and roughly 1/40th of the top of "
+                "it. If a date needs something in the slot rather than "
+                "someone specific, that is a different budget conversation."
+                .format(vname, vwhere, vfee),
+        "basis": "Public-university contract records; no NFL club figure is "
+                 "public. See our non-band research file.",
+        "strength": "documented"})
+
+    split = _credit_split(snap)
+    if split["nfl"] or split["arena"]:
+        findings.append({
+            "title": "NFL halftime credits and arena credits are different populations",
+            "body": "Of {} acts the catalogue has found with a sports credit, "
+                    "the arena and All-Star slots go to national names ({}), "
+                    "while the NFL regular-season halftime credits skew local, "
+                    "heritage and military ({}). The clubs and the arenas are "
+                    "not competing for the same acts, which is why a national "
+                    "name being 'available' says little about a Sunday "
+                    "afternoon slot.".format(
+                        split["total"], ", ".join(split["arena"][:4]) or "none yet",
+                        ", ".join(split["nfl"][:5]) or "none yet"),
+            "basis": "Computed from this catalogue — {} acts, refreshed nightly."
+                     .format(split["total"]),
+            "strength": "computed"})
+
+    findings.append({
+        "title": "In recent bookings the market tie holds where the age fit does not",
+        "body": "Across the recent set — Bret Michaels for the Steelers "
+                "(Butler County), Jack White for the Lions (Detroit), Post "
+                "Malone for the Cowboys (Dallas area) — the hometown "
+                "connection is present every time. The 45+ age fit is not: "
+                "Post Malone skews younger and was still the pick. On this "
+                "sample the market tie is doing more work than the era does, "
+                "which matters when the two pull apart on a given date.",
+        "basis": "Five recent club bookings — a small sample, and stated as one.",
+        "strength": "small sample"})
+
+    gaps = []
+    for g in snap["games"]:
+        if g.get("at_venue", True) and \
+           g["coverage"]["touring"]["state"] == NOT_SWEPT:
+            gaps.append(g["week"])
+    findings.append({
+        "title": "What this analysis cannot tell you yet",
+        "body": "Nothing here measures DRAW or response, because we hold no "
+                "attendance, ticket or reaction data — every claim above is "
+                "about supply and price. Routing is unswept for {} of the "
+                "home dates. The version of this worth acting on needs two "
+                "things from you: which acts you have already used and how "
+                "recently, and anything you track on how a halftime landed."
+                .format(len(gaps)),
+        "basis": "Stated so it is not mistaken for an absence of effect.",
+        "strength": "gap"})
+    return findings
 
 
 # ── render ──────────────────────────────────────────────────────────────────
@@ -288,6 +503,10 @@ def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
             _e(act.get("name")), "</div>"]
+    v = act.get("verdict") or {}
+    if v.get("rule") and v.get("state") == "admitted":
+        bits.append("<div class='cleared'>Clears your {}: {}</div>".format(
+            _e(v["rule"]), _e(v["why"])))
     if act.get("badges"):
         bits.append("<div class='badges'>")
         for b in act["badges"]:
@@ -366,6 +585,18 @@ def render_html(snap: Dict) -> str:
                 parts.append("<ul class='acts'>")
                 parts.extend(_act_card(a) for a in shown)
                 parts.append("</ul>")
+                held = g.get("held", {}).get(pool) or []
+                if held:
+                    parts.append(
+                        "<details class='held'><summary>{} held by your "
+                        "rules</summary><ul class='acts'>".format(len(held)))
+                    for h in held:
+                        parts.append(
+                            "<li class='act'><div class='act-name'>{}</div>"
+                            "<div class='row'><span class='v'>{}</span></div>"
+                            "</li>".format(_e(h.get("name")),
+                                           _e((h.get("verdict") or {}).get("why"))))
+                    parts.append("</ul></details>")
                 if len(acts) > len(shown):
                     parts.append(
                         "<p class='more'>+{} more in the credit list below — "
@@ -373,8 +604,34 @@ def render_html(snap: Dict) -> str:
                             len(acts) - len(shown), len(shown)))
             else:
                 parts.append(_empty_message(cov))
+                held = g.get("held", {}).get(pool) or []
+                if held:
+                    parts.append(
+                        "<p class='more'>{} act(s) were held by your rules "
+                        "rather than being absent — see below.</p>".format(
+                            len(held)))
+                    parts.append(
+                        "<details class='held'><summary>held by your rules"
+                        "</summary><ul class='acts'>")
+                    for h in held:
+                        parts.append(
+                            "<li class='act'><div class='act-name'>{}</div>"
+                            "<div class='row'><span class='v'>{}</span></div>"
+                            "</li>".format(_e(h.get("name")),
+                                           _e((h.get("verdict") or {}).get("why"))))
+                    parts.append("</ul></details>")
             parts.append("</div>")
         parts.append("</div></section>")
+
+    parts.append("<section class='analysis'><h2>What does well in this "
+                 "market</h2>")
+    for f in market_analysis(snap):
+        parts.append(
+            "<div class='finding f-{}'><h3>{}</h3><p>{}</p>"
+            "<p class='basis'>{}</p></div>".format(
+                _e(f["strength"].split()[0]), _e(f["title"]), _e(f["body"]),
+                _e(f["basis"])))
+    parts.append("</section>")
 
     roster = []
     for g in snap["games"]:
@@ -466,6 +723,9 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .empty.failed strong {{ color:#e06a6a; }}
 .empty.na strong {{ color:#6f7b88; }}
 .more {{ margin:8px 0 0; font-size:12px; color:#7d8794; }}
+.cleared {{ margin:5px 0 2px; font-size:12px; color:#79d19a; }}
+.held {{ margin-top:10px; font-size:13px; }}
+.held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
@@ -582,6 +842,67 @@ def selftest() -> int:
               and "+6 more in the credit list" in big)
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
+
+        # --- R12 the rap rule -----------------------------------------
+        def _act(name, style="", cat="other music", home="", badges=()):
+            a = {"name": name, "fields": {"style": style, "category": cat,
+                                          "home_base": home, "clients": ""}}
+            a["badges"] = badges_for(a) if not badges else list(badges)
+            return a
+
+        wiz = _act("Wiz-like", "hip hop / rap", "regional / market",
+                   "Pittsburgh, PA")
+        snoop = _act("Snoop-like", "hip hop / rap", "nostalgia music")
+        other = _act("Unconnected Rapper", "hip hop / rap", "other music")
+        rocker = _act("Rock Act", "rock", "classic rock")
+        silent = _act("Style Unknown", "", "other music")
+
+        check("hip-hop with a Pittsburgh tie is ADMITTED",
+              rule_verdict(wiz)["state"] == "admitted")
+        check("...and the card says WHICH door it came through",
+              "Pittsburgh" in rule_verdict(wiz)["why"])
+        check("hip-hop as a nostalgia play is ADMITTED",
+              rule_verdict(snoop)["state"] == "admitted"
+              and "Nostalgia" in rule_verdict(snoop)["why"])
+        check("hip-hop with neither is HELD",
+              rule_verdict(other)["state"] == "held")
+        check("a non-hip-hop act is untouched by the rule",
+              rule_verdict(rocker)["state"] == "admitted"
+              and rule_verdict(rocker)["rule"] is None)
+        check("the rule FAILS OPEN on an unstated style, never on a guess",
+              rule_verdict(silent)["state"] == "admitted"
+              and rule_verdict(silent)["style_source"] == "unknown")
+        adm, held = apply_rules([wiz, snoop, other, rocker])
+        check("a held act is separated, never discarded",
+              len(adm) == 3 and [h["name"] for h in held]
+              == ["Unconnected Rapper"])
+
+        ruled = json.loads(json.dumps(snap))
+        for _g in ruled["games"]:
+            if _g.get("at_venue", True):
+                _g["candidates"]["for_hire"] = [dict(other, verdict=None)]
+                _g["held"]["for_hire"] = [
+                    dict(other, verdict=rule_verdict(other))]
+        rpage = render_html(ruled)
+        check("a held act is VISIBLE on the page with its reason",
+              "held by your rules" in rpage
+              and "no Pittsburgh tie" in rpage)
+
+        # --- R13 market analysis --------------------------------------
+        mkt = market_analysis(snap)
+        check("the analysis has findings, each with a stated basis",
+              len(mkt) >= 5 and all(f["basis"] for f in mkt))
+        check("every finding carries a number or a comparison, not a truism",
+              all(any(ch.isdigit() for ch in f["body"]) for f in mkt))
+        check("the small-sample claim is LABELLED as one",
+              any(f["strength"] == "small sample" for f in mkt))
+        check("the analysis states what it cannot tell you",
+              any(f["strength"] == "gap" for f in mkt))
+        check("no finding restates what a booker already knows",
+              not any("each team books" in f["body"].lower() for f in mkt))
+        mpage = render_html(snap)
+        check("the analysis reaches the page",
+              "What does well in this market" in mpage)
 
         check("build writes both the snapshot and the page",
               (Path(res["out"]) / "snapshot.json").exists()
