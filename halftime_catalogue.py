@@ -72,19 +72,33 @@ REFRESH_CHUNK = 3
 # coverage forever, which is the one slot this project does NOT care about
 # (the NFL books that centrally, with Roc Nation; every other slot is booked by
 # the club).
+# (pool, category, query). POOL is the supply model, and it decides which
+# extraction prompt runs. Justin's S79 reply split the problem in two: an act
+# that TOURS is a candidate for the one game its routing passes near, while an
+# act that is FOR HIRE is available for every game. They cannot share a ranking,
+# so they do not share a pool.
 SEARCH_ANGLES = [
-    ("stunt dog show", "NFL halftime stunt dog frisbee show booked"),
-    ("stunt dog show", "college football halftime dog frisbee act contract"),
-    ("drone show", "college football halftime drone light show cost"),
-    ("drone show", "NFL stadium halftime drone show provider"),
-    ("acrobat / variety", "college football halftime acrobat variety act performer"),
-    ("acrobat / variety", "NFL halftime plate spinner unicycle acrobat act"),
-    ("bmx / fmx", "football halftime BMX freestyle motocross stunt show stadium"),
-    ("pogo / trampoline", "football halftime pogo trampoline dunk team halftime"),
-    ("pyro / fireworks", "college football halftime fireworks pyrotechnics contract cost"),
-    ("projection / light", "stadium halftime projection mapping light show football"),
-    ("fan contest", "football halftime fan contest punt pass kick promotion halftime"),
-    ("mascot / novelty", "football halftime mascot novelty act racing sausages halftime"),
+    ("variety", "stunt dog show", "NFL halftime stunt dog frisbee show booked"),
+    ("variety", "stunt dog show", "college football halftime dog frisbee act contract"),
+    ("variety", "drone show", "college football halftime drone light show cost"),
+    ("variety", "drone show", "NFL stadium halftime drone show provider"),
+    ("variety", "acrobat / variety", "college football halftime acrobat variety act performer"),
+    ("variety", "acrobat / variety", "NFL halftime plate spinner unicycle acrobat act"),
+    ("variety", "bmx / fmx", "football halftime BMX freestyle motocross stunt show stadium"),
+    ("variety", "pogo / trampoline", "football halftime pogo trampoline dunk team halftime"),
+    ("variety", "pyro / fireworks", "college football halftime fireworks pyrotechnics contract cost"),
+    ("variety", "projection / light", "stadium halftime projection mapping light show football"),
+    ("variety", "fan contest", "football halftime fan contest punt pass kick promotion halftime"),
+    ("variety", "mascot / novelty", "football halftime mascot novelty act racing sausages halftime"),
+    # FOR-HIRE MUSIC (S79). These are the acts Justin asked about: "they might
+    # not tour anymore but when someone calls they consider." Discovery is by
+    # roster and by credit, never by tour routing -- there is none to track.
+    ("for_hire_music", "nostalgia music", "nostalgia act booking agency roster halftime NFL performance fee"),
+    ("for_hire_music", "nostalgia music", "80s 90s legacy artist available for corporate sports event booking"),
+    ("for_hire_music", "nostalgia music", "NBA NHL halftime intermission musical performer booked one-off"),
+    ("for_hire_music", "classic rock", "classic rock band available for hire stadium halftime sporting event"),
+    ("for_hire_music", "military / patriotic", "military patriotic musical act salute to service NFL halftime performer"),
+    ("for_hire_music", "regional / market", "Pittsburgh area musician performed Steelers Penguins Pirates game"),
 ]
 
 # A band is the default at college level and is exactly what Buddy asked to
@@ -123,6 +137,47 @@ or a client list -- an empty field is correct and useful; a guessed one poisons
 the catalogue. If the sources contain no qualifying act, return []."""
 
 
+_MUSIC_SYSTEM = """You catalogue MUSICAL acts that can be hired to play a
+one-off sports halftime or intermission slot -- the "for hire" supply, not the
+touring supply.
+
+The distinction matters and is the whole point of this pass: a touring act is
+bookable only where its routing already goes, while a for-hire act has no tour
+to track and is available to anyone who calls. Include acts whose live work is
+now mainly private, corporate and event bookings -- legacy and nostalgia acts,
+regional favourites, tribute and heritage line-ups, and solo members performing
+under their own name.
+
+EXCLUDE, always:
+- marching bands, drumlines, drum corps, pep bands, colour guard, majorettes
+- Super Bowl halftime performers (booked centrally, not by a club)
+- acts whose ONLY listed live work is a current concert tour
+- anything you cannot tie to a bookable live performance
+
+Return ONLY a JSON array, no prose. Each element:
+{"name": "the act or performer name",
+ "category": "one of: nostalgia music, classic rock, military / patriotic,
+              regional / market, tribute, other music",
+ "level": "pro" | "college" | "both" | "unknown",
+ "clients": "teams/venues/events named as having booked it, comma separated, or ''",
+ "booking_contact": "agency, phone, email or site if stated, else ''",
+ "fee_note": "any DOCUMENTED fee with its source context, else ''",
+ "home_base": "city/state if stated, else ''",
+ "evidence": "one sentence, quoting or closely paraphrasing the source"}
+
+If a field is not stated in the sources, use "". NEVER invent a contact, a fee
+or a client list -- an empty field is correct and useful; a guessed one poisons
+the catalogue. A fee is the field most likely to be guessed and the most
+damaging to guess: a client who quotes our invented number to an agent has been
+embarrassed by us. If the sources contain no qualifying act, return []."""
+
+
+_SYSTEM_FOR_POOL = {
+    "variety": _EXTRACT_SYSTEM,
+    "for_hire_music": _MUSIC_SYSTEM,
+}
+
+
 def log(msg: str) -> None:
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     print(line)
@@ -143,21 +198,27 @@ def slug_for(name: str) -> str:
     return entity_kb.slugify(name)
 
 
-def angles_for_today(n: int = DEFAULT_ANGLES, day: int = None) -> list:
+def angles_for_today(n: int = DEFAULT_ANGLES, day: int = None,
+                     pool: str = None) -> list:
     """A rotating slice of the matrix, so one run is cheap and a week is full.
 
     Rotates by day-of-year rather than a stored cursor: nothing to corrupt,
     nothing to reset, and a missed day costs one slice rather than desyncing
     the rotation permanently.
     """
-    if not SEARCH_ANGLES:
+    # `pool` narrows the rotation to one supply model. It exists for SEEDING:
+    # when a pool is added, day-of-year rotation would take a week to reach its
+    # angles for the first time, and the dashboard is empty until it does. The
+    # nightly run passes nothing and keeps rotating over everything.
+    angles = [a for a in SEARCH_ANGLES if pool is None or a[0] == pool]
+    if not angles:
         return []
-    n = max(1, min(int(n), len(SEARCH_ANGLES)))
+    n = max(1, min(int(n), len(angles)))
     day = int(datetime.now().strftime("%j")) if day is None else day
-    start = (day * n) % len(SEARCH_ANGLES)
+    start = (day * n) % len(angles)
     out = []
     for i in range(n):
-        out.append(SEARCH_ANGLES[(start + i) % len(SEARCH_ANGLES)])
+        out.append(angles[(start + i) % len(angles)])
     return out
 
 
@@ -202,7 +263,8 @@ def parse_acts(raw: str) -> list | None:
     return out
 
 
-def extract_acts(source_block: str, creds: dict) -> tuple:
+def extract_acts(source_block: str, creds: dict,
+                 pool: str = "variety") -> tuple:
     """(acts, model, escalated). LOCAL FIRST — requirement 4, literally.
 
     qwen2.5:72b answers unless it cannot produce usable JSON, and only then does
@@ -216,10 +278,11 @@ def extract_acts(source_block: str, creds: dict) -> tuple:
     """
     import llm_providers
 
+    system = _SYSTEM_FOR_POOL.get(pool, _EXTRACT_SYSTEM)
     user = f"SOURCES:\n\n{source_block[:24000]}"
 
     try:
-        raw = llm_providers.call("ollama", _EXTRACT_SYSTEM, user, creds,
+        raw = llm_providers.call("ollama", system, user, creds,
                                  max_tokens=4000, retries=0)
         acts = parse_acts(raw)
         if acts is not None:
@@ -229,7 +292,7 @@ def extract_acts(source_block: str, creds: dict) -> tuple:
 
     try:
         provider, raw = llm_providers.escalate(
-            _EXTRACT_SYSTEM, user, creds, max_tokens=4000, mode="single")
+            system, user, creds, max_tokens=4000, mode="single")
         acts = parse_acts(raw)
         if acts is not None:
             return acts, provider, True
@@ -238,9 +301,11 @@ def extract_acts(source_block: str, creds: dict) -> tuple:
     return [], "", False
 
 
-def _fields_for(act: dict, angle: str, model: str, escalated: bool) -> dict:
+def _fields_for(act: dict, angle: str, model: str, escalated: bool,
+                pool: str = "variety") -> dict:
     return {
         "type": "halftime act",
+        "pool": pool,
         "category": act["category"],
         "level": act["level"],
         "clients": act["clients"],
@@ -259,7 +324,7 @@ def _fields_for(act: dict, angle: str, model: str, escalated: bool) -> dict:
 
 def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         refresh: int = REFRESH_CHUNK, creds: dict = None,
-        db_path: str = None) -> dict:
+        db_path: str = None, pool: str = None) -> dict:
     """One pass: discover on a rotating slice of angles, then refresh known acts."""
     import cirrus_daily
 
@@ -269,7 +334,7 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
     stats = {"angles": 0, "sources": 0, "found": 0, "new": 0, "updated": 0,
              "bands_rejected": 0, "escalated": 0, "local": 0}
 
-    for category, query in angles_for_today(angles):
+    for pool, category, query in angles_for_today(angles, pool=pool):
         stats["angles"] += 1
         log(f"angle: {category} — {query}")
         try:
@@ -292,7 +357,7 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         stats["sources"] += len(sources)
 
         block = "\n\n".join(f"SOURCE: {u}\n{t}" for u, t in sources)
-        acts, model, escalated = extract_acts(block, creds)
+        acts, model, escalated = extract_acts(block, creds, pool)
         if escalated:
             stats["escalated"] += 1
         elif model:
@@ -312,7 +377,7 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             existing = entity_kb.get_entity(KB_PROJECT, slug, db_path=db_path)
             res = entity_kb.upsert_entity(
                 KB_PROJECT, slug, act["name"], entity_type="halftime_act",
-                fields=_fields_for(act, category, model, escalated),
+                fields=_fields_for(act, category, model, escalated, pool),
                 lead_state=None if existing else "new", db_path=db_path)
             if res.get("created"):
                 stats["new"] += 1
@@ -402,14 +467,45 @@ def selftest() -> int:
     # --- rotation covers the whole matrix without a stored cursor -------
     seen = set()
     for d in range(1, 30):
-        for cat, q in angles_for_today(DEFAULT_ANGLES, day=d):
+        for _p, cat, q in angles_for_today(DEFAULT_ANGLES, day=d):
             seen.add(q)
     check("rotating angles cover the whole matrix within a month",
-          seen == {q for _, q in SEARCH_ANGLES})
+          seen == {q for _, _, q in SEARCH_ANGLES})
     check("a run asks for a bounded number of angles",
           len(angles_for_today(4, day=1)) == 4)
     check("asking for more angles than exist does not crash",
           len(angles_for_today(999, day=1)) == len(SEARCH_ANGLES))
+
+    # --- pools (S79) -------------------------------------------------------
+    # The two supply models must stay apart all the way from the search angle
+    # to the stored entity. A for-hire act silently filed as "variety" would
+    # be ranked by routing it does not have.
+    check("every angle declares a pool that has an extraction prompt",
+          all(len(a) == 3 and a[0] in _SYSTEM_FOR_POOL for a in SEARCH_ANGLES))
+    check("both pools are actually searched, not just declared",
+          {a[0] for a in SEARCH_ANGLES} == {"variety", "for_hire_music"})
+    check("the two pools use DIFFERENT prompts",
+          _SYSTEM_FOR_POOL["variety"] is not _SYSTEM_FOR_POOL["for_hire_music"])
+    check("the for-hire prompt excludes tour-only acts",
+          "ONLY listed live work is a current concert tour" in _MUSIC_SYSTEM)
+    check("the variety prompt still excludes touring concerts",
+          "concerts by touring musicians" in _EXTRACT_SYSTEM)
+    _sample = {"name": "x", "category": "c", "level": "pro", "clients": "",
+               "booking_contact": "", "fee_note": "", "home_base": "",
+               "evidence": ""}
+    check("pool is recorded on the entity, not just used at search time",
+          _fields_for(_sample, "a", "m", False, "for_hire_music")["pool"]
+          == "for_hire_music")
+    check("an unknown pool falls back to the variety prompt rather than crashing",
+          _SYSTEM_FOR_POOL.get("nonsense", _EXTRACT_SYSTEM) is _EXTRACT_SYSTEM)
+    check("a pool filter returns only that pool's angles",
+          all(a[0] == "for_hire_music"
+              for a in angles_for_today(3, day=1, pool="for_hire_music")))
+    check("no pool filter still rotates over everything",
+          len({a[0] for d in range(40)
+               for a in angles_for_today(4, day=d)}) == 2)
+    check("an unknown pool yields no angles rather than silently running all",
+          angles_for_today(4, day=1, pool="nope") == [])
 
     # --- writes land in the KB, and a band never does -------------------
     with tempfile.TemporaryDirectory() as td:
@@ -434,13 +530,19 @@ def main() -> int:
     if "report" in args:
         return report()
     dry = "--dry-run" in args
+    pool = None
+    if "--pool" in args:
+        try:
+            pool = args[args.index("--pool") + 1]
+        except Exception:
+            pass
     angles = DEFAULT_ANGLES
     if "--angles" in args:
         try:
             angles = int(args[args.index("--angles") + 1])
         except Exception:
             pass
-    run(dry_run=dry, angles=angles)
+    run(dry_run=dry, angles=angles, pool=pool)
     return 0
 
 
