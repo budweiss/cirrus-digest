@@ -26,6 +26,7 @@ Python 3.9-safe (CIRRUS): no PEP-604 unions.
 """
 import html
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -188,6 +189,61 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
 
 
 
+
+# ── the same act, twice ─────────────────────────────────────────────────────
+# The catalogue keys on a slug of the name, so "Eminem" and "Eminem (featuring
+# Jack White)", or "Nathaniel Buttram" and "First Class Nathaniel Buttram",
+# survive as separate entities. On a research catalogue that is untidy; on a
+# page a booker reads it is worse than untidy, because the same person
+# appearing twice under two names is the kind of thing that makes someone stop
+# trusting the whole list.
+#
+# The collapse is deliberately CONSERVATIVE — a trailing parenthetical and a
+# leading service rank, nothing else. Over-merging would silently delete a real
+# act, which is the more expensive mistake: a duplicate is visible and
+# embarrassing, a wrongly-merged act is invisible and gone.
+_RANKS = ("first class", "staff sgt.", "staff sergeant", "sgt.", "sergeant",
+          "master sgt.", "sfc", "mu1", "petty officer", "cpl.", "lt.",
+          "the honorable")
+_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def canonical_name(name: str) -> str:
+    """A conservative merge key. Never merges on a substring match."""
+    out = _PAREN.sub("", (name or "").strip()).strip()
+    low = out.lower()
+    for rank in _RANKS:
+        if low.startswith(rank + " "):
+            out = out[len(rank) + 1:].strip()
+            low = out.lower()
+    if low.startswith("the "):
+        out = out[4:].strip()
+    return " ".join(out.lower().split())
+
+
+def dedupe_acts(acts: List[Dict]) -> List[Dict]:
+    """Collapse name variants, keeping the entry that carries the most. The
+    dropped variants are recorded on the survivor rather than vanishing."""
+    by_key = {}
+    for act in acts:
+        key = canonical_name(act.get("name", ""))
+        if not key:
+            continue
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = dict(act, also_known_as=[])
+            continue
+        filled = lambda a: sum(
+            1 for v in (a.get("fields") or {}).values() if str(v).strip())
+        keep, drop = (prev, act) if filled(prev) >= filled(act) else (act, prev)
+        merged = dict(keep)
+        merged["also_known_as"] = sorted(
+            set((prev.get("also_known_as") or []))
+            | ({drop.get("name")} - {keep.get("name")}))
+        by_key[key] = merged
+    return sorted(by_key.values(), key=lambda a: a.get("name", ""))
+
+
 # ── R12: the rap rule ───────────────────────────────────────────────────────
 # Justin: "I'm not sure a rapper would work in our market/game unless they are
 # from Pittsburgh like wiz or are a nostalgia play like snoop." That is a RULE,
@@ -286,7 +342,7 @@ def _load_acts(pool: str, db_path: Optional[str] = None) -> List[Dict]:
                "fields": fields, "last_updated": row.get("last_updated")}
         act["badges"] = badges_for(act)
         out.append(act)
-    return out
+    return dedupe_acts(out)
 
 
 def _kb_pool(pool: str) -> str:
@@ -503,6 +559,9 @@ def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
             _e(act.get("name")), "</div>"]
+    if act.get("also_known_as"):
+        bits.append("<div class='aka'>also listed as: {}</div>".format(
+            _e(", ".join(act["also_known_as"]))))
     v = act.get("verdict") or {}
     if v.get("rule") and v.get("state") == "admitted":
         bits.append("<div class='cleared'>Clears your {}: {}</div>".format(
@@ -725,7 +784,7 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .more {{ margin:8px 0 0; font-size:12px; color:#7d8794; }}
 .cleared {{ margin:5px 0 2px; font-size:12px; color:#79d19a; }}
 .held {{ margin-top:10px; font-size:13px; }}
-.held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
+.held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.aka {{ font-size:12px; color:#6f7b88; font-style:italic; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
@@ -842,6 +901,31 @@ def selftest() -> int:
               and "+6 more in the credit list" in big)
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
+
+        # --- name variants ---------------------------------------------
+        check("a trailing parenthetical is the same act",
+              canonical_name("Eminem (featuring Jack White)")
+              == canonical_name("Eminem"))
+        check("a service rank is the same person",
+              canonical_name("First Class Nathaniel Buttram")
+              == canonical_name("Nathaniel Buttram"))
+        check("a leading 'The' does not create a second act",
+              canonical_name("The Roots") == canonical_name("Roots"))
+        check("two genuinely different acts are NOT merged",
+              canonical_name("Run-DMC") != canonical_name("Rev Run"))
+        check("a substring is not enough to merge",
+              canonical_name("Jack White") != canonical_name("Jack White Band"))
+        dd = dedupe_acts([
+            {"name": "Eminem", "fields": {"style": "hip hop / rap"}},
+            {"name": "Eminem (featuring Jack White)",
+             "fields": {"style": "hip hop / rap", "clients": "Lions",
+                        "home_base": "Detroit"}}])
+        check("a duplicate collapses to one entry",
+              len(dd) == 1)
+        check("...keeping the richer record",
+              (dd[0]["fields"] or {}).get("clients") == "Lions")
+        check("...and the dropped variant is SHOWN, not silently lost",
+              dd[0]["also_known_as"] == ["Eminem"])
 
         # --- R12 the rap rule -----------------------------------------
         def _act(name, style="", cat="other music", home="", badges=()):
