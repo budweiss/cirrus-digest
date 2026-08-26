@@ -878,6 +878,33 @@ def selftest() -> int:
         if not cond:
             failures += 1
 
+    # T40 (S79): a body longer than BODY_HEAD_CHARS must SAY it was cut.
+    # This is the bug that lost the largest requirement in a client's email
+    # while every operator view of it looked like a complete message.
+    import email.message as _em
+
+    def _msg(body):
+        m = _em.Message()
+        m.set_payload(body)
+        m.set_type("text/plain")
+        return m
+
+    short = body_text(_msg("a short note"))
+    check("a short body is returned untouched, with no marker",
+          short == "a short note" and "TRUNCATED" not in short)
+    long_src = "x" * (BODY_HEAD_CHARS + 2300)
+    cut = body_text(_msg(long_src))
+    check("a long body is truncated", len(cut) > BODY_HEAD_CHARS
+          and cut.startswith("x" * BODY_HEAD_CHARS))
+    check("...and SAYS it was truncated", "TRUNCATED" in cut)
+    check("...and states the real total, so the reader knows how much is gone",
+          str(len(long_src)) in cut)
+    check("...and names how to recover the rest", "gmail-inbox" in cut)
+    check("a body exactly at the limit is NOT marked",
+          "TRUNCATED" not in body_text(_msg("y" * BODY_HEAD_CHARS)))
+    check("the marker sits past the slices that feed classification",
+          "TRUNCATED" not in cut[:400])
+
     # allowlist: placeholders inert, real entries parsed, case-insensitive
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "senders.json"
