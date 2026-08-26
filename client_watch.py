@@ -232,13 +232,26 @@ def intake_health(stale_minutes: int = 40, log_path=None, err_path=None) -> dict
     out["age_minutes"] = round(age, 1)
     out["stale"] = age > stale_minutes
 
-    # Recent failures. Counted from the tail only: this file is append-only and
-    # years long, and a failure from August last year is not news today.
+    # Failures SINCE THE LAST SUCCESSFUL POLL, not "in the last N lines".
+    #
+    # The first version counted the whole tail, which meant a resolved outage
+    # kept firing for roughly two days while its lines scrolled out of view. An
+    # alert that keeps shouting after the thing is fixed is how alerts get
+    # muted, and a muted alert is what let this outage run in the first place.
+    # If intake has completed a poll since a failure, that failure is history.
     fails = 0
     if err_path.exists():
         tail = err_path.read_text(errors="replace").splitlines()[-400:]
-        fails = sum(1 for l in tail if "intake.py failed" in l)
-    out["recent_failures"] = fails
+        seen_success_after = False
+        for line in reversed(tail):
+            m = _TS_RX.match(line.strip())
+            if m and "inbox:" in line:
+                seen_success_after = True
+                break
+            if "intake.py failed" in line:
+                fails += 1
+    out["unresolved_failures"] = fails
+    out["recent_failures"] = fails      # kept: callers and the contract use it
     return out
 
 
@@ -464,10 +477,26 @@ def selftest() -> int:
               h["stale"] is True)
 
         # The exact bytes the loop wrote during the S78 break.
-        ierr.write_text("TypeError: unsupported operand type(s) for |\n"
-                        "intake.py failed (exit 1), will retry next cycle\n" * 3)
+        ierr.write_text(("TypeError: unsupported operand type(s) for |\n"
+                         "intake.py failed (exit 1), will retry next cycle\n") * 3)
         h = intake_health(log_path=ilog, err_path=ierr)
-        check("repeated loop failures are counted", h["recent_failures"] == 3)
+        check("unresolved loop failures are counted", h["recent_failures"] == 3)
+
+        # The exact shape of today: three failures, then recovery. Once intake
+        # polls successfully again the failures are HISTORY -- otherwise a
+        # resolved outage keeps firing for days and the alert gets muted.
+        ierr.write_text(("intake.py failed (exit 1), will retry next cycle\n") * 3
+                        + f"[{ts(0.1)}] inbox: 6 in window, 0 new\n")
+        h = intake_health(log_path=ilog, err_path=ierr)
+        check("failures BEFORE a successful poll are not still reported",
+              h["recent_failures"] == 0)
+
+        # ...but a failure AFTER the last success is live and must show.
+        ierr.write_text(f"[{ts(2)}] inbox: 6 in window, 0 new\n"
+                        + "intake.py failed (exit 1), will retry next cycle\n" * 2)
+        h = intake_health(log_path=ilog, err_path=ierr)
+        check("failures after the last success ARE reported",
+              h["recent_failures"] == 2)
 
         ilog.write_text("no timestamps here at all\n")
         try:
