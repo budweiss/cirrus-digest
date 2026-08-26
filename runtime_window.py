@@ -190,23 +190,76 @@ def line_share(est_mb: float, minutes: float) -> float:
 # ── parsing the live schedule ───────────────────────────────────────────────
 # Fed the raw text of the runner's `schedule-map`, which prints CIRRUS launchd
 # entries as "  com.cirrus.daily  02:00" and CUMULUS timers via list-timers.
+# S79: `(day N)` -- the MONTHLY form -- had no place in this pattern, so
+# com.cirrus.stratusreview (05:15, day 1) and com.cirrus.rebootmonthly (08:15,
+# day 1) were dropped silently, exactly like the CUMULUS Mon form. Found by the
+# new unparsed-line report the moment it was switched on, which is the argument
+# for that report in one line.
 _CIRRUS_LINE = re.compile(
-    r"^\s+(com\.cirrus\.\S+)\s+(\d{2}):(\d{2})"
-    r"(?:\s+\(weekday (\d)\))?(\s+\[dormant\])?\s*$")
+    r"^\s+(?P<job>com\.cirrus\.\S+)\s+(?P<h>\d{2}):(?P<m>\d{2})"
+    r"(?:\s+\(weekday (?P<wd>\d)\))?"
+    r"(?:\s+\(day (?P<md>\d+)\))?"
+    r"(?P<dormant>\s+\[dormant\])?\s*$")
 # CUMULUS lines are the unit's own OnCalendar, e.g.
 #   "  cirrus-billsnow.timer   Mon 04:00:00"  /  "  cirrus-daily.timer  *-*-* 03:00:00"
 # NOT the NEXT column of list-timers: NEXT is derived, so an interval timer
 # (deadman, every 10 min) reads as a fixed daily time and gets falsely flagged.
+#
+# S79: the prefix group was `(\S+)` -- exactly ONE token between the unit name
+# and the time. systemd writes a day-scoped calendar as TWO:
+#     entity-kb-weekly-digest.timer      Mon *-*-* 05:00:00
+# so that line never matched and was DROPPED WITHOUT A WORD. It is Bill's
+# Monday HOA digest -- a client-facing job -- and window-audit, the tool
+# START-HERE says to trust instead of eyeballing the schedule, did not know it
+# existed. Anything scheduled against 05:00 would be told the slot was free.
+# The prefix is now non-greedy and may hold several tokens; the weekday is
+# looked up by scanning it rather than by assuming its position.
 _CUMULUS_LINE = re.compile(
-    r"^\s+(\S+\.timer)\s+(\S+)\s+(\d{1,2}):(\d{2})(?::\d{2})?"
+    r"^\s+(\S+\.timer)\s+(.+?)\s+(\d{1,2}):(\d{2})(?::\d{2})?"
     r"(\s+\[dormant\])?\s*$")
+# systemd OnCalendar shorthands, which carry no HH:MM to match on.
+_SHORTHAND = {"daily": (None, 0, 0), "weekly": (0, 0, 0),
+              "monthly": (None, 0, 0), "yearly": (None, 0, 0),
+              "annually": (None, 0, 0), "midnight": (None, 0, 0)}
+_SHORTHAND_LINE = re.compile(
+    r"^\s+(\S+\.timer)\s+(" + "|".join(_SHORTHAND) + r")(\s+\[dormant\])?\s*$")
 _DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
-def parse_schedule(text: str):
+def _weekday_in(prefix: str):
+    """First day-of-week token in a systemd calendar prefix, or None.
+
+    Scans instead of indexing: `Mon 04:00:00`, `Mon *-*-* 05:00:00` and
+    `*-*-* 03:00:00` all reach here and only the first two name a day.
+    """
+    for tok in prefix.replace(",", " ").split():
+        d = _DOW.get(tok[:3].lower())
+        if d is not None:
+            return d
+    return None
+
+
+_INTERVAL_RX = re.compile(r"\(interval / not calendar-scheduled\)")
+
+
+def _looks_schedulish(line: str) -> bool:
+    """Does this line name a unit we were supposed to have understood?"""
+    if not line.strip() or "=====" in line or _INTERVAL_RX.search(line):
+        return False
+    return (".timer" in line or ".plist" in line
+            or line.strip().startswith("com."))
+
+
+def parse_schedule(text: str, unparsed: list = None):
     """-> [{'host','job','hour','minute','weekday'}]. Interval/continuous jobs
-    are skipped: a watchdog every 1800s has no window to place."""
+    are skipped: a watchdog every 1800s has no window to place.
+
+    Pass `unparsed` to receive every unit line that did NOT parse (S79) --
+    see the detection note at the bottom of the loop for why that matters.
+    """
     out = []
+    if unparsed is None:
+        unparsed = []
     host = "cirrus"
     for line in (text or "").splitlines():
         if "CUMULUS" in line and "=====" in line:
@@ -217,19 +270,43 @@ def parse_schedule(text: str):
             continue
         m = _CIRRUS_LINE.match(line)
         if m:
-            wd = m.group(4)
-            out.append({"host": "cirrus", "job": m.group(1),
-                        "hour": int(m.group(2)), "minute": int(m.group(3)),
+            wd = m.group("wd")
+            md = m.group("md")
+            out.append({"host": "cirrus", "job": m.group("job"),
+                        "hour": int(m.group("h")), "minute": int(m.group("m")),
                         # launchd Weekday: 0/7=Sun, 1=Mon .. 6=Sat -> Python Mon=0
                         "weekday": (int(wd) - 1) % 7 if wd else None,
-                        "dormant": bool(m.group(5))})
+                        # A monthly job contends on its one day. Recording it
+                        # slightly over-states contention on the other 30; that
+                        # is the safe direction for a tool whose job is to say
+                        # whether a slot is free.
+                        "monthday": int(md) if md else None,
+                        "dormant": bool(m.group("dormant"))})
             continue
         m = _CUMULUS_LINE.match(line)
         if m:
             out.append({"host": "cumulus", "job": m.group(1),
                         "hour": int(m.group(3)), "minute": int(m.group(4)),
-                        "weekday": _DOW.get(m.group(2)[:3].lower()),
+                        "weekday": _weekday_in(m.group(2)),
                         "dormant": bool(m.group(5))})
+            continue
+        m = _SHORTHAND_LINE.match(line)
+        if m:
+            wd, hh, mm = _SHORTHAND[m.group(2).lower()]
+            out.append({"host": "cumulus", "job": m.group(1),
+                        "hour": hh, "minute": mm, "weekday": wd,
+                        "dormant": bool(m.group(3))})
+            continue
+        # S79 DETECTION. Everything above this line either matched or was a
+        # header/blank/interval row. Anything left names a unit and did NOT
+        # parse -- which is how Bill's Monday digest went missing for a whole
+        # session while the audit reported "no policy violations" and printed a
+        # confident "next free heavy slot". A schedule auditor that drops rows
+        # it cannot read is worse than no auditor, because the silence is
+        # indistinguishable from a clean schedule. Collect them and make the
+        # caller say so.
+        if _looks_schedulish(line):
+            unparsed.append(line.strip())
     return out
 
 
@@ -346,13 +423,23 @@ def budget(jobs):
             f"  {j['hour']:02d}:{j['minute']:02d}-{end//60:02d}:{end%60:02d}  "
             f"{j['job']:<32} ~{est_mb:4}MB over {mins:3}min  "
             f"= {share:5.2f}% of the {LINE_DOWN_MBPS:.0f} Mbps line")
-    for a in heavy:
-        for b in heavy:
-            if a is b:
-                continue
-            sa, sb = a["hour"] * 60 + a["minute"], b["hour"] * 60 + b["minute"]
-            if sa < sb < sa + profile(a["job"])[1]:
-                overlaps.append(f"  {a['job']} overlaps {b['job']}")
+    # S79: this comparison was `sa < sb < sa + dur` -- STRICTLY greater. Two
+    # jobs starting in the SAME minute give sa == sb, so the single likeliest
+    # collision (two jobs both parked on a round hour) was the one case it
+    # could not see. entity-kb-weekly-digest and halftime-catalogue have both
+    # fired at 05:00 since S78 and this line printed "no two heavy jobs
+    # overlap" every time. Pairs are walked once now, so a clash is reported
+    # in one direction rather than two.
+    for i, a in enumerate(heavy):
+        for b in heavy[i + 1:]:
+            sa = a["hour"] * 60 + a["minute"]
+            sb = b["hour"] * 60 + b["minute"]
+            first, second = (a, b) if sa <= sb else (b, a)
+            lo, hi = min(sa, sb), max(sa, sb)
+            if hi < lo + profile(first["job"])[1]:
+                same = " (SAME START)" if sa == sb else ""
+                overlaps.append(
+                    f"  {first['job']} overlaps {second['job']}{same}")
     return lines, sorted(set(overlaps))
 
 
@@ -470,6 +557,66 @@ def selftest() -> bool:
     ck("interval timer produces no row",
        any("deadman" in c["job"] for c in cum), False)
 
+    # S79: the day-scoped OnCalendar form. This is the exact line that was
+    # silently dropped -- Bill's Monday HOA digest, client-facing.
+    up = []
+    day = parse_schedule(
+        "===== CUMULUS (systemd timers) =====\n"
+        "  entity-kb-weekly-digest.timer      Mon *-*-* 05:00:00\n"
+        "  halftime-catalogue.timer           *-*-* 05:00:00\n", up)
+    ck("Mon *-*-* HH:MM:SS parses at all", len(day), 2)
+    ck("...to the right weekday", day[0]["weekday"], 0)
+    ck("...and the right hour", day[0]["hour"], 5)
+    ck("plain *-*-* still has no weekday", day[1]["weekday"], None)
+    ck("a readable schedule reports nothing unparsed", up, [])
+
+    # OnCalendar shorthand carries no HH:MM.
+    sh = parse_schedule("===== CUMULUS (systemd timers) =====\n"
+                        "  cloudflared-update.timer           daily  [dormant]\n")
+    ck("daily shorthand parses to midnight", (sh[0]["hour"], sh[0]["minute"]), (0, 0))
+    ck("...and keeps its dormant mark", sh[0]["dormant"], True)
+
+    # THE DETECTION, tested by planting a failure. A green check on a file
+    # where nothing is wrong proves only that nothing is wrong.
+    bad_up = []
+    parse_schedule("===== CUMULUS (systemd timers) =====\n"
+                   "  wat.timer   every second tuesday when it rains\n", bad_up)
+    ck("an unreadable unit line is REPORTED, not dropped", len(bad_up), 1)
+    ck("...and quotes the line", "wat.timer" in bad_up[0], True)
+    quiet = []
+    parse_schedule("===== CUMULUS (systemd timers) =====\n"
+                   "  cirrus-deadman.timer   (interval / not calendar-scheduled)\n",
+                   quiet)
+    ck("an interval row is not mistaken for unreadable", quiet, [])
+
+    # S79: the CIRRUS monthly form, the other silently-dropped shape.
+    mup = []
+    mon = parse_schedule("===== CIRRUS (launchd) =====\n"
+                         "  com.cirrus.stratusreview           05:15  (day 1)\n", mup)
+    ck("(day N) monthly form parses", len(mon), 1)
+    ck("...keeps its time", (mon[0]["hour"], mon[0]["minute"]), (5, 15))
+    ck("...records the month day", mon[0]["monthday"], 1)
+    ck("...and is not reported unreadable", mup, [])
+
+    # S79: two heavy jobs starting in the SAME minute must be reported.
+    # Planted deliberately -- this is the case the old strict `<` missed.
+    same = [{"host": "cumulus", "job": "entity-kb-weekly-digest.timer",
+             "hour": 5, "minute": 0, "weekday": 0, "dormant": False},
+            {"host": "cumulus", "job": "halftime-catalogue.timer",
+             "hour": 5, "minute": 0, "weekday": None, "dormant": False}]
+    _, ov = budget(same)
+    ck("simultaneous heavy jobs ARE flagged", len(ov), 1)
+    ck("...and named as a same-start clash", "SAME START" in ov[0], True)
+    # A pair is walked once, not twice.
+    stagger = [dict(same[0]), dict(same[1])]
+    stagger[1]["minute"] = 5
+    _, ov2 = budget(stagger)
+    ck("a staggered clash is reported once, not twice", len(ov2), 1)
+    apart = [dict(same[0]), dict(same[1])]
+    apart[1]["hour"] = 9
+    _, ov3 = budget(apart)
+    ck("jobs far apart do not clash", ov3, [])
+
     # find_window
     h, m, _ = find_window(jobs, minutes=30, host="cirrus")
     ck("new heavy job lands in the window",
@@ -495,8 +642,16 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         raise SystemExit(0 if selftest() else 1)
     text = sys.stdin.read()
-    jobs = parse_schedule(text)
+    unparsed = []
+    jobs = parse_schedule(text, unparsed)
     print(f"parsed {len(jobs)} scheduled job(s)\n")
+    if unparsed:
+        print(f"=== {len(unparsed)} SCHEDULE LINE(S) THIS AUDIT COULD NOT READ ===")
+        print("  Every verdict below is computed WITHOUT them. Do not treat a")
+        print("  free slot as free until these parse.")
+        for u in unparsed:
+            print("  ?? " + u)
+        print()
     viol, notes = audit(jobs)
     if viol:
         print(f"=== {len(viol)} POLICY VIOLATION(S) ===")

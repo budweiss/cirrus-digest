@@ -27,8 +27,11 @@ Usage:
   python3 business_idea_scan.py selftest
 """
 import json
+import os
 import re
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1046,6 +1049,34 @@ def selftest() -> bool:
     checks.append(("score is clamped to 10 max",
                    _parse_score("SCORE: 15 | WHY: x | IDEA: y")[0] == 10))
     checks.append(("malformed line returns None", _parse_score("not a score line") is None))
+
+    # ── S79 watchdog. A hang raises nothing, so the ONLY thing that makes it
+    # visible is the watchdog recording a failure on its way out. Test that,
+    # not just that it exits -- an exit that leaves yesterday's "ok" status in
+    # place recreates the exact blind spot this was written to close.
+    _rec, _exited = [], []
+    _watchdog_fire(30, recorder=lambda *a: _rec.append(a),
+                   exiter=lambda code: _exited.append(code),
+                   printer=lambda *a, **k: None)
+    checks.append(("watchdog records a job_status entry", len(_rec) == 1))
+    checks.append(("...marked FAILED, not ok", _rec and _rec[0][1] is False))
+    checks.append(("...naming the job", _rec and _rec[0][0] == "businessideascan"))
+    checks.append(("...and saying it HUNG", _rec and "HUNG" in _rec[0][2]))
+    checks.append(("watchdog exits non-zero", _exited == [75]))
+    # A broken job_status must not stop the abort -- the abort is the point.
+    _exited2 = []
+    def _boom(*a):
+        raise RuntimeError("job_status is down")
+    _watchdog_fire(30, recorder=_boom, exiter=lambda c: _exited2.append(c),
+                   printer=lambda *a, **k: None)
+    checks.append(("a failing recorder still aborts", _exited2 == [75]))
+    # Armed as a DAEMON: a live watchdog thread must never hold the process
+    # open after a normal, successful run.
+    _before = threading.active_count()
+    arm_watchdog(minutes=10_000)
+    _wd = [t for t in threading.enumerate() if t.name == "scan-watchdog"]
+    checks.append(("watchdog thread is armed", len(_wd) == 1))
+    checks.append(("...as a daemon, so a good run still exits", _wd and _wd[0].daemon))
     checks.append(("slug prefers the idea label over the raw title",
                    _slug_for("AI Bookkeeping Agency", "Some Article Title About Stuff")
                    == entity_kb.slugify("AI Bookkeeping Agency")))
@@ -1177,8 +1208,16 @@ def selftest() -> bool:
                    < _run_src.index("mark_emails_seen")))
     # The cap must never be applied before the sender filter -- that bug hid
     # 967 Medium emails behind 660 promos in a busy inbox.
+    # S79: this compared against `_MAX_EMAILS_PER_RUN`, which appears in the
+    # function SIGNATURE as a default (`max_per_sender=_MAX_EMAILS_PER_RUN`) --
+    # so its first index is near the top of the source, always before the IMAP
+    # search, and the check failed no matter what the code did. It had been red
+    # for a while, and a permanently-red check is worse than a missing one: it
+    # is the reason a real failure in the same suite gets scrolled past. Compare
+    # against where the cap is APPLIED, which is the thing the check is about.
     checks.append(("sender filtering happens server-side, before the cap",
-                   _fetch_src.index('FROM "') < _fetch_src.index("_MAX_EMAILS_PER_RUN")))
+                   _fetch_src.index('FROM "')
+                   < _fetch_src.index("[:max_per_sender]")))
 
     import os
     import tempfile
@@ -1226,11 +1265,74 @@ def selftest() -> bool:
     return all_ok
 
 
+# ── wall-clock watchdog ──────────────────────────────────────────────────────
+# S79. This job hung for 5h37m on 2026-08-26 against a normal runtime of about
+# four minutes, blocked in a TLS socket read (proved with a stack sample:
+# ssl3_read_n -> BIO_read -> sock_read -> read). Two things made that expensive:
+#
+#  1. Every remote call in this pipeline is ALREADY wrapped in
+#     cirrus_daily.hard_deadline, and it did not fire. So a per-call deadline is
+#     necessary and demonstrably not sufficient, and a fix aimed at one call
+#     site would only move the problem to the next unbounded read.
+#  2. A hang RAISES NOTHING. The __main__ handler below records a failure on an
+#     exception, so a crash is visible -- but a process that simply never
+#     returns writes no status at all, and jobscheck could only report the
+#     PREVIOUS day's timestamp as "OVERDUE". Overdue and hung look identical
+#     from outside, which is why this sat all morning after being detected.
+#
+# So the bound is on the PROCESS, not the call, and firing it RECORDS A FAILURE
+# rather than dying quietly. A thread can do this even while the main thread is
+# blocked in C: socket reads release the GIL.
+#
+# launchd will not start a second instance while the first is alive, so a hang
+# does not just lose today's run -- it silently loses every following one too.
+_WATCHDOG_MIN = 30          # ~7x the observed normal runtime
+
+
+def _watchdog_fire(minutes, recorder=None, exiter=None, printer=None):
+    """What the watchdog does when the clock runs out.
+
+    Split out from the thread so the selftest can exercise it without killing
+    the test run -- a watchdog nobody can test is a watchdog nobody trusts.
+    """
+    msg = (f"WATCHDOG: businessideascan exceeded {minutes} min — aborting. "
+           f"See S79: a hung TLS read that hard_deadline did not catch.")
+    # T9: the selftest exercises this on a HEALTHY run, and a green suite that
+    # shouts "aborting" twice is how a real abort gets read as test noise.
+    (printer if printer is not None else print)(msg, flush=True)
+    if recorder is not None:
+        try:
+            recorder("businessideascan", False,
+                     f"HUNG — killed by watchdog after {minutes} min")
+        except Exception:
+            pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    (exiter or os._exit)(75)
+
+
+def arm_watchdog(minutes: int = _WATCHDOG_MIN) -> None:
+    def _run():
+        time.sleep(minutes * 60)
+        recorder = None
+        try:
+            import job_status
+            recorder = job_status.record
+        except Exception:
+            pass
+        _watchdog_fire(minutes, recorder)
+    threading.Thread(target=_run, name="scan-watchdog", daemon=True).start()
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         sys.exit(0 if selftest() else 1)
     dry = "--dry-run" in sys.argv
     backfill = "--backfill" in sys.argv
+    arm_watchdog()
     # Record health so a silent failure surfaces in the morning brief rather
     # than going unnoticed for days -- these run unattended every morning.
     try:
