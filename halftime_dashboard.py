@@ -853,6 +853,18 @@ def render_html(snap: Dict) -> str:
             parts.append("<p class='poolsub'>{}</p>".format(
                 _e(POOL_SUB[pool])))
             parts.append(_coverage_line(cov))
+            # The credit pool has no per-game signal — the same acts rank the
+            # same way on every date — so repeating the top three under all
+            # nine games said nothing and put Bret Michaels, who Justin told us
+            # they have booked "many times", at the top of six cards. Show it
+            # per game only where the game's own target actually reorders it
+            # (11/1 patriotic, 12/20 rivalry); elsewhere point at the one list.
+            if pool == "for_hire" and acts and not g.get("target"):
+                parts.append(
+                    "<p class='more'>{} acts in the credit list, and it "
+                    "applies to every date equally — so it is listed once "
+                    "below rather than repeated here.</p>".format(len(acts)))
+                acts = []
             if acts:
                 shown = acts[:PER_GAME_SHOWN]
                 parts.append("<ul class='acts'>")
@@ -1188,10 +1200,29 @@ def selftest() -> int:
         check("the club act is still listed, not filtered away",
               "Club Act" in order)
         dpage = render_html(dsnap)
+        # the repetition Justin's tone note made expensive
+        tpage = render_html(snap)
+        _names = [a["name"] for g_ in snap["games"]
+                  for a in g_["candidates"]["for_hire"]]
+        if _names:
+            _lead = _names[0]
+            check("a credit act is not repeated under every game",
+                  tpage.count(">" + _e(_lead) + "<") <= 3)
+        check("a game with no target points at the one list instead",
+              "applies to every date equally" in tpage)
+        check("a TARGET game still shows its ranked credit acts",
+              any(g_["candidates"]["for_hire"] for g_ in snap["games"]
+                  if g_.get("target")))
+
         check("the cross-pool act says why it is top",
               "Both pools at once" in dpage)
+        # Assert the LABEL and the reassurance, not the exact prose. This
+        # check broke silently when halftime_routing reworded "well below
+        # stadium draw" to add the sizes-the-show caveat, and it went unnoticed
+        # because only the changed module's suite was re-run (T38: do not pin
+        # wording a neighbouring module owns).
         check("the small room is explained, not silently ranked down",
-              "well below stadium draw" in dpage)
+              "Club-scale room" in dpage and "genuinely in the area" in dpage)
 
         # --- reachability: the credit-list problem -----------------------
         def _rc(name, clients, cat="other music", home=""):
