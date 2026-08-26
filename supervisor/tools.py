@@ -359,8 +359,12 @@ def check_intake_health(stale_minutes: int = 40) -> str:
     if not rows:
         out = "UNREADABLE: no box reported intake health. NOT a clean result."
     elif not bad:
+        # Name the boxes that ACTUALLY answered. The first version said "both
+        # boxes" unconditionally and then listed one, which is the precise shape
+        # of claim this whole check exists to stop.
         ages = ", ".join(f"{r['_box']} {r['age_minutes']}m ago" for r in rows)
-        out = f"OK — intake polling normally on both boxes ({ages})."
+        who = " and ".join(sorted(r["_box"] for r in rows))
+        out = f"OK — intake polling normally on {who} ({ages})."
     else:
         lines = ["Intake is UP but may not be WORKING:"]
         for r in bad:
