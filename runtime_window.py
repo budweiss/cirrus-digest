@@ -133,6 +133,15 @@ JOB = {
     "cirrus-intake.timer":           ("light", 1, 5, "polls the intake mailbox"),
     "cirrus-watchdog.timer":         ("light", 1, 1, "local service liveness"),
     "cowork-netsample.timer":        ("light", 1, 0, "reads local counters, no network"),
+    # S79. The routing sweep is the longest job on either box by an order of
+    # magnitude, and duration is exactly what the overlap check runs on: at the
+    # unprofiled default of 15 minutes a job parked at 23:00 would have looked
+    # clear of a sweep that is still running at midnight.
+    "halftime-catalogue.timer":      ("heavy", 15, 50, "12+ search angles, nightly research"),
+    "halftime-routing.timer":        ("heavy", 150, 120,
+                                      "8 games x 7 metros, each a search + "
+                                      "fetches + a model call; 2 games measured "
+                                      "at 24 min on 2026-08-26"),
 }
 _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 
@@ -419,10 +428,16 @@ def budget(jobs):
         weight, mins, est_mb, basis = profile(j["job"])
         share = line_share(est_mb, mins)
         end = j["hour"] * 60 + j["minute"] + mins
+        # S79: an UNPROFILED job was rendered identically to a measured one.
+        # _DEFAULT's own basis says "treated as heavy until profiled" -- a
+        # warning that lived in the data and never reached the reader, so every
+        # duration on this plan looked equally trustworthy and the overlap
+        # check silently ran on a guess.
+        flag = " [UNPROFILED — 15min is a guess]" if basis is _DEFAULT[3] else ""
         lines.append(
             f"  {j['hour']:02d}:{j['minute']:02d}-{end//60:02d}:{end%60:02d}  "
             f"{j['job']:<32} ~{est_mb:4}MB over {mins:3}min  "
-            f"= {share:5.2f}% of the {LINE_DOWN_MBPS:.0f} Mbps line")
+            f"= {share:5.2f}% of the {LINE_DOWN_MBPS:.0f} Mbps line{flag}")
     # S79: this comparison was `sa < sb < sa + dur` -- STRICTLY greater. Two
     # jobs starting in the SAME minute give sa == sb, so the single likeliest
     # collision (two jobs both parked on a round hour) was the one case it
@@ -635,6 +650,28 @@ def selftest() -> bool:
 
     print()
     print("all runtime_window selftests passed" if not bad else f"{bad} FAILED")
+
+    # S79 — the routing sweep is the longest job on either box, and duration is
+    # what the overlap check runs on.
+    ck("the routing sweep is profiled, not left on the 15-minute default",
+       profile("halftime-routing.timer")[1], 150)
+    ck("the catalogue is profiled too",
+       profile("halftime-catalogue.timer")[1], 15)
+    ck("a job nobody profiled still defaults to HEAVY",
+       profile("some-brand-new.timer")[0], "heavy")
+    _plan, _ = budget([
+        {"host": "cumulus", "job": "some-brand-new.timer", "hour": 23,
+         "minute": 0, "dormant": False}])
+    ck("an UNPROFILED job is marked as such on the plan",
+       "[UNPROFILED" in "".join(_plan), True)
+    _plan2, _ = budget([
+        {"host": "cumulus", "job": "halftime-routing.timer", "hour": 22,
+         "minute": 0, "dormant": False}])
+    ck("a profiled job carries no warning",
+       "[UNPROFILED" in "".join(_plan2), False)
+    ck("the sweep's real duration reaches the plan line",
+       "150min" in "".join(_plan2), True)
+
     return bad == 0
 
 
