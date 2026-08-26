@@ -175,6 +175,22 @@ back failed, that is the finding, and it is more important than the restart.
   promise check. It means the check did not run. Say that, rather than
   implying all is well.
 
+- **`check_intake_health`** (S78) — read-only, both boxes. **The one that was
+  missing.** Intake is a **KeepAlive loop**: launchd/systemd keeps the wrapper
+  alive and reports a live PID and exit 0 whether the python inside it works or
+  not. On 2026-08-25 CIRRUS intake could not process ANY client mail for an
+  hour while `launchctl list` showed `336  0  com.cirrus.intake` — healthy by
+  every check that existed, including everything you had.
+
+  `check_service_status` answers *"is it up"*. That was never the question worth
+  asking. This reads the log the loop already writes and answers *"when did it
+  last COMPLETE a poll"*. **A stale intake means client mail is arriving and
+  being silently ignored** — treat it as more serious than a down unit, because
+  a down unit is visible and this is not. Report it; a broken deploy is not
+  yours to fix.
+
+  **Run this one every pass**, alongside the promise check. It is a file read.
+
   **Do not run all four every pass.** They read files and a database, so they
   are cheap, but a summary that recites four "OK —" lines daily trains Buddy to
   stop reading it. Run the promise check every pass; run these three when

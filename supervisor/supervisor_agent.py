@@ -127,6 +127,17 @@ def _build_mcp_tools():
                               "text": tools.check_high_value_field_overwrites(
                                   args.get("hours", 168))}]}
 
+    @tool("check_intake_health",
+          "Check whether client intake is actually WORKING on both boxes, not "
+          "merely running (read-only). Intake is a KeepAlive loop, so service "
+          "status reports healthy even when every iteration is failing — this "
+          "reads when it last COMPLETED a poll. A stale intake means client "
+          "mail is arriving and being silently ignored.", {"stale_minutes": int})
+    async def _check_intake_health(args):
+        return {"content": [{"type": "text",
+                              "text": tools.check_intake_health(
+                                  args.get("stale_minutes", 40))}]}
+
     @tool("check_credentials_health",
           "Verify CUMULUS credentials.json currently parses (read-only, never returns values)", {})
     async def _check_credentials_health(args):
@@ -172,6 +183,7 @@ def _build_mcp_tools():
     return [_check_service_status, _check_timers, _tail_journal,
             _check_open_client_promises, _check_duplicate_client_answers,
             _check_thread_stalls, _check_high_value_field_overwrites,
+            _check_intake_health,
             _check_credentials_health, _check_cirrus_timemachine,
             _restart_service, _reset_failed, _send_telegram,
             _request_opus_upgrade, _request_guidance]

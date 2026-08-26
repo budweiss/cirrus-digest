@@ -937,6 +937,10 @@ def client_watch_status():
     fold("stalled_threads", lambda: client_watch.stalled_threads())
     fold("high_value_overwrites",
          lambda: client_watch.high_value_overwrites(hours=hours))
+    # S78: "is intake WORKING", not "is it up". com.cirrus.intake is a KeepAlive
+    # loop, so launchd reports a live PID whether the python inside it runs or
+    # not -- which is exactly how it sat broken for an hour looking healthy.
+    fold("intake_health", client_watch.intake_health)
     return jsonify(json.loads(json.dumps(out, default=str)))
 
 @app.route("/admin/service/status", methods=["GET"])

@@ -26,6 +26,7 @@ Two design notes worth keeping:
   supervisor user can read.
 """
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -183,6 +184,62 @@ def stalled_threads(path=None, hours: int = 48) -> list:
             "expected_reply": r.get("kind") in ("answer", "confirmation", "resend"),
         })
     return sorted(stalls, key=lambda s: s["age_hours"], reverse=True)
+
+
+# ── Check 5: is intake actually WORKING, not merely running? ─────────────────
+
+INTAKE_LOG = APP_DIR / "logs" / "intake.log"
+INTAKE_ERR_LOG = APP_DIR / "logs" / "intake-launchd.log"
+_TS_RX = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+
+
+def intake_health(stale_minutes: int = 40, log_path=None, err_path=None) -> dict:
+    """When did intake last COMPLETE a poll, and has it been failing?
+
+    S78, and this is the check whose absence cost a real outage. `intake` is a
+    **KeepAlive loop**, not a scheduled job: launchd keeps the wrapper alive and
+    reports a live PID and exit 0 whether the python inside it works or not.
+    During the S78 break `launchctl list` showed `336  0  com.cirrus.intake` for
+    the whole hour while every 15-minute iteration died on an import error.
+
+    So service status answers "is it up", and that question was never the one
+    worth asking. This answers **"is it working"**, from the log the loop
+    already writes — no new heartbeat file, nothing extra to keep in sync.
+
+    The loop even logged `intake.py failed (exit 1), will retry next cycle` on
+    every failure. The signal existed on disk the entire time and nothing read
+    it. The same line appears for a 2026-08-22 credential failure, which also
+    went unnoticed — so this is a repeat, not a one-off.
+    """
+    log_path = Path(log_path or INTAKE_LOG)
+    err_path = Path(err_path or INTAKE_ERR_LOG)
+    out = {"stale_minutes_threshold": stale_minutes}
+
+    if not log_path.exists():
+        raise FileNotFoundError(f"intake log not found at {log_path}")
+
+    last = None
+    for line in log_path.read_text(errors="replace").splitlines():
+        m = _TS_RX.match(line.strip())
+        if m:
+            last = m.group(1)
+    if not last:
+        raise ValueError(f"no timestamped line in {log_path} — cannot tell when "
+                         f"intake last ran")
+
+    age = (datetime.now() - datetime.strptime(last, TS_FMT)).total_seconds() / 60
+    out["last_poll"] = last
+    out["age_minutes"] = round(age, 1)
+    out["stale"] = age > stale_minutes
+
+    # Recent failures. Counted from the tail only: this file is append-only and
+    # years long, and a failure from August last year is not news today.
+    fails = 0
+    if err_path.exists():
+        tail = err_path.read_text(errors="replace").splitlines()[-400:]
+        fails = sum(1 for l in tail if "intake.py failed" in l)
+    out["recent_failures"] = fails
+    return out
 
 
 # ── Check 4: was a researched fact on a good lead overwritten? ───────────────
@@ -391,6 +448,38 @@ def selftest() -> int:
         check("a build request is still reported", len(st) == 1)
         check("...but is flagged as not expecting an instant reply",
               st and st[0]["expected_reply"] is False)
+
+        # ---- intake_health: the check whose absence cost a real outage ---
+        ilog = Path(td) / "intake.log"
+        ierr = Path(td) / "intake-launchd.log"
+        ilog.write_text(f"[{ts(0.1)}] inbox: 6 in window, 0 new\n")
+        ierr.write_text("all quiet\n")
+        h = intake_health(log_path=ilog, err_path=ierr)
+        check("a recent poll is not stale", h["stale"] is False)
+        check("the age is measured", h["age_minutes"] < 15)
+
+        ilog.write_text(f"[{ts(3)}] inbox: 6 in window, 0 new\n")
+        h = intake_health(log_path=ilog, err_path=ierr)
+        check("a poll 3 hours old IS stale — this is the S78 outage shape",
+              h["stale"] is True)
+
+        # The exact bytes the loop wrote during the S78 break.
+        ierr.write_text("TypeError: unsupported operand type(s) for |\n"
+                        "intake.py failed (exit 1), will retry next cycle\n" * 3)
+        h = intake_health(log_path=ilog, err_path=ierr)
+        check("repeated loop failures are counted", h["recent_failures"] == 3)
+
+        ilog.write_text("no timestamps here at all\n")
+        try:
+            intake_health(log_path=ilog, err_path=ierr)
+            check("a log with no timestamp raises rather than reading healthy", False)
+        except ValueError:
+            check("a log with no timestamp raises rather than reading healthy", True)
+        try:
+            intake_health(log_path=Path(td) / "gone.log")
+            check("a missing intake log raises rather than reading healthy", False)
+        except FileNotFoundError:
+            check("a missing intake log raises rather than reading healthy", True)
 
         # ---- unreadable sources must be LOUD ----------------------------
         gone = Path(td) / "nope.jsonl"

@@ -326,6 +326,60 @@ def check_high_value_field_overwrites(hours: int = 168) -> str:
     return out
 
 
+def check_intake_health(stale_minutes: int = 40) -> str:
+    """Is client intake actually WORKING on both boxes, or just running?
+
+    S78, added because its absence cost a real outage. Intake is a KeepAlive
+    loop on both boxes: the supervisor sees a live process and exit 0 whether
+    the python inside it works or not. On 2026-08-25 CIRRUS intake was unable to
+    process ANY client mail for an hour while `launchctl list` showed
+    `336  0  com.cirrus.intake` -- healthy by every check that existed.
+
+    `check_service_status` answers "is it up". That was never the question worth
+    asking. This one reads the log the loop already writes and answers "when did
+    it last COMPLETE a poll" -- and the loop was already logging
+    `intake.py failed (exit 1), will retry next cycle` on every failure. The
+    signal was on disk the whole time. Nothing read it.
+
+    A stale intake means client mail is arriving and being silently ignored.
+    Report it; you cannot fix a deploy.
+    """
+    rows, notes = [], []
+    for box, fn in (("CUMULUS", _client_digest), ("CIRRUS", _cirrus_digest)):
+        try:
+            h = (fn() or {}).get("intake_health")
+            if not h:
+                notes.append(f"{box} returned no intake_health")
+                continue
+            rows.append({**h, "_box": box})
+        except Exception as e:
+            notes.append(f"{box} UNREADABLE ({type(e).__name__}: {e})")
+
+    bad = [r for r in rows if r.get("stale") or r.get("recent_failures")]
+    if not rows:
+        out = "UNREADABLE: no box reported intake health. NOT a clean result."
+    elif not bad:
+        ages = ", ".join(f"{r['_box']} {r['age_minutes']}m ago" for r in rows)
+        out = f"OK — intake polling normally on both boxes ({ages})."
+    else:
+        lines = ["Intake is UP but may not be WORKING:"]
+        for r in bad:
+            lines.append(
+                f"  • [{r['_box']}] last completed poll {r.get('age_minutes')}m ago"
+                f"{' — STALE' if r.get('stale') else ''}"
+                f"{', ' + str(r['recent_failures']) + ' recent loop failure(s)' if r.get('recent_failures') else ''}"
+                f" (last: {r.get('last_poll')})")
+        lines.append("Client mail may be arriving and being silently ignored. "
+                     "Report it — a broken deploy is not yours to fix.")
+        out = "\n".join(lines)
+    out = _verdict(out, bad, notes, out)
+
+    ledger_append({"event": "check", "tool": "check_intake_health",
+                   "tier_name": "read-only", "detail": f"{stale_minutes}m",
+                   "result": out[:200]})
+    return out
+
+
 def check_timers() -> str:
     """List all systemd timers with next/last-fire times. Read-only, no sudo."""
     r = _run(["systemctl", "list-timers", "--all", "--no-pager"])

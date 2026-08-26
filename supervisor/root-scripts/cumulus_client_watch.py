@@ -69,6 +69,7 @@ def main() -> int:
     fold("stalled_threads", lambda: client_watch.stalled_threads())
     fold("high_value_overwrites",
          lambda: client_watch.high_value_overwrites(hours=hours))
+    fold("intake_health", client_watch.intake_health)
 
     print(json.dumps(out, default=str))
     return 1 if out.get("errors") else 0
