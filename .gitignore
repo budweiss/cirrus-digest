@@ -111,3 +111,13 @@ x_scan.py
 
 # Referenced by nothing in the tree; a leftover next to the real sources.json.
 cirrus-digest-sources.json
+
+# S79 — match the FAMILY, not the suffixes that happened to exist today.
+# The *.bak-* / *.pre-* patterns above covered the copies present on 2026-08-26
+# and would NOT have caught `credentials.json.save`, which lived on CIRRUS until
+# S63 and still sits in the Mac's backup store. Buddy's requirement is that
+# these never reach the internet; a rule that enumerates known suffixes is the
+# wrong shape for that (same lesson as T36). Nothing plaintext has ever been
+# committed in this repo's history — this keeps it that way by construction.
+# credentials.template.json does not match this pattern and stays tracked.
+credentials.json.*
