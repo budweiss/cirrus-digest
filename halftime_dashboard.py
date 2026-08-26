@@ -87,6 +87,12 @@ POOLS = ("touring", "for_hire")
 # pool correct. Until then the honest label is what we actually know.
 POOL_LABEL = {"touring": "Routing through",
               "for_hire": "Has played a sports slot"}
+# R5: "a few options for each game" -- a few, not the whole roster. Repeating
+# every credit-list act under all nine games rendered 99 near-identical cards
+# and buried the ranking that makes the column worth reading. The full roster
+# is listed ONCE at the foot of the page instead.
+PER_GAME_SHOWN = 3
+
 POOL_SUB = {
     "touring": "Acts whose announced tour passes near this date.",
     "for_hire": "A credit list, not a verified availability list — every act "
@@ -356,13 +362,36 @@ def render_html(snap: Dict) -> str:
                 _e(POOL_SUB[pool])))
             parts.append(_coverage_line(cov))
             if acts:
+                shown = acts[:PER_GAME_SHOWN]
                 parts.append("<ul class='acts'>")
-                parts.extend(_act_card(a) for a in acts)
+                parts.extend(_act_card(a) for a in shown)
                 parts.append("</ul>")
+                if len(acts) > len(shown):
+                    parts.append(
+                        "<p class='more'>+{} more in the credit list below — "
+                        "these {} rank highest for this game.</p>".format(
+                            len(acts) - len(shown), len(shown)))
             else:
                 parts.append(_empty_message(cov))
             parts.append("</div>")
         parts.append("</div></section>")
+
+    roster = []
+    for g in snap["games"]:
+        for a in g["candidates"]["for_hire"]:
+            if a["name"] not in [r["name"] for r in roster]:
+                roster.append(a)
+    if roster:
+        parts.append("<section class='roster'><h2>Credit list — "
+                     "{} acts</h2>".format(len(roster)))
+        parts.append("<p class='meta'>Every act the catalogue has found with a "
+                     "sports-slot credit. Each game above shows the {} that "
+                     "rank highest for it; this is the whole list.</p>".format(
+                         PER_GAME_SHOWN))
+        parts.append("<ul class='acts'>")
+        parts.extend(_act_card(a) for a in sorted(roster,
+                                                  key=lambda x: x["name"]))
+        parts.append("</ul></section>")
 
     parts.append(
         "<footer><p>Two pools, kept apart on purpose. <strong>Routing "
@@ -436,6 +465,10 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .empty.none strong {{ color:#8fa0b0; }}
 .empty.failed strong {{ color:#e06a6a; }}
 .empty.na strong {{ color:#6f7b88; }}
+.more {{ margin:8px 0 0; font-size:12px; color:#7d8794; }}
+.roster .acts {{ columns:2; column-gap:26px; }}
+@media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
+.roster .act {{ break-inside:avoid; }}
 footer {{ max-width:1100px; margin:26px auto 0; color:var(--dim);
           font-size:13px; border-top:1px solid var(--edge); padding-top:14px; }}
 </style></head><body>"""
@@ -535,6 +568,21 @@ def selftest() -> int:
               "<script>" not in render_html(_snap_with_name(snap, "<script>x")))
 
         res = build(out_dir=Path(tmp) / "out", db_path=db)
+        # R5, pinned: a per-game column must stay a shortlist. This regressed
+        # once already -- 11 acts under 9 games rendered 99 cards.
+        many = json.loads(json.dumps(snap))
+        for _g in many["games"]:
+            if _g["candidates"]["for_hire"]:
+                _a = _g["candidates"]["for_hire"][0]
+                _g["candidates"]["for_hire"] = [
+                    dict(_a, name="Act {}".format(i)) for i in range(9)]
+        big = render_html(many)
+        check("a game column shows a few options, not the whole roster",
+              big.count("Act 0") <= len(many["games"]) + 1
+              and "+6 more in the credit list" in big)
+        check("the full roster still appears exactly once",
+              big.count("Credit list —") == 1)
+
         check("build writes both the snapshot and the page",
               (Path(res["out"]) / "snapshot.json").exists()
               and (Path(res["out"]) / "index.html").exists())
