@@ -27,6 +27,12 @@ Usage:
   python3 hoa_daily_research.py [--chunk-size N] [--dry-run]
   python3 hoa_daily_research.py selftest
 """
+# T34: CIRRUS runs the system python 3.9, which has no PEP 604 unions.
+# This module only runs on CUMULUS today, so the `str | None` below is
+# harmless there -- but a latent one is still a landmine, and it costs a
+# line to disarm. S78.
+from __future__ import annotations
+
 import re
 import sys
 from datetime import datetime
