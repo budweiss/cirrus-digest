@@ -78,8 +78,22 @@ HOME_GAMES = [
 ]
 
 POOLS = ("touring", "for_hire")
+# The for-hire label is deliberately NOT "available to book". Discovery is by
+# CREDIT -- an act named as having played a sports slot -- which is a SUPERSET
+# of the acts Justin meant. Eminem and Wu-Tang have halftime credits and are
+# not for-hire nostalgia bookings. Separating "still touring at scale" from
+# "plays when called" needs the routing data, which is step 4: the touring
+# sweep is not only the other pool, it is the discriminator that makes THIS
+# pool correct. Until then the honest label is what we actually know.
 POOL_LABEL = {"touring": "Routing through",
-              "for_hire": "Available to book"}
+              "for_hire": "Has played a sports slot"}
+POOL_SUB = {
+    "touring": "Acts whose announced tour passes near this date.",
+    "for_hire": "A credit list, not a verified availability list — every act "
+                "here has performed a halftime or in-game slot somewhere. "
+                "Whether a given one still takes one-off bookings is the phone "
+                "call, and is not claimed here.",
+}
 
 # Coverage states. The whole point of R4 is that these are three different
 # answers and the page must never render them the same way.
@@ -338,6 +352,8 @@ def render_html(snap: Dict) -> str:
             acts = g["candidates"][pool]
             parts.append("<div class='pool pool-{}'>".format(_e(pool)))
             parts.append("<h3>{}</h3>".format(_e(POOL_LABEL[pool])))
+            parts.append("<p class='poolsub'>{}</p>".format(
+                _e(POOL_SUB[pool])))
             parts.append(_coverage_line(cov))
             if acts:
                 parts.append("<ul class='acts'>")
@@ -350,10 +366,16 @@ def render_html(snap: Dict) -> str:
 
     parts.append(
         "<footer><p>Two pools, kept apart on purpose. <strong>Routing "
-        "through</strong> is acts whose tour already passes near the date. "
-        "<strong>Available to book</strong> is acts with no tour to track, "
-        "who play when called — they apply to every date, which is why they "
-        "are not mixed into the routing list.</p>"
+        "through</strong> is acts whose announced tour passes near the date — "
+        "each one belongs to a single game. <strong>Has played a sports "
+        "slot</strong> is a credit list, and applies to every date, which is "
+        "why it is not mixed into the routing column.</p>"
+        "<p><strong>Known gap.</strong> The credit list is a superset of the "
+        "for-hire acts you asked about: an act that played a halftime once may "
+        "be a heritage act who takes one-off bookings, or a stadium headliner "
+        "who does not. Telling those apart needs current touring activity, "
+        "which is the sweep still to be built — so it is stated here rather "
+        "than guessed.</p>"
         "<p>Coverage is stated on every panel so an empty one can be read "
         "correctly: “none available” and “not searched yet” are different "
         "answers.</p></footer></body></html>")
@@ -392,6 +414,7 @@ h2 {{ margin:0 0 4px; font-size:18px; font-weight:600; }}
          padding:12px 14px; }}
 h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
       letter-spacing:.08em; color:var(--accent); }}
+.poolsub {{ margin:0 0 8px; font-size:12px; color:#7d8794; }}
 .cov {{ font-size:12px; color:var(--dim); margin-bottom:10px;
         font-variant-numeric:tabular-nums; }}
 .cov-none {{ color:#7d8794; font-style:italic; }}
@@ -503,6 +526,11 @@ def selftest() -> int:
               all(_e(g["opponent"]) in page for g in snap["games"]))
         check("the target dates are called out on the page",
               "Your two dates" in page)
+        check("the credit pool does NOT claim the acts are available",
+              "Available to book" not in page
+              and "not a verified availability list" in page)
+        check("the page states the known gap rather than hiding it",
+              "Known gap" in page)
         check("no unescaped act name can inject markup",
               "<script>" not in render_html(_snap_with_name(snap, "<script>x")))
 
