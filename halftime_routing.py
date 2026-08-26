@@ -108,12 +108,14 @@ VENUE_TIERS = {
         "stage ae", "benedum center", "heinz hall", "roxian theatre",
         "carnegie music hall", "the wylie", "agora theatre", "house of blues",
         "newport music hall", "stambaugh auditorium", "akron civic theatre",
+        "severance music center", "carnegie of homestead",
         "goodyear theater", "ej thomas hall", "warner theatre",
         "metropolitan theatre", "mr. smalls", "mr smalls"),
     "club": (
         "beachland ballroom", "globe iron", "skully's music diner",
         "skullys music diner", "rumba cafe", "a&r music bar", "club cafe",
-        "thunderbird"),
+        "thunderbird", "grog shop", "ace of cups", "king of clubs",
+        "b side liquor lounge"),
 }
 
 # Which tiers could carry a stadium halftime at all.
@@ -123,13 +125,21 @@ DRAW_ORDER = {"credited": 0, "stadium": 1, "arena": 2, "amphitheatre": 3,
               "unknown": 4, "theatre": 5, "club": 6}
 
 
+def _norm_venue(name: str) -> str:
+    """Strip everything but letters and digits before matching. The live sweep
+    returned "E J Thomas Hall", which a plain substring test does not match
+    against "ej thomas hall" — a spacing difference should not decide whether
+    we recognise a room."""
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
 def venue_tier(venue: str) -> str:
-    low = (venue or "").lower()
-    if not low.strip():
+    if not (venue or "").strip():
         return "unknown"
+    low = _norm_venue(venue)
     for tier, names in VENUE_TIERS.items():
         for name in names:
-            if name in low:
+            if _norm_venue(name) in low:
                 return tier
     return "unknown"
 
@@ -157,11 +167,19 @@ def draw_signal(event: Dict, credited_names=()) -> Dict:
                        "than judged small. Worth a look if the name is "
                        "familiar to you.".format(
                            event.get("venue") or "the venue")}
+    # The room measures the SHOW, not the artist. A major act doing an
+    # intimate theatre run reads small here, and that is a real limit of the
+    # proxy rather than a fact about the act — so the page says so instead of
+    # letting the ranking imply something it cannot support.
+    caveat = ("" if tier == "club" else
+              " Note this sizes the SHOW, not the artist — a major act on an "
+              "intimate run looks small by this measure.")
     return {"tier": tier, "plausible": False,
             "label": "{}-scale room".format(tier.capitalize()),
-            "why": "Playing {} — well below stadium draw. Listed because they "
-                   "are genuinely in the area, not as a halftime "
-                   "suggestion.".format(event.get("venue") or "a small room")}
+            "why": "Playing {} — below stadium draw. Listed because they are "
+                   "genuinely in the area, not as a halftime "
+                   "suggestion.{}".format(
+                       event.get("venue") or "a small room", caveat)}
 
 
 def canonical_key(name: str) -> str:
@@ -417,6 +435,16 @@ def selftest() -> int:
           "do not recognise" in draw_signal({"venue": "Some New Room"})["why"])
     check("a missing venue is unknown, not club",
           draw_signal({"venue": ""})["tier"] == "unknown")
+
+    check("spacing does not decide whether we recognise a room",
+          venue_tier("E J Thomas Hall") == venue_tier("EJ Thomas Hall")
+          == "theatre")
+    check("punctuation does not either",
+          venue_tier("Skully\'s Music Diner") == "club")
+    check("a theatre says the room sizes the SHOW, not the artist",
+          "not the artist" in draw_signal({"venue": "E J Thomas Hall"})["why"])
+    check("a club does not carry that caveat — it is small either way",
+          "not the artist" not in draw_signal({"venue": "Rumba Cafe"})["why"])
 
     credited = {canonical_key("Bret Michaels"), canonical_key("Styx")}
     both = draw_signal({"artist": "Bret Michaels", "venue": "Rumba Cafe"},
