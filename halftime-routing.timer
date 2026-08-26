@@ -1,0 +1,20 @@
+[Unit]
+Description=Halftime routing sweep — weekly, ahead of the working week
+
+# Sunday 22:00. WEEKLY, not nightly: announced tour dates move slowly, and each
+# full sweep is ~2 hours of search and model time for data that changes little
+# day to day. Sunday night means the week opens with a fresh board.
+#
+# Slot chosen from a live window-audit, not by eyeballing:
+#   21:30-21:45 com.cirrus.devloop is the last thing before it, and the next
+#   scheduled job of any kind is 02:00 (com.cirrus.daily + opportunity-scout).
+#   That is a four-hour clear runway for a two-hour job, and it is nowhere near
+#   Bill's Monday 04:00/04:30/05:00 client-facing block.
+#
+# Retiming this is NOT `systemctl restart` — see T39.
+[Timer]
+OnCalendar=Sun *-*-* 22:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

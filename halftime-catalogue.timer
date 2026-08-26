@@ -1,14 +1,18 @@
 [Unit]
 Description=Halftime act catalogue — nightly non-band entertainment research
 
-# 05:00 — inside the preferred 02:00-06:00 window (docs/RUNTIME-WINDOWS.md).
-# Slot chosen from a live window-audit, not by eyeballing the calendar:
+# 06:30 — moved from 05:00 on 2026-08-26 (Buddy, S79) because 05:00 collided
+# with entity-kb-weekly-digest, which EMAILS BILL on Mondays. This file was
+# left at 05:00 after that move, so a reinstall would have silently put the job
+# back on top of a client-facing send. Slot chosen from a live window-audit:
 #   02:00 opportunity-scout, 03:00 cirrus-hoaleads, Mon 04:00/04:30 Bill's two
-#   client jobs, 05:30 modelhealth (light). 05:00 is the clear gap, and a ~10
-#   minute run finishes well before modelhealth and long before the 07:30
-#   morning brief, so the night's findings are there to read at breakfast.
+#   client jobs, 05:00 Bill's weekly digest, 06:00 pedagogy. 06:30 is clear,
+#   and a ~15 minute run finishes long before the 07:30 morning brief.
+#
+# Retiming this timer is NOT `systemctl restart` — see T39. Persistent=true
+# means a restart with an old stamp FIRES the job immediately.
 [Timer]
-OnCalendar=*-*-* 05:00:00
+OnCalendar=*-*-* 06:30:00
 Persistent=true
 
 [Install]

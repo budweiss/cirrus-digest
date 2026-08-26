@@ -1,0 +1,21 @@
+[Unit]
+Description=Halftime routing sweep (S79) — who is announced near each Steelers home date
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+# 8 games x 7 metros, each a search + fetches + a model call: the first full
+# sweep took about two hours. Set EXPLICITLY rather than trusting the oneshot
+# default, because a start timeout that kills the job at 90 seconds would leave
+# a half-written routing.json and look like a thin week rather than a failure.
+TimeoutStartSec=4h
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/halftime_routing.py
+
+[Install]
+WantedBy=multi-user.target

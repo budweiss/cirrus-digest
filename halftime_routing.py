@@ -21,6 +21,7 @@ infrastructure that would need its own maintenance and its own 403s.
 Python 3.9-safe (CIRRUS): no PEP-604 unions.
 """
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -355,6 +356,54 @@ def _extract(block: str, creds: Dict):
         return None
 
 
+LOCK_PATH = PROJECT_DIR / "logs" / "halftime_routing.lock"
+
+
+class _Lock:
+    """Refuse to run twice, whoever started it.
+
+    There are now TWO launch paths — the runner (pid-file guarded) and the
+    systemd timer (not) — so the guard has to live in the script rather than in
+    one caller. Two concurrent sweeps would both write routing.json and the
+    loser would silently clobber the winner.
+    """
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path else LOCK_PATH
+        self.fh = None
+
+    def __enter__(self):
+        import fcntl
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(self.path, "w")
+        try:
+            fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.fh.close()
+            self.fh = None
+            return False
+        self.fh.write(str(os.getpid()))
+        self.fh.flush()
+        return True
+
+    def __exit__(self, *exc):
+        if self.fh:
+            try:
+                import fcntl
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.fh.close()
+        return False
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write via a temp file and rename. The dashboard reads this file; a
+    reader must never catch it half-written and conclude the week was thin."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(str(tmp), str(path))
+
+
 def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
         creds: Optional[Dict] = None, out_path: Optional[Path] = None) -> Dict:
     import halftime_dashboard
@@ -372,7 +421,7 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
         result["games"][gid] = sweep_game(game, creds)
     out = Path(out_path) if out_path else OUT_PATH
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(result, indent=2))
+    _write_atomic(out, json.dumps(result, indent=2))
     total = sum(len(v["events"]) for v in result["games"].values())
     log("done: {} game(s) swept, {} show(s) in window".format(
         len(todo), total))
@@ -435,6 +484,23 @@ def selftest() -> int:
           "do not recognise" in draw_signal({"venue": "Some New Room"})["why"])
     check("a missing venue is unknown, not club",
           draw_signal({"venue": ""})["tier"] == "unknown")
+
+    import tempfile as _tmpf
+    with _tmpf.TemporaryDirectory() as _td:
+        lp = Path(_td) / "x.lock"
+        a, b = _Lock(lp), _Lock(lp)
+        check("the first sweep takes the lock", a.__enter__() is True)
+        check("a SECOND sweep is refused, whoever launched it",
+              b.__enter__() is False)
+        a.__exit__()
+        check("the lock is released when the sweep finishes",
+              _Lock(lp).__enter__() is True)
+        op = Path(_td) / "out.json"
+        _write_atomic(op, '{"a":1}')
+        check("an atomic write lands the whole file",
+              json.loads(op.read_text()) == {"a": 1})
+        check("...and leaves no temp file behind",
+              not (Path(_td) / "out.json.tmp").exists())
 
     check("spacing does not decide whether we recognise a room",
           venue_tier("E J Thomas Hall") == venue_tier("EJ Thomas Hall")
@@ -515,7 +581,14 @@ def main() -> int:
     args = sys.argv[1:]
     if "selftest" in args:
         return selftest()
-    res = run(only_targets="--targets" in args)
+    lock = _Lock()
+    if not lock.__enter__():
+        log("another sweep is already running — not starting a second one.")
+        return 0
+    try:
+        res = run(only_targets="--targets" in args)
+    finally:
+        lock.__exit__()
     print(json.dumps(res))
     return 0
 
