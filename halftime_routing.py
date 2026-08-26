@@ -69,6 +69,111 @@ Rules:
 - If nothing qualifies, return []."""
 
 
+
+# ── draw: is this act's scale plausible for a stadium slot ──────────────────
+# The first live sweep put Dent May, Post Animal and Eivor against 1 November.
+# All three really are in the area, so the sweep was right and the
+# PRESENTATION would have been wrong in exactly the way the credit list was:
+# a booker reading a 300-capacity room as a halftime option concludes we do
+# not know the business.
+#
+# TWO SIGNALS, and the second is the better one:
+#
+#   1. THE ROOM. The venue an act is playing is the best public proxy for the
+#      draw it carries. A booker knows these rooms by name, so this reads as
+#      information rather than a score.
+#   2. A SPORTS CREDIT IN OUR OWN CATALOGUE. An act that is BOTH in the area
+#      and has already played a halftime somewhere is the highest-value cell in
+#      the whole dashboard — the intersection of the two pools, which is the
+#      thing neither column can show on its own.
+#
+# The venue table is a hand-written name list, which is the T36 shape and will
+# eventually be out of date. It is acceptable here ONLY because it fails
+# VISIBLE: a room we do not recognise is labelled "scale unknown" and keeps its
+# place in the list, never quietly dropped. An unknown act is a lead we have
+# not sized, not an act we have judged small.
+
+VENUE_TIERS = {
+    "stadium": (
+        "acrisure stadium", "huntington bank field", "milan puskar stadium"),
+    "arena": (
+        "ppg paints arena", "petersen events center", "rocket arena",
+        "rocket mortgage fieldhouse", "nationwide arena",
+        "schottenstein center", "covelli centre", "erie insurance arena",
+        "wvu coliseum"),
+    "amphitheatre": (
+        "the pavilion at star lake", "star lake", "blossom music center",
+        "jacobs pavilion", "kemba live"),
+    "theatre": (
+        "stage ae", "benedum center", "heinz hall", "roxian theatre",
+        "carnegie music hall", "the wylie", "agora theatre", "house of blues",
+        "newport music hall", "stambaugh auditorium", "akron civic theatre",
+        "goodyear theater", "ej thomas hall", "warner theatre",
+        "metropolitan theatre", "mr. smalls", "mr smalls"),
+    "club": (
+        "beachland ballroom", "globe iron", "skully's music diner",
+        "skullys music diner", "rumba cafe", "a&r music bar", "club cafe",
+        "thunderbird"),
+}
+
+# Which tiers could carry a stadium halftime at all.
+_PLAUSIBLE = ("stadium", "arena", "amphitheatre")
+
+DRAW_ORDER = {"credited": 0, "stadium": 1, "arena": 2, "amphitheatre": 3,
+              "unknown": 4, "theatre": 5, "club": 6}
+
+
+def venue_tier(venue: str) -> str:
+    low = (venue or "").lower()
+    if not low.strip():
+        return "unknown"
+    for tier, names in VENUE_TIERS.items():
+        for name in names:
+            if name in low:
+                return tier
+    return "unknown"
+
+
+def draw_signal(event: Dict, credited_names=()) -> Dict:
+    """What we can honestly say about this act's scale."""
+    from_credits = canonical_key(event.get("artist", "")) in set(credited_names)
+    tier = venue_tier(event.get("venue", ""))
+
+    if from_credits:
+        return {"tier": "credited", "plausible": True,
+                "label": "In the area AND has a halftime credit",
+                "why": "This act appears in the credit catalogue as having "
+                       "played a sports slot, and is announced near this "
+                       "date. Both pools at once."}
+    if tier in _PLAUSIBLE:
+        return {"tier": tier, "plausible": True,
+                "label": "{}-scale room".format(tier.capitalize()),
+                "why": "Playing {} — a room whose scale is consistent with a "
+                       "stadium slot.".format(event.get("venue") or "a large room")}
+    if tier == "unknown":
+        return {"tier": "unknown", "plausible": None,
+                "label": "Scale unknown",
+                "why": "We do not recognise {} , so this act is unsized rather "
+                       "than judged small. Worth a look if the name is "
+                       "familiar to you.".format(
+                           event.get("venue") or "the venue")}
+    return {"tier": tier, "plausible": False,
+            "label": "{}-scale room".format(tier.capitalize()),
+            "why": "Playing {} — well below stadium draw. Listed because they "
+                   "are genuinely in the area, not as a halftime "
+                   "suggestion.".format(event.get("venue") or "a small room")}
+
+
+def canonical_key(name: str) -> str:
+    """Match routing artists to catalogue acts the same way the dashboard
+    collapses name variants, so the two pools can be cross-referenced."""
+    import re as _re
+    out = _re.sub(r"\s*\([^)]*\)\s*$", "", (name or "").strip())
+    if out.lower().startswith("the "):
+        out = out[4:]
+    return " ".join(out.lower().split())
+
+
 def log(msg: str) -> None:
     line = "[{}] {}".format(
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
@@ -292,6 +397,46 @@ def selftest() -> int:
     check("the gap is signed, so before and after are distinguishable",
           gap_days("2026-10-29", "2026-11-01") == -3
           and gap_days("2026-11-04", "2026-11-01") == 3)
+
+    # --- draw signal ------------------------------------------------------
+    check("an arena is plausible for a stadium slot",
+          draw_signal({"venue": "PPG Paints Arena"})["plausible"] is True)
+    check("a stadium is plausible",
+          draw_signal({"venue": "Acrisure Stadium"})["tier"] == "stadium")
+    check("an amphitheatre is plausible",
+          draw_signal({"venue": "Blossom Music Center"})["plausible"] is True)
+    check("a 300-capacity club is NOT a halftime draw",
+          draw_signal({"venue": "Rumba Cafe"})["plausible"] is False)
+    check("a theatre is below stadium draw",
+          draw_signal({"venue": "Newport Music Hall"})["plausible"] is False)
+    check("...but a club act is still LISTED, not dropped",
+          "genuinely in the area" in draw_signal({"venue": "Rumba Cafe"})["why"])
+    check("an unrecognised room is UNSIZED, never judged small",
+          draw_signal({"venue": "Some New Room"})["plausible"] is None)
+    check("...and says so, so the list failing behind reality is visible",
+          "do not recognise" in draw_signal({"venue": "Some New Room"})["why"])
+    check("a missing venue is unknown, not club",
+          draw_signal({"venue": ""})["tier"] == "unknown")
+
+    credited = {canonical_key("Bret Michaels"), canonical_key("Styx")}
+    both = draw_signal({"artist": "Bret Michaels", "venue": "Rumba Cafe"},
+                       credited)
+    check("a halftime credit BEATS the room it happens to be playing",
+          both["tier"] == "credited" and both["plausible"] is True)
+    check("...and is named as the intersection of both pools",
+          "Both pools at once" in both["why"])
+    check("'The Band' and 'Band' match for cross-referencing",
+          canonical_key("The Styx") == canonical_key("Styx"))
+    check("a parenthetical does not break the cross-reference",
+          canonical_key("Styx (live)") == canonical_key("Styx"))
+    check("an uncredited act is not falsely credited",
+          draw_signal({"artist": "Dent May", "venue": "Rumba Cafe"},
+                      credited)["tier"] == "club")
+    check("the ordering puts credited acts above every room tier",
+          DRAW_ORDER["credited"] < min(
+              DRAW_ORDER[t] for t in DRAW_ORDER if t != "credited"))
+    check("unknown outranks the tiers we know are too small",
+          DRAW_ORDER["unknown"] < DRAW_ORDER["theatre"] < DRAW_ORDER["club"])
 
     game = {"date": "2026-11-01", "opponent": "Cleveland Browns", "week": 8}
     qs = queries_for(game)

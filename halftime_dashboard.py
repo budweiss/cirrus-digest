@@ -469,6 +469,10 @@ def build_snapshot(db_path: Optional[str] = None,
     games = games if games is not None else HOME_GAMES
     for_hire = _load_acts("for_hire", db_path=db_path)
     routing = _load_routing(routing_path)
+    # Cross-reference key: an act in BOTH pools is the strongest lead there is.
+    import halftime_routing
+    credited_names = {halftime_routing.canonical_key(a["name"])
+                      for a in for_hire}
 
     snap = {"season": SEASON, "team": TEAM, "venue": VENUE,
             "generated_at": _now(), "games": [], "acts_total": len(for_hire)}
@@ -509,7 +513,8 @@ def build_snapshot(db_path: Optional[str] = None,
             else:
                 rows = swept.get("coverage") or []
                 errs = [r for r in rows if r.get("error")]
-                touring = _as_candidates(swept.get("events") or [])
+                touring = _as_candidates(
+                    swept.get("events") or [], credited_names)
                 if rows and len(errs) == len(rows):
                     tr_cov = {"state": FAILED,
                               "swept_at": rows[0].get("swept_at"),
@@ -674,9 +679,17 @@ def market_analysis(snap: Dict) -> List[Dict]:
     return findings
 
 
-def _as_candidates(events: List[Dict]) -> List[Dict]:
+def _as_candidates(events: List[Dict],
+                   credited_names=()) -> List[Dict]:
     """A routing hit, shaped like an act card. One entry per ARTIST — the same
-    act announced in two metros is one option, not two."""
+    act announced in two metros is one option, not two.
+
+    `credited_names` are the acts already in the credit catalogue, so a routing
+    hit that is ALSO a known halftime act can be marked as such. That
+    intersection is the most useful thing on the page and neither column can
+    show it alone.
+    """
+    import halftime_routing
     by_artist = {}
     for ev in events:
         key = canonical_name(ev.get("artist", ""))
@@ -696,10 +709,15 @@ def _as_candidates(events: List[Dict]) -> List[Dict]:
                            "routing": "{} — {}, {}".format(
                                ev.get("date"), where, when)},
                 "also_known_as": []}
+        draw = halftime_routing.draw_signal(ev, credited_names)
+        cand["draw"] = draw
         cand["badges"] = badges_for(cand)
         cand["badges"].append(
             {"kind": "routing", "label": when,
              "why": "{} at {}".format(ev.get("date"), where)})
+        cand["badges"].append(
+            {"kind": "draw" if draw["plausible"] else "draw-small",
+             "label": draw["label"], "why": draw["why"]})
         cand["reach"] = {"state": "unknown",
                          "why": "Announced show near this date."}
         prev = by_artist.get(key)
@@ -708,8 +726,13 @@ def _as_candidates(events: List[Dict]) -> List[Dict]:
                 prev.get("_gap") or 99):
             cand["_gap"] = ev.get("gap")
             by_artist[key] = cand
+    # Draw first, date second. An arena act four days out is a better lead
+    # than a 300-capacity club act on the day.
     return sorted(by_artist.values(),
-                  key=lambda c: (abs(c.get("_gap") or 99), c["name"]))
+                  key=lambda c: (
+                      halftime_routing.DRAW_ORDER.get(
+                          (c.get("draw") or {}).get("tier"), 4),
+                      abs(c.get("_gap") or 99), c["name"]))
 
 
 # ── render ──────────────────────────────────────────────────────────────────
@@ -739,6 +762,10 @@ def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
             _e(act.get("name")), "</div>"]
+    d = act.get("draw") or {}
+    if d.get("why"):
+        bits.append("<div class='{}'>{}</div>".format(
+            "cleared" if d.get("plausible") else "reach", _e(d["why"])))
     r = act.get("reach") or {}
     if r.get("state") in ("marquee_only", "home_market"):
         bits.append("<div class='reach'>{}</div>".format(_e(r.get("why"))))
@@ -960,7 +987,7 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .b-market {{ border-color:var(--gold); color:var(--gold); }}
 .b-patriotic {{ border-color:#7fb3ff; color:#7fb3ff; }}
 .b-nostalgia {{ border-color:#c9a3ff; color:#c9a3ff; }}
-.b-price {{ border-color:#79d19a; color:#79d19a; }}\n.b-routing {{ border-color:#4da3ff; color:#4da3ff; }}
+.b-price {{ border-color:#79d19a; color:#79d19a; }}\n.b-routing {{ border-color:#4da3ff; color:#4da3ff; }}\n.b-draw {{ border-color:#79d19a; color:#79d19a; }}\n.b-draw-small {{ border-color:#6f7b88; color:#6f7b88; }}
 .row {{ font-size:13px; color:var(--dim); margin-top:2px; }}
 .k {{ display:inline-block; min-width:64px; color:#6f7b88; }}
 .empty {{ margin:6px 0 0; font-size:13px; color:var(--dim); }}
@@ -1133,6 +1160,38 @@ def selftest() -> int:
         rpage3 = render_html(rsnap)
         check("the routing hit and its gap reach the page",
               "Near Act" in rpage3 and "1 day(s) before" in rpage3)
+
+        # --- draw ordering in the touring column ------------------------
+        rt2 = Path(tmp) / "routing-draw.json"
+        rt2.write_text(json.dumps({
+            "generated_at": "2026-08-26T00:00:00Z", "window_days": 3,
+            "games": {gid8: {"events": [
+                {"artist": "Club Act", "date": "2026-11-01",
+                 "venue": "Rumba Cafe", "city": "Columbus, OH",
+                 "metro": "Columbus, OH", "miles": 185, "gap": 0},
+                {"artist": "Arena Act", "date": "2026-11-04",
+                 "venue": "PPG Paints Arena", "city": "Pittsburgh, PA",
+                 "metro": "Pittsburgh, PA", "miles": 0, "gap": 3},
+                {"artist": "Test Patriot Band", "date": "2026-11-02",
+                 "venue": "Rumba Cafe", "city": "Columbus, OH",
+                 "metro": "Columbus, OH", "miles": 185, "gap": 1}],
+                "coverage": [{"metro": "Pittsburgh, PA", "miles": 0,
+                              "sources": 2, "found": 3, "error": None,
+                              "swept_at": "2026-08-26T00:00:00Z"}]}}}))
+        dsnap = build_snapshot(db_path=db, routing_path=rt2)
+        d8 = next(g for g in dsnap["games"] if g["week"] == 8)
+        order = [c["name"] for c in d8["candidates"]["touring"]]
+        check("an act in BOTH pools leads the touring column",
+              order[0] == "Test Patriot Band")
+        check("an arena act four days out beats a club act on the day",
+              order.index("Arena Act") < order.index("Club Act"))
+        check("the club act is still listed, not filtered away",
+              "Club Act" in order)
+        dpage = render_html(dsnap)
+        check("the cross-pool act says why it is top",
+              "Both pools at once" in dpage)
+        check("the small room is explained, not silently ranked down",
+              "well below stadium draw" in dpage)
 
         # --- reachability: the credit-list problem -----------------------
         def _rc(name, clients, cat="other music", home=""):
