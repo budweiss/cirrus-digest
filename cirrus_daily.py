@@ -999,7 +999,7 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         if paras:
             text = re.sub(r"\s+", " ", " ".join(paras)).strip()
             if len(text) > 200:
-                return text[:MAX_ARTICLE], is_paywalled
+                return text[:MAX_ARTICLE], is_paywalled  # T40-OK: LLM cost control, not an operator view; marker would change prompt text on a live digest (worklisted: log the cut instead)
 
     except requests.exceptions.Timeout:
         _LAST_FETCH_REASON = "timeout"

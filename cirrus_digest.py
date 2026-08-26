@@ -329,10 +329,10 @@ def fetch_ref_content(url: str, timeout: int = 30) -> str:
             if el:
                 text = re.sub(r"\s+", " ", el.get_text()).strip()
                 if len(text) > 200:
-                    return text[:MAX_ARTICLE]
+                    return text[:MAX_ARTICLE]  # T40-OK: LLM cost control, not an operator view; marker would change prompt text on a live digest (worklisted: log the cut instead)
         paras = [p.get_text() for p in soup.find_all("p") if len(p.get_text()) > 50]
         if paras:
-            return re.sub(r"\s+", " ", " ".join(paras)).strip()[:MAX_ARTICLE]
+            return re.sub(r"\s+", " ", " ".join(paras)).strip()[:MAX_ARTICLE]  # T40-OK: LLM cost control, not an operator view; marker would change prompt text on a live digest (worklisted: log the cut instead)
     except requests.exceptions.Timeout:
         log(f"    Fetch timed out: {url[:70]}")
     except Exception as e:

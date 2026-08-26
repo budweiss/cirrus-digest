@@ -223,7 +223,20 @@ def body_text(msg) -> str:
             plain = _decode(msg)
 
     text = plain or re.sub(r"<[^>]+>", " ", html)
-    return re.sub(r"\s+", " ", text).strip()[:BODY_HEAD_CHARS]
+    clean = re.sub(r"\s+", " ", text).strip()
+    if len(clean) <= BODY_HEAD_CHARS:
+        return clean
+    # T40 (S79): say so when we cut. This limit silently swallowed the last
+    # ~2,300 characters of a client's reply on Project Halftime — a booking
+    # agent's priced roster, the biggest requirement in the message — and every
+    # operator view of it ended mid-sentence looking like a complete email.
+    # The marker lands past the [:300]/[:400] slices that feed classification
+    # and the stored body_head, so it changes what a HUMAN reads and not what
+    # the classifier sees.
+    return (clean[:BODY_HEAD_CHARS] +
+            f" [TRUNCATED — {len(clean)} chars total, showing "
+            f"{BODY_HEAD_CHARS}. Full body: runner gmail-inbox "
+            f"args.from=<sender> args.limit=20000]")
 
 
 def parse_request_title(subject: str) -> str:
