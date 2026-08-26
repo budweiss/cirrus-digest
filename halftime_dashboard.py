@@ -170,24 +170,39 @@ def badges_for(act: Dict) -> List[Dict]:
 
 
 def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
-    """Order candidates for ONE game. The target flag on a game decides which
-    badge leads — for 11/1 that is the patriotic tie, everywhere else the
-    market tie. Nothing is filtered out by ranking; a booker gets to see the
-    tail and decide."""
+    """Order candidates for ONE game.
+
+    The game's target decides what leads. For 11/1 that is the military tie;
+    everywhere else it is the Pittsburgh tie, then the 45+ nostalgia fit that
+    Justin named as the core of his crowd.
+
+    A patriotic-only act is DEMOTED on a game with no patriotic ask. Without
+    that, ranking fell through to alphabetical order and the 122nd Army Band
+    led every single card — including a Week 1 game in September, which is the
+    sort of suggestion that tells a booker the list is not really ranked.
+
+    Nothing is filtered out by ranking; only the top few are shown, and the
+    full list is on the page.
+    """
     target = (game.get("target") or "").lower()
-    lead = "patriotic" if "military" in target or "patriot" in target else "market"
+    wants_patriotic = "military" in target or "patriot" in target
+    lead = "patriotic" if wants_patriotic else "market"
 
     def key(act):
         kinds = {b["kind"] for b in act.get("badges", [])}
+        # An act whose ONLY claim is the patriotic one is a Salute to Service
+        # booking; it should not head a September afternoon game.
+        patriotic_only = ("patriotic" in kinds
+                          and not (kinds - {"patriotic", "credit"}))
         return (0 if lead in kinds else 1,
+                1 if (patriotic_only and not wants_patriotic) else 0,
                 0 if "market" in kinds else 1,
+                0 if "nostalgia" in kinds else 1,
                 0 if "credit" in kinds else 1,
                 0 if "price" in kinds else 1,
                 act.get("name", ""))
 
     return sorted(acts, key=key)
-
-
 
 
 # ── the same act, twice ─────────────────────────────────────────────────────
@@ -901,6 +916,34 @@ def selftest() -> int:
               and "+6 more in the credit list" in big)
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
+
+        # --- ranking ---------------------------------------------------
+        def _ra(name, cat, home=""):
+            a = {"name": name, "fields": {"category": cat, "home_base": home,
+                                          "clients": "Some Team", "style": ""}}
+            a["badges"] = badges_for(a)
+            return a
+
+        army = _ra("122nd Army Band", "military / patriotic")
+        rocker2 = _ra("Zed Rock Act", "classic rock")
+        local = _ra("Zeta Local Act", "regional / market", "Pittsburgh, PA")
+        plain = _ra("Aaa Plain Act", "other music")
+        pool = [army, rocker2, local, plain]
+
+        sept = next(g for g in HOME_GAMES if g["week"] == 1)
+        nov = next(g for g in HOME_GAMES if g["week"] == 8)
+        check("on a patriotic date the military act LEADS",
+              rank_for_game(nov, pool)[0]["name"] == "122nd Army Band")
+        check("on an ordinary date it does NOT lead, despite sorting first "
+              "alphabetically",
+              rank_for_game(sept, pool)[0]["name"] != "122nd Army Band")
+        check("on an ordinary date the Pittsburgh tie leads",
+              rank_for_game(sept, pool)[0]["name"] == "Zeta Local Act")
+        check("nostalgia fit outranks an unbadged act",
+              rank_for_game(sept, pool).index(rocker2)
+              < rank_for_game(sept, pool).index(plain))
+        check("ranking never drops an act, it only orders them",
+              len(rank_for_game(sept, pool)) == len(pool))
 
         # --- name variants ---------------------------------------------
         check("a trailing parenthetical is the same act",
