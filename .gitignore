@@ -42,3 +42,72 @@ config/business_idea_trial_feeds.json
 # transient deploy trigger — written by Cowork, consumed and removed by
 # cowork-deploy.sh. Committing it produces a spurious add/delete pair (S71).
 .deploy-job
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S79 (2026-08-26) — the untracked-path backlog that has been threatening every
+# deploy since S70.
+#
+# `git pull --ff-only` aborts when an incoming commit adds a path that already
+# exists UNTRACKED on the box. That is the S70 failure: CIRRUS silently refused
+# every pull for days while `deploy` reported success. deploy-drift has warned
+# "20+ modified/untracked path(s)" on BOTH boxes ever since, and it sat on
+# carry-over untouched because the check named a count and never the paths.
+#
+# Nothing below is deleted — ignoring a file only changes git's view of it, and
+# git will cleanly overwrite an IGNORED path during a merge instead of aborting.
+# That is exactly the property we need.
+#
+# Everything here was checked before being listed: each is either generated at
+# runtime, a backup, build output, per-box config, or a Cowork-owned script that
+# has no business in this repo.
+
+# Backups and pre-change snapshots. Every *.bak-<date> under config/ came from
+# a tool that rewrites a config in place, plus a few hand-made ones.
+*.bak
+*.bak-*
+*.pre-*
+
+# Virtualenv (CUMULUS builds its own; it is not source).
+.venv/
+
+# Build/report output. A bare `out/` matches at any depth, which covers
+# newdev/out/, hoa_leads/out/ and snowbrief/out/ as well as the top-level one.
+out/
+bench/
+newdev/*.xlsx
+property-management/
+
+# Stray logs outside logs/ (that directory is already ignored above).
+*.log
+
+# Per-box RUNTIME state, same reasoning as intake_state.json above — each box
+# owns its own copy and committing one would overwrite the other's.
+#   topics-pedagogy.json  is CREATED by intake.py from client requests
+#   vendor_mail_ledger.json / cookie_watchlist.json are ledgers written by jobs
+#   pedagogy_state.json    is a per-box cursor
+config/topics-pedagogy.json
+config/pedagogy_state.json
+config/vendor_mail_ledger.json
+config/cookie_watchlist.json
+
+# Per-box provisioning, deliberately NOT shared: cumulus-status checks that this
+# exists on the box, and the two boxes hold different values.
+provision/platform.env
+
+# Cowork-owned scripts that get copied onto the boxes by the credential
+# tooling. They live in ~/Documents/Cowork/runner/ and are versioned THERE;
+# a copy on the box is a deployment artefact, not source for this repo.
+apply_creds_encrypted.py
+creds_crypto.py
+materialize_credentials.sh
+materialize_credentials_cirrus.sh
+deploy-cirrus.sh
+
+# One-off experiments left on CUMULUS. Ignored rather than deleted — they are
+# somebody's working notes, and this file's job is to unblock deploys, not to
+# decide what is worth keeping.
+apify_*.py
+x_scan.py
+
+# Referenced by nothing in the tree; a leftover next to the real sources.json.
+cirrus-digest-sources.json
