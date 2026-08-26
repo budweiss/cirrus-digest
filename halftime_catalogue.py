@@ -213,6 +213,34 @@ def log(msg: str) -> None:
         pass          # logging must never take the job down
 
 
+# The prompt already says "EXCLUDE Super Bowl halftime performers", and the
+# model put Green Day in the catalogue anyway on a Super Bowl LX credit. An
+# instruction is not a guard (rule 3b): a marquee event is centrally booked and
+# is no evidence at all that an act would play a club's Sunday afternoon
+# halftime, so the rule is enforced in code where it cannot be talked out of.
+# Rejects only when EVERY credit is marquee — an act with both a Super Bowl and
+# a club credit is still a real club candidate.
+_MARQUEE_RX = re.compile(
+    r"\b(super ?bowl|all[- ]star|nba finals|stanley cup|world series|"
+    r"pro bowl|olympic|halftime show at the super bowl)\b", re.IGNORECASE)
+_CLUB_RX = re.compile(
+    r"\b(steelers|bengals|browns|ravens|lions|packers|cowboys|giants|"
+    r"commanders|texans|broncos|eagles|bills|chiefs|49ers|seahawks|"
+    r"vikings|bears|saints|falcons|panthers|buccaneers|cardinals|rams|"
+    r"chargers|raiders|jets|dolphins|patriots|titans|colts|jaguars|"
+    r"university|college|state)\b", re.IGNORECASE)
+
+
+def marquee_only(clients: str) -> bool:
+    """Every credit is a centrally-booked marquee event, none is a club slot."""
+    text = clients or ""
+    if not _MARQUEE_RX.search(text):
+        return False
+    # A club name alongside it means there is real club evidence too. Strip the
+    # marquee phrases first so "Super Bowl LX" cannot itself look club-ish.
+    return not _CLUB_RX.search(_MARQUEE_RX.sub(" ", text))
+
+
 def looks_like_band(name: str) -> bool:
     """Is this act the thing we were explicitly told to filter out?"""
     return bool(_BAND_RX.search(name or ""))
@@ -358,7 +386,8 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         json.loads((PROJECT_DIR / "config/credentials.json").read_text()))
 
     stats = {"angles": 0, "sources": 0, "found": 0, "new": 0, "updated": 0,
-             "bands_rejected": 0, "escalated": 0, "local": 0}
+             "bands_rejected": 0, "marquee_rejected": 0,
+             "escalated": 0, "local": 0}
 
     for pool, category, query in angles_for_today(angles, pool=pool):
         stats["angles"] += 1
@@ -394,6 +423,10 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         for act in acts:
             if looks_like_band(act["name"]):
                 stats["bands_rejected"] += 1
+                continue
+            if pool == "for_hire_music" and marquee_only(act.get("clients", "")):
+                stats["marquee_rejected"] += 1
+                log(f"    rejected (marquee-only credit): {act['name']}")
                 continue
             stats["found"] += 1
             slug = slug_for(act["name"])
@@ -525,6 +558,20 @@ def selftest() -> int:
           "Renegade" in _MUSIC_SYSTEM)
     check("team-tradition angles actually exist in the rotation",
           any(a[1] == "team tradition" for a in SEARCH_ANGLES))
+    check("a Super Bowl-only credit is rejected, not just discouraged",
+          marquee_only("Super Bowl LX 2026"))
+    check("an NBA All-Star-only credit is rejected",
+          marquee_only("NBA All-Star Game 2026 at Intuit Dome"))
+    check("an NBA Finals-only credit is rejected",
+          marquee_only("2026 NBA Finals Game 4 halftime at Madison Square Garden"))
+    check("a real club credit is KEPT",
+          not marquee_only("Detroit Lions Thanksgiving Classic 2025"))
+    check("a college credit is KEPT",
+          not marquee_only("Ohio State University homecoming"))
+    check("an act with BOTH a marquee and a club credit is kept",
+          not marquee_only("Super Bowl LX 2026; Pittsburgh Steelers halftime"))
+    check("no credit at all is not a marquee rejection",
+          not marquee_only(""))
     check("the music prompt asks for a style, which the rap rule needs",
           '"style"' in _MUSIC_SYSTEM)
     check("the prompt tells the model an EMPTY style is better than a guess",

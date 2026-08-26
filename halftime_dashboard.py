@@ -37,6 +37,7 @@ import entity_kb
 KB_PROJECT = "halftime_acts"
 PROJECT_DIR = Path(__file__).resolve().parent
 OUT_DIR = PROJECT_DIR / "out" / "halftime"
+ROUTING_PATH = OUT_DIR / "routing.json"
 
 SEASON = 2026
 TEAM = "Pittsburgh Steelers"
@@ -95,7 +96,8 @@ POOL_LABEL = {"touring": "Routing through",
 PER_GAME_SHOWN = 3
 
 POOL_SUB = {
-    "touring": "Acts whose announced tour passes near this date.",
+    "touring": "Acts with an announced show within 3 days of kickoff and "
+               "inside the 200-mile radius — they are already in the area.",
     "for_hire": "A credit list, not a verified availability list — every act "
                 "here has performed a halftime or in-game slot somewhere. "
                 "Whether a given one still takes one-off bookings is the phone "
@@ -190,11 +192,13 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
 
     def key(act):
         kinds = {b["kind"] for b in act.get("badges", [])}
+        reach = REACH_ORDER.get((act.get("reach") or {}).get("state"), 2)
         # An act whose ONLY claim is the patriotic one is a Salute to Service
         # booking; it should not head a September afternoon game.
         patriotic_only = ("patriotic" in kinds
                           and not (kinds - {"patriotic", "credit"}))
         return (0 if lead in kinds else 1,
+                reach,
                 1 if (patriotic_only and not wants_patriotic) else 0,
                 0 if "market" in kinds else 1,
                 0 if "nostalgia" in kinds else 1,
@@ -257,6 +261,74 @@ def dedupe_acts(acts: List[Dict]) -> List[Dict]:
             | ({drop.get("name")} - {keep.get("name")}))
         by_key[key] = merged
     return sorted(by_key.values(), key=lambda a: a.get("name", ""))
+
+
+
+# ── how reachable is this act, really ───────────────────────────────────────
+# The first build offered Green Day, Eminem, Wu-Tang and Ludacris against
+# Steelers home games. Every one has a genuine sports credit, so the catalogue
+# was right and the PRESENTATION was wrong: a booker reading those as options
+# concludes we do not understand his market, which is precisely the complaint
+# Justin already made.
+#
+# The credit itself says which it is, and the distinction is not a judgement
+# call:
+#   * a MARQUEE credit (Super Bowl, All-Star, Finals) is a centrally-booked
+#     event and no evidence at all about a club's Sunday afternoon slot;
+#   * a club credit in the act's OWN home market is a hometown booking, which
+#     is the league's dominant pattern — evidence that Detroit booked Detroit,
+#     not that the act travels;
+#   * a club credit in OUR market is the strongest thing available.
+#
+# Nothing is deleted. Each act carries its reachability and the reason, and the
+# weak ones sort to the bottom instead of leading the card.
+
+_MARQUEE = ("super bowl", "all-star", "all star", "nba finals", "stanley cup",
+            "world series", "pro bowl", "olympic")
+_OURS = ("steelers", "pittsburgh", "acrisure", "heinz field", "penguins",
+         "pirates")
+
+REACH_ORDER = {"our_market": 0, "travels": 1, "unknown": 2,
+               "home_market": 3, "marquee_only": 4}
+
+
+def _city_words(home_base: str) -> set:
+    """City tokens from a home base, ignoring the state abbreviation."""
+    head = (home_base or "").split(",")[0]
+    return {w.lower() for w in head.split() if len(w) > 3}
+
+
+def reachability(act: Dict) -> Dict:
+    fields = act.get("fields") or {}
+    clients = (fields.get("clients") or "").strip()
+    low = clients.lower()
+    cat = (fields.get("category") or "").lower()
+
+    if not clients:
+        return {"state": "unknown", "why": "No credit recorded yet."}
+    if any(o in low for o in _OURS):
+        return {"state": "our_market",
+                "why": "Has played for a Pittsburgh team — the strongest "
+                       "evidence available."}
+
+    marquee = any(m in low for m in _MARQUEE)
+    if marquee:
+        return {"state": "marquee_only",
+                "why": "Credit is a centrally-booked marquee event ({}). That "
+                       "says nothing about whether they would play a club's "
+                       "regular-season halftime.".format(clients[:60])}
+
+    # A service band or a heritage act travels by definition; a hometown
+    # headliner booked by its own club does not.
+    travels = ("military" in cat or "patriotic" in cat or "tribute" in cat
+               or "team tradition" in cat)
+    if not travels and _city_words(fields.get("home_base", "")) & set(low.split()):
+        return {"state": "home_market",
+                "why": "Played their OWN market's club ({}). That is the "
+                       "league's hometown pattern — evidence the club booked "
+                       "local, not that the act travels.".format(clients[:50])}
+    return {"state": "travels",
+            "why": "Club credit outside their home market."}
 
 
 # ── R12: the rap rule ───────────────────────────────────────────────────────
@@ -356,6 +428,7 @@ def _load_acts(pool: str, db_path: Optional[str] = None) -> List[Dict]:
         act = {"slug": row.get("slug"), "name": row.get("name"),
                "fields": fields, "last_updated": row.get("last_updated")}
         act["badges"] = badges_for(act)
+        act["reach"] = reachability(act)
         out.append(act)
     return dedupe_acts(out)
 
@@ -365,11 +438,26 @@ def _kb_pool(pool: str) -> str:
     return "for_hire_music" if pool == "for_hire" else "touring"
 
 
+def _load_routing(path: Optional[Path] = None) -> Dict:
+    """The routing sweep's output, or {} if it has never run.
+
+    An ABSENT file and an EMPTY sweep are different answers and must stay
+    different all the way to the page: no file means nobody looked.
+    """
+    path = Path(path) if path else ROUTING_PATH
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
 def build_snapshot(db_path: Optional[str] = None,
-                   games: Optional[List[Dict]] = None) -> Dict:
+                   games: Optional[List[Dict]] = None,
+                   routing_path: Optional[Path] = None) -> Dict:
     """Everything the page needs, in one file."""
     games = games if games is not None else HOME_GAMES
     for_hire = _load_acts("for_hire", db_path=db_path)
+    routing = _load_routing(routing_path)
 
     snap = {"season": SEASON, "team": TEAM, "venue": VENUE,
             "generated_at": _now(), "games": [], "acts_total": len(for_hire)}
@@ -398,19 +486,47 @@ def build_snapshot(db_path: Optional[str] = None,
 
         # TOURING: not built yet. Saying so is the requirement (R4); pretending
         # a blank cell means "nothing out there" is the failure it guards.
+        touring = []
         if entry["at_venue"]:
-            tr_cov = {"state": NOT_SWEPT, "swept_at": None,
-                      "sources": None, "found": 0,
-                      "note": "Routing sweep not built yet — no source has "
-                              "been checked for this date. This is NOT a "
-                              "finding of 'no acts available'."}
+            swept = (routing.get("games") or {}).get(gid)
+            if not swept:
+                tr_cov = {"state": NOT_SWEPT, "swept_at": None,
+                          "sources": None, "found": 0,
+                          "note": "No routing sweep has run for this date. "
+                                  "This is NOT a finding of 'no acts "
+                                  "available'."}
+            else:
+                rows = swept.get("coverage") or []
+                errs = [r for r in rows if r.get("error")]
+                touring = _as_candidates(swept.get("events") or [])
+                if rows and len(errs) == len(rows):
+                    tr_cov = {"state": FAILED,
+                              "swept_at": rows[0].get("swept_at"),
+                              "sources": "{} metro(s)".format(len(rows)),
+                              "found": 0,
+                              "note": "Every source failed: {}".format(
+                                  errs[0].get("error", ""))[:180]}
+                else:
+                    tr_cov = {
+                        "state": SWEPT,
+                        "swept_at": rows[0].get("swept_at") if rows else None,
+                        "sources": "{} metro(s) within {} mi".format(
+                            len(rows), max((r.get("miles") or 0)
+                                           for r in rows) if rows else 0),
+                        "found": len(touring),
+                        "note": "Announced shows within {} days of kickoff. "
+                                "{} of {} metro searches returned nothing."
+                                .format(routing.get("window_days", 3),
+                                        len([r for r in rows
+                                             if not r.get("found")]),
+                                        len(rows))}
         else:
             tr_cov = {"state": NOT_APPLICABLE, "swept_at": None,
                       "sources": None, "found": 0,
                       "note": "Staged in Paris — routing to Acrisure does not "
                               "apply."}
 
-        entry["candidates"] = {"for_hire": fh, "touring": []}
+        entry["candidates"] = {"for_hire": fh, "touring": touring}
         entry["held"] = {"for_hire": fh_held, "touring": []}
         entry["coverage"] = {"for_hire": fh_cov, "touring": tr_cov}
         snap["games"].append(entry)
@@ -547,6 +663,44 @@ def market_analysis(snap: Dict) -> List[Dict]:
     return findings
 
 
+def _as_candidates(events: List[Dict]) -> List[Dict]:
+    """A routing hit, shaped like an act card. One entry per ARTIST — the same
+    act announced in two metros is one option, not two."""
+    by_artist = {}
+    for ev in events:
+        key = canonical_name(ev.get("artist", ""))
+        if not key:
+            continue
+        gap = ev.get("gap")
+        when = ("same day" if gap == 0 else
+                "{} day(s) {}".format(abs(gap), "before" if gap < 0 else "after")
+                if isinstance(gap, int) else "date unclear")
+        where = "{}{}".format(
+            ev.get("venue") or ev.get("city") or ev.get("metro", ""),
+            "" if not ev.get("miles") else " ({} mi)".format(ev["miles"]))
+        cand = {"name": ev.get("artist"),
+                "fields": {"clients": "", "category": "touring",
+                           "home_base": ev.get("city", ""),
+                           "style": "",
+                           "routing": "{} — {}, {}".format(
+                               ev.get("date"), where, when)},
+                "also_known_as": []}
+        cand["badges"] = badges_for(cand)
+        cand["badges"].append(
+            {"kind": "routing", "label": when,
+             "why": "{} at {}".format(ev.get("date"), where)})
+        cand["reach"] = {"state": "unknown",
+                         "why": "Announced show near this date."}
+        prev = by_artist.get(key)
+        # Prefer the closest date, then the nearest metro.
+        if prev is None or abs(ev.get("gap") or 99) < abs(
+                prev.get("_gap") or 99):
+            cand["_gap"] = ev.get("gap")
+            by_artist[key] = cand
+    return sorted(by_artist.values(),
+                  key=lambda c: (abs(c.get("_gap") or 99), c["name"]))
+
+
 # ── render ──────────────────────────────────────────────────────────────────
 
 def _e(s) -> str:
@@ -574,6 +728,11 @@ def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
             _e(act.get("name")), "</div>"]
+    r = act.get("reach") or {}
+    if r.get("state") in ("marquee_only", "home_market"):
+        bits.append("<div class='reach'>{}</div>".format(_e(r.get("why"))))
+    elif r.get("state") == "our_market":
+        bits.append("<div class='cleared'>{}</div>".format(_e(r.get("why"))))
     if act.get("also_known_as"):
         bits.append("<div class='aka'>also listed as: {}</div>".format(
             _e(", ".join(act["also_known_as"]))))
@@ -587,8 +746,10 @@ def _act_card(act: Dict) -> str:
             bits.append("<span class='badge b-{}' title='{}'>{}</span>".format(
                 _e(b["kind"]), _e(b["why"]), _e(b["label"])))
         bits.append("</div>")
-    for label, key in (("Fee", "fee_note"), ("Base", "home_base"),
-                       ("Credits", "clients"), ("Booking", "booking_contact")):
+    for label, key in (("Playing", "routing"), ("Fee", "fee_note"),
+                       ("Base", "home_base"),
+                       ("Credits", "clients"),
+                       ("Booking", "booking_contact")):
         val = (fields.get(key) or "").strip()
         if val:
             bits.append("<div class='row'><span class='k'>{}</span>"
@@ -788,7 +949,7 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .b-market {{ border-color:var(--gold); color:var(--gold); }}
 .b-patriotic {{ border-color:#7fb3ff; color:#7fb3ff; }}
 .b-nostalgia {{ border-color:#c9a3ff; color:#c9a3ff; }}
-.b-price {{ border-color:#79d19a; color:#79d19a; }}
+.b-price {{ border-color:#79d19a; color:#79d19a; }}\n.b-routing {{ border-color:#4da3ff; color:#4da3ff; }}
 .row {{ font-size:13px; color:var(--dim); margin-top:2px; }}
 .k {{ display:inline-block; min-width:64px; color:#6f7b88; }}
 .empty {{ margin:6px 0 0; font-size:13px; color:var(--dim); }}
@@ -799,7 +960,7 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .more {{ margin:8px 0 0; font-size:12px; color:#7d8794; }}
 .cleared {{ margin:5px 0 2px; font-size:12px; color:#79d19a; }}
 .held {{ margin-top:10px; font-size:13px; }}
-.held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.aka {{ font-size:12px; color:#6f7b88; font-style:italic; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
+.held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.aka {{ font-size:12px; color:#6f7b88; font-style:italic; }}\n.reach {{ margin:5px 0 2px; font-size:12px; color:#e0a03a; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
@@ -916,6 +1077,95 @@ def selftest() -> int:
               and "+6 more in the credit list" in big)
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
+
+        # --- routing feeds the touring column ---------------------------
+        import tempfile as _tf
+        rt = Path(tmp) / "routing.json"
+        gid8 = game_id(next(g for g in HOME_GAMES if g["week"] == 8))
+        rt.write_text(json.dumps({
+            "generated_at": "2026-08-26T00:00:00Z", "window_days": 3,
+            "games": {gid8: {
+                "events": [
+                    {"artist": "Near Act", "date": "2026-10-31",
+                     "venue": "Stage AE", "city": "Pittsburgh, PA",
+                     "metro": "Pittsburgh, PA", "miles": 0, "gap": -1},
+                    {"artist": "Near Act", "date": "2026-11-03",
+                     "venue": "Rocket", "city": "Cleveland, OH",
+                     "metro": "Cleveland, OH", "miles": 135, "gap": 2}],
+                "coverage": [
+                    {"metro": "Pittsburgh, PA", "miles": 0, "sources": 2,
+                     "found": 1, "error": None,
+                     "swept_at": "2026-08-26T00:00:00Z"},
+                    {"metro": "Cleveland, OH", "miles": 135, "sources": 1,
+                     "found": 1, "error": None,
+                     "swept_at": "2026-08-26T00:00:00Z"}]}}}))
+        rsnap = build_snapshot(db_path=db, routing_path=rt)
+        w8 = next(g for g in rsnap["games"] if g["week"] == 8)
+        w1 = next(g for g in rsnap["games"] if g["week"] == 1)
+        check("a swept game shows its routing hits",
+              [c["name"] for c in w8["candidates"]["touring"]] == ["Near Act"])
+        check("one artist in two metros is ONE option, not two",
+              len(w8["candidates"]["touring"]) == 1)
+        check("...and it keeps the CLOSEST date",
+              "2026-10-31" in w8["candidates"]["touring"][0]["fields"]["routing"])
+        check("a swept game reports coverage, not 'not searched'",
+              w8["coverage"]["touring"]["state"] == SWEPT)
+        check("an UNSWEPT game still says nobody looked",
+              w1["coverage"]["touring"]["state"] == NOT_SWEPT)
+        check("a sweep where every metro failed is FAILED, not empty",
+              build_snapshot(db_path=db, routing_path=_fail_routing(
+                  Path(tmp), gid8))["games"][0] is not None
+              and next(g for g in build_snapshot(
+                  db_path=db, routing_path=_fail_routing(Path(tmp), gid8)
+              )["games"] if g["week"] == 8
+              )["coverage"]["touring"]["state"] == FAILED)
+        rpage3 = render_html(rsnap)
+        check("the routing hit and its gap reach the page",
+              "Near Act" in rpage3 and "1 day(s) before" in rpage3)
+
+        # --- reachability: the credit-list problem -----------------------
+        def _rc(name, clients, cat="other music", home=""):
+            return {"name": name, "fields": {"clients": clients,
+                                             "category": cat,
+                                             "home_base": home}}
+
+        check("a Pittsburgh club credit is the strongest state",
+              reachability(_rc("B", "Pittsburgh Steelers"))["state"]
+              == "our_market")
+        check("a Super Bowl credit is NOT evidence of club availability",
+              reachability(_rc("G", "Super Bowl LX 2026"))["state"]
+              == "marquee_only")
+        check("an NBA All-Star credit is treated the same way",
+              reachability(_rc("L", "NBA All-Star Game 2026"))["state"]
+              == "marquee_only")
+        check("a hometown act playing its OWN club is demoted, with the reason",
+              reachability(_rc("E", "Detroit Lions Thanksgiving Classic",
+                               home="Detroit, MI"))["state"] == "home_market")
+        check("...and the reason names the league's hometown pattern",
+              "hometown pattern" in reachability(
+                  _rc("E", "Detroit Lions", home="Detroit, MI"))["why"])
+        check("a club credit outside the home market counts as travelling",
+              reachability(_rc("X", "New York Giants",
+                               home="Nashville, TN"))["state"] == "travels")
+        check("a service band travels even in its own state",
+              reachability(_rc("N", "Washington Commanders",
+                               cat="military / patriotic",
+                               home="Washington, DC"))["state"] == "travels")
+        check("no credit reads as unknown, never as unreachable",
+              reachability(_rc("Q", ""))["state"] == "unknown")
+
+        reach_pool = [
+            dict(_rc("Marquee Act", "Super Bowl LX 2026"), badges=[]),
+            dict(_rc("Steelers Act", "Pittsburgh Steelers"), badges=[]),
+        ]
+        for a in reach_pool:
+            a["reach"] = reachability(a)
+        ordered = rank_for_game(HOME_GAMES[0], reach_pool)
+        check("a marquee-only act does NOT outrank a Pittsburgh credit",
+              ordered[0]["name"] == "Steelers Act")
+        rpage2 = render_html(build_snapshot(db_path=db))
+        check("reachability is EXPLAINED on the page, not applied invisibly",
+              "reach" in rpage2 or "strongest evidence available" in rpage2)
 
         # --- ranking ---------------------------------------------------
         def _ra(name, cat, home=""):
@@ -1041,6 +1291,18 @@ def selftest() -> int:
         return 1
     print("ALL PASS")
     return 0
+
+
+def _fail_routing(tmp: Path, gid: str) -> Path:
+    """A sweep where every metro errored — used by the selftest."""
+    path = tmp / "routing-fail.json"
+    path.write_text(json.dumps({
+        "generated_at": "2026-08-26T00:00:00Z", "window_days": 3,
+        "games": {gid: {"events": [], "coverage": [
+            {"metro": "Pittsburgh, PA", "miles": 0, "sources": 0, "found": 0,
+             "error": "no fetchable source",
+             "swept_at": "2026-08-26T00:00:00Z"}]}}}))
+    return path
 
 
 def _snap_with_name(snap: Dict, name: str) -> Dict:
