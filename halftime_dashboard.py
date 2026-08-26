@@ -307,6 +307,17 @@ def reachability(act: Dict) -> Dict:
     if not clients:
         return {"state": "unknown", "why": "No credit recorded yet."}
     if any(o in low for o in _OURS):
+        # A TEAM-TRADITION act's tie is its SONG, not a performance. Styx came
+        # into the catalogue with clients="Pittsburgh Steelers" because
+        # "Renegade" is the Acrisure ritual — and reading that field as a
+        # credit made the page say Styx had PLAYED for the Steelers, which is
+        # false. The tie is real and worth ranking on; the claim about it has
+        # to be true.
+        if "team tradition" in cat:
+            return {"state": "our_market",
+                    "why": "Their music is an established tradition at a "
+                           "Pittsburgh team — the tie is the song, not a "
+                           "past booking."}
         return {"state": "our_market",
                 "why": "Has played for a Pittsburgh team — the strongest "
                        "evidence available."}
@@ -1153,6 +1164,17 @@ def selftest() -> int:
                                home="Washington, DC"))["state"] == "travels")
         check("no credit reads as unknown, never as unreachable",
               reachability(_rc("Q", ""))["state"] == "unknown")
+        styx = reachability(_rc("Styx", "Pittsburgh Steelers",
+                                cat="team tradition"))
+        check("a team-tradition act ranks as our-market",
+              styx["state"] == "our_market")
+        check("...but is NOT described as having played for the team",
+              "played" not in styx["why"].lower()
+              and "the tie is the song" in styx["why"])
+        check("a genuine Pittsburgh performer IS described as having played",
+              "Has played" in reachability(
+                  _rc("BM", "Pittsburgh Steelers",
+                      cat="nostalgia music"))["why"])
 
         reach_pool = [
             dict(_rc("Marquee Act", "Super Bowl LX 2026"), badges=[]),
