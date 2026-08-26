@@ -17,5 +17,12 @@ Environment=TARGET_ENV=beta
 TimeoutStartSec=4h
 ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/halftime_routing.py
 
+# Rebuild the page this job feeds. Without it the sweep and the
+# catalogue would keep updating their data while halftime_serve.py
+# kept serving a frozen index.html - a dashboard that silently stops
+# moving is worse than one that is obviously empty, because the
+# client has no way to tell.
+ExecStartPost=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/halftime_dashboard.py
+
 [Install]
 WantedBy=multi-user.target
