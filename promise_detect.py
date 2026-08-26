@@ -25,6 +25,13 @@ importing task_solver back would be a cycle. `llm_providers` is imported lazily
 inside the call so the read-only supervisor probe can import the ledger side
 without dragging in the LLM stack.
 """
+# CIRRUS runs the SYSTEM python (3.9.6), not a venv, and 3.9 has no PEP 604
+# unions -- `dict | None` in a signature is evaluated at def time and raises
+# TypeError. task_solver.py carries this same import for exactly that reason.
+# Without it this module imported fine on CUMULUS (3.11) and took intake.py
+# down on CIRRUS the moment it was deployed. S78.
+from __future__ import annotations
+
 import json
 import re
 
