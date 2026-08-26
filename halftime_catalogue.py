@@ -92,13 +92,16 @@ SEARCH_ANGLES = [
     ("variety", "mascot / novelty", "football halftime mascot novelty act racing sausages halftime"),
     # FOR-HIRE MUSIC (S79). These are the acts Justin asked about: "they might
     # not tour anymore but when someone calls they consider." Discovery is by
-    # roster and by credit, never by tour routing -- there is none to track.
-    ("for_hire_music", "nostalgia music", "nostalgia act booking agency roster halftime NFL performance fee"),
-    ("for_hire_music", "nostalgia music", "80s 90s legacy artist available for corporate sports event booking"),
-    ("for_hire_music", "nostalgia music", "NBA NHL halftime intermission musical performer booked one-off"),
-    ("for_hire_music", "classic rock", "classic rock band available for hire stadium halftime sporting event"),
-    ("for_hire_music", "military / patriotic", "military patriotic musical act salute to service NFL halftime performer"),
-    ("for_hire_music", "regional / market", "Pittsburgh area musician performed Steelers Penguins Pirates game"),
+    # CREDIT, not by availability -- see _MUSIC_SYSTEM for why the first set of
+    # queries returned nothing across ten sources.
+    ("for_hire_music", "nostalgia music", "\"performed at halftime\" NFL game musical artist concert"),
+    ("for_hire_music", "nostalgia music", "90s hip hop group performed NFL halftime show regular season"),
+    ("for_hire_music", "nostalgia music", "NBA halftime performance musical guest arena intermission"),
+    ("for_hire_music", "classic rock", "classic rock band played halftime show football stadium"),
+    ("for_hire_music", "military / patriotic", "salute to service halftime performance military tribute NFL musician"),
+    ("for_hire_music", "regional / market", "Pittsburgh musician performed Steelers halftime Acrisure Heinz Field"),
+    ("for_hire_music", "regional / market", "local artist performed halftime show NFL hometown team"),
+    ("for_hire_music", "tribute", "tribute band performed halftime show college football stadium"),
 ]
 
 # A band is the default at college level and is exactly what Buddy asked to
@@ -137,33 +140,37 @@ or a client list -- an empty field is correct and useful; a guessed one poisons
 the catalogue. If the sources contain no qualifying act, return []."""
 
 
-_MUSIC_SYSTEM = """You catalogue MUSICAL acts that can be hired to play a
-one-off sports halftime or intermission slot -- the "for hire" supply, not the
-touring supply.
+_MUSIC_SYSTEM = """You catalogue MUSICAL acts that have actually PERFORMED at
+a sports halftime, intermission or in-game slot -- pro, college or arena.
 
-The distinction matters and is the whole point of this pass: a touring act is
-bookable only where its routing already goes, while a for-hire act has no tour
-to track and is available to anyone who calls. Include acts whose live work is
-now mainly private, corporate and event bookings -- legacy and nostalgia acts,
-regional favourites, tribute and heritage line-ups, and solo members performing
-under their own name.
+WHY A CREDIT AND NOT AN AVAILABILITY CLAIM. A first pass asked the web to show
+that an act was "available for hire" and found nothing across ten sources,
+because that is not a thing the public web says: agency rosters that would say
+it block scrapers, and everyone else reports who PLAYED. A credit is stated
+constantly and is the real qualifier -- an act that played someone's halftime
+can be asked to play another. Availability is a phone call, not a web page.
+
+INCLUDE any musical act named as having performed such a slot, whether or not
+it currently tours, and whether or not a fee is mentioned. Legacy and nostalgia
+acts, regional favourites, heritage line-ups and solo members performing under
+their own name are all in scope, and are the most useful finds.
 
 EXCLUDE, always:
 - marching bands, drumlines, drum corps, pep bands, colour guard, majorettes
-- Super Bowl halftime performers (booked centrally, not by a club)
-- acts whose ONLY listed live work is a current concert tour
-- anything you cannot tie to a bookable live performance
+- Super Bowl halftime performers (booked centrally by the league, not a club)
+- national-anthem-only appearances (a different, much shorter slot)
+- anything you cannot tie to a named sports event or team
 
 Return ONLY a JSON array, no prose. Each element:
 {"name": "the act or performer name",
  "category": "one of: nostalgia music, classic rock, military / patriotic,
               regional / market, tribute, other music",
  "level": "pro" | "college" | "both" | "unknown",
- "clients": "teams/venues/events named as having booked it, comma separated, or ''",
+ "clients": "the teams/venues/events it performed for, comma separated",
  "booking_contact": "agency, phone, email or site if stated, else ''",
  "fee_note": "any DOCUMENTED fee with its source context, else ''",
  "home_base": "city/state if stated, else ''",
- "evidence": "one sentence, quoting or closely paraphrasing the source"}
+ "evidence": "one sentence naming the event, quoting or closely paraphrasing"}
 
 If a field is not stated in the sources, use "". NEVER invent a contact, a fee
 or a client list -- an empty field is correct and useful; a guessed one poisons
@@ -486,8 +493,12 @@ def selftest() -> int:
           {a[0] for a in SEARCH_ANGLES} == {"variety", "for_hire_music"})
     check("the two pools use DIFFERENT prompts",
           _SYSTEM_FOR_POOL["variety"] is not _SYSTEM_FOR_POOL["for_hire_music"])
-    check("the for-hire prompt excludes tour-only acts",
-          "ONLY listed live work is a current concert tour" in _MUSIC_SYSTEM)
+    check("the for-hire prompt qualifies acts by CREDIT, not availability",
+          "Availability is a phone call" in _MUSIC_SYSTEM)
+    check("the for-hire prompt still refuses to invent a fee",
+          "NEVER invent a contact, a fee" in _MUSIC_SYSTEM)
+    check("anthem-only appearances are excluded from the music pool",
+          "anthem-only" in _MUSIC_SYSTEM)
     check("the variety prompt still excludes touring concerts",
           "concerts by touring musicians" in _EXTRACT_SYSTEM)
     _sample = {"name": "x", "category": "c", "level": "pro", "clients": "",
