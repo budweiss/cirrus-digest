@@ -102,6 +102,11 @@ SEARCH_ANGLES = [
     ("for_hire_music", "regional / market", "Pittsburgh musician performed Steelers halftime Acrisure Heinz Field"),
     ("for_hire_music", "regional / market", "local artist performed halftime show NFL hometown team"),
     ("for_hire_music", "tribute", "tribute band performed halftime show college football stadium"),
+    # TEAM TRADITION (S79, Buddy's Renegade question). An act whose song is a
+    # stadium ritual has the strongest possible market tie and no halftime
+    # credit, so every angle above is blind to it.
+    ("for_hire_music", "team tradition", "song played every home game NFL stadium tradition band anthem"),
+    ("for_hire_music", "team tradition", "classic rock song NFL team stadium ritual fourth quarter anthem"),
 ]
 
 # A band is the default at college level and is exactly what Buddy asked to
@@ -155,6 +160,14 @@ it currently tours, and whether or not a fee is mentioned. Legacy and nostalgia
 acts, regional favourites, heritage line-ups and solo members performing under
 their own name are all in scope, and are the most useful finds.
 
+ALSO INCLUDE acts whose SONG is an established in-stadium tradition for a team,
+even with no halftime credit at all -- the song being a ritual IS the tie, and
+is often a stronger one than having played a slot somewhere else. Styx's
+"Renegade" at Steelers home games is the type case: the band has no Steelers
+halftime credit, so a credit-only search cannot see the single most
+Pittsburgh-connected act there is. Category these as "team tradition" and name
+the song and the team in the evidence.
+
 EXCLUDE, always:
 - marching bands, drumlines, drum corps, pep bands, colour guard, majorettes
 - Super Bowl halftime performers (booked centrally by the league, not a club)
@@ -164,7 +177,7 @@ EXCLUDE, always:
 Return ONLY a JSON array, no prose. Each element:
 {"name": "the act or performer name",
  "category": "one of: nostalgia music, classic rock, military / patriotic,
-              regional / market, tribute, other music",
+              regional / market, tribute, team tradition, other music",
  "style": "the kind of music, from: hip hop / rap, rock, classic rock, country,
            pop, r&b / soul, gospel, latin, metal, jazz, marching / military,
            other. Use '' if the sources do not make it clear -- a guessed style
@@ -505,6 +518,13 @@ def selftest() -> int:
           "NEVER invent a contact, a fee" in _MUSIC_SYSTEM)
     check("anthem-only appearances are excluded from the music pool",
           "anthem-only" in _MUSIC_SYSTEM)
+    check("an act whose SONG is a stadium tradition is in scope, credit or not",
+          "team tradition" in _MUSIC_SYSTEM
+          and "ritual IS the tie" in _MUSIC_SYSTEM)
+    check("the blind spot that motivated it is named, so it is not re-lost",
+          "Renegade" in _MUSIC_SYSTEM)
+    check("team-tradition angles actually exist in the rotation",
+          any(a[1] == "team tradition" for a in SEARCH_ANGLES))
     check("the music prompt asks for a style, which the rap rule needs",
           '"style"' in _MUSIC_SYSTEM)
     check("the prompt tells the model an EMPTY style is better than a guess",
