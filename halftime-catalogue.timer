@@ -1,0 +1,15 @@
+[Unit]
+Description=Halftime act catalogue — nightly non-band entertainment research
+
+# 05:00 — inside the preferred 02:00-06:00 window (docs/RUNTIME-WINDOWS.md).
+# Slot chosen from a live window-audit, not by eyeballing the calendar:
+#   02:00 opportunity-scout, 03:00 cirrus-hoaleads, Mon 04:00/04:30 Bill's two
+#   client jobs, 05:30 modelhealth (light). 05:00 is the clear gap, and a ~10
+#   minute run finishes well before modelhealth and long before the 07:30
+#   morning brief, so the night's findings are there to read at breakfast.
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
