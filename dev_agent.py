@@ -494,13 +494,98 @@ def importers_of(mod: str, root) -> list:
     return out
 
 
-def has_selftest(fp) -> bool:
-    """True if the file defines selftest() AND dispatches to it from argv."""
+# S81. How a module lets you ASK for its selftest. The tree uses two spellings
+# and gate 2 only ever passed one of them.
+_SELFTEST_DEF_RX  = re.compile(r"^\s*def\s+_?selftest\s*\(", re.M)
+_DISPATCH_DASH_RX = re.compile(r"[\"']--selftest[\"']")
+# A quoted bare "selftest" used as an ARGUMENT test. Anchored to argv (or to an
+# `== "selftest"` comparison, for the `cmd = sys.argv[1] ... elif cmd ==` shape)
+# rather than matching the word anywhere -- a docstring that merely mentions
+# selftest must not make us invoke a module with an argument it ignores, which
+# is the false-pass this whole change exists to remove.
+# `args` as well as `argv`: the commonest idiom in this tree is
+#     args = sys.argv[1:]
+#     if "selftest" in args:
+# and requiring "argv" on the SAME line missed ten real modules (intake,
+# halftime_catalogue, pedagogy_daily and friends) -- which would have made gate
+# 2 skip suites it used to run. Tightening a rule can lose coverage as easily as
+# loosening it can invent it; both directions were measured against the tree.
+_DISPATCH_BARE_RX = re.compile(
+    r"arg[sv][^\n]*[\"']selftest[\"']"       # "selftest" in args / argv[1] == "selftest"
+    r"|[\"']selftest[\"'][^\n]*arg[sv]"
+    r"|==\s*[\"']selftest[\"']")             # elif cmd == "selftest":
+# `if __name__ == "__main__":` whose body is nothing but a call to the selftest
+# (optionally via sys.exit / raise SystemExit). Anything else in that block and
+# we must NOT invoke the file bare -- that would run its production path.
+_MAIN_IS_ONLY_SELFTEST_RX = re.compile(
+    r"if\s+__name__\s*==\s*[\"']__main__[\"']\s*:\s*\n"
+    r"(?:\s*(?:sys\.exit\(|raise\s+SystemExit\()?\s*_?selftest\(\)[^\n]*\n)"
+    r"\s*\Z", re.M)
+
+
+def selftest_argvs(fp):
+    """The argument this module actually dispatches its selftest on, or None.
+
+    S81 -- THIS WAS A LIVE FALSE PASS, and it is the worst kind. Gate 2 invoked
+    every module as `python3 <file> selftest`, a bare word. Ten modules in this
+    tree dispatch only on `--selftest`, so for those the bare word matched
+    nothing and python fell through to the module's DEFAULT __main__ action,
+    which exited 0 and was recorded as a passing selftest. Measured, not
+    theorised:
+
+        $ python3 send_guard.py selftest
+        billsnow: clear to send            <- the production entrypoint
+        billnewdev: clear to send
+        exit=0                             <- gate 2 reads this as PASS
+
+    Zero tests ran and the gate went green -- for send_guard, runtime_window,
+    search_usage, placement, cirrus_api, net_sampler, vendor_mail_watch,
+    client_watch, nccde_directory and dev_findings. Worse than no gate, because
+    it looks like one. It is also the S80 lesson exactly: a gate that reports
+    "selftest" while inspecting nothing is how config_snapshot's bug survived.
+
+    Two further points this fixes:
+      * `def _selftest` (dev_loop's and dev_agent's own spelling) was not
+        recognised at all, so the RISK CLASSIFIER's tests never ran in gate 2.
+      * A module that defines a selftest but dispatches on NOTHING is reported
+        as having none. That is deliberate and honest: a test nobody can invoke
+        is not a gate, and running such a file with no arguments would execute
+        its production path.
+    """
     try:
         text = Path(fp).read_text(errors="ignore")
     except Exception:
-        return False
-    return "def selftest" in text and "selftest" in text.split("def selftest")[-1]
+        return []
+    if not _SELFTEST_DEF_RX.search(text):
+        return []
+    # RUN BOTH when a module answers to both, rather than guessing which is
+    # "the" suite. The first draft of this preferred the dashed form and would
+    # have quietly downgraded THIS file: `dev_agent.py selftest` is the 92-check
+    # main suite and `dev_agent.py --selftest` is the 14-check edit-planner one.
+    # Choosing the dashed form would have run a seventh of the tests and called
+    # the file green -- S80 found and fixed exactly that in dev-agent-selftest,
+    # and a heuristic here would have reintroduced it one layer down. Guessing
+    # was the bug; not guessing is the fix.
+    out = []
+    if _DISPATCH_DASH_RX.search(text):
+        out.append(["--selftest"])
+    if _DISPATCH_BARE_RX.search(text):
+        out.append(["selftest"])
+    # Third convention, and the one the first draft missed: no argv check at
+    # all -- `if __name__ == "__main__": sys.exit(selftest())`. dev_loop.py,
+    # task_solver.py and four others are written this way, as are dev_agent's
+    # own test fixtures. Invoking with NO arguments is only safe when the
+    # __main__ block does nothing else, so that is what is checked; a module
+    # whose __main__ also does real work is reported as having no invokable
+    # selftest rather than having its production path run by a gate.
+    if not out and _MAIN_IS_ONLY_SELFTEST_RX.search(text):
+        out.append([])
+    return out
+
+
+def has_selftest(fp) -> bool:
+    """True if the file has at least one selftest gate 2 can actually invoke."""
+    return bool(selftest_argvs(fp))
 
 
 def failure_signature(gate: str, detail: str) -> str:
@@ -580,10 +665,12 @@ def failing_selftests(wt, mods) -> set:
         fp = Path(wt) / m
         if not fp.exists() or not has_selftest(fp):
             continue
-        rc, _out = _run([sys.executable, str(fp), "selftest"],
-                        cwd=wt, timeout=SELFTEST_TIMEOUT)
-        if rc != 0:
-            out.add(m)
+        for argv in selftest_argvs(fp):
+            rc, _out = _run([sys.executable, str(fp)] + argv,
+                            cwd=wt, timeout=SELFTEST_TIMEOUT)
+            if rc != 0:
+                out.add(m)
+                break
     return out
 
 
@@ -623,11 +710,16 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
     cand_self = [p for p in changed if p.endswith(".py")]
     for p in cand_self:
         fp = wt / p
-        if not has_selftest(fp):
+        args = selftest_argvs(fp)   # S81: every spelling THIS module answers to
+        if not args:
             continue
         n_self += 1
-        rc, out = _run([sys.executable, str(fp), "selftest"],
-                       cwd=wt, timeout=SELFTEST_TIMEOUT)
+        rc, out = 0, ""
+        for a in args:
+            rc, out = _run([sys.executable, str(fp)] + a,
+                           cwd=wt, timeout=SELFTEST_TIMEOUT)
+            if rc != 0:
+                break
         if rc != 0:
             d = "%s selftest failed:\n%s" % (p, out[-1200:])
             ran.append("selftest(%d/%d)" % (n_self, len(cand_self)))
@@ -649,11 +741,16 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
                 excused.append(dep)          # already broken; not ours to fix
                 continue
             fp = wt / dep
-            if not has_selftest(fp):
+            args = selftest_argvs(fp)  # S81: same, for the dependent
+            if not args:
                 continue
             n_dep += 1
-            rc, out = _run([sys.executable, str(fp), "selftest"],
-                           cwd=wt, timeout=SELFTEST_TIMEOUT)
+            rc, out = 0, ""
+            for a in args:
+                rc, out = _run([sys.executable, str(fp)] + a,
+                               cwd=wt, timeout=SELFTEST_TIMEOUT)
+                if rc != 0:
+                    break
             if rc != 0:
                 d = ("%s selftest failed (it imports %s, which this patch "
                      "changed):\n%s" % (dep, module_name(p), out[-1200:]))
@@ -1914,6 +2011,97 @@ def _selftest():
               has_selftest(wt / "base.py"))
         check("has_selftest: false for a module without one",
               not has_selftest(wt / "lonely.py"))
+
+        # -- S81: WHICH argv does the module answer to? ------------------------
+        # Gate 2 used to invoke every file as `python3 <file> selftest`. Thirteen
+        # modules in this tree dispatch only on `--selftest`, so the bare word
+        # matched nothing, python ran their DEFAULT __main__ path, it exited 0,
+        # and the gate recorded a passing selftest having run no tests. Measured
+        # on the real tree, not theorised. These checks pin every convention.
+        conv = wt / "conv"
+        conv.mkdir(exist_ok=True)
+        (conv / "dashed.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    if '--selftest' in sys.argv:\n        sys.exit(0)\n"
+            "    print('PRODUCTION PATH')\n")
+        (conv / "bare.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    if 'selftest' in sys.argv:\n        sys.exit(0)\n")
+        (conv / "both.py").write_text(
+            "import sys\ndef selftest():\n    return True\ndef _selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    if '--selftest' in sys.argv:\n        sys.exit(0)\n"
+            "    if sys.argv[1:] == ['selftest']:\n        sys.exit(0)\n")
+        (conv / "noargv.py").write_text(
+            "import sys\ndef _selftest():\n    return True\n"
+            "if __name__ == '__main__':\n    sys.exit(_selftest())\n")
+        (conv / "busy_main.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n    print('does real work')\n    selftest()\n")
+
+        check("selftest_argvs: a --selftest-only module is invoked with --selftest",
+              selftest_argvs(conv / "dashed.py") == [["--selftest"]])
+        check("selftest_argvs: a bare-selftest module is invoked with selftest",
+              selftest_argvs(conv / "bare.py") == [["selftest"]])
+        # THE regression this file nearly shipped: dev_agent itself answers to
+        # BOTH, and they are DIFFERENT suites -- `selftest` is the 100-check main
+        # one, `--selftest` the 14-check edit planner. Preferring either would
+        # run a fraction of the tests and call the file green, which is the exact
+        # defect S80 fixed in dev-agent-selftest. So: run both, never guess.
+        check("selftest_argvs: a module answering to BOTH gets BOTH run",
+              selftest_argvs(conv / "both.py") == [["--selftest"], ["selftest"]])
+        check("selftest_argvs: dev_agent itself answers to both",
+              len(selftest_argvs(Path(__file__))) == 2)
+        # `def _selftest` -- dev_loop's spelling, and the RISK CLASSIFIER was
+        # therefore invisible to gate 2 entirely.
+        check("selftest_argvs: an argv-less __main__ selftest is invoked bare",
+              selftest_argvs(conv / "noargv.py") == [[]])
+        check("selftest_argvs: _selftest is recognised, not just selftest",
+              has_selftest(conv / "noargv.py"))
+        # ...but only when __main__ does NOTHING ELSE. Running a file bare that
+        # also does real work would have a GATE execute a production path.
+        check("selftest_argvs: a __main__ that also does real work is NOT invoked bare",
+              selftest_argvs(conv / "busy_main.py") == [])
+        check("selftest_argvs: a file with no selftest at all yields nothing",
+              selftest_argvs(wt / "lonely.py") == [])
+        # The commonest idiom in this tree, and the one a first tightening of
+        # the regex broke: `args = sys.argv[1:]` on one line, `"selftest" in
+        # args` on another. Ten real modules are written this way.
+        (conv / "argsidiom.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n    args = sys.argv[1:]\n"
+            "    if 'selftest' in args:\n        sys.exit(0)\n")
+        check("selftest_argvs: the `\"selftest\" in args` idiom is recognised",
+              selftest_argvs(conv / "argsidiom.py") == [["selftest"]])
+        # A docstring that merely MENTIONS selftest must not make us pass an
+        # argument the module ignores -- that is the false pass, rebuilt.
+        (conv / "mentions.py").write_text(
+            '"""Run me with: python3 mentions.py selftest"""\n'
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n    print('real work')\n")
+        check("selftest_argvs: a docstring mention is not a dispatch",
+              selftest_argvs(conv / "mentions.py") == [])
+
+        # RATCHET against the real tree. Tightening this regex loses coverage as
+        # easily as loosening it invents it, and both happened while writing it.
+        # A count measured against reality catches the direction a fixture cannot.
+        real = [f for f in Path(__file__).resolve().parent.glob("*.py")
+                if selftest_argvs(f)]
+        check("selftest_argvs: at least 30 real modules stay invokable (got %d)"
+              % len(real), len(real) >= 30)
+
+        # End to end: the gate must FAIL a dashed module whose tests fail, where
+        # before it would have run the production path and passed.
+        (conv / "dashed_fails.py").write_text(
+            "import sys\ndef selftest():\n    return False\n"
+            "if __name__ == '__main__':\n"
+            "    if '--selftest' in sys.argv:\n        sys.exit(1)\n"
+            "    print('PRODUCTION PATH'); sys.exit(0)\n")
+        vconv = verify_build(conv, ["dashed_fails.py"], run_dryrun=False)
+        check("gate 2 now FAILS a --selftest module whose tests fail",
+              not vconv["ok"] and vconv["gate"] == "selftest")
 
         # -- gates, in order --------------------------------------------------
         v = verify_build(wt, ["base.py"])
