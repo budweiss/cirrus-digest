@@ -43,14 +43,20 @@ def take_snapshot(tag=""):
     dest = SNAP_DIR / stamp
     dest.mkdir(exist_ok=True)
     n = 0
+    captured = []
+    missing = []
     for name in FILES:
         src = CONFIG_DIR / name
         if src.exists():
             shutil.copy2(src, dest / name)
             n += 1
+            captured.append(name)
+        else:
+            missing.append(name)
     (dest / "_manifest.json").write_text(json.dumps(
         {"created": datetime.now().isoformat(timespec="seconds"),
-         "files": n, "tag": tag}, indent=2))
+         "files": n, "captured": captured, "missing": missing,
+         "tag": tag}, indent=2))
     _prune()
     _log(f"took snapshot {stamp} ({n} files)")
     return dest
