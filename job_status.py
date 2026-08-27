@@ -13,6 +13,7 @@ Stdlib only. Never raises to the caller — a monitoring write must not break th
 job it is monitoring.
 """
 import json
+import re
 import os
 import subprocess
 import time
@@ -244,6 +245,45 @@ def selftest():
     loose = sorted(k for k, v in CADENCE_H.items()
                    if v > 24 * 16 and k != "stratusreview")
     ck(f"no job is watched at a tolerance over ~16d (loose: {loose})", not loose)
+
+    # ---- S81: does every watched job have a WRITER? ----------------------
+    # The other half of the loop, and a genuinely silent hole. A key in
+    # CADENCE_H whose job never calls record() reads as "no run recorded yet"
+    # -> good is None -> NEUTRAL -> all_ok stays True, forever. Adding a job to
+    # this table without wiring its record() call therefore looks exactly like
+    # a healthy job, which is the same failure the whole table exists to catch.
+    # placement.py's coverage check cannot see this: it compares the table to
+    # the SCHEDULE, and both sides would be satisfied.
+    here = Path(__file__).resolve().parent
+    writers = set()
+    # RECURSE. The first version globbed the top level plus supervisor/ and
+    # reported four false orphans -- billsnow, billnewdev, privacymon and
+    # stratusreview all record from subdirectories (snowbrief/, newdev/,
+    # privacy/, stratus/). Same shape as T44 itself: the GLOB of a check is its
+    # scope, and a scope narrower than reality gives a confident wrong answer.
+    _SKIP = {"__pycache__", ".git", ".venv", "venv", "node_modules", "build"}
+    for f in here.rglob("*.py"):
+        if _SKIP & set(f.parts):
+            continue
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        # Match across the CALL, not per line: these calls routinely wrap, and
+        # the first version of this check read line-by-line and reported eight
+        # false orphans -- a check that cries wolf on correct code gets
+        # switched off, which is worse than not having it.
+        for m in re.finditer(r"(?:job_status\.)?(?:record|_log_job)\s*\(",
+                             text):
+            window = text[m.end(): m.end() + 160]
+            for k in CADENCE_H:
+                if f'"{k}"' in window or f"'{k}'" in window:
+                    writers.add(k)
+    # jobscheck/watchdog-style keys would go here if any were read-only; today
+    # every watched job is expected to write its own row.
+    orphaned = sorted(set(CADENCE_H) - writers)
+    ck(f"every watched job has a record() call somewhere (missing: {orphaned})",
+       not orphaned)
 
     # And a daily job that stopped yesterday must actually trip.
     _, g = _row("hoaleads", CADENCE_H["hoaleads"],
