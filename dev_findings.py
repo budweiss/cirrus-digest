@@ -416,6 +416,23 @@ def run(dry_run=True, limit=MAX_PER_RUN):
     if proposed and not dry_run:
         B.save_pending(pending)
 
+    if not dry_run:
+        # S81: this is a scheduled job now, so it reports like one. A front door
+        # that silently stops producing looks exactly like a tree with nothing
+        # wrong in it -- the T44 shape, and the reason placement.py's coverage
+        # check would flag this unit the moment it went on the schedule unwatched.
+        # A run that proposes NOTHING because the queue is full is a HEALTHY run,
+        # so ok stays True and the note says which it was.
+        try:
+            import job_status
+            job_status.record(
+                "devfindings", True,
+                f"{len(proposed)} proposed, {len(findings)} finding(s) collected, "
+                f"{waiting} already waiting"
+                + (f", {len(errors)} collector error(s)" if errors else ""))
+        except Exception as e:
+            print(f"  job_status.record failed: {e}")
+
     return {
         "dry_run": bool(dry_run),
         "collected": len(findings),

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- S81 THE FRONT DOOR. Runs 15 minutes before com.cirrus.devloop (21:30)
+         so the builder finds tonight's proposals already filed.
+
+         A LaunchDAEMON in /Library/LaunchDaemons bootstrapped into the `system`
+         domain, NOT a user LaunchAgent: CIRRUS runs with nobody logged in, so
+         there is no gui/501 domain at all and an agent plist would never load
+         (T43). Same shape as com.cirrus.devloop and com.cirrus.devreport.
+
+         It passes the live flag because dev_findings defaults to dry-run, so
+         this file is the only thing that turns the front door on: turning it
+         off is deleting one plist.
+
+         NOTE the absence of any double hyphen in this comment. XML forbids one
+         inside a comment; plutil accepts it anyway and a strict XML parser does
+         not, so a plist can pass `plutil -lint` and still be malformed. That
+         cost a round trip here and shell_tests.sh now checks both (T46). -->
+    <key>Label</key>
+    <string>com.cirrus.devfindings</string>
+    <key>UserName</key>
+    <string>buddy</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/buddy</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/buddy/projects/cirrus-digest/dev_findings.py</string>
+        <string>--live</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>21</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devfindings-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devfindings-launchd.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

@@ -86,6 +86,11 @@ CADENCE_H = {
     "cumulusdailybrief": 26,    # daily 20:00 CUMULUS
     "halftimerouting":  24 * 8,  # weekly Sun 22:00 CUMULUS (Justin)
     "entitykbdigest":   24 * 8,  # weekly Mon 05:00 CUMULUS -- Bill, CLIENT-FACING
+    # S81 THE FRONT DOOR. Daily 21:15 CIRRUS, fifteen minutes ahead of the
+    # builder. Watched from the day it was installed rather than months later,
+    # which is the entire point of T44 -- and placement.py's coverage check
+    # would have failed the session wrap if this line were missing.
+    "devfindings":      26,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
