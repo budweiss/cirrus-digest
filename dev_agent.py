@@ -1564,7 +1564,27 @@ def repairs_text(limit: int = 20, path=None) -> str:
     return "\n".join(out)
 
 
-def report_text(builds=None, path=None) -> str:
+# The report runs at 06:30 and describes the 21:30 run -- which is YESTERDAY'S
+# calendar date. The first version filtered on `created.startswith(today)` and
+# would therefore have reported "nothing built overnight" EVERY SINGLE DAY,
+# from a job that was working perfectly, in a message that looks entirely
+# normal. Caught before the first real 06:30 fire, by asking what the filter
+# would actually match at the moment the daemon runs. A WINDOW, not a date.
+REPORT_WINDOW_HOURS = 18   # 06:30 back to 12:30 yesterday: catches the 21:30
+                           # run, excludes the night before it.
+
+
+def _within_window(created: str, now, hours: int) -> bool:
+    """Was this build created inside the reporting window?"""
+    try:
+        when = datetime.strptime(str(created)[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return False
+    return when > now - timedelta(hours=hours)
+
+
+def report_text(builds=None, path=None, now=None,
+                hours: int = REPORT_WINDOW_HOURS) -> str:
     """The morning report. Says what happened AND what it declined to do.
 
     A report that lists only successes is the T42 shape — a check that reads
@@ -1572,10 +1592,11 @@ def report_text(builds=None, path=None) -> str:
     first-class lines here, not omissions.
     """
     builds = builds if builds is not None else builds_load()
-    today = datetime.now().strftime("%Y-%m-%d")
-    mine = [b for b in builds if str(b.get("created", "")).startswith(today)]
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    mine = [b for b in builds if _within_window(b.get("created", ""), now, hours)]
     if not mine:
-        return "Dev-loop %s: nothing built overnight." % today
+        return ("Dev-loop %s: nothing built in the last %dh." % (today, hours))
 
     lines = ["Dev-loop overnight report — %s" % today, ""]
     buckets = {}
@@ -1950,8 +1971,30 @@ def _selftest():
               "No repair attempts" in repairs_text(path=wt / "none.jsonl"))
 
     # -- the morning report is honest about failure ---------------------------
-    today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rpt = report_text(builds=[
+    # THE REAL TIMING: the daemon fires at 06:30 and must describe the 21:30 run
+    # from the night before -- a different calendar date. Every case below uses
+    # those two clocks, because a test written at "now" passes against a filter
+    # that would report nothing at the only moment it actually runs.
+    RUN_AT   = datetime(2026, 8, 26, 21, 30, 0)          # the nightly build
+    READ_AT  = datetime(2026, 8, 27, 6, 30, 0)           # the morning report
+    today = RUN_AT.strftime("%Y-%m-%d %H:%M:%S")
+
+    check("report: a build from 21:30 IS in the 06:30 report (different DATE)",
+          "b9" in report_text(now=READ_AT, builds=[
+              {"id": "b9", "status": "awaiting-confirm", "created": today,
+               "summary": "s", "attempts": 1, "gates_ran": ["compile"]}]))
+    check("report: the night BEFORE last is not dragged in",
+          "b8" not in report_text(now=READ_AT, builds=[
+              {"id": "b8", "status": "shipped", "attempts": 1,
+               "created": (RUN_AT - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+               "summary": "old"}]))
+    check("report: an unparseable created stamp is excluded, not crashed on",
+          "b7" not in report_text(now=READ_AT, builds=[
+              {"id": "b7", "status": "shipped", "created": "who knows", "summary": "x"}]))
+    check("report: a quiet night names the window it looked at",
+          "last 18h" in report_text(now=READ_AT, builds=[]))
+
+    rpt = report_text(now=READ_AT, builds=[
         {"id": "b1", "status": "awaiting-confirm", "created": today,
          "summary": "cache the mission text", "attempts": 2,
          "gates_ran": ["compile", "selftest", "dependents"]},
@@ -1962,17 +2005,17 @@ def _selftest():
           "repaired on attempt 2" in rpt)
     check("report_text: a give-up is reported, not omitted", "GAVE UP" in rpt)
     check("report_text: the give-up names the gate that never went green",
-          "selftest" in rpt.split("GAVE UP")[1])
+          "selftest" in (rpt.split("GAVE UP")[1] if "GAVE UP" in rpt else ""))
     check("report_text: it keeps the worktree for inspection",
           "/tmp/wt" in rpt)
     check("report_text: it lists which gates actually ran",
           "dependents" in rpt)
     check("report_text: a quiet night says nothing was built",
-          "nothing built" in report_text(builds=[]))
+          "nothing built" in report_text(now=READ_AT, builds=[]))
 
     # S80, found on the daemon's FIRST real run: `shipped` was not a bucket, so
     # a build that had just gone live produced a report naming nothing at all.
-    srep = report_text(builds=[
+    srep = report_text(now=READ_AT, builds=[
         {"id": "b3", "status": "shipped", "created": today, "summary": "the thing",
          "attempts": 1, "shipped_sha": "d95c4f2"},
         {"id": "b4", "status": "rolled-back", "created": today, "summary": "bad one"},
