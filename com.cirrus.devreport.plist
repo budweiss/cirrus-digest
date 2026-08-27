@@ -2,8 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- S80. A LaunchDAEMON in /Library/LaunchDaemons, bootstrapped into the
+         `system` domain — NOT a user LaunchAgent. CIRRUS normally runs with
+         nobody logged in (console user is root), so there is no gui/501 domain
+         at all and a ~/Library/LaunchAgents plist would never load. Every live
+         cirrus job was converted to this shape; the repo copies were not
+         updated, which is how the first version of this file got written as an
+         agent. Matches the live com.cirrus.devloop daemon exactly. -->
     <key>Label</key>
     <string>com.cirrus.devreport</string>
+    <key>UserName</key>
+    <string>buddy</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/buddy</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
