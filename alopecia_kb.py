@@ -34,6 +34,15 @@ EMBED_MODEL = "nomic-embed-text"
 MIN_SIM = 0.45          # below this a hit is not evidence of anything
 CHUNK_WORDS = 350
 
+# Sections that are CITATION LISTS, not knowledge. Measured, S82: a bibliography
+# is dense with drug names, journal titles and the disease name, so it embeds
+# close to almost any topical question and outranked the real answer for 3 of
+# the first 10 spot questions -- "Which JAK inhibitors are approved and when?"
+# retrieved the reference list. Every hit still LOOKED cited, which is what made
+# it dangerous. A reference list can never answer a question; skip it at index
+# time so it cannot win at query time.
+SKIP_SECTIONS = ("sources", "references", "bibliography", "further reading")
+
 
 def _ollama_host():
     with open(CONFIG_PATH) as f:
@@ -76,6 +85,8 @@ def chunk_doc(text, source):
             continue
         first = part.split("\n", 1)[0].strip()
         heading = first.lstrip("#").strip() if first.startswith("#") else "(preamble)"
+        if heading.strip().lower().lstrip("0123456789. ") in SKIP_SECTIONS:
+            continue
         words = part.split()
         if len(words) <= CHUNK_WORDS:
             pieces = [part]
@@ -215,6 +226,13 @@ def selftest():
           len([c for c in chunks if c["section"] == "Diet"]) > 1)
     check("chunk_doc: stores FULL text, not a 300-char preview",
           max(len(c["text"]) for c in chunks) > 300)
+    biblio = chunk_doc(doc + "\n\n## Sources\n\n1. immune follicle journal "
+                       "article about diet and microbiome evidence cd8\n", "d.md")
+    check("chunk_doc: a bibliography section is NOT indexed",
+          not any(c["section"].lower() == "sources" for c in biblio))
+    check("chunk_doc: numbered bibliography headings are caught too",
+          not any(c["section"].lower().endswith("references")
+                  for c in chunk_doc("## 9. References\n\n" + "cd8 immune " * 40, "d.md")))
 
     # deterministic fake embeddings: bag-of-words over a fixed vocabulary
     # Last dimension is an "matched nothing" axis, so a genuinely unrelated
