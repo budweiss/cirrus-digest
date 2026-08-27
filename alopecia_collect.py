@@ -343,16 +343,37 @@ def run(dry_run=False, days=1, collectors=None, seen_path=SEEN_PATH,
         it["rank"], it["label"] = classify(it)
     fresh.sort(key=lambda i: (i["rank"], i["source"]))
 
-    body = render(fresh, day)
+    # The day's file ACCUMULATES across runs rather than being replaced.
+    # S82, caught by reading the output instead of the exit code: run() wrote
+    # alopecia-<day>.md unconditionally, so a second run on the same day -- a
+    # retry, a manual invocation, or systemd Persistent=true firing a missed
+    # timer (T39) -- found 0 new items and overwrote 103 real ones with
+    # "Nothing new today." The run that destroyed the day's work reported
+    # success, because by its own definition it had done nothing wrong.
+    merged = fresh
+    day_json = Path(out_dir) / ("alopecia-%s.json" % day)
     if not dry_run:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
-        (Path(out_dir) / ("alopecia-%s.md" % day)).write_text(body + "\n")
+        prior = []
+        try:
+            prior = json.loads(day_json.read_text())
+        except Exception:
+            prior = []
+        by_key = {}
+        for it in prior + fresh:
+            by_key[it.get("key")] = it
+        merged = sorted(by_key.values(),
+                        key=lambda i: (i.get("rank", 9), i.get("source", "")))
+        day_json.write_text(json.dumps(merged, indent=1) + "\n")
+        (Path(out_dir) / ("alopecia-%s.md" % day)).write_text(
+            render(merged, day) + "\n")
         for it in fresh:
             seen[it["key"]] = day
         save_seen(seen, seen_path)
 
-    return {"found": len(found), "new": len(fresh), "seen_total": len(seen),
-            "errors": errors, "day": day, "body": body}
+    return {"found": len(found), "new": len(fresh), "day_total": len(merged),
+            "seen_total": len(seen), "errors": errors, "day": day,
+            "body": render(merged, day)}
 
 
 def report(out_dir=OUT_DIR):
@@ -433,13 +454,40 @@ def selftest():
         r2 = run(collectors=cols, seen_path=sp, out_dir=od)
         ck("run: day 2 over the SAME source finds NOTHING new (the P1 criterion)",
            r2["new"] == 0)
-        ck("run: a quiet day still renders a file, saying so",
-           "Nothing new today" in r2["body"])
         ck("run: the ledger persisted across runs", r2["seen_total"] == 2)
+        # the clobber bug: a 0-new re-run must not erase the day's real findings
+        ck("run: a re-run finding nothing KEEPS the day's earlier items",
+           r2["day_total"] == 2 and "Nothing new today" not in r2["body"])
+        md = (od / ("alopecia-%s.md" % r2["day"])).read_text()
+        ck("run: and the file on disk still holds them",
+           "Alopecia universalis case" in md)
 
-        r3 = run(collectors=cols, seen_path=sp, out_dir=od, dry_run=True)
-        ck("run: --dry-run writes nothing to the ledger",
-           r3["seen_total"] == 2)
+        extra = [{"key": "pmid:200", "title": "Gut microbiome study",
+                  "date": "2026", "source": "PubMed", "url": "u3", "extra": ""}]
+        r2b = run(collectors={"f": lambda: list(fake) + extra},
+                  seen_path=sp, out_dir=od)
+        ck("run: a later run ADDS to the day rather than replacing it",
+           r2b["new"] == 1 and r2b["day_total"] == 3)
+
+        # a genuinely quiet FIRST run of a day still says so
+        od2 = Path(td) / "daily2"
+        rq = run(collectors={"f": lambda: []}, seen_path=Path(td) / "s2.json",
+                 out_dir=od2)
+        ck("run: a truly empty day still renders 'nothing new'",
+           "Nothing new today" in rq["body"])
+
+        # assert the INVARIANT (nothing changed), not a count that any test
+        # added above this line would silently invalidate
+        before_ledger = json.loads(sp.read_text())
+        before_md = (od / ("alopecia-%s.md" % r2["day"])).read_text()
+        r3 = run(collectors={"f": lambda: list(fake) + [
+            {"key": "pmid:999", "title": "brand new", "date": "d",
+             "source": "PubMed", "url": "u", "extra": ""}]},
+            seen_path=sp, out_dir=od, dry_run=True)
+        ck("run: --dry-run finds new items but writes NOTHING",
+           r3["new"] == 1
+           and json.loads(sp.read_text()) == before_ledger
+           and (od / ("alopecia-%s.md" % r2["day"])).read_text() == before_md)
 
         def boom():
             raise RuntimeError("source down")
