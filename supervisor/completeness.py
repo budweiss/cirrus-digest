@@ -65,9 +65,19 @@ class Rule:
     """
 
     def __init__(self, name, produced_patterns, max_zero_runs, why,
-                 zero_phrases=()):
+                 zero_phrases=(), produced_phrases=()):
         self.name = name
         self.produced_patterns = [re.compile(p, re.I) for p in produced_patterns]
+        # S81, the mirror image of zero_phrases and found the same way -- by
+        # running this against the LIVE CUMULUS ledger instead of a fixture.
+        # billsnow writes "sent material update", billnewdev writes "sent":
+        # both mean the job did its whole job, and neither carries a digit, so
+        # every count regex missed and all three were reported "unreadable"
+        # FOREVER. unreadable flips ok=False, so Skywarden's heartbeat had been
+        # permanently unhealthy on three jobs that were working perfectly --
+        # a check that fires on correct behaviour is one you teach yourself to
+        # ignore, which costs more than having no check.
+        self.produced_phrases = tuple(pp.lower() for pp in produced_phrases)
         # Literal phrases that MEAN zero without carrying a number. Jobs write
         # prose, not just counters -- hoaleads' real note is "no genuine leads",
         # which no count regex can match. Without this the check reports
@@ -80,10 +90,16 @@ class Rule:
     def productivity(self, note: str):
         """(produced_total, matched_any). matched_any=False means unreadable."""
         n = (note or "").lower()
+        # zero_phrases win over produced_phrases: "no material change" and
+        # "nothing to send" are the explicit statements of a quiet run, and a
+        # note can contain both ("nothing to send, so nothing sent").
         for phrase in self.zero_phrases:
             if phrase in n:
                 return 0, True
         total, matched = 0, False
+        for phrase in self.produced_phrases:
+            if phrase in n:
+                total, matched = total + 1, True
         for pat in self.produced_patterns:
             m = pat.search(note or "")
             if m:
@@ -136,17 +152,25 @@ RULES = {
     "billsnow": Rule(
         "billsnow", [r"(\d+)\s+sent"], max_zero_runs=2,
         zero_phrases=("no material change", "nothing to send", "no change"),
+        produced_phrases=("sent",),          # S81: the real note is "sent material update"
         why="Bill's snow outlook has sent nothing for two weeks — confirm the "
             "weather research still returns data before assuming a quiet season.",
     ),
     "billnewdev": Rule(
         "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=2,
         zero_phrases=("no new leads", "nothing new"),
+        produced_phrases=("sent",),          # S81: the real note is just "sent"
         why="Bill's new-dev lead check found nothing for two weeks — confirm "
             "the DE PLUS/parcel sources still respond.",
     ),
+    # S81: the real note is "sent: 2 art, 0 pod, 0 topic" -- none of the old
+    # patterns matched it, so Alyssa's digest read as unreadable every day.
+    # Counting the PIECES rather than the send keeps a genuinely empty digest
+    # ("sent: 0 art, 0 pod, 0 topic") reading as zero, which is the case the
+    # threshold exists for.
     "pedagogy": Rule(
-        "pedagogy", [r"(\d+)\s+sent", r"(\d+)\s+item"], max_zero_runs=5,
+        "pedagogy", [r"(\d+)\s+art", r"(\d+)\s+pod", r"(\d+)\s+topic",
+                     r"(\d+)\s+sent", r"(\d+)\s+item"], max_zero_runs=5,
         zero_phrases=("quiet day", "nothing to send"),
         why="Alyssa's pedagogy digest has been quiet for five runs — check the "
             "literacy feeds and podcast transcription still produce.",
@@ -162,6 +186,20 @@ RULES = {
     # items is the NORMAL case, so this is only about the scan itself dying.
     # Its own ok=False already covers a failed scan, so the threshold is high
     # and this is a backstop, not the primary signal.
+    # S81. Nightly divergent brainstorm (S77). Added the day it failed at 02:00
+    # on a transient DNS outage and nobody was told. Its note is
+    # "N model answer(s), M rate card(s)", or "FAILED: ..." when it dies --
+    # and a FAILED run never reaches here, because check() leaves ok=False to
+    # heartbeat. This rule is for the other shape: it runs, exits 0, and every
+    # model returned nothing.
+    "opportunityscout": Rule(
+        "opportunityscout",
+        [r"(\d+)\s+model answer", r"(\d+)\s+rate card"],
+        max_zero_runs=2,
+        why="The scout ran but no model answered twice running — check "
+            "provider reachability (llm-ping) and the rate-card fetches before "
+            "assuming the prompts went stale.",
+    ),
     "vendormail": Rule(
         "vendormail",
         [r"(\d+)\s+new", r"(\d+)\s+open"],
@@ -326,6 +364,42 @@ def selftest() -> bool:
     ck("unreadable note flips ok=False", r["ok"] is False)
     ck("unreadable is reported separately from stalled",
        r["unreadable"] and not r["stalled"])
+
+    # ---- S81: the REAL notes these jobs write, taken off the live CUMULUS
+    # ledger. Every one of these read as "unreadable" -- i.e. ok=False, i.e.
+    # Skywarden permanently unhealthy -- while the job was working perfectly.
+    # Fixtures invented alongside the rule agreed with the rule; only the live
+    # ledger disagreed.
+    for job, note, want in (
+        ("billsnow",   "sent material update",        True),
+        ("billnewdev", "sent",                        True),
+        ("pedagogy",   "sent: 2 art, 0 pod, 0 topic", True),
+    ):
+        produced, matched = RULES[job].productivity(note)
+        ck(f"{job}'s REAL note parses at all ({note!r})", matched)
+        ck(f"{job}'s real note counts as productive", produced > 0 if want else True)
+        r = check({job: {"ok": True, "epoch": 1, "note": note}}, {})
+        ck(f"{job} working normally does NOT flip ok=False", r["ok"] is True)
+
+    # ...and a genuinely quiet run must still read as zero, or the fix above
+    # would have bought a green light instead of a working check.
+    ck("billsnow's quiet note still reads as zero",
+       RULES["billsnow"].productivity("no material change") == (0, True))
+    ck("an EMPTY pedagogy digest still reads as zero",
+       RULES["pedagogy"].productivity("sent: 0 art, 0 pod, 0 topic") == (0, True))
+    ck("a zero phrase beats a produced phrase in the same note",
+       RULES["billsnow"].productivity("nothing to send, so nothing sent")
+       == (0, True))
+
+    # The scout, added the day it failed silently.
+    ck("opportunityscout has a rule", "opportunityscout" in RULES)
+    ck("the scout's real success note parses as productive",
+       RULES["opportunityscout"].productivity("5 model answer(s), 7 rate card(s)")[0] > 0)
+    st = {"opportunityscout": {"ok": True, "epoch": 1,
+                               "note": "0 model answer(s), 0 rate card(s)"}}
+    ck("a scout run where nothing answered reads as zero",
+       RULES["opportunityscout"].productivity(st["opportunityscout"]["note"])
+       == (0, True))
 
     # A job with no rule is surfaced, not silently ignored -- but is not an
     # incident on its own.
