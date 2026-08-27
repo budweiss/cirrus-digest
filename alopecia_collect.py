@@ -419,8 +419,13 @@ def selftest():
     ck("privacy: every outbound query is condition-level vocabulary only", good)
     ck("privacy: the check is exhaustive over outbound_queries()",
        set(outbound_queries()) >= {"pubmed", "trials", "medrxiv", "naaf"})
+    # The planted place-name is a DELIBERATELY IRRELEVANT one. S82 first used
+    # RCW's actual town and county here -- putting the exact strings this
+    # project promises to keep out of the repo into the repo, inside the test
+    # that proves they stay out. Any non-vocabulary word exercises the check
+    # identically. Do not "improve" this by making it realistic.
     _orig = globals()["outbound_queries"]
-    globals()["outbound_queries"] = lambda: {"x": "alopecia areata Montgomery"}
+    globals()["outbound_queries"] = lambda: {"x": "alopecia areata Reykjavik"}
     try:
         planted_ok, planted_bad = check_queries_condition_level()
         ck("privacy: the check FIRES on a planted place-name",
@@ -539,7 +544,7 @@ def selftest():
            any("dead" in e for e in r4["errors"]))
 
         # fail closed on a privacy violation
-        globals()["outbound_queries"] = lambda: {"x": "alopecia Norristown"}
+        globals()["outbound_queries"] = lambda: {"x": "alopecia Reykjavik"}
         try:
             threw = False
             try:
