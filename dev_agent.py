@@ -7,9 +7,16 @@ Takes an APPROVED Tier-1 proposal (queued by cirrus_bot.execute_action into
 logs/dev-loop/build-queue.jsonl), and runs the pipeline:
 
     build   — git worktree + branch, Claude API writes the patch (safety-gated)
-    test    — py_compile every changed .py; full daily --dry-run when a core
-              digest file is touched (paths in cirrus_daily are absolute, so a
-              worktree run reads live config but can only write DRYRUN-* files)
+    verify  — four ordered gates (S80): py_compile every changed .py; the
+              changed module's own selftest; the selftest of every module that
+              IMPORTS it; and a full daily --dry-run when a core digest file is
+              touched (paths in cirrus_daily are absolute, so a worktree run
+              reads live config but can only write DRYRUN-* files)
+    repair  — on failure, show the model how its patch broke and try again, up
+              to MAX_REPAIR_ATTEMPTS. Attempts 1-2 Claude alone; attempt 3
+              escalates to the keyed panel. A repair may NOT edit test code,
+              and two identical failures stop the loop. Every attempt is
+              journalled to logs/dev-loop/repairs.jsonl.
     confirm — Telegram one-tap: diff stat + test result + rollback plan;
               Buddy replies `ship N` or `discard N`
     deploy  — config snapshot → rebase on origin/main → push → live
@@ -27,7 +34,9 @@ Safety model (defense in depth, mirrors dev_loop.may_auto_apply):
     the agent never edits live files directly.
 
 Usage:
-    python3 dev_agent.py nightly      # sweep the queue, build+test, notify
+    python3 dev_agent.py nightly      # sweep the queue, build+test+repair, notify
+    python3 dev_agent.py report       # morning report (06:30): what happened overnight
+    python3 dev_agent.py repairs [N]  # read back HOW the last N fixes were approached
     python3 dev_agent.py list         # show builds awaiting confirm
     python3 dev_agent.py ship N       # deploy build N (bot calls this)
     python3 dev_agent.py discard N    # drop build N
@@ -413,6 +422,291 @@ def _cleanup_worktree(bid):
     shutil.rmtree(wt, ignore_errors=True)
 
 
+# ── Self-repair: verification gates + journal (S80) ───────────────────────────
+# Buddy, S80: "I like the three times try and fix it" and "keep logs on how we
+# approach any fix so we can learn from them too."
+#
+# The old test section was a straight line: py_compile, maybe a dry-run, stop.
+# Two separate things were wrong with it. It captured the error text and then
+# THREW IT AWAY, so the model never saw how its own patch broke; and py_compile
+# is a weak definition of working -- it proves a file parses, not that it does
+# anything right. 32 of the 64 modules here ship a selftest() this loop had
+# never once run.
+#
+# WHAT THIS CANNOT DO, stated here so the morning report is never read as more
+# assurance than it is: every gate below is a property of CODE. All of them
+# would have been GREEN for every real defect S79 shipped -- a page of 99
+# near-identical cards, a ranking that had silently fallen through to
+# alphabetical, a roster labelled "available to book" that was not, a false
+# credit on a client page. This loop fixes what it BREAKS. It cannot notice it
+# built the wrong thing. See docs/DEV-AGENT-SELF-REPAIR.md.
+#
+# NOTE ON trap_lint: the first draft had it as a blocking gate. It is a Cowork
+# tool and this worktree is cirrus-digest -- a different tree it does not scan.
+# Dropped rather than faked.
+
+MAX_REPAIR_ATTEMPTS      = 3
+REPAIR_MAX_FAILURE_CHARS = 2000
+SELFTEST_TIMEOUT         = 300
+REPAIRS_FILE             = PROJECT_DIR / "logs/dev-loop/repairs.jsonl"
+
+# A repair may not edit test code. The cheapest way for a model to make a test
+# pass is to delete the test, so this is a hard refusal, not a warning.
+_TEST_CODE_RX = re.compile(r"(def\s+selftest|\bcheck\(|\bassert\s|FAILURES:)")
+
+
+def module_name(path: str) -> str:
+    """Repo-relative .py path -> importable module name ('' if not a module)."""
+    if not path.endswith(".py"):
+        return ""
+    return Path(path).name[:-3]
+
+
+def importers_of(mod: str, root) -> list:
+    """Top-level .py files under root that import `mod`.
+
+    S79 shipped a dashboard test that failed quietly because halftime_routing
+    reworded a phrase the dashboard suite pinned, and only the CHANGED module's
+    suite was re-run. Changing a file means running the tests of everything that
+    imports it. Fan-in here is small enough to just run them: the hottest module
+    in the tree has 9 importers.
+    """
+    if not mod:
+        return []
+    rx = re.compile(r"^\s*(?:from|import)\s+%s\b" % re.escape(mod), re.M)
+    out = []
+    try:
+        for fp in sorted(Path(root).glob("*.py")):
+            if fp.name == mod + ".py":
+                continue
+            try:
+                if rx.search(fp.read_text(errors="ignore")):
+                    out.append(fp.name)
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
+def has_selftest(fp) -> bool:
+    """True if the file defines selftest() AND dispatches to it from argv."""
+    try:
+        text = Path(fp).read_text(errors="ignore")
+    except Exception:
+        return False
+    return "def selftest" in text and "selftest" in text.split("def selftest")[-1]
+
+
+def failure_signature(gate: str, detail: str) -> str:
+    """Stable fingerprint of a failure, for the no-progress rule.
+
+    Deliberately coarse: gate + the FIRST failing thing named. Two attempts
+    that fail the same check the same way are the model circling, and a third
+    swing buys the same answer at three times the cost.
+    """
+    first = ""
+    for line in (detail or "").splitlines():
+        s = line.strip()
+        if s.startswith("FAIL") or s.startswith("check(") or "Error" in s:
+            first = s[:120]
+            break
+    if not first:
+        first = (detail or "").strip()[:120]
+    return "%s::%s" % (gate, re.sub(r"\s+", " ", first))
+
+
+def no_progress(history) -> bool:
+    """True when the last two attempts failed with the identical signature."""
+    sigs = [h.get("signature") for h in (history or []) if h.get("signature")]
+    return len(sigs) >= 2 and sigs[-1] == sigs[-2]
+
+
+def touches_test_code(patch: dict):
+    """(ok, reason) — refuse a REPAIR patch that edits test code.
+
+    The original build may ADD tests; that is good and is not routed here. Only
+    repair attempts are checked, and only for weakening what already exists.
+    """
+    for f in (patch.get("files") or []):
+        if _TEST_CODE_RX.search(str(f.get("content", ""))):
+            return False, "repair rewrote a file containing test code (%s)" % f.get("path", "?")
+    for e in (patch.get("edits") or []):
+        found = str((e or {}).get("find", ""))
+        repl = str((e or {}).get("replace", ""))
+        if _TEST_CODE_RX.search(found) or _TEST_CODE_RX.search(repl):
+            return False, "repair edited test code in %s" % (e or {}).get("path", "?")
+    return True, ""
+
+
+def failing_selftests(wt, mods) -> set:
+    """Which of `mods` ALREADY fail their selftest, before we patch anything.
+
+    Without this the loop blames itself for someone else's bug: a dependent
+    whose suite was broken on main (or that cannot even import, e.g. a missing
+    third-party package on this box) would fail gate 3 on every attempt, and
+    the model would burn all three swings trying to fix code its patch never
+    touched. Measured once against the pristine worktree, then excused.
+    """
+    out = set()
+    for m in mods:
+        fp = Path(wt) / m
+        if not fp.exists() or not has_selftest(fp):
+            continue
+        rc, _out = _run([sys.executable, str(fp), "selftest"],
+                        cwd=wt, timeout=SELFTEST_TIMEOUT)
+        if rc != 0:
+            out.add(m)
+    return out
+
+
+def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
+    """Run the gates in order, cheapest first. Stop at the first failure.
+
+    Returns {ok, gate, detail, signature, ran}. `ran` lists the gates that
+    actually executed, so a report can never imply a gate passed when it was
+    skipped -- that is the T42 shape.
+
+    prebroken: modules already failing before this patch. Excused, and named in
+    `excused` so a clean verdict never hides a suite nobody is watching.
+    """
+    wt = Path(wt)
+    ran = []
+
+    # gate 1 — every changed .py parses
+    ran.append("compile")
+    for p in changed:
+        if p.endswith(".py"):
+            rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)])
+            if rc != 0:
+                d = "py_compile %s: %s" % (p, out[:400])
+                return {"ok": False, "gate": "compile", "detail": d,
+                        "signature": failure_signature("compile", d),
+                        "ran": ran, "excused": []}
+
+    # gate 2 — the changed module's own selftest
+    ran.append("selftest")
+    for p in changed:
+        fp = wt / p
+        if not p.endswith(".py") or not has_selftest(fp):
+            continue
+        rc, out = _run([sys.executable, str(fp), "selftest"],
+                       cwd=wt, timeout=SELFTEST_TIMEOUT)
+        if rc != 0:
+            d = "%s selftest failed:\n%s" % (p, out[-1200:])
+            return {"ok": False, "gate": "selftest", "detail": d,
+                    "signature": failure_signature("selftest:" + p, out),
+                    "ran": ran, "excused": []}
+
+    # gate 3 — selftests of everything that IMPORTS a changed module (S79)
+    ran.append("dependents")
+    seen, excused = set(), []
+    prebroken = set(prebroken or ())
+    for p in changed:
+        for dep in importers_of(module_name(p), wt):
+            if dep in seen or dep in changed:
+                continue
+            seen.add(dep)
+            if dep in prebroken:
+                excused.append(dep)          # already broken; not ours to fix
+                continue
+            fp = wt / dep
+            if not has_selftest(fp):
+                continue
+            rc, out = _run([sys.executable, str(fp), "selftest"],
+                           cwd=wt, timeout=SELFTEST_TIMEOUT)
+            if rc != 0:
+                d = ("%s selftest failed (it imports %s, which this patch "
+                     "changed):\n%s" % (dep, module_name(p), out[-1200:]))
+                return {"ok": False, "gate": "dependents", "detail": d,
+                        "signature": failure_signature("dependents:" + dep, out),
+                        "ran": ran, "excused": excused}
+
+    # gate 4 — full daily dry-run when a core digest file changed
+    if run_dryrun and (set(changed) & DRYRUN_TRIGGERS):
+        ran.append("dryrun")
+        rc, out = _run([sys.executable, str(wt / "cirrus_daily.py"), "--dry-run"],
+                       cwd=wt, timeout=DRYRUN_TIMEOUT)
+        if rc != 0:
+            d = "daily --dry-run failed:\n%s" % out[-1200:]
+            return {"ok": False, "gate": "dryrun", "detail": d,
+                    "signature": failure_signature("dryrun", out),
+                    "ran": ran, "excused": excused}
+
+    return {"ok": True, "gate": "", "detail": "", "signature": "", "ran": ran,
+            "excused": excused}
+
+
+def _repair_journal(entry: dict):
+    """Append one attempt to the repair journal. Never fatal.
+
+    Buddy's ask: keep a record of HOW a fix was approached, not just whether it
+    worked, so the approaches themselves can be reviewed later. Every attempt
+    lands here -- including the ones that were refused and the ones that gave
+    up. A journal of successes only would teach the wrong lesson.
+    """
+    try:
+        REPAIRS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        entry = dict(entry)
+        entry.setdefault("ts", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        with open(REPAIRS_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        _log("repair journal write failed: %s" % e)
+
+
+def repair_prompt(item, blobs, conventions, edit_only, failure, prior, attempt):
+    """(system, user) for a REPAIR call: the original task plus how it broke."""
+    system, user = build_prompt(item, blobs, conventions, edit_only)
+    system = system + (
+        "\n\nYOU ARE REPAIRING YOUR OWN PREVIOUS ATTEMPT.\n"
+        "The file contents shown below are the ORIGINAL, unpatched files. Your "
+        "reply must be a COMPLETE fresh patch against those originals -- not a "
+        "patch against your broken attempt.\n"
+        "HARD RULE: do NOT change, weaken, or delete any test code (a "
+        "selftest() body, a check(...) line, an assert). If the only way you "
+        "can make the gate pass is to change a test, the patch is wrong -- "
+        "return CANNOT_BUILD and say so in notes.")
+    parts = [user, "",
+             "===== HOW ATTEMPT %d BROKE =====" % (attempt - 1),
+             "FAILED GATE: %s" % failure.get("gate", "?"),
+             (failure.get("detail") or "")[:REPAIR_MAX_FAILURE_CHARS]]
+    if prior:
+        parts += ["", "===== THE PATCH THAT BROKE (unified diff) =====",
+                  prior[:6000]]
+    return system, "\n".join(parts)
+
+
+def council_repair(system: str, user: str):
+    """Attempt 3 escalation: ask the whole keyed panel, not Claude again.
+
+    Buddy, S80. Attempts 1-2 are Claude alone. A third identical swing walks
+    straight into the no-progress rule, so the last attempt gets a genuinely
+    different brain: ensemble.best_answer runs the keyed providers in parallel
+    and has a judge synthesize one answer. dev_agent has always imported this
+    module -- it has just never asked it to FIX anything, only to comment on a
+    diff after the fact.
+
+    Falls back to Claude alone if the panel is unavailable, and says so.
+    """
+    try:
+        import ensemble
+    except Exception as e:
+        _log("council_repair: ensemble unavailable (%s) — falling back to Claude" % e)
+        return parse_model_json(call_claude_build(system, user)), {"driver": "claude-fallback"}
+    try:
+        meta, text = ensemble.best_answer(system, user, _creds(),
+                                          max_tokens=16384,
+                                          task="dev-agent-repair", mode="council")
+        return parse_model_json(text), {"driver": "council",
+                                        "members": meta.get("members", []),
+                                        "judge": meta.get("judge"),
+                                        "degraded": bool(meta.get("degraded"))}
+    except Exception as e:
+        _log("council_repair failed (%s) — falling back to Claude" % e)
+        return parse_model_json(call_claude_build(system, user)), {"driver": "claude-fallback"}
+
+
 # ── Build one item ────────────────────────────────────────────────────────────
 # ── Council cross-check of the built patch (S57) ──────────────────────────────
 # Buddy: self-improvement should use ALL our LLMs. After Claude writes a patch and
@@ -573,104 +867,209 @@ def build_item(item: dict):
         if conv.exists():
             conventions = conv.read_text()
 
-        system, user = build_prompt(item, blobs, conventions, edit_only)
-        patch = build_model_patch(system, user)
+        # ── build → verify → repair, up to MAX_REPAIR_ATTEMPTS (S80) ─────────
+        # Attempts 1-2 are Claude alone. Attempt 3 escalates to the keyed panel
+        # (council_repair) rather than taking a third identical swing, which
+        # would only re-trigger the no-progress rule. Every attempt is
+        # journalled -- including refusals and the final give-up.
+        rc, base_sha = _git(["rev-parse", "HEAD"], cwd=wt)
+        base_sha = base_sha.strip()
+        history, verdict, attempt = [], None, 0
+        rec["attempts"] = 0
 
-        whole = patch.get("files") or []
-        edits = patch.get("edits") or []
-        if patch.get("summary") == "CANNOT_BUILD" or (not whole and not edits):
-            rec.update(status="cannot-build",
-                       error=str(patch.get("notes", ""))[:300])
-            _ledger("build", bid, result=f"CANNOT_BUILD: {patch.get('notes','')[:60]}")
-            _cleanup_worktree(bid)
-            return rec
+        # Baseline the dependents BEFORE any patch exists, while the worktree is
+        # still pristine. A suite that was already red is not this patch's fault
+        # and must not eat all three attempts.
+        deps = set()
+        for _p in want:
+            deps.update(importers_of(module_name(_p), wt))
+        prebroken = failing_selftests(wt, deps)
+        if prebroken:
+            rec["prebroken"] = sorted(prebroken)
+            _log(f"{bid}: dependent suites already red before this patch — "
+                 f"excused: {', '.join(sorted(prebroken))}")
 
-        # A whole-file rewrite of an EDIT-ONLY file is the exact failure this
-        # mode exists to prevent: it cannot be returned complete inside
-        # max_tokens, so accepting it would write a truncated file to disk.
-        ignored = sorted({f.get("path", "") for f in whole} & edit_only)
-        if ignored:
-            why = (f"returned whole-file content for {', '.join(ignored)}, which is "
-                   f"too large to write back whole — those must use \"edits\"")
-            rec.update(status="blocked", error=f"patch rejected: {why}"[:300])
-            _ledger("build", bid, result=f"BLOCKED: {why[:60]}")
-            _cleanup_worktree(bid)
-            return rec
+        while attempt < MAX_REPAIR_ATTEMPTS:
+            attempt += 1
+            rec["attempts"] = attempt
+            t0 = time.time()
+            driver = {"driver": "claude"}
 
-        if whole:
-            ok, why = validate_patch(whole)
-            if not ok:
-                rec.update(status="blocked", error=f"patch rejected: {why}")
-                _ledger("build", bid, result=f"BLOCKED: {why}")
+            # Reset the worktree so each attempt patches the ORIGINAL files.
+            # Without this, attempt 2 would be applied on top of attempt 1 and
+            # the `find` strings from the untouched blobs would stop matching.
+            if attempt > 1:
+                _git(["reset", "--hard", base_sha], cwd=wt)
+                _git(["clean", "-fd"], cwd=wt)
+
+            if attempt == 1:
+                system, user = build_prompt(item, blobs, conventions, edit_only)
+                patch = build_model_patch(system, user)
+            else:
+                system, user = repair_prompt(item, blobs, conventions, edit_only,
+                                             verdict, rec.get("diff_stat", ""), attempt)
+                if attempt >= MAX_REPAIR_ATTEMPTS:
+                    patch, driver = council_repair(system, user)
+                else:
+                    patch = build_model_patch(system, user)
+
+            jrn = {"build_id": bid, "attempt": attempt, "driver": driver["driver"],
+                   "detail": rec["detail"], "fixing_gate": (verdict or {}).get("gate", ""),
+                   "fixing_signature": (verdict or {}).get("signature", "")}
+            jrn.update({k: v for k, v in driver.items() if k != "driver"})
+
+            whole = patch.get("files") or []
+            edits = patch.get("edits") or []
+            if patch.get("summary") == "CANNOT_BUILD" or (not whole and not edits):
+                why = str(patch.get("notes", ""))[:300]
+                rec.update(status="cannot-build", error=why)
+                _ledger("build", bid, result=f"CANNOT_BUILD: {why[:60]}")
+                jrn.update(outcome="cannot-build", approach=why,
+                           elapsed_s=round(time.time() - t0, 1))
+                _repair_journal(jrn)
                 _cleanup_worktree(bid)
                 return rec
 
-        # Edits are planned entirely in memory and only then written, so a patch
-        # is never half-applied to the worktree.
-        edited = {}
-        if edits:
-            for e in edits:
-                okp, whyp = patch_path_ok((e or {}).get("path", ""))
-                if not okp:
-                    rec.update(status="blocked",
-                               error=f"patch rejected: {(e or {}).get('path','')}: {whyp}"[:300])
-                    _ledger("build", bid, result=f"BLOCKED: edit path {whyp[:40]}")
-                    _cleanup_worktree(bid)
-                    return rec
-            ok, why, edited = plan_edits(blobs, edits)
-            if not ok:
-                rec.update(status="blocked", error=f"edits rejected: {why}"[:300])
+            jrn["approach"] = str(patch.get("summary", ""))[:200]
+            jrn["model_notes"] = str(patch.get("notes", ""))[:300]
+
+            # A REPAIR may not weaken test code. The cheapest way to make a
+            # test pass is to delete it, so this is a refusal, and it costs the
+            # attempt -- a model that tries it does not get a free retry.
+            if attempt > 1:
+                okt, whyt = touches_test_code(patch)
+                if not okt:
+                    _log(f"{bid}: attempt {attempt} REFUSED — {whyt}")
+                    _ledger("repair", bid, result=f"REFUSED: {whyt[:60]}")
+                    jrn.update(outcome="refused-test-edit", refusal=whyt,
+                               elapsed_s=round(time.time() - t0, 1))
+                    _repair_journal(jrn)
+                    history.append({"signature": "refused::test-edit"})
+                    if no_progress(history):
+                        break
+                    continue
+
+            # A whole-file rewrite of an EDIT-ONLY file is the exact failure this
+            # mode exists to prevent: it cannot be returned complete inside
+            # max_tokens, so accepting it would write a truncated file to disk.
+            ignored = sorted({f.get("path", "") for f in whole} & edit_only)
+            if ignored:
+                why = (f"returned whole-file content for {', '.join(ignored)}, which is "
+                       f"too large to write back whole — those must use \"edits\"")
+                rec.update(status="blocked", error=f"patch rejected: {why}"[:300])
                 _ledger("build", bid, result=f"BLOCKED: {why[:60]}")
+                jrn.update(outcome="blocked", refusal=why,
+                           elapsed_s=round(time.time() - t0, 1))
+                _repair_journal(jrn)
                 _cleanup_worktree(bid)
                 return rec
 
-        changed = []
-        for f in whole:
-            dest = wt / f["path"]
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(f["content"])
-            changed.append(f["path"])
-        for path, text in edited.items():
-            (wt / path).write_text(text)
-            changed.append(path)
-        rec["edits_applied"] = len(edits)
-        rec["files"] = changed
-        rec["summary"] = str(patch.get("summary", ""))[:200]
-        rec["notes"] = str(patch.get("notes", ""))[:300]
-
-        # ── test: compile every changed .py ──────────────────────────────────
-        for p in changed:
-            if p.endswith(".py"):
-                rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)])
-                if rc != 0:
-                    rec.update(status="test-failed", error=f"py_compile {p}: {out[:300]}")
-                    _ledger("test", bid, result=f"FAIL compile {p}")
+            if whole:
+                ok, why = validate_patch(whole)
+                if not ok:
+                    rec.update(status="blocked", error=f"patch rejected: {why}")
+                    _ledger("build", bid, result=f"BLOCKED: {why}")
+                    jrn.update(outcome="blocked", refusal=why,
+                               elapsed_s=round(time.time() - t0, 1))
+                    _repair_journal(jrn)
                     _cleanup_worktree(bid)
                     return rec
-        rec["test_compile"] = "ok"
 
-        # commit before the (long) dry-run so the work is never lost
-        _git(["add", "-A"], cwd=wt)
-        rc, out = _git(["commit", "-m", f"dev-loop {bid}: {rec['summary'][:60]}"], cwd=wt)
-        if rc != 0:
-            raise RuntimeError(f"commit failed: {out[:200]}")
-        rc, stat = _git(["diff", "--stat", "HEAD~1..HEAD"], cwd=wt)
-        rec["diff_stat"] = stat[-500:]
+            # Edits are planned entirely in memory and only then written, so a patch
+            # is never half-applied to the worktree.
+            edited = {}
+            if edits:
+                blocked = None
+                for e in edits:
+                    okp, whyp = patch_path_ok((e or {}).get("path", ""))
+                    if not okp:
+                        blocked = f"{(e or {}).get('path','')}: {whyp}"
+                        break
+                if blocked is None:
+                    ok, why, edited = plan_edits(blobs, edits)
+                    if not ok:
+                        blocked = why
+                if blocked is not None:
+                    rec.update(status="blocked", error=f"edits rejected: {blocked}"[:300])
+                    _ledger("build", bid, result=f"BLOCKED: {blocked[:60]}")
+                    jrn.update(outcome="blocked", refusal=blocked,
+                               elapsed_s=round(time.time() - t0, 1))
+                    _repair_journal(jrn)
+                    _cleanup_worktree(bid)
+                    return rec
 
-        # ── test: full dry-run if a core digest file changed ─────────────────
-        if set(changed) & DRYRUN_TRIGGERS:
-            _log(f"{bid}: core file changed — running daily --dry-run (long)")
-            rc, out = _run([sys.executable, str(wt / "cirrus_daily.py"), "--dry-run"],
-                           cwd=wt, timeout=DRYRUN_TIMEOUT)
-            rec["test_dryrun"] = "ok" if rc == 0 else "FAIL"
-            rec["dryrun_tail"] = out[-600:]
-            if rc != 0:
-                rec.update(status="test-failed", error="dry-run failed")
-                _ledger("test", bid, result="FAIL dry-run")
-                # keep worktree for inspection; do not confirm
-                return rec
-        else:
-            rec["test_dryrun"] = "skipped (no core digest file changed)"
+            changed = []
+            for f in whole:
+                dest = wt / f["path"]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(f["content"])
+                changed.append(f["path"])
+            for path, text in edited.items():
+                (wt / path).write_text(text)
+                changed.append(path)
+            rec["edits_applied"] = len(edits)
+            rec["files"] = changed
+            rec["summary"] = str(patch.get("summary", ""))[:200]
+            rec["notes"] = str(patch.get("notes", ""))[:300]
+
+            # ── the gates ────────────────────────────────────────────────────
+            verdict = verify_build(wt, changed, prebroken=prebroken)
+            rec["gates_ran"] = verdict["ran"]
+            if verdict.get("excused"):
+                rec["excused"] = verdict["excused"]
+            jrn.update(files=changed, gates_ran=verdict["ran"],
+                       elapsed_s=round(time.time() - t0, 1))
+
+            if verdict["ok"]:
+                rec["test_compile"] = "ok"
+                rec["test_dryrun"] = ("ok" if "dryrun" in verdict["ran"]
+                                      else "skipped (no core digest file changed)")
+                _git(["add", "-A"], cwd=wt)
+                rc, out = _git(["commit", "-m", f"dev-loop {bid}: {rec['summary'][:60]}"], cwd=wt)
+                if rc != 0:
+                    raise RuntimeError(f"commit failed: {out[:200]}")
+                rc, stat = _git(["diff", "--stat", f"{base_sha}..HEAD"], cwd=wt)
+                rec["diff_stat"] = stat[-500:]
+                jrn.update(outcome=("fixed" if attempt > 1 else "built"),
+                           diff_stat=stat[-300:])
+                _repair_journal(jrn)
+                if attempt > 1:
+                    _ledger("repair", bid,
+                            result=f"FIXED on attempt {attempt} via {driver['driver']}")
+                    _log(f"{bid}: repaired on attempt {attempt} ({driver['driver']})")
+                break
+
+            # failed — record how, and decide whether another swing is worth it
+            rec.update(status="test-failed", error=f"{verdict['gate']}: {verdict['detail'][:250]}")
+            rc, stat = _git(["diff", "--stat"], cwd=wt)
+            rec["diff_stat"] = stat[-500:]
+            jrn.update(outcome="failed", gate=verdict["gate"],
+                       signature=verdict["signature"],
+                       failure=verdict["detail"][:REPAIR_MAX_FAILURE_CHARS],
+                       diff_stat=stat[-300:])
+            _repair_journal(jrn)
+            _ledger("test", bid, result=f"FAIL {verdict['gate']} (attempt {attempt})")
+            _log(f"{bid}: attempt {attempt} failed at {verdict['gate']}")
+            history.append(verdict)
+
+            if no_progress(history):
+                _log(f"{bid}: identical failure twice — stopping, not circling")
+                _repair_journal({"build_id": bid, "attempt": attempt,
+                                 "driver": "-", "outcome": "no-progress",
+                                 "signature": verdict["signature"],
+                                 "approach": "stopped: same failure twice running"})
+                break
+
+        # ── loop over ────────────────────────────────────────────────────────
+        if verdict is None or not verdict.get("ok"):
+            rec["status"] = "repair-exhausted"
+            rec["repair_gate"] = (verdict or {}).get("gate", "")
+            _ledger("repair", bid,
+                    result=f"EXHAUSTED after {rec['attempts']} attempt(s) at "
+                           f"{(verdict or {}).get('gate','?')}")
+            _log(f"{bid}: repair exhausted after {rec['attempts']} attempts — "
+                 f"worktree kept at {wt}")
+            return rec   # worktree KEPT on purpose, for inspection
 
         # Full-panel cross-check of the diff. A council REJECT auto-HOLDS the build:
         # it stays visible but `ship` refuses it until an explicit `unhold` (S57).
@@ -1059,6 +1458,119 @@ def selftest() -> bool:
     return bad == 0
 
 
+# ── Repair journal read-back + morning report (S80) ───────────────────────────
+def repairs_load(limit: int = 200, path=None):
+    """Newest-last journal entries. Never raises on a bad line."""
+    fp = Path(path) if path else REPAIRS_FILE
+    if not fp.exists():
+        return []
+    rows = []
+    try:
+        for line in fp.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return rows[-limit:]
+
+
+def repairs_text(limit: int = 20, path=None) -> str:
+    """Human read-back of HOW fixes were approached — Buddy's ask, S80.
+
+    Shows the approach line for every attempt, not just the ones that worked.
+    A journal of successes only would teach the wrong lesson: the refusals and
+    the give-ups are the entries worth reading.
+    """
+    rows = repairs_load(limit=limit, path=path)
+    if not rows:
+        return "No repair attempts journalled yet."
+    out = ["REPAIR JOURNAL (last %d attempts)" % len(rows), ""]
+    for r in rows:
+        head = "%s  %s  attempt %s/%s  [%s]" % (
+            r.get("ts", "?"), r.get("build_id", "?"), r.get("attempt", "?"),
+            MAX_REPAIR_ATTEMPTS, r.get("driver", "?"))
+        out.append(head)
+        out.append("   outcome : %s" % r.get("outcome", "?"))
+        if r.get("fixing_gate"):
+            out.append("   fixing  : %s" % r["fixing_gate"])
+        if r.get("approach"):
+            out.append("   approach: %s" % r["approach"])
+        if r.get("model_notes"):
+            out.append("   notes   : %s" % r["model_notes"])
+        if r.get("refusal"):
+            out.append("   REFUSED : %s" % r["refusal"])
+        if r.get("gate"):
+            out.append("   failed  : %s — %s" % (
+                r["gate"], (r.get("failure") or "").splitlines()[0][:110]))
+        if r.get("members"):
+            out.append("   panel   : %s → %s" % ("/".join(r["members"]), r.get("judge")))
+        if r.get("files"):
+            out.append("   files   : %s" % ", ".join(r["files"]))
+        out.append("")
+    return "\n".join(out)
+
+
+def report_text(builds=None, path=None) -> str:
+    """The morning report. Says what happened AND what it declined to do.
+
+    A report that lists only successes is the T42 shape — a check that reads
+    clean because it never looked. Refusals, give-ups and skipped gates are
+    first-class lines here, not omissions.
+    """
+    builds = builds if builds is not None else builds_load()
+    today = datetime.now().strftime("%Y-%m-%d")
+    mine = [b for b in builds if str(b.get("created", "")).startswith(today)]
+    if not mine:
+        return "Dev-loop %s: nothing built overnight." % today
+
+    lines = ["Dev-loop overnight report — %s" % today, ""]
+    buckets = {}
+    for b in mine:
+        buckets.setdefault(b.get("status", "?"), []).append(b)
+
+    for b in buckets.get("awaiting-confirm", []):
+        n = b.get("attempts", 1)
+        how = "first try" if n <= 1 else "repaired on attempt %d" % n
+        lines.append("READY  %s — %s (%s)" % (b.get("id"), b.get("summary", ""), how))
+        lines.append("       gates: %s" % ", ".join(b.get("gates_ran") or ["?"]))
+        if b.get("excused"):
+            lines.append("       NOT CHECKED (already red before this patch): %s"
+                         % ", ".join(b["excused"]))
+        if (b.get("council") or {}).get("verdict"):
+            lines.append("       council: %s" % b["council"]["verdict"])
+        lines.append("       reply `ship N` or `discard N`")
+
+    for b in buckets.get("repair-exhausted", []):
+        lines.append("GAVE UP %s — %s" % (b.get("id"), b.get("detail", "")))
+        lines.append("       tried %d times, never passed: %s"
+                     % (b.get("attempts", 0), b.get("repair_gate") or "?"))
+        lines.append("       %s" % (b.get("error") or "")[:160])
+        lines.append("       worktree kept: %s" % b.get("worktree", "?"))
+
+    for key, label in (("cannot-build", "DECLINED"), ("blocked", "BLOCKED"),
+                       ("refused", "REFUSED"), ("build-error", "ERROR")):
+        for b in buckets.get(key, []):
+            lines.append("%s %s — %s" % (label, b.get("id"), (b.get("error") or "")[:160]))
+
+    lines.append("")
+    lines.append("Attempts journalled: %d. `dev_agent.py repairs` to read how."
+                 % len(repairs_load(limit=500, path=path)))
+    return "\n".join(lines)
+
+
+def run_report():
+    """Send the morning report to Telegram and print it."""
+    text = report_text()
+    print(text)
+    _notify(text[:3500])
+    return text
+
+
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
 def run_nightly():
     _log("nightly sweep start")
@@ -1193,6 +1705,171 @@ def _selftest():
     check("build_prompt: file content included", "print('hi')" in usr_p)
     check("build_prompt: CANNOT_BUILD escape hatch", "CANNOT_BUILD" in sys_p)
 
+    # ── self-repair loop (S80) ────────────────────────────────────────────────
+    import tempfile
+
+    # -- pure helpers ---------------------------------------------------------
+    check("module_name: .py -> module", module_name("halftime_routing.py") == "halftime_routing")
+    check("module_name: non-.py -> ''", module_name("notes.md") == "")
+
+    check("failure_signature: same failure -> same sig",
+          failure_signature("selftest", "FAIL a sweep that broke")
+          == failure_signature("selftest", "FAIL a sweep that broke"))
+    check("failure_signature: different failure -> different sig",
+          failure_signature("selftest", "FAIL one thing")
+          != failure_signature("selftest", "FAIL another thing"))
+    check("failure_signature: whitespace-insensitive",
+          failure_signature("g", "FAIL  x   y") == failure_signature("g", "FAIL x y"))
+
+    check("no_progress: two identical failures -> stop",
+          no_progress([{"signature": "a"}, {"signature": "a"}]))
+    check("no_progress: two different failures -> keep going",
+          not no_progress([{"signature": "a"}, {"signature": "b"}]))
+    check("no_progress: a single failure is not yet circling",
+          not no_progress([{"signature": "a"}]))
+
+    # -- a repair may not weaken test code ------------------------------------
+    check("touches_test_code: rewriting a file with check() is refused",
+          not touches_test_code({"files": [{"path": "m.py", "content": "check(\"x\", 1)"}]})[0])
+    check("touches_test_code: rewriting a file with def selftest is refused",
+          not touches_test_code({"files": [{"path": "m.py", "content": "def selftest():\n    pass"}]})[0])
+    check("touches_test_code: editing OUT an assert is refused",
+          not touches_test_code({"edits": [{"path": "m.py", "find": "assert x == 1", "replace": ""}]})[0])
+    check("touches_test_code: sneaking an assert IN is refused too",
+          not touches_test_code({"edits": [{"path": "m.py", "find": "return 1", "replace": "assert False"}]})[0])
+    check("touches_test_code: an innocent patch is allowed",
+          touches_test_code({"edits": [{"path": "m.py", "find": "return 1", "replace": "return 2"}]})[0])
+
+    with tempfile.TemporaryDirectory() as td:
+        wt = Path(td)
+        (wt / "base.py").write_text(
+            "def one():\n    return 1\n\n"
+            "def selftest():\n    return 0 if one() == 1 else 1\n\n"
+            "import sys\n"
+            "if __name__ == '__main__':\n    sys.exit(selftest())\n")
+        (wt / "dep.py").write_text(
+            "import base\n\n"
+            "def selftest():\n    return 0 if base.one() == 1 else 1\n\n"
+            "import sys\n"
+            "if __name__ == '__main__':\n    sys.exit(selftest())\n")
+        (wt / "lonely.py").write_text("def x():\n    return 1\n")
+
+        # -- importer graph (the S79 gate) -----------------------------------
+        check("importers_of: finds the module that imports it",
+              importers_of("base", wt) == ["dep.py"])
+        check("importers_of: does not list the module itself",
+              "base.py" not in importers_of("base", wt))
+        check("importers_of: nothing imports dep", importers_of("dep", wt) == [])
+        check("importers_of: unknown module is empty, not an error",
+              importers_of("nosuch", wt) == [])
+
+        check("has_selftest: true when defined AND dispatched",
+              has_selftest(wt / "base.py"))
+        check("has_selftest: false for a module without one",
+              not has_selftest(wt / "lonely.py"))
+
+        # -- gates, in order --------------------------------------------------
+        v = verify_build(wt, ["base.py"])
+        check("verify_build: a healthy patch passes", v["ok"])
+        check("verify_build: it ran compile, selftest AND dependents",
+              set(v["ran"]) == {"compile", "selftest", "dependents"})
+        check("verify_build: it does NOT claim to have run the dry-run",
+              "dryrun" not in v["ran"])
+
+        (wt / "broken.py").write_text("def x(:\n")
+        v = verify_build(wt, ["broken.py"])
+        check("verify_build: a syntax error fails at the compile gate",
+              not v["ok"] and v["gate"] == "compile")
+
+        (wt / "failing.py").write_text(
+            "def selftest():\n    print('FAIL the thing')\n    return 1\n\n"
+            "import sys\n"
+            "if __name__ == '__main__':\n    sys.exit(selftest())\n")
+        v = verify_build(wt, ["failing.py"])
+        check("verify_build: a failing selftest is caught (py_compile never would)",
+              not v["ok"] and v["gate"] == "selftest")
+        check("verify_build: the failure text reaches the model",
+              "FAIL the thing" in v["detail"])
+
+        # THE S79 CASE: the changed module is fine; the module that IMPORTS it
+        # is broken by the change. Today's loop misses this entirely.
+        (wt / "base.py").write_text(
+            "def one():\n    return 99\n\n"
+            "def selftest():\n    return 0\n\n"
+            "import sys\n"
+            "if __name__ == '__main__':\n    sys.exit(selftest())\n")
+        v = verify_build(wt, ["base.py"])
+        check("verify_build: a change that breaks a DEPENDENT's suite is caught",
+              not v["ok"] and v["gate"] == "dependents")
+        check("verify_build: and it names which dependent, and why",
+              "dep.py" in v["detail"] and "imports base" in v["detail"])
+
+        # -- a dependent that was ALREADY red is not this patch's fault -------
+        check("failing_selftests: spots a suite that is already red",
+              failing_selftests(wt, ["failing.py", "base.py"]) == {"failing.py"})
+        check("failing_selftests: ignores a module with no selftest",
+              failing_selftests(wt, ["lonely.py"]) == set())
+        v = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+        check("verify_build: an already-red dependent is excused, not blamed",
+              v["ok"] and v["excused"] == ["dep.py"])
+        check("verify_build: but the excuse is REPORTED, never silent",
+              "dep.py" in report_text(builds=[{"id": "b", "status": "awaiting-confirm",
+                  "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "summary": "s", "attempts": 1, "gates_ran": ["compile"],
+                  "excused": v["excused"]}]))
+        check("verify_build: a dependent NOT in prebroken still fails the gate",
+              not verify_build(wt, ["base.py"], prebroken=set())["ok"])
+
+        # -- the journal ------------------------------------------------------
+        jf = wt / "repairs.jsonl"
+        check("repairs_load: a missing journal is empty, not an error",
+              repairs_load(path=jf) == [])
+        jf.write_text(json.dumps({"build_id": "b1", "attempt": 2, "driver": "council",
+                                  "outcome": "fixed", "approach": "widen the regex"})
+                      + "\nNOT JSON\n")
+        rows = repairs_load(path=jf)
+        check("repairs_load: reads good lines and skips a corrupt one", len(rows) == 1)
+        txt = repairs_text(path=jf)
+        check("repairs_text: shows the approach, not just the outcome",
+              "widen the regex" in txt and "fixed" in txt)
+        check("repairs_text: shows which driver did it", "council" in txt)
+        check("repairs_text: empty journal says so plainly",
+              "No repair attempts" in repairs_text(path=wt / "none.jsonl"))
+
+    # -- the morning report is honest about failure ---------------------------
+    today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rpt = report_text(builds=[
+        {"id": "b1", "status": "awaiting-confirm", "created": today,
+         "summary": "cache the mission text", "attempts": 2,
+         "gates_ran": ["compile", "selftest", "dependents"]},
+        {"id": "b2", "status": "repair-exhausted", "created": today,
+         "detail": "widen the parser", "attempts": 3, "repair_gate": "selftest",
+         "error": "still failing", "worktree": "/tmp/wt"}])
+    check("report_text: a repaired build says which attempt fixed it",
+          "repaired on attempt 2" in rpt)
+    check("report_text: a give-up is reported, not omitted", "GAVE UP" in rpt)
+    check("report_text: the give-up names the gate that never went green",
+          "selftest" in rpt.split("GAVE UP")[1])
+    check("report_text: it keeps the worktree for inspection",
+          "/tmp/wt" in rpt)
+    check("report_text: it lists which gates actually ran",
+          "dependents" in rpt)
+    check("report_text: a quiet night says nothing was built",
+          "nothing built" in report_text(builds=[]))
+
+    # -- the repair prompt carries the failure and the hard rule --------------
+    item = {"detail": "d", "dev_spec": {"id": "x", "files_to_change": ["a.py"]}}
+    sysp, usrp = repair_prompt(item, {"a.py": "print(1)\n"}, "", set(),
+                               {"gate": "selftest", "detail": "FAIL the thing"},
+                               "diff --git a b", 2)
+    check("repair_prompt: tells the model it is repairing its own attempt",
+          "REPAIRING YOUR OWN" in sysp)
+    check("repair_prompt: forbids changing test code", "do NOT change" in sysp)
+    check("repair_prompt: includes how the last attempt broke",
+          "FAIL the thing" in usrp and "selftest" in usrp)
+    check("repair_prompt: patches against the ORIGINAL files, not the broken ones",
+          "ORIGINAL, unpatched" in sysp)
+
     print(f"\n{ok} passed, {fail} failed")
     return fail == 0
 
@@ -1211,6 +1888,10 @@ if __name__ == "__main__":
         print(discard(int(sys.argv[2])))
     elif cmd == "unhold" and len(sys.argv) > 2:
         print(unhold(int(sys.argv[2])))
+    elif cmd == "repairs":
+        print(repairs_text(int(sys.argv[2]) if len(sys.argv) > 2 else 20))
+    elif cmd == "report":
+        run_report()
     elif cmd == "review-test":
         # Live check of the council review path on this box (no build/worktree).
         # Feeds a SAFE sample patch and an UNSAFE one; prints the panel's verdict.
