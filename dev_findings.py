@@ -269,9 +269,21 @@ def collect_all(collectors=None):
 
 
 # ── Selection ─────────────────────────────────────────────────────────────────
+def buildable_finding(f: dict) -> bool:
+    """Can the builder actually act on this finding?
+
+    It needs a file to send the model. dev_agent refuses to guess one -- S71
+    tried substituting cirrus_daily.py for a spec that named none and produced a
+    patch against an unrelated file -- so a finding with no file would occupy a
+    build slot only to be blocked. Collected and counted, but not proposed.
+    """
+    return bool(f.get("files"))
+
+
 def select(findings, seen_keys, limit=MAX_PER_RUN):
     """Highest-ranked findings we have not already proposed. Pure."""
-    fresh = [f for f in findings if f.get("key") not in set(seen_keys)]
+    fresh = [f for f in findings
+             if f.get("key") not in set(seen_keys) and buildable_finding(f)]
     fresh.sort(key=lambda f: (-int(f.get("rank", 0)), str(f.get("key", ""))))
     return fresh[:max(0, int(limit))]
 
@@ -303,6 +315,7 @@ def to_item(f: dict, date=None) -> dict:
         "source_line": f"[{f.get('kind')}] {f.get('evidence', '')}",
         "source": f"dev_findings/{f.get('kind')}",
         "finding_key": f.get("key", ""),
+        "finding_files": list(f.get("files") or []),
         "added": date,
     }
 
@@ -417,6 +430,15 @@ def run(dry_run=True, limit=MAX_PER_RUN):
         # has a build record for. Derive it from the finding instead, so it is
         # unique across findings and stable across runs of the same one.
         item["dev_spec"]["id"] = spec_id(f["key"], date)
+        # S81: make_spec fills files_to_change from dev_loop._guess_files, which
+        # knows nothing about TEST_GAP and returned []. build_item then REFUSES
+        # to build -- correctly, and its comment says so out loud: "the fix
+        # belongs in whatever produced an empty files_to_change". That producer
+        # is this module, and the collector has known the filename all along.
+        # Caught by asking find_buildable what it would do, not by reading the
+        # queue file: queued and buildable are different claims.
+        if f.get("files"):
+            item["dev_spec"]["files_to_change"] = list(f["files"])
         if dry_run:
             proposed.append(item)
             continue
@@ -459,6 +481,8 @@ def run(dry_run=True, limit=MAX_PER_RUN):
         "already_waiting": waiting,
         "room": room,
         "already_known": len([f for f in findings if f.get("key") in known]),
+        "not_auto_buildable": [f["key"] for f in findings
+                               if not buildable_finding(f)],
         "proposed": [{"id": (i.get("dev_spec") or {}).get("id"),
                       "type": i["type"], "why": i.get("why", "")} for i in proposed],
         "dropped": [{"key": f["key"], "why": w} for f, w in dropped],
@@ -474,9 +498,13 @@ def selftest() -> bool:
     def ck(name, cond):
         checks.append((name, bool(cond)))
 
-    def F(key, rank, kind="blind_gate"):
+    def F(key, rank, kind="blind_gate", files=None):
+        # A default file list on purpose: select() now requires one, and a
+        # fixture without it would silently exercise the file filter instead of
+        # the ranking it claims to test (four checks failed exactly that way).
         return {"kind": kind, "key": key, "rank": rank, "title": key,
-                "detail": "d", "evidence": "e", "files": []}
+                "detail": "d", "evidence": "e",
+                "files": ["fixture.py"] if files is None else files}
 
     # ---- selection ----------------------------------------------------------
     fs = [F("a", 1), F("b", 5), F("c", 3)]
@@ -529,6 +557,23 @@ def selftest() -> bool:
     ck("a stalled signal is typed BUG_FIX",
        to_item(F("s", 1, kind="stalled_signal"))["type"] == "BUG_FIX")
 
+    # ---- the builder must be told WHICH FILE -------------------------------
+    # dev_agent refuses to build a spec with an empty files_to_change (it will
+    # not guess -- S71 tried, and patched an unrelated file). make_spec fills
+    # that field from _guess_files, which knows nothing about TEST_GAP, so every
+    # finding was heading for a blocked build. Caught by asking find_buildable
+    # what it would do rather than by reading the queue file.
+    ck("a finding that names a file IS proposable",
+       buildable_finding({"files": ["ensemble.py"]}))
+    ck("a finding with no file is NOT proposed (it would occupy a slot and block)",
+       not buildable_finding({"files": []}))
+    ck("selection filters out findings the builder could not act on",
+       [f["key"] for f in select([{"key": "nofile", "rank": 9, "files": []},
+                                  {"key": "withfile", "rank": 1,
+                                   "files": ["a.py"]}], set(), 5)] == ["withfile"])
+    ck("the proposal carries the finding's file list",
+       to_item(F("blind_gate:ensemble.py", 10,
+                 files=["ensemble.py"]))["finding_files"] == ["ensemble.py"])
     # ---- proposal ids must be unique per FINDING, not per position ----------
     # make_spec numbers by position in the run, so a second run the same day
     # restarts at 1 and two different findings collide. Found by listing
@@ -621,6 +666,10 @@ def selftest() -> bool:
        "no gate can invoke" in got2["blind_gate:uninvokable.py"]["title"])
     ck("...and does not tell the model to write a suite that already exists",
        "DEFINES a selftest" in got2["blind_gate:uninvokable.py"]["detail"])
+
+    real = [f for f in collect_blind_gates(tmp) if f["key"].endswith("big_untested.py")]
+    ck("a real blind-gate finding names its own file, so the builder can act",
+       bool(real) and real[0]["files"] == ["big_untested.py"])
 
     ranks = {f["key"]: f["rank"] for f in collect_blind_gates(tmp)}
     ck("fan-in raises the rank (an importer blinds gate 3 too)",
