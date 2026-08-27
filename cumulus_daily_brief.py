@@ -234,7 +234,20 @@ def main():
     ok = _send_mail(creds.get("outlook_email", ""), creds.get("outlook_password", ""),
                     "Buddy.Weiss@outlook.com", "", subject, body)
     print("email:", "sent" if ok else "failed")
-    print(send_telegram(body, creds))
+    tg = send_telegram(body, creds)
+    print(tg)
+
+# S81: record into the job_status ledger so an overdue/failed run is actually
+# SEEN. Until today this job ran unwatched -- opportunity_scout wrote its
+# status correctly and nothing read it, and these jobs did not even write one.
+# Best-effort and never allowed to change the exit status: monitoring must not
+# break the thing it monitors.
+    try:
+        import job_status
+        job_status.record("cumulusdailybrief", bool(ok),
+                          "sent" if ok else "email FAILED to send")
+    except Exception as e:
+        print(f"job_status.record failed: {e}")
 
 
 if __name__ == "__main__":

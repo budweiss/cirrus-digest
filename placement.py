@@ -442,9 +442,207 @@ cumulus cirrus-gone.timer       client  04:00   live
     return bad == 0
 
 
+
+
+# ── Monitor coverage (S81) ────────────────────────────────────────────────────
+# WHY THIS EXISTS
+# ---------------
+# On 2026-08-27 `opportunity-scout.service` died at 02:00 on CUMULUS and sat in
+# `failed` for six hours with nobody told. It had done everything right: it
+# wrote ok=False into the job_status ledger exactly as designed. Nothing read
+# it, because a ledger entry is only ever looked at if the job ALSO appears in
+# job_status.CADENCE_H -- a hand-written table that had not been extended since
+# the job was built. Meanwhile cirrus-modelhealth, which IS in every list,
+# failed at 05:30, was caught, restarted and healed inside sixty seconds. Same
+# box, same minute-by-minute supervisor, opposite outcomes; the only difference
+# was membership of a list somebody had to remember to edit.
+#
+# This is the FOURTH time a hand-maintained scope has gone stale in this tree
+# (placement_inventory.sh S72 and S73, window-audit S79, this). Every previous
+# fix widened one list. This one asks a different question: given the LIVE
+# schedule the inventory already collects, is there a scheduled job that NO
+# monitor watches? A new job is then unwatched-and-reported from the day it is
+# installed, instead of unwatched-and-silent until it breaks.
+#
+# STALENESS DIRECTION. WATCH_ALIAS and EXEMPT are themselves hand-maintained,
+# so they can rot too -- but they can only rot toward NOISE. An unknown unit is
+# reported as unwatched; forgetting to add an alias makes this complain about a
+# job that is fine. It can never produce a false all-clear, which is the only
+# failure mode that actually costs us anything.
+
+# Unit name (after normalize()) -> the key that job_status.CADENCE_H uses.
+# Only irregular spellings need an entry; identical names need nothing.
+WATCH_ALIAS = {
+    "businessideasdigest":     "businessideareport",  # plist and ledger disagree
+    "daily-brief":             "cumulusdailybrief",   # prefix stripped by normalize()
+    "entity-kb-weekly-digest": "entitykbdigest",
+}
+
+
+def watch_keys(key: str):
+    """Every spelling of `key` that a ledger might reasonably use.
+
+    systemd unit names carry dashes (`halftime-catalogue`) and ledger keys
+    generally do not (`halftimecatalogue`). Deriving that instead of listing it
+    keeps three entries out of WATCH_ALIAS -- and every entry NOT in a
+    hand-maintained list is one that cannot go stale, which is the whole point
+    of this section. Only genuinely irregular names need an alias.
+    """
+    forms = {key, key.replace("-", ""), key.replace("-", "_")}
+    if key in WATCH_ALIAS:
+        forms.add(WATCH_ALIAS[key])
+    return forms
+
+# Scheduled jobs that deliberately have no ledger entry, each with the reason.
+# An exemption must say WHY, so it can be argued with later.
+EXEMPT = {
+    "jobscheck":  "IS the overdue checker -- it reads the ledger, so watching "
+                  "itself in the ledger would be circular",
+    "watchdog":   "the liveness watchdog itself; its own failure surfaces via "
+                  "the morning brief watchdog.log tail",
+    # S81. Argued, not waved through. A ledger write from this job would have
+    # to happen moments before the box goes down, so the entry would say "I am
+    # about to reboot" and prove nothing about whether the reboot completed.
+    # UPTIME is the direct evidence and cannot go stale: a box whose monthly
+    # reboot stopped firing shows an uptime longer than a month, which
+    # `cumulus-status` and `boot-readiness` both print. Watch the effect, not
+    # the intent.
+    "rebootmonthly": "reboots the box it runs on, so a ledger write could only "
+                     "record the INTENT, never the result -- uptime is the "
+                     "direct evidence and is already reported by cumulus-status "
+                     "and boot-readiness",
+}
+
+# Schedule strings that mean 'not a scheduled job' -- always-on services and
+# poll loops. These are liveness questions, answered by the supervisor and the
+# API service list, not by an overdue ledger.
+_NOT_SCHEDULED = ("always-on", "service", "interval", "every ")
+
+
+def is_scheduled(row) -> bool:
+    """Does this row describe a job that fires on a clock/calendar?"""
+    sched = (row.get("schedule") or "").strip().lower()
+    if not sched:
+        return False
+    return not any(sched.startswith(x) or sched == x.strip()
+                   for x in _NOT_SCHEDULED)
+
+
+def coverage(live, watched, unreachable=()):
+    """Which live, scheduled jobs does no monitor watch?
+
+    `watched` is the set of keys some monitor actually checks -- in practice
+    job_status.CADENCE_H. Returns (unwatched, notes).
+
+    A host we could not read contributes NOTHING and says so: an inventory that
+    could not look must never render as "everything there is watched" (S73).
+    """
+    watched = set(watched)
+    unreachable = {h.lower() for h in unreachable}
+    unwatched, notes = [], []
+    for r in sorted(live, key=lambda x: (x["host"], x["unit"])):
+        if r["host"] in unreachable or not r["live"] or not is_scheduled(r):
+            continue
+        key = r["key"]
+        if key in EXEMPT:
+            continue
+        if watch_keys(key) & watched:
+            continue
+        unwatched.append({"host": r["host"], "unit": r["unit"],
+                          "schedule": r["schedule"], "key": key})
+    for h in sorted(unreachable):
+        notes.append(f"UNREACHABLE {h} — its jobs are NOT included above; "
+                     f"this is not a clean result for that box.")
+    return unwatched, notes
+
+
+def coverage_selftest() -> bool:
+    checks = []
+
+    def ck(name, cond):
+        checks.append((name, bool(cond)))
+
+    def row(host, unit, sched, live=True):
+        return {"host": host, "unit": unit, "schedule": sched, "state": "x",
+                "live": live, "key": normalize(unit)}
+
+    # THE case. opportunity-scout was live, scheduled daily, and watched by
+    # nothing -- this must name it.
+    scout = row("cumulus", "opportunity-scout.timer", "*-*-* 02:00:00")
+    un, _ = coverage([scout], watched=set())
+    ck("an unwatched scheduled job is reported",
+       [u["unit"] for u in un] == ["opportunity-scout.timer"])
+    un, _ = coverage([scout], watched={"opportunityscout"})
+    ck("...and is silent once the ledger watches it", not un)
+
+    # Dash-stripping must be doing real work -- the raw key does not match.
+    ck("the scout's unit key is NOT the ledger key",
+       normalize("opportunity-scout.timer") != "opportunityscout")
+    ck("a dashed unit name matches an undashed ledger key without an alias",
+       "opportunity-scout" not in WATCH_ALIAS
+       and "opportunityscout" in watch_keys("opportunity-scout"))
+    ck("halftime-catalogue matches halftimecatalogue with no alias entry",
+       "halftime-catalogue" not in WATCH_ALIAS
+       and not coverage([row("cumulus", "halftime-catalogue.timer", "*-*-* 06:30:00")],
+                        watched={"halftimecatalogue"})[0])
+    ck("an irregular name still needs (and has) its alias",
+       not coverage([row("cumulus", "entity-kb-weekly-digest.timer", "Mon *-*-* 05:00:00")],
+                    watched={"entitykbdigest"})[0])
+
+    ck("the digest plist aliases to its ledger name",
+       not coverage([row("cirrus", "com.cirrus.businessideasdigest", "04:45")],
+                    watched={"businessideareport"})[0])
+
+    # Always-on and poll loops are a different question; they must not appear.
+    for sched in ("always-on", "service", "interval", "every 900s"):
+        un, _ = coverage([row("cirrus", "com.cirrus.api", sched)], watched=set())
+        ck(f"a {sched!r} unit is not treated as a scheduled job", not un)
+
+    # A dormant unit is not a gap -- it is off on purpose.
+    un, _ = coverage([row("cirrus", "com.cirrus.billsnow", "04:00 wd1", live=False)],
+                     watched=set())
+    ck("a dormant job is not reported as unwatched", not un)
+
+    # Exemptions apply, and only to what is listed.
+    un, _ = coverage([row("cirrus", "com.cirrus.jobscheck", "16:30")], watched=set())
+    ck("an exempt job is not reported", not un)
+    ck("every exemption states a reason",
+       all(isinstance(v, str) and len(v) > 20 for v in EXEMPT.values()))
+    un, _ = coverage([row("cumulus", "cirrus-rebootmonthly.timer", "*-*-15 08:15:00")],
+                     watched=set())
+    ck("the reboot job is exempt on BOTH boxes (name normalizes the same)", not un)
+    ck("...and on cirrus too",
+       not coverage([row("cirrus", "com.cirrus.rebootmonthly", "08:15")],
+                    watched=set())[0])
+
+    # "could not look" must not read as "all watched" (S73's lesson).
+    un, notes = coverage([scout], watched=set(), unreachable=("cumulus",))
+    ck("an unreachable host contributes no findings", not un)
+    ck("...and says so out loud", any("UNREACHABLE" in n for n in notes))
+    ck("...naming the box", any("cumulus" in n for n in notes))
+
+    # A weekly job counts too -- cadence is irrelevant to coverage.
+    un, _ = coverage([row("cumulus", "halftime-routing.timer", "Sun *-*-* 22:00:00")],
+                     watched=set())
+    ck("a weekly scheduled job is in scope", len(un) == 1)
+
+    bad = 0
+    for name, ok in checks:
+        print(("  ok   " if ok else "  FAIL ") + name)
+        bad += 0 if ok else 1
+    print()
+    print("all coverage selftests passed" if not bad else f"{bad} FAILED")
+    return bad == 0
+
+
 def main():
     if "--selftest" in sys.argv:
-        return 0 if selftest() else 1
+        ok = selftest()
+        print()
+        ok = coverage_selftest() and ok
+        return 0 if ok else 1
+    if "--coverage-selftest" in sys.argv:
+        return 0 if coverage_selftest() else 1
     a = sys.argv
     # S72: make the registry AUTHORITATIVE for tooling, not just auditable after
     # the fact. `--live-units <host>` prints the units the registry says that box
@@ -487,7 +685,39 @@ def main():
         print()
         for n in notes:
             print("  " + n)
-    return 1 if problems else 0
+
+    # S81 — second question off the SAME inventory: is every live scheduled job
+    # watched by something? One collection, two questions, so the two answers
+    # can never be taken against different views of the boxes.
+    print()
+    print("=== monitor coverage — is every scheduled job watched? ===")
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import job_status
+        watched = set(job_status.CADENCE_H)
+    except Exception as e:
+        print(f"  !! could not read job_status.CADENCE_H ({e}) — coverage NOT checked.")
+        print("     That is a gap, not a pass.")
+        return 1 if problems else 2
+    unwatched, cnotes = coverage(live, watched, unreachable)
+    for n in cnotes:
+        print("  " + n)
+    if unwatched:
+        print(f"  {len(unwatched)} scheduled job(s) that NO monitor watches:")
+        for u in unwatched:
+            print(f"    !! {u['host']:<8} {u['unit']:<32} {u['schedule']}")
+        print("     A job nobody watches fails silently. Add it to")
+        print("     job_status.CADENCE_H (and have it call job_status.record),")
+        print("     or add it to placement.EXEMPT with the reason why not.")
+    else:
+        print("  every live scheduled job on both boxes is watched.")
+    # Exit 2 == coverage gap only, so the caller can name the RIGHT reason.
+    # Folding it into 1 would print "registry is out of date" at a session
+    # whose registry is perfect, and a check that misdescribes its own finding
+    # is one people learn to skim (T9).
+    if problems:
+        return 1
+    return 2 if unwatched else 0
 
 
 if __name__ == "__main__":

@@ -634,7 +634,23 @@ def main() -> int:
             angles = int(args[args.index("--angles") + 1])
         except Exception:
             pass
-    run(dry_run=dry, angles=angles, pool=pool)
+    stats = run(dry_run=dry, angles=angles, pool=pool)
+
+# S81: record into the job_status ledger so an overdue/failed run is actually
+# SEEN. Until today this job ran unwatched -- opportunity_scout wrote its
+# status correctly and nothing read it, and these jobs did not even write one.
+# Best-effort and never allowed to change the exit status: monitoring must not
+# break the thing it monitors.
+    if not dry:
+        try:
+            import job_status
+            st = stats or {}
+            job_status.record(
+                "halftimecatalogue", True,
+                f"{st.get('found', 0)} found, {st.get('new', 0)} new, "
+                f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources")
+        except Exception as e:
+            print(f"job_status.record failed: {e}")
     return 0
 
 

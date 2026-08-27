@@ -29,7 +29,14 @@ CADENCE_H = {
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
-    "hoaleads":      24 * 8,    # weekly Monday + grace (DE HOA lead monitor, S57)
+    # S81 CORRECTION: this said `24 * 8` -- weekly + grace -- since S57, when
+    # the job WAS weekly. The timer on CUMULUS is `*-*-* 03:00:00` and the unit
+    # calls itself "cirrus-hoaleads daily research": it has been DAILY for
+    # months. At a 192h tolerance Bill's lead research could have stopped for a
+    # full week and this check would have printed a tick every day of it. A
+    # cadence looser than the schedule is not a safety margin, it is a blind
+    # spot with a checkmark on it.
+    "hoaleads":      26,        # daily 03:00 (DE HOA lead monitor, S57; CUMULUS)
     "stratusreview": 24 * 33,   # monthly + grace
     # S67: dropped to BI-WEEKLY (even ISO weeks). The sweep is ~416 Brave
     # queries in one burst -- the single largest line item in the Brave bill,
@@ -58,13 +65,40 @@ CADENCE_H = {
     # because "could not check" must never render as "healthy").
     "daily":         26,        # daily 02:00
     "digest":        24 * 8,    # weekly Sunday 02:30 + grace
+    # S81: the scout has recorded here since S77 and NOTHING read it, because
+    # a ledger entry is only checked if it also appears in this table. On
+    # 2026-08-27 it died at 02:00 on a transient DNS outage, wrote
+    # ok=False/"FAILED: every provider failed" exactly as designed, and sat
+    # unreported for six hours -- the write end was right and the read end had
+    # never been told. Daily 02:00 on CUMULUS.
+    "opportunityscout": 26,
+    # S81: the rest of what placement.py's coverage check found unwatched.
+    # Every one of these was a live scheduled job that no monitor looked at,
+    # so the only way to learn it had stopped was to notice its output missing.
+    "devloop":          26,     # daily 21:30 CIRRUS -- the self-repair loop
+                                # itself, which watched everything but itself
+    "devreport":        26,     # daily 06:30 CIRRUS -- the morning report; if
+                                # THIS stops, the silence looks like a quiet
+                                # night, which is the worst possible failure
+                                # mode for a reporting job
+    "halftimecatalogue": 26,    # daily 06:30 CUMULUS (Justin)
+    "cumulusdailybrief": 26,    # daily 20:00 CUMULUS
+    "halftimerouting":  24 * 8,  # weekly Sun 22:00 CUMULUS (Justin)
+    "entitykbdigest":   24 * 8,  # weekly Mon 05:00 CUMULUS -- Bill, CLIENT-FACING
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
 # CIRRUS (dev), it reads their status from CUMULUS's ledger over the read-only SSH
 # link instead of the (now-stale) local ledger — so a moved job is reported from
 # where it actually runs, not falsely flagged OVERDUE here.
-REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads"}
+REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
+                 # S81 -- all of these run on CUMULUS, so when summarize()
+                 # runs on CIRRUS their status must be read from CUMULUS's
+                 # ledger. Omitting one here does not merely mis-attribute it:
+                 # CIRRUS's own ledger has no entry, so it reports OVERDUE
+                 # forever and trains us to ignore the overdue signal.
+                 "opportunityscout", "halftimecatalogue", "halftimerouting",
+                 "cumulusdailybrief", "entitykbdigest"}
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 
@@ -185,6 +219,37 @@ def selftest():
     line, _ = _row("billsnow", 999, {"epoch": now, "ok": True, "last_run": "x"}, now,
                    tag=" (CUMULUS)")
     ck("remote tag renders", "(CUMULUS)" in line)
+
+    # ---- S81: invariants about the TABLE, not just about _row ----------------
+    # Every check above passed for years while the table itself was the broken
+    # part: hoaleads was watched at a weekly tolerance though it runs daily,
+    # and opportunityscout wrote a status nothing read. Mechanics were tested;
+    # the contents never were.
+
+    # A job is only watched if it is in BOTH structures. A REMOTE_JOB missing
+    # from CADENCE_H is read off CUMULUS and then never looked at.
+    orphans = sorted(REMOTE_JOBS - set(CADENCE_H))
+    ck(f"every REMOTE_JOB is also in CADENCE_H (orphans: {orphans})", not orphans)
+
+    # The specific regression. 24*8 here would mean a daily job may vanish for
+    # a week and still print a tick.
+    ck("hoaleads is watched at a DAILY tolerance, not weekly",
+       CADENCE_H.get("hoaleads", 0) <= 30)
+    ck("opportunityscout is watched at all", "opportunityscout" in CADENCE_H)
+    ck("opportunityscout is read from the box it runs on",
+       "opportunityscout" in REMOTE_JOBS)
+
+    # No entry may be looser than a month unless it is genuinely monthly --
+    # a large number here is how a blind spot hides in plain sight.
+    loose = sorted(k for k, v in CADENCE_H.items()
+                   if v > 24 * 16 and k != "stratusreview")
+    ck(f"no job is watched at a tolerance over ~16d (loose: {loose})", not loose)
+
+    # And a daily job that stopped yesterday must actually trip.
+    _, g = _row("hoaleads", CADENCE_H["hoaleads"],
+                {"epoch": now - 30 * hr, "ok": True, "last_run": "x"}, now)
+    ck("hoaleads silent for 30h reads as overdue", g is False)
+
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 

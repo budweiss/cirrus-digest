@@ -660,4 +660,19 @@ if __name__ == "__main__":
     # log a false failure (and alarm the watchdog) most days. Only a real
     # send failure or a bad config is an error.
     quiet = outcome.get("reason", "").startswith("nothing to report")
-    sys.exit(0 if (outcome.get("sent") or args.dry_run or quiet) else 1)
+    good = bool(outcome.get("sent") or args.dry_run or quiet)
+    # S81: ledger write, so an overdue/failed run is SEEN. Best-effort; never
+    # allowed to change the outcome -- monitoring must not break what it watches.
+    # A quiet week is ok=True on purpose: the job RAN. Whether a quiet run is
+    # meaningful is completeness.py's question, not this one, and conflating
+    # the two is how "ran fine, produced nothing" hid for a month in S67.
+    if not args.dry_run:
+        try:
+            import job_status
+            job_status.record(
+                "entitykbdigest", good,
+                "sent" if outcome.get("sent")
+                else (outcome.get("reason") or "no send")[:120])
+        except Exception as e:
+            print(f"job_status.record failed: {e}")
+    sys.exit(0 if good else 1)

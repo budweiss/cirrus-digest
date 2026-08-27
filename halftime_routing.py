@@ -590,6 +590,20 @@ def main() -> int:
     finally:
         lock.__exit__()
     print(json.dumps(res))
+
+# S81: record into the job_status ledger so an overdue/failed run is actually
+# SEEN. Until today this job ran unwatched -- opportunity_scout wrote its
+# status correctly and nothing read it, and these jobs did not even write one.
+# Best-effort and never allowed to change the exit status: monitoring must not
+# break the thing it monitors.
+    try:
+        import job_status
+        job_status.record(
+            "halftimerouting", True,
+            f"{res.get('events', 0)} event(s) across "
+            f"{res.get('games_swept', 0)} game(s)")
+    except Exception as e:
+        print(f"job_status.record failed: {e}")
     return 0
 
 

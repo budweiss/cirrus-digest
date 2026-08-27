@@ -1672,7 +1672,25 @@ def run_report():
     text = report_text()
     print(text)
     _notify(text[:3500])
+    _log_job("devreport", True, f"{len(text.splitlines())} line report sent")
     return text
+
+
+
+
+def _log_job(name, ok, note=""):
+    """S81: write this run into the job_status ledger.
+
+    dev_agent is the loop that repairs everything else and nothing watched IT.
+    An empty night counts as a healthy RUN -- the job did fire and correctly
+    found nothing -- so both exits record, otherwise a quiet week would read
+    identically to a dead timer.
+    """
+    try:
+        import job_status
+        job_status.record(name, ok, note)
+    except Exception as e:
+        _log(f"job_status.record failed: {e}")
 
 
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
@@ -1681,6 +1699,7 @@ def run_nightly():
     todo = find_buildable()
     if not todo:
         evaluate_empty_night()      # S71: is an empty queue the RIGHT outcome?
+        _log_job("devloop", True, "0 queued, nothing to build")
         return
     _streak_reset()
     picked = todo[:MAX_BUILDS_PER_RUN]
@@ -1717,6 +1736,9 @@ def run_nightly():
         lines.append(f"_({len(todo)-len(picked)} more queued for tomorrow night.)_")
     _notify("\n".join(lines))
     _log("nightly sweep done")
+    built = sum(1 for r in done if r.get("status") == "awaiting-confirm")
+    _log_job("devloop", True,
+             f"{len(done)} built, {built} awaiting confirm, {len(todo)} queued")
 
 
 # ── Self-test (offline: no creds, no network, no git remotes) ─────────────────
