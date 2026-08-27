@@ -452,7 +452,12 @@ REPAIRS_FILE             = PROJECT_DIR / "logs/dev-loop/repairs.jsonl"
 
 # A repair may not edit test code. The cheapest way for a model to make a test
 # pass is to delete the test, so this is a hard refusal, not a warning.
-_TEST_CODE_RX = re.compile(r"(def\s+selftest|\bcheck\(|\bassert\s|FAILURES:)")
+# One assertion-ish construct. NOTE the absence of a trailing \b after the
+# alternation: `check\(` ends on "(", a non-word character, so a closing \b
+# could never match and the whole rule would silently never fire. That exact
+# mistake is T42, found in test_coverage_check.py earlier the same day.
+_TEST_MARK_RX = re.compile(
+    r"def\s+selftest|\bcheck\(|\bck\(|\bassert\s|self\.assert")
 
 
 def module_name(path: str) -> str:
@@ -522,20 +527,42 @@ def no_progress(history) -> bool:
     return len(sigs) >= 2 and sigs[-1] == sigs[-2]
 
 
-def touches_test_code(patch: dict):
-    """(ok, reason) — refuse a REPAIR patch that edits test code.
+def test_weight(text) -> int:
+    """How much assertion there is in a file. A count, not a flag."""
+    return len(_TEST_MARK_RX.findall(text or ""))
 
-    The original build may ADD tests; that is good and is not routed here. Only
-    repair attempts are checked, and only for weakening what already exists.
+
+def weakens_tests(final: dict, blobs: dict):
+    """(ok, reason) — refuse a REPAIR that REMOVES existing assertions.
+
+    S80, second pass. The first version refused any repair patch that
+    *contained* test code, which was wrong in two directions at once:
+
+      * it blocked a repair from ADDING a test -- so a task whose whole purpose
+        was writing a selftest could never be repaired, only abandoned;
+      * it blocked rewriting any file that merely HAS a selftest, however
+        faithfully the rewrite preserved it.
+
+    The thing actually worth forbidding is narrower: the cheapest way to make a
+    failing gate go green is to delete the check that failed. So compare the
+    FINAL content against the ORIGINAL and refuse only when assertions have
+    gone missing. Adding is always fine; keeping is fine; losing is not.
+
+    Takes the resolved file contents, not the patch, so whole-file rewrites and
+    surgical edits are judged the same way -- an edit that quietly drops a
+    check(...) is the same act as a rewrite that omits it.
+
+    A file absent from `blobs` is new: its old weight is 0, so it can only gain.
     """
-    for f in (patch.get("files") or []):
-        if _TEST_CODE_RX.search(str(f.get("content", ""))):
-            return False, "repair rewrote a file containing test code (%s)" % f.get("path", "?")
-    for e in (patch.get("edits") or []):
-        found = str((e or {}).get("find", ""))
-        repl = str((e or {}).get("replace", ""))
-        if _TEST_CODE_RX.search(found) or _TEST_CODE_RX.search(repl):
-            return False, "repair edited test code in %s" % (e or {}).get("path", "?")
+    for path, text in (final or {}).items():
+        before = test_weight((blobs or {}).get(path, ""))
+        after = test_weight(text)
+        if after < before:
+            return False, ("repair removed %d of %d assertion(s) from %s — the "
+                           "gate must be satisfied by fixing the code, not by "
+                           "deleting the check" % (before - after, before, path))
+        if "def selftest" in (blobs or {}).get(path, "") and "def selftest" not in (text or ""):
+            return False, "repair deleted selftest() from %s" % path
     return True, ""
 
 
@@ -677,10 +704,12 @@ def repair_prompt(item, blobs, conventions, edit_only, failure, prior, attempt):
         "The file contents shown below are the ORIGINAL, unpatched files. Your "
         "reply must be a COMPLETE fresh patch against those originals -- not a "
         "patch against your broken attempt.\n"
-        "HARD RULE: do NOT change, weaken, or delete any test code (a "
-        "selftest() body, a check(...) line, an assert). If the only way you "
-        "can make the gate pass is to change a test, the patch is wrong -- "
-        "return CANNOT_BUILD and say so in notes.")
+        "HARD RULE: do NOT REMOVE any existing assertion -- a check(...) line, "
+        "an assert, a selftest() body. You MAY add new ones, and you may "
+        "rewrite a file that contains tests as long as every existing "
+        "assertion survives. If the only way you can make the gate pass is to "
+        "delete a check, the patch is wrong -- return CANNOT_BUILD and say so "
+        "in notes.")
     parts = [user, "",
              "===== HOW ATTEMPT %d BROKE =====" % (attempt - 1),
              "FAILED GATE: %s" % failure.get("gate", "?"),
@@ -947,22 +976,6 @@ def build_item(item: dict):
             jrn["approach"] = str(patch.get("summary", ""))[:200]
             jrn["model_notes"] = str(patch.get("notes", ""))[:300]
 
-            # A REPAIR may not weaken test code. The cheapest way to make a
-            # test pass is to delete it, so this is a refusal, and it costs the
-            # attempt -- a model that tries it does not get a free retry.
-            if attempt > 1:
-                okt, whyt = touches_test_code(patch)
-                if not okt:
-                    _log(f"{bid}: attempt {attempt} REFUSED — {whyt}")
-                    _ledger("repair", bid, result=f"REFUSED: {whyt[:60]}")
-                    jrn.update(outcome="refused-test-edit", refusal=whyt,
-                               elapsed_s=round(time.time() - t0, 1))
-                    _repair_journal(jrn)
-                    history.append({"signature": "refused::test-edit"})
-                    if no_progress(history):
-                        break
-                    continue
-
             # A whole-file rewrite of an EDIT-ONLY file is the exact failure this
             # mode exists to prevent: it cannot be returned complete inside
             # max_tokens, so accepting it would write a truncated file to disk.
@@ -1011,6 +1024,28 @@ def build_item(item: dict):
                     _repair_journal(jrn)
                     _cleanup_worktree(bid)
                     return rec
+
+            # A REPAIR may not REMOVE assertions. The cheapest way to make a
+            # failing gate go green is to delete the check that failed, so this
+            # is a refusal and it COSTS the attempt -- a model that tries it
+            # does not get a free retry. Judged on the RESOLVED content, after
+            # edits are planned and before anything is written, so a surgical
+            # edit that quietly drops a check(...) is caught the same as a
+            # rewrite that omits it. Adding tests is always allowed.
+            if attempt > 1:
+                final = {f["path"]: f["content"] for f in whole}
+                final.update(edited)
+                okt, whyt = weakens_tests(final, blobs)
+                if not okt:
+                    _log(f"{bid}: attempt {attempt} REFUSED — {whyt}")
+                    _ledger("repair", bid, result=f"REFUSED: {whyt[:60]}")
+                    jrn.update(outcome="refused-test-edit", refusal=whyt,
+                               elapsed_s=round(time.time() - t0, 1))
+                    _repair_journal(jrn)
+                    history.append({"signature": "refused::test-edit"})
+                    if no_progress(history):
+                        break
+                    continue
 
             changed = []
             for f in whole:
@@ -1743,16 +1778,37 @@ def _selftest():
           not no_progress([{"signature": "a"}]))
 
     # -- a repair may not weaken test code ------------------------------------
-    check("touches_test_code: rewriting a file with check() is refused",
-          not touches_test_code({"files": [{"path": "m.py", "content": "check(\"x\", 1)"}]})[0])
-    check("touches_test_code: rewriting a file with def selftest is refused",
-          not touches_test_code({"files": [{"path": "m.py", "content": "def selftest():\n    pass"}]})[0])
-    check("touches_test_code: editing OUT an assert is refused",
-          not touches_test_code({"edits": [{"path": "m.py", "find": "assert x == 1", "replace": ""}]})[0])
-    check("touches_test_code: sneaking an assert IN is refused too",
-          not touches_test_code({"edits": [{"path": "m.py", "find": "return 1", "replace": "assert False"}]})[0])
-    check("touches_test_code: an innocent patch is allowed",
-          touches_test_code({"edits": [{"path": "m.py", "find": "return 1", "replace": "return 2"}]})[0])
+    # A repair may not REMOVE assertions. It may add them, and it may rewrite a
+    # file that has them so long as they survive (S80 second pass -- the first
+    # version refused any patch CONTAINING test code, which made a
+    # test-writing task unrepairable and blocked honest rewrites).
+    THREE = ("def selftest():\n"
+             "    check(\"a\", 1)\n"
+             "    check(\"b\", 2)\n"
+             "    assert True\n")
+    B = {"m.py": THREE}
+
+    check("test_weight counts each assertion", test_weight(THREE) == 4)
+    check("test_weight of nothing is 0", test_weight("") == 0 and test_weight(None) == 0)
+
+    check("removing one check is REFUSED",
+          not weakens_tests({"m.py": THREE.replace('    check("b", 2)\n', "")}, B)[0])
+    check("  ...and the refusal says how many went missing",
+          "1 of 4" in weakens_tests({"m.py": THREE.replace('    check("b", 2)\n', "")}, B)[1])
+    check("gutting selftest() entirely is REFUSED",
+          not weakens_tests({"m.py": "def one():\n    return 1\n"}, B)[0])
+    check("deleting only the selftest DEF is REFUSED even if checks remain",
+          not weakens_tests({"m.py": '    check("a", 1)\n    check("b", 2)\n    assert True\n'}, B)[0])
+
+    check("keeping every assertion while rewriting the file is ALLOWED",
+          weakens_tests({"m.py": THREE + "\ndef extra():\n    return 2\n"}, B)[0])
+    check("ADDING a test is ALLOWED — the whole point of the second pass",
+          weakens_tests({"m.py": THREE + '    check("c", 3)\n'}, B)[0])
+    check("a NEW file that is all tests is ALLOWED (nothing to lose)",
+          weakens_tests({"new.py": THREE}, B)[0])
+    check("a patch touching no tests at all is ALLOWED",
+          weakens_tests({"m.py": THREE.replace("return 1", "return 2")}, B)[0])
+    check("an empty patch is ALLOWED", weakens_tests({}, B)[0])
 
     with tempfile.TemporaryDirectory() as td:
         wt = Path(td)
@@ -1887,7 +1943,9 @@ def _selftest():
                                "diff --git a b", 2)
     check("repair_prompt: tells the model it is repairing its own attempt",
           "REPAIRING YOUR OWN" in sysp)
-    check("repair_prompt: forbids changing test code", "do NOT change" in sysp)
+    check("repair_prompt: forbids REMOVING an assertion", "do NOT REMOVE" in sysp)
+    check("repair_prompt: and explicitly PERMITS adding one",
+          "You MAY add new ones" in sysp)
     check("repair_prompt: includes how the last attempt broke",
           "FAIL the thing" in usrp and "selftest" in usrp)
     check("repair_prompt: patches against the ORIGINAL files, not the broken ones",
