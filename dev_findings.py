@@ -574,6 +574,20 @@ def selftest() -> bool:
     ck("the proposal carries the finding's file list",
        to_item(F("blind_gate:ensemble.py", 10,
                  files=["ensemble.py"]))["finding_files"] == ["ensemble.py"])
+    # End to end through make_spec: the field the BUILDER reads must be filled.
+    # Testing to_item alone would have missed this -- make_spec overwrites
+    # files_to_change from dev_loop._guess_files, which knows nothing about
+    # TEST_GAP and returns [].
+    import dev_loop as _dl
+    _f = F("blind_gate:ensemble.py", 10, files=["ensemble.py"])
+    _it = to_item(_f, "2026-08-27")
+    _spec = _dl.make_spec(_it, 1, "2026-08-27")
+    ck("make_spec on its own leaves files_to_change EMPTY (why the override exists)",
+       not _spec.get("files_to_change"))
+    _spec["files_to_change"] = list(_f["files"])
+    ck("...and after the override the builder is told which file",
+       _spec["files_to_change"] == ["ensemble.py"])
+
     # ---- proposal ids must be unique per FINDING, not per position ----------
     # make_spec numbers by position in the run, so a second run the same day
     # restarts at 1 and two different findings collide. Found by listing
