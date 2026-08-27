@@ -64,6 +64,7 @@ building the wrong thing. S80's Styx point stands: the best output of Halftime
 came from Buddy asking a question, and no amount of finding-collection produces
 that. This widens the fuel line; it does not make the engine imaginative.
 """
+import hashlib
 import json
 import re
 import sys
@@ -275,6 +276,18 @@ def select(findings, seen_keys, limit=MAX_PER_RUN):
     return fresh[:max(0, int(limit))]
 
 
+def spec_id(finding_key: str, date=None) -> str:
+    """A proposal id that is unique per finding and stable per day.
+
+    Keeps make_spec's `prop-<date>-<n>` shape so every existing consumer and the
+    approve-finding id pattern still match; only the number changes meaning,
+    from "position in this run" to "which finding this is".
+    """
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    n = int(hashlib.sha1(finding_key.encode()).hexdigest()[:8], 16) % 900000 + 100000
+    return f"prop-{date}-{n}"
+
+
 def to_item(f: dict, date=None) -> dict:
     """A finding -> the proposal shape /approve and dev_agent already consume.
 
@@ -397,6 +410,13 @@ def run(dry_run=True, limit=MAX_PER_RUN):
             dropped.append((f, why))
             continue
         item["dev_spec"] = dev_loop.make_spec(item, len(proposed) + 1, date)
+        # S81: make_spec numbers a spec by its POSITION in the run, so a second
+        # run on the same day restarts at 1 and two different findings get the
+        # same id. That is not cosmetic: dev_agent.queue_load dedupes on this id
+        # and would SILENTLY DROP one of them, and find_buildable skips an id it
+        # has a build record for. Derive it from the finding instead, so it is
+        # unique across findings and stable across runs of the same one.
+        item["dev_spec"]["id"] = spec_id(f["key"], date)
         if dry_run:
             proposed.append(item)
             continue
@@ -508,6 +528,21 @@ def selftest() -> bool:
     ck("a blind gate is typed TEST_GAP", it["type"] == "TEST_GAP")
     ck("a stalled signal is typed BUG_FIX",
        to_item(F("s", 1, kind="stalled_signal"))["type"] == "BUG_FIX")
+
+    # ---- proposal ids must be unique per FINDING, not per position ----------
+    # make_spec numbers by position in the run, so a second run the same day
+    # restarts at 1 and two different findings collide. Found by listing
+    # /approve after two runs and seeing prop-2026-08-27-1 twice. Not cosmetic:
+    # dev_agent.queue_load dedupes on this id and would silently drop one.
+    d = "2026-08-27"
+    ck("two different findings get different ids",
+       spec_id("blind_gate:ensemble.py", d) != spec_id("blind_gate:llm_providers.py", d))
+    ck("the same finding gets the SAME id on a re-run (stable, not random)",
+       spec_id("blind_gate:ensemble.py", d) == spec_id("blind_gate:ensemble.py", d))
+    ck("the id keeps the prop-<date>-<n> shape every consumer expects",
+       re.fullmatch(r"prop-\d{4}-\d{2}-\d{2}-\d+", spec_id("k", d)) is not None)
+    ck("30 real-shaped keys produce 30 distinct ids",
+       len({spec_id(f"blind_gate:mod{i}.py", d) for i in range(30)}) == 30)
 
     # ---- the type must actually be EXECUTABLE on approval --------------------
     # THE bug that nearly shipped: cirrus_bot.execute_action dispatches on
