@@ -186,19 +186,38 @@ def fetch_naaf(limit=20):
     return out
 
 
+MEDRXIV_MAX_PAGES = 60          # 1800 preprints ~= 30 days of the firehose
+
+
 def fetch_medrxiv(days=1):
     """medRxiv preprints in the window, filtered client-side on the title.
 
-    The details endpoint has no keyword search -- it returns every preprint in
-    a date range -- so the filter happens here. That is also why the window is
-    kept short: a day is a few dozen papers, a month is thousands.
+    The details endpoint has NO keyword search: it returns every preprint in a
+    date range and the filter has to happen here.
+
+    S82, measured before trusting it: an 88-day range holds **5,088** preprints
+    (~58/day), and the first draft of this function capped scanning at 6 pages
+    = 180 records. For any window past ~3 days it therefore examined a slice of
+    the corpus and returned "0 new preprints" -- indistinguishable from a
+    genuinely quiet day. Alopecia preprints are RARE (0 in a 600-record sample),
+    so a truncated scan is the one thing that could never be noticed by reading
+    the output.
+
+    Now: it reads the API's own `total`, scans every page up to a generous cap,
+    and if the cap ever truncates it says so loudly. A bounded scan is fine; a
+    SILENT bounded scan is not.
     """
     end = datetime.now().date()
     start = end - timedelta(days=max(1, days))
-    out, cursor = [], 0
-    for _ in range(6):                      # hard page cap; never unbounded
+    out, cursor, total = [], 0, None
+    for _ in range(MEDRXIV_MAX_PAGES):
         data = _get("https://api.biorxiv.org/details/medrxiv/%s/%s/%d"
                     % (start.isoformat(), end.isoformat(), cursor))
+        if total is None:
+            try:
+                total = int(data.get("messages", [{}])[0].get("total", 0))
+            except Exception:
+                total = 0
         coll = data.get("collection", []) or []
         if not coll:
             break
@@ -216,8 +235,14 @@ def fetch_medrxiv(days=1):
                 "extra": "preprint",
             })
         cursor += len(coll)
+        if total and cursor >= total:
+            break
         if len(coll) < 30:
             break
+    if total and cursor < total:
+        log("medRxiv TRUNCATED: scanned %d of %d preprints in %s..%s "
+            "(page cap %d) -- coverage is PARTIAL, not empty"
+            % (cursor, total, start, end, MEDRXIV_MAX_PAGES))
     return out
 
 
@@ -435,6 +460,36 @@ def selftest():
             ck("run: FAILS CLOSED if a query would leak a place-name", threw)
         finally:
             globals()["outbound_queries"] = _orig
+
+        # medRxiv truncation must ANNOUNCE itself (S82). Fake the API: claim a
+        # huge total, hand back full pages forever, and check the warning fires.
+        import io, contextlib
+        _real_get = globals()["_get"]
+        globals()["_get"] = lambda url, as_json=True: {
+            "messages": [{"total": "99999"}],
+            "collection": [{"title": "unrelated preprint", "doi": "d/%d" % i,
+                            "date": "2026-08-27"} for i in range(30)]}
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fetch_medrxiv(days=30)
+            ck("medRxiv: a truncated scan says so, loudly",
+               "TRUNCATED" in buf.getvalue() and "PARTIAL" in buf.getvalue())
+
+            globals()["_get"] = lambda url, as_json=True: {
+                "messages": [{"total": "2"}],
+                "collection": [{"title": "Alopecia areata preprint",
+                                "doi": "10.1/x", "date": "2026-08-27"},
+                               {"title": "unrelated", "doi": "10.1/y",
+                                "date": "2026-08-27"}]}
+            got = buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                got = fetch_medrxiv(days=1)
+            ck("medRxiv: keeps only alopecia titles", len(got) == 1)
+            ck("medRxiv: a COMPLETE scan stays quiet",
+               "TRUNCATED" not in buf2.getvalue())
+        finally:
+            globals()["_get"] = _real_get
 
         body = render([{"key": "k", "title": "T", "date": "d", "source": "s",
                         "url": "u", "extra": "", "rank": 1, "label": "L"}], "2026-01-01")
