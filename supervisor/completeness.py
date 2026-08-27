@@ -391,6 +391,29 @@ def selftest() -> bool:
        RULES["billsnow"].productivity("nothing to send, so nothing sent")
        == (0, True))
 
+    # S81 send guard: a run that SUPPRESSED a duplicate must not read as a
+    # stalled/unproductive one -- the week's mail did go out, so the job did
+    # its work. Pinned here because the note is written in bill_snow_weekly.py
+    # and read by rules in this file, and nothing else connects the two.
+    # Read the note out of the JOB ITSELF rather than retyping it. The first
+    # version of this test used a hyphen where the real string has an em dash,
+    # so it was testing a string that never occurs -- the classic way a
+    # regression test passes forever while guarding nothing.
+    supp = "already sent today \u2014 duplicate send suppressed"
+    for src in (Path(__file__).resolve().parent.parent / "snowbrief/bill_snow_weekly.py",):
+        try:
+            m = re.search(r"already sent today[^\"']*", src.read_text())
+            if m:
+                supp = m.group(0)
+        except OSError:
+            pass                      # not readable from here; use the literal
+    ck("the suppression note under test is the one the job writes",
+       supp.startswith("already sent today") and "suppressed" in supp)
+    for job in ("billsnow", "billnewdev"):
+        produced, matched = RULES[job].productivity(supp)
+        ck(f"{job}: a suppressed-duplicate run parses", matched)
+        ck(f"{job}: ...and counts as productive, not a zero week", produced > 0)
+
     # The scout, added the day it failed silently.
     ck("opportunityscout has a rule", "opportunityscout" in RULES)
     ck("the scout's real success note parses as productive",

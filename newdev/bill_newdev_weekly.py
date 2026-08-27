@@ -118,8 +118,21 @@ def _rec(dry, ok, note=""):
 
 def main():
     dry = "--dry-run" in sys.argv
+    force = "--force-send" in sys.argv
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] bill_newdev_weekly ({'dry-run' if dry else 'live'})")
+
+    # S81: refuse a SECOND send on the same day -- same reasoning as billsnow.
+    # This unit is auto-restartable and a restart re-runs main() from the top.
+    # Checked before plus_pull/enrich/build, which are the expensive part.
+    # Fails OPEN by design -- see send_guard's module docstring.
+    if not dry and not force:
+        import send_guard
+        stamp = send_guard.already_sent_today("billnewdev")
+        if stamp:
+            print(send_guard.blocked_message("billnewdev", stamp))
+            _rec(dry, True, "already sent today — duplicate send suppressed")
+            return
 
     if not _run("plus_pull.py"):
         print("plus_pull failed — aborting, nothing sent.")
@@ -164,6 +177,11 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode)
+    if r.returncode == 0:
+        # Stamp FIRST, then record -- see billsnow for why the order matters.
+        import send_guard
+        if not send_guard.mark_sent("billnewdev", SUBJECT):
+            print("WARNING: send stamp not written — a restart could re-send.")
     _rec(dry, r.returncode == 0, "sent" if r.returncode == 0 else "send failed")
 
 

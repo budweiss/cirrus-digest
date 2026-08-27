@@ -262,8 +262,25 @@ def _run_failed(data):
 
 def main():
     dry = "--dry-run" in sys.argv
+    force = "--force-send" in sys.argv
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] bill_snow_weekly ({'dry-run' if dry else 'live'})")
+
+    # S81: refuse a SECOND send on the same day. This unit is in Skywarden's
+    # restart allowlist, and a restart re-runs main() from the top -- so a
+    # failure that happened AFTER a successful send would mail Bill twice.
+    # Checked BEFORE decide(), which costs web research and an LLM call: if the
+    # week's mail is already out there is nothing left to decide.
+    # Fails OPEN by design -- see send_guard's module docstring.
+    if not dry and not force:
+        import send_guard
+        stamp = send_guard.already_sent_today("billsnow")
+        if stamp:
+            print(send_guard.blocked_message("billsnow", stamp))
+            # Recorded as a healthy run, because it IS one: the week's send
+            # happened. Staying silent here would read as a job that never ran.
+            _rec(dry, True, "already sent today — duplicate send suppressed")
+            return
 
     data, urls = decide()
     material = bool(data.get("material_change")) and bool((data.get("email_body") or "").strip())
@@ -305,6 +322,13 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode, "| refresh:", refresh_path.name)
+    if r.returncode == 0:
+        # Stamp FIRST, then record: the stamp is what stops a duplicate, and
+        # the window between the mail leaving and the stamp landing is the only
+        # window in which a restart could still double-send. Keep it short.
+        import send_guard
+        if not send_guard.mark_sent("billsnow", data.get("email_subject") or ""):
+            print("WARNING: send stamp not written — a restart could re-send.")
     _rec(dry, r.returncode == 0, "sent material update" if r.returncode == 0 else "send failed")
 
 
