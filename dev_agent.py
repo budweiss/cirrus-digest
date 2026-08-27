@@ -585,22 +585,33 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
                         "ran": ran, "excused": []}
 
     # gate 2 — the changed module's own selftest
-    ran.append("selftest")
-    for p in changed:
+    #
+    # S80, found on this gate's FIRST live run: config_snapshot.py has no
+    # selftest, so this gate inspected nothing and `ran` still said "selftest".
+    # That is the T42 shape -- a check that reads clean because it never looked
+    # -- written into verify_build the same evening T42 was fixed in
+    # test_coverage_check.py. `ran` now records the COUNT actually executed, so
+    # "selftest(0/1)" can never be misread as "the tests passed".
+    n_self = 0
+    cand_self = [p for p in changed if p.endswith(".py")]
+    for p in cand_self:
         fp = wt / p
-        if not p.endswith(".py") or not has_selftest(fp):
+        if not has_selftest(fp):
             continue
+        n_self += 1
         rc, out = _run([sys.executable, str(fp), "selftest"],
                        cwd=wt, timeout=SELFTEST_TIMEOUT)
         if rc != 0:
             d = "%s selftest failed:\n%s" % (p, out[-1200:])
+            ran.append("selftest(%d/%d)" % (n_self, len(cand_self)))
             return {"ok": False, "gate": "selftest", "detail": d,
                     "signature": failure_signature("selftest:" + p, out),
                     "ran": ran, "excused": []}
 
+    ran.append("selftest(%d/%d)" % (n_self, len(cand_self)))
+
     # gate 3 — selftests of everything that IMPORTS a changed module (S79)
-    ran.append("dependents")
-    seen, excused = set(), []
+    seen, excused, n_dep = set(), [], 0
     prebroken = set(prebroken or ())
     for p in changed:
         for dep in importers_of(module_name(p), wt):
@@ -613,11 +624,13 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
             fp = wt / dep
             if not has_selftest(fp):
                 continue
+            n_dep += 1
             rc, out = _run([sys.executable, str(fp), "selftest"],
                            cwd=wt, timeout=SELFTEST_TIMEOUT)
             if rc != 0:
                 d = ("%s selftest failed (it imports %s, which this patch "
                      "changed):\n%s" % (dep, module_name(p), out[-1200:]))
+                ran.append("dependents(%d)" % n_dep)
                 return {"ok": False, "gate": "dependents", "detail": d,
                         "signature": failure_signature("dependents:" + dep, out),
                         "ran": ran, "excused": excused}
@@ -633,6 +646,7 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
                     "signature": failure_signature("dryrun", out),
                     "ran": ran, "excused": excused}
 
+    ran.append("dependents(%d)" % n_dep)
     return {"ok": True, "gate": "", "detail": "", "signature": "", "ran": ran,
             "excused": excused}
 
@@ -1772,7 +1786,16 @@ def _selftest():
         v = verify_build(wt, ["base.py"])
         check("verify_build: a healthy patch passes", v["ok"])
         check("verify_build: it ran compile, selftest AND dependents",
-              set(v["ran"]) == {"compile", "selftest", "dependents"})
+              v["ran"] == ["compile", "selftest(1/1)", "dependents(1)"])
+        # S80 live-run finding: a module with NO selftest must not report a
+        # gate that inspected nothing as simply "selftest" (T42 shape).
+        check("verify_build: a module with no selftest reports 0 checked",
+              "selftest(0/1)" in verify_build(wt, ["lonely.py"])["ran"])
+        check("verify_build: and 0-inspected still passes, it does not fail",
+              verify_build(wt, ["lonely.py"])["ok"])
+        check("verify_build: dependents count reflects suites actually run",
+              "dependents(1)" in verify_build(wt, ["base.py"], prebroken={"dep.py"})["ran"]
+              or "dependents(0)" in verify_build(wt, ["base.py"], prebroken={"dep.py"})["ran"])
         check("verify_build: it does NOT claim to have run the dry-run",
               "dryrun" not in v["ran"])
 
