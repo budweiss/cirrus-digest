@@ -62,7 +62,8 @@ WORK_ROOT   = Path.home() / "projects/dev-loop-work"     # worktrees live here
 QUEUE_FILE  = PROJECT_DIR / "logs/dev-loop/build-queue.jsonl"
 BUILDS_FILE = PROJECT_DIR / "logs/dev-loop/builds.json"
 
-MAX_BUILDS_PER_RUN  = 2          # dry-runs are ~13 min each — cap the night
+MAX_BUILDS_PER_RUN  = 2          # dry-runs are ~25 min each (measured S81, was
+                                 # documented as 13) — cap the night
 MAX_FILES_PER_PATCH = 4
 MAX_FILE_CONTEXT    = 45_000     # WHOLE-FILE rewrite ceiling. NOT an input limit —
                                  # Sonnet takes far more. It tracks the OUTPUT budget:
@@ -84,7 +85,22 @@ DRYRUN_TRIGGERS = {"cirrus_daily.py", "cirrus_digest.py", "extract_actions.py",
 # Changed files that require a service restart after deploy.
 RESTART_MAP = {"cirrus_bot.py": "com.cirrus.bot", "cirrus_api.py": "com.cirrus.api"}
 
-DRYRUN_TIMEOUT = 30 * 60
+# S81: MEASURED, not assumed. A full dry-run on 2026-08-27 took **25m03s**
+# (11:08:04 -> 11:33:07, 178 items, 2259-line digest, exit 0). Every note in
+# this tree said "~13 min", including docs/COWORK-CONVENTIONS.md, and the 30
+# minute timeout was calibrated against that stale figure -- leaving FIVE
+# minutes of headroom on a job whose length scales with how much news broke
+# that day.
+#
+# A timeout here does not read as "the gate ran out of time". It returns
+# rc != 0 and the build is recorded as FAILED AT THE DRYRUN GATE, which looks
+# exactly like the patch being bad. That is the expensive kind of wrong: it
+# would discard a good build and teach us to distrust the loop.
+#
+# 45 minutes is ~1.8x the one real measurement. Widening gate 4's triggers
+# (dryrun_reachable) makes this matter more, not less, so the two shipped
+# together.
+DRYRUN_TIMEOUT = 45 * 60
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 
 # ── Patch safety (pure, unit-tested) ─────────────────────────────────────────
@@ -588,6 +604,20 @@ def has_selftest(fp) -> bool:
     return bool(selftest_argvs(fp))
 
 
+def dryrun_reachable(changed, root) -> bool:
+    """Is any changed file imported by a DRYRUN_TRIGGER? (S81, one hop.)
+
+    Pure-ish and cheap: importers_of greps the top-level .py files, which is the
+    same cost gate 3 already pays.
+    """
+    for p in changed or ():
+        if not str(p).endswith(".py"):
+            continue
+        if set(importers_of(module_name(p), root)) & DRYRUN_TRIGGERS:
+            return True
+    return False
+
+
 def failure_signature(gate: str, detail: str) -> str:
     """Stable fingerprint of a failure, for the no-progress rule.
 
@@ -759,8 +789,25 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
                         "signature": failure_signature("dependents:" + dep, out),
                         "ran": ran, "excused": excused}
 
-    # gate 4 — full daily dry-run when a core digest file changed
-    if run_dryrun and (set(changed) & DRYRUN_TRIGGERS):
+    # gate 4 — full daily dry-run when a core digest file changed, OR when a
+    # changed file is IMPORTED BY one (S81).
+    #
+    # DRYRUN_TRIGGERS is six literal filenames, and matching on the name alone
+    # missed the case that prompted this: `self_review.py` is a trigger and
+    # imports `ensemble`, so a change to ensemble.py could break self_review's
+    # dry-run while the gate that would catch it never fired. The two most
+    # imported modules in the tree were getting THINNER coverage than a leaf
+    # file. Same shape as T44 -- a hand-maintained name list standing in for a
+    # reachability question -- and answered with `importers_of`, the same
+    # function gate 3 already uses.
+    #
+    # ONE HOP, not transitive, and the limit is deliberate: one hop adds exactly
+    # ten modules (measured), while a transitive closure would pull in most of
+    # the tree and put a 13-minute dry-run on nearly every build. So this
+    # catches `ensemble` but NOT `llm_providers`, which is two hops out. Stated
+    # rather than hidden: widening it is a measurement, not a guess.
+    if run_dryrun and (set(changed) & DRYRUN_TRIGGERS
+                       or dryrun_reachable(changed, wt)):
         ran.append("dryrun")
         rc, out = _run([sys.executable, str(wt / "cirrus_daily.py"), "--dry-run"],
                        cwd=wt, timeout=DRYRUN_TIMEOUT)
@@ -2083,6 +2130,32 @@ def _selftest():
             "if __name__ == '__main__':\n    print('real work')\n")
         check("selftest_argvs: a docstring mention is not a dispatch",
               selftest_argvs(conv / "mentions.py") == [])
+
+        # -- S81: gate 4 must follow the IMPORT GRAPH, not just filenames ------
+        # self_review.py is a DRYRUN_TRIGGER and imports ensemble, so a change
+        # to ensemble.py could break self_review's dry-run with gate 4 never
+        # firing. The two most-imported modules in the tree were getting
+        # thinner coverage than a leaf file.
+        dr = wt / "dr"
+        dr.mkdir(exist_ok=True)
+        (dr / "self_review.py").write_text("import helper\n")     # a real trigger name
+        (dr / "helper.py").write_text("x = 1\n")
+        (dr / "loner.py").write_text("y = 2\n")
+        (dr / "twohop.py").write_text("z = 3\n")
+        (dr / "helper2.py").write_text("import twohop\n")
+        check("dryrun_reachable: a file imported by a trigger reaches gate 4",
+              dryrun_reachable(["helper.py"], dr))
+        check("dryrun_reachable: a file nothing triggers imports does not",
+              not dryrun_reachable(["loner.py"], dr))
+        check("dryrun_reachable: a TRIGGER itself is left to the name check",
+              not dryrun_reachable(["self_review.py"], dr))
+        # The stated limit, pinned so nobody assumes it is transitive.
+        check("dryrun_reachable: is ONE HOP only (two hops does NOT reach)",
+              not dryrun_reachable(["twohop.py"], dr))
+        check("dryrun_reachable: non-.py changes are ignored",
+              not dryrun_reachable(["config/sources.json"], dr))
+        check("dryrun_reachable: empty change list is False, not an error",
+              not dryrun_reachable([], dr))
 
         # RATCHET against the real tree. Tightening this regex loses coverage as
         # easily as loosening it invents it, and both happened while writing it.
