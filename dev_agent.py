@@ -401,9 +401,21 @@ def _git(args, cwd=PROJECT_DIR, timeout=120):
     return _run(["git", "-C", str(cwd)] + args, timeout=timeout)
 
 
+# S82: the selftest deliberately drives failure paths (a truncated model reply,
+# a build error) and those paths call _log. Every run therefore appended lines
+# like "model patch attempt 1/2 failed" to the OPERATIONAL log, where the only
+# thing reading them is a human deciding whether the nightly loop is healthy.
+# Four such lines from a test run were the first thing S82 chased. A test that
+# writes fake failures into the log used to diagnose real ones is worse than a
+# silent test. Selftest logging stays on stdout, where it belongs.
+_IN_SELFTEST = False
+
+
 def _log(msg):
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] dev_agent: {msg}"
     print(line)
+    if _IN_SELFTEST:
+        return
     try:
         with open(PROJECT_DIR / "logs/devloop.log", "a") as f:
             f.write(line + "\n")
@@ -1887,6 +1899,7 @@ def run_nightly():
 
 # ── Self-test (offline: no creds, no network, no git remotes) ─────────────────
 def _selftest():
+    globals()["_IN_SELFTEST"] = True
     ok = fail = 0
 
     def check(name, cond):
@@ -1935,6 +1948,16 @@ def _selftest():
         check("build_model_patch: retries then parses", _jj["summary"] == "ok")
     finally:
         globals()["call_claude_build"] = _orig_call
+
+    # ...and that the failure it just logged did NOT land in the operational log
+    # (S82). The retry above is the only place the suite exercises _log's error
+    # path, so this is measured right where it happens, not asserted in theory.
+    _lf = PROJECT_DIR / "logs/devloop.log"
+    _before = _lf.stat().st_size if _lf.exists() else -1
+    _log("selftest log-isolation probe")
+    _after = _lf.stat().st_size if _lf.exists() else -1
+    check("_log does not write the live devloop.log during selftest",
+          _IN_SELFTEST and _after == _before)
 
     # tier gate
     check("may_build: Tier-1 dedupe note builds",
