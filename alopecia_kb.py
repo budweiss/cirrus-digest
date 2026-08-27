@@ -289,6 +289,51 @@ def selftest():
     return fail == 0
 
 
+# Questions the foundation KB must be able to answer, each with a string a
+# CORRECT answer has to contain. Asserting on retrieval alone passed 10/10 while
+# three answers were the bibliography (T48) -- content is the only honest gate.
+GROUNDING_QUESTIONS = [
+    ("What causes the immune system to attack the hair follicle?",
+     ["immune privilege", "CD8"]),
+    ("Is the hair follicle permanently destroyed, or can it regrow?",
+     ["non-scarring", "not destroyed"]),
+    ("Which JAK inhibitors are FDA approved and in what year?",
+     ["2022", "2023", "2024"]),
+    ("Does long disease duration reduce response to JAK inhibitors?",
+     ["10 years", "7 years", "window of opportunity"]),
+    ("What percentage of cases progress to totalis or universalis?", ["5%"]),
+    ("Chance of spontaneous regrowth once universalis is established?",
+     ["<10%", "10%"]),
+    ("Is there proof that gut microbiome or diet causes alopecia areata?",
+     ["remains to be established", "not proven"]),
+    ("What new drugs beyond JAK inhibitors are in the pipeline?",
+     ["Rezpegaldesleukin", "IL-7", "OX40"]),
+    ("Why does alopecia areata often begin in childhood?",
+     ["not answered", "trigger window", "4 years"]),
+    ("How do we find recruiting clinical trials near a location?",
+     ["filter.geo", "distance"]),
+]
+
+
+def groundcheck(kb_dir=KB_DIR):
+    """ONLINE check (needs Ollama + a populated KB): can the KB actually answer?
+
+    Re-run this after every edit to the foundation document -- a correction that
+    silently stops being retrievable is the failure mode this catches.
+    """
+    passed = 0
+    for q, expect in GROUNDING_QUESTIONS:
+        hits = query(q, top_k=3, kb_dir=kb_dir)
+        blob = " ".join(h["text"] for h in hits).lower()
+        found = [k for k in expect if k.lower() in blob]
+        passed += bool(found)
+        print("  [%s] %s" % ("OK " if found else "MISS", q))
+        if not found:
+            print("        expected one of: %s" % expect)
+    print("\ngrounded %d/%d" % (passed, len(GROUNDING_QUESTIONS)))
+    return passed == len(GROUNDING_QUESTIONS)
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "stats"
     if cmd in ("--selftest", "selftest"):
@@ -296,6 +341,8 @@ if __name__ == "__main__":
     elif cmd == "index":
         for f in sys.argv[2:]:
             print("indexed %d chunks from %s" % (index_doc(f), f))
+    elif cmd == "groundcheck":
+        sys.exit(0 if groundcheck() else 1)
     elif cmd == "query":
         for h in query(" ".join(sys.argv[2:])):
             print("\n[%.3f] %s -- %s\n%s" % (h["similarity"], h["source"],
