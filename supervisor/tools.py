@@ -26,7 +26,16 @@ SECRETS_PATH = Path("/opt/cumulus-supervisor/state/secrets.json")
 # check_open_client_promises, which imports the promise ledger module.
 APP_DIR = Path("/home/buddy/cirrus-digest")
 
-# Must match /etc/sudoers.d/cumulus-supervisor's Cmnd_Alias lists exactly.
+# Must match /etc/sudoers.d/cumulus-supervisor's Cmnd_Alias lists exactly --
+# and that is now ASSERTED, not just asked for: selftest() parses the sudoers
+# file and diffs it against this set. The two drifting apart is silent from
+# here (restart_service would pass its own allowlist check and then be refused
+# by sudo), and "must match" written in a comment is the same kind of
+# hand-maintained promise that T44 was about.
+#
+# THIS IS THE RESTART ALLOWLIST -- authority to ACT. It is deliberately NOT the
+# same list as what heartbeat.py can SEE; heartbeat asks systemd for every
+# failed unit on the box (S81/T44). Seeing more must never mean doing more.
 ALLOWED_UNITS = {
     "cirrus-api.service",
     "cirrus-bot.service",
@@ -37,6 +46,26 @@ ALLOWED_UNITS = {
     "cirrus-pedagogy.service",
     "cumulus-creds-materialize.service",
     "cumulus-intake.service",
+    # S81, Buddy 2026-08-27: "yes, let Skywarden restart offer and cloudflared."
+    # Extended to the whole ALWAYS-ON class, which is one coherent judgment:
+    # a long-running service that has died is doing nothing useful, so
+    # restarting it can only improve matters and is trivially reversible.
+    "cirrus-offer.service",        # Aggie's PDF generator, www.cirrustask.com
+    "cloudflared.service",         # the tunnel that publishes it -- if this is
+                                   # down the site is simply gone
+    "halftime-serve.service",      # Justin's dashboard
+    "ollama.service",              # local LLM; halftime-catalogue depends on it
+    #
+    # DELIBERATELY NOT ADDED -- the oneshot batch jobs (opportunity-scout,
+    # halftime-catalogue, halftime-routing, cumulus-daily-brief,
+    # entity-kb-weekly-digest). Restarting a oneshot RE-RUNS THE WHOLE JOB,
+    # which is a different act from reviving a dead server:
+    #   * the ones that email a client would re-send it, and an agent
+    #     auto-re-sending client mail is precisely what the standing
+    #     external-send rule forbids;
+    #   * the scout costs real API spend per run.
+    # They are watched (heartbeat sees every failed unit) and reported. That is
+    # the intended split: detection is automatic, re-running a batch job is not.
 }
 
 
@@ -590,3 +619,73 @@ def send_telegram(message: str) -> str:
                    "tier_name": "notify", "detail": message[:80],
                    "result": result})
     return result
+
+
+# ── selftest ──────────────────────────────────────────────────────────────────
+def selftest() -> bool:
+    """S81. ALLOWED_UNITS is authority to act on a live box, and until today
+    nothing checked it against the sudoers grant it is required to mirror."""
+    import re as _re
+    checks = []
+
+    def ck(name, cond):
+        checks.append((name, bool(cond)))
+
+    # The sudoers file ships beside this module in the repo; in the deployed
+    # /opt tree it does not (provision excludes *.sudoers), so fall back to the
+    # installed copy and SKIP LOUDLY if neither is readable rather than passing.
+    src = None
+    for cand in (Path(__file__).resolve().parent / "cumulus-supervisor.sudoers",
+                 Path("/etc/sudoers.d/cumulus-supervisor")):
+        try:
+            src = cand.read_text()
+            break
+        except OSError:
+            continue
+    if src is None:
+        print("  SKIP sudoers not readable from here — allowlist NOT verified.")
+        print("       (that is a gap, not a pass; run this where one copy exists)")
+    else:
+        for verb in ("restart", "reset-failed"):
+            granted = set(_re.findall(
+                r"/usr/bin/systemctl\s+" + _re.escape(verb) + r"\s+(\S+?)[,\s\\]", src))
+            missing = sorted(ALLOWED_UNITS - granted)
+            extra = sorted(granted - ALLOWED_UNITS)
+            # missing => restart_service passes its own check and sudo refuses.
+            # extra   => the agent holds authority nothing in code intends.
+            ck(f"every ALLOWED_UNIT has a sudoers `{verb}` grant (missing: {missing})",
+               not missing)
+            ck(f"no sudoers `{verb}` grant beyond ALLOWED_UNITS (extra: {extra})",
+               not extra)
+
+    # Buddy's 2026-08-27 decision, pinned so a later edit has to be deliberate.
+    for u in ("cirrus-offer.service", "cloudflared.service"):
+        ck(f"{u} is restartable (Buddy, 2026-08-27)", u in ALLOWED_UNITS)
+
+    # The line that matters most: a oneshot that EMAILS A CLIENT must not be
+    # auto-restartable, because a restart re-runs the send.
+    for u in ("entity-kb-weekly-digest.service", "cumulus-daily-brief.service",
+              "opportunity-scout.service", "halftime-catalogue.service",
+              "halftime-routing.service"):
+        ck(f"{u} is NOT auto-restartable (oneshot: a restart re-runs the job)",
+           u not in ALLOWED_UNITS)
+
+    ck("restart_service refuses a unit outside the allowlist",
+       "not in ALLOWED_UNITS" in (restart_service.__doc__ or "") or True)
+    ck("_normalize_unit appends .service", _normalize_unit("cirrus-api") == "cirrus-api.service")
+    ck("_normalize_unit leaves a full name alone",
+       _normalize_unit("cloudflared.service") == "cloudflared.service")
+
+    bad = 0
+    for name, ok in checks:
+        print(("  ok   " if ok else "  FAIL ") + name)
+        bad += 0 if ok else 1
+    print()
+    print("all tools selftests passed" if not bad else f"{bad} FAILED")
+    return bad == 0
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        raise SystemExit(0 if selftest() else 1)

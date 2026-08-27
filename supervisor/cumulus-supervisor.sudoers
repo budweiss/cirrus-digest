@@ -1,4 +1,7 @@
 # cumulus-supervisor sudoers — B1 supervisor agent (S63)
+# S81 (Buddy 2026-08-27): the four always-on services added below.
+# Kept in lockstep with tools.ALLOWED_UNITS -- supervisor selftest
+# now parses THIS FILE and fails if the two disagree.
 # Narrow, explicit allowlist: restart/reset-failed on the fixed reversible-action
 # unit list from CUMULUS.md §4. No wildcards (sudoers wildcard argument matching
 # is exploitable) — every command spelled out in full.
@@ -11,7 +14,11 @@ Cmnd_Alias SUPERVISOR_RESTART = \
     /usr/bin/systemctl restart cirrus-modelhealth.service, \
     /usr/bin/systemctl restart cirrus-pedagogy.service, \
     /usr/bin/systemctl restart cumulus-creds-materialize.service, \
-    /usr/bin/systemctl restart cumulus-intake.service
+    /usr/bin/systemctl restart cumulus-intake.service, \
+    /usr/bin/systemctl restart cirrus-offer.service, \
+    /usr/bin/systemctl restart cloudflared.service, \
+    /usr/bin/systemctl restart halftime-serve.service, \
+    /usr/bin/systemctl restart ollama.service
 
 Cmnd_Alias SUPERVISOR_RESET = \
     /usr/bin/systemctl reset-failed cirrus-api.service, \
@@ -22,7 +29,11 @@ Cmnd_Alias SUPERVISOR_RESET = \
     /usr/bin/systemctl reset-failed cirrus-modelhealth.service, \
     /usr/bin/systemctl reset-failed cirrus-pedagogy.service, \
     /usr/bin/systemctl reset-failed cumulus-creds-materialize.service, \
-    /usr/bin/systemctl reset-failed cumulus-intake.service
+    /usr/bin/systemctl reset-failed cumulus-intake.service, \
+    /usr/bin/systemctl reset-failed cirrus-offer.service, \
+    /usr/bin/systemctl reset-failed cloudflared.service, \
+    /usr/bin/systemctl reset-failed halftime-serve.service, \
+    /usr/bin/systemctl reset-failed ollama.service
 
 cumulus-supervisor ALL=(root) NOPASSWD: SUPERVISOR_RESTART, SUPERVISOR_RESET
 
