@@ -58,9 +58,26 @@ PRIORITIES = [
      r"inadequate response|treatment[- ]resistant"),
     (2, "regrowth & remission",
      r"regrow|remission|relapse|spontaneous recover|durability|withdrawal|discontinu"),
-    (3, "etiology / trigger",
-     r"pathogenes|etiolog|immune privilege|trigger|onset|cd8|nkg2d|interferon|"
-     r"il-15|genetic|gwas|risk (factor|locus|loci)"),
+    # WHAT CAUSED THIS -- Buddy's standing question (S82), and the band most
+    # easily under-built. The first draft of this pattern matched 2 of 11
+    # realistic causation-discovery titles: "molecular mimicry between a viral
+    # antigen and a follicle autoantigen", "EBV infection precedes alopecia
+    # areata", "trichohyalin identified as the dominant autoantigen" and six
+    # others all fell through to P7 "general AA news" -- the bottom of the
+    # file. A discovery of the CAUSE would have been reported as miscellaneous.
+    # Those eleven titles are now a regression test (see selftest): this band
+    # can narrow again, but not silently.
+    (3, "etiology / cause / trigger",
+     r"pathogenes|etiolog|a?etiolog|immune privilege|trigger|onset|cd8|nkg2d|"
+     r"interferon|il-15|genetic|genom|gwas|risk (factor|locus|loci)|"
+     r"cause|causal|causation|caus(ing|es)|"
+     r"autoantigen|antigen|epitope|mimicry|autoimmun|tolerance|"
+     r"viral|virus|infection|epstein|ebv|covid|vaccin|microb(e|ial) trigger|"
+     r"hla|haplotype|heritab|twin|famil(y|ial) (history|aggregation)|"
+     r"susceptib|predispos|"
+     r"tcr|t[- ]cell receptor|clonal|single[- ]cell|repertoire|"
+     r"epidemiolog|incidence|prevalence|cohort stud|case[- ]control|"
+     r"preced|antecedent|prodrom"),
     (4, "diet / microbiome / environment",
      r"diet|nutrition|microbiome|microbiota|gut|vitamin|zinc|iron|biotin|"
      r"probiotic|supplement|environmental|stress"),
@@ -418,6 +435,30 @@ def selftest():
        classify({"title": "Spontaneous regrowth after withdrawal"})[0] == 2)
     ck("classify: etiology is priority 3",
        classify({"title": "CD8 T cells and immune privilege collapse"})[0] == 3)
+
+    # THE CAUSATION REGRESSION TEST (S82, Buddy's standing question). Every one
+    # of these landed in P7 "general AA news" before the etiology band was
+    # widened. None may fall below P3 again.
+    CAUSE_TITLES = [
+        "Molecular mimicry between a viral antigen and a hair follicle autoantigen",
+        "Epstein-Barr virus infection precedes alopecia areata in a national cohort",
+        "Trichohyalin identified as the dominant autoantigen in alopecia areata",
+        "HLA-DRB1 haplotypes and susceptibility to childhood alopecia areata",
+        "Single-cell TCR sequencing reveals clonal expansion in lesional scalp",
+        "Twin concordance and heritability of alopecia areata",
+        "Incidence of alopecia areata after COVID-19 vaccination: a cohort study",
+        "What causes alopecia areata? A mechanistic synthesis",
+        "Childhood infection and later autoimmunity: a population-based analysis",
+        "Environmental exposures preceding disease onset",
+        "Genome-wide association study identifies new susceptibility loci",
+    ]
+    missed = [t for t in CAUSE_TITLES if classify({"title": t})[0] > 3]
+    ck("classify: EVERY causation-discovery title ranks P3 or better "
+       "(%d/%d)" % (len(CAUSE_TITLES) - len(missed), len(CAUSE_TITLES)),
+       not missed)
+    if missed:
+        for t in missed:
+            print("        MISSED: %s" % t[:70])
     ck("classify: diet is priority 4",
        classify({"title": "Gut microbiome and vitamin D in AA"})[0] == 4)
     ck("classify: pipeline is priority 5",
