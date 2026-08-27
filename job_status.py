@@ -91,6 +91,10 @@ CADENCE_H = {
     # which is the entire point of T44 -- and placement.py's coverage check
     # would have failed the session wrap if this line were missing.
     "devfindings":      26,
+    # S82 ALOPECIA P1. Daily 05:45 CUMULUS. Registered in the same change that
+    # installed the timer -- T44's rule: a job is watched from the day it
+    # exists, not from the day someone notices it stopped.
+    "alopeciacollect":  26,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -104,7 +108,8 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  # CIRRUS's own ledger has no entry, so it reports OVERDUE
                  # forever and trains us to ignore the overdue signal.
                  "opportunityscout", "halftimecatalogue", "halftimerouting",
-                 "cumulusdailybrief", "entitykbdigest"}
+                 "cumulusdailybrief", "entitykbdigest",
+                 "alopeciacollect"}                        # S82, runs on CUMULUS
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 

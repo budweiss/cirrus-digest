@@ -1,0 +1,26 @@
+[Unit]
+Description=ALOPECIA daily collector — 05:45
+
+# Slot chosen from a LIVE window-audit (S82), not by eyeballing the schedule:
+#   CUMULUS  02:00 opportunity-scout · 03:00 hoaleads · Mon 04:00/04:30 Bill's
+#            two CLIENT-FACING sends · Mon 05:00 entity-kb (Bill) · 05:30
+#            modelhealth · 06:00 pedagogy · 06:30 halftime-catalogue
+#   CIRRUS   05:00 vendormail · 05:30 modelhealth · 06:30 devreport
+# 05:45 is clear on BOTH boxes, sits inside the preferred 02:00-06:00 window,
+# and lands well before the 07:30 morning brief -- which matters because a
+# producer firing after the brief is reported a day late (the rule that
+# window-audit exists to enforce).
+#
+# The run takes ~4 seconds against four APIs, so it cannot collide with the
+# 06:00 job even if a source hangs to its 45s timeout.
+#
+# Retiming this timer is NOT `systemctl restart` -- see T39. Persistent=true
+# means a restart holding an old stamp FIRES the job immediately. A same-day
+# re-fire is now harmless (the daily file accumulates rather than being
+# overwritten, S82) but it still spends four API calls for nothing.
+[Timer]
+OnCalendar=*-*-* 05:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=ALOPECIA daily collector (S82) — alopecia areata research, trials and news for Buddy
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/alopecia_collect.py
+
+[Install]
+WantedBy=multi-user.target
