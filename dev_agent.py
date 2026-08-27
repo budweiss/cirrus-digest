@@ -1601,10 +1601,44 @@ def report_text(builds=None, path=None) -> str:
         lines.append("       %s" % (b.get("error") or "")[:160])
         lines.append("       worktree kept: %s" % b.get("worktree", "?"))
 
+    for b in buckets.get("shipped", []):
+        n = b.get("attempts", 1)
+        how = "first try" if n <= 1 else "repaired on attempt %d" % n
+        lines.append("SHIPPED %s — %s (%s)" % (b.get("id"), b.get("summary", ""), how))
+        if b.get("shipped_sha"):
+            lines.append("       live at %s — rollback: git revert %s"
+                         % (b["shipped_sha"], b["shipped_sha"]))
+
+    # A build that shipped and then FAILED verify was auto-reverted. That is the
+    # single most important line this report can carry, so it is explicit rather
+    # than left to the catch-all.
+    for b in buckets.get("rolled-back", []):
+        lines.append("ROLLED BACK %s — %s" % (b.get("id"), b.get("summary", "")))
+        lines.append("       verify failed after deploy; live tree is back on "
+                     "the previous commit")
+
+    for b in buckets.get("discarded", []):
+        lines.append("DROPPED %s — %s" % (b.get("id"), b.get("summary", "")))
+
     for key, label in (("cannot-build", "DECLINED"), ("blocked", "BLOCKED"),
                        ("refused", "REFUSED"), ("build-error", "ERROR")):
         for b in buckets.get(key, []):
             lines.append("%s %s — %s" % (label, b.get("id"), (b.get("error") or "")[:160]))
+
+    # Anything not named above still gets a line. S80: the report was written
+    # with a bucket per status and `shipped` was not one of them, so the first
+    # real report -- for a build that had just gone live -- said only "Attempts
+    # journalled: 1" and named nothing. A report that silently drops a status it
+    # was not taught about is the same defect as one that lists only successes;
+    # enumerate the leftovers rather than trusting the list to stay complete.
+    KNOWN = {"awaiting-confirm", "repair-exhausted", "shipped", "rolled-back",
+             "discarded", "cannot-build", "blocked", "refused", "build-error"}
+    for status, items in sorted(buckets.items()):
+        if status in KNOWN:
+            continue
+        for b in items:
+            lines.append("%s %s — %s" % (status.upper(), b.get("id"),
+                                         b.get("summary", "") or b.get("detail", "")))
 
     lines.append("")
     lines.append("Attempts journalled: %d. `dev_agent.py repairs` to read how."
@@ -1935,6 +1969,23 @@ def _selftest():
           "dependents" in rpt)
     check("report_text: a quiet night says nothing was built",
           "nothing built" in report_text(builds=[]))
+
+    # S80, found on the daemon's FIRST real run: `shipped` was not a bucket, so
+    # a build that had just gone live produced a report naming nothing at all.
+    srep = report_text(builds=[
+        {"id": "b3", "status": "shipped", "created": today, "summary": "the thing",
+         "attempts": 1, "shipped_sha": "d95c4f2"},
+        {"id": "b4", "status": "rolled-back", "created": today, "summary": "bad one"},
+        {"id": "b5", "status": "some-status-nobody-taught-it", "created": today,
+         "summary": "unknown state"}])
+    check("report_text: a SHIPPED build is named, not silently dropped",
+          "SHIPPED b3" in srep and "the thing" in srep)
+    check("report_text: and carries the sha and its rollback",
+          "d95c4f2" in srep and "git revert" in srep)
+    check("report_text: an auto-rollback is called out explicitly",
+          "ROLLED BACK b4" in srep)
+    check("report_text: an UNKNOWN status still gets a line (no silent drop)",
+          "b5" in srep and "SOME-STATUS-NOBODY-TAUGHT-IT" in srep)
 
     # -- the repair prompt carries the failure and the hard rule --------------
     item = {"detail": "d", "dev_spec": {"id": "x", "files_to_change": ["a.py"]}}
