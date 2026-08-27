@@ -1826,6 +1826,37 @@ def execute_action(item: dict) -> str:
         except Exception as e:
             return f"⚠️ CIRRUS note logged, but proposal generation failed: {e}"
 
+    elif action_type in ("TEST_GAP", "BUG_FIX"):
+        # S81 THE FRONT DOOR. dev_findings.py proposes findings under these two
+        # types, and without this branch approving one printed "Unknown action
+        # type" and queued NOTHING -- a silent no-op at the exact moment Buddy
+        # thought he had approved a build. Found before the first approval, by
+        # reading the dispatch rather than trusting it.
+        #
+        # NOT hoisted to a blanket "any Tier-1 dev_spec gets queued" at the top
+        # of this function, tempting as that is: PULL_MODEL is also Tier 1 and
+        # must pull a model, not try to build code. The dispatch is about HOW to
+        # execute, so a new type needs a branch, not a shortcut.
+        #
+        # dev_findings.selftest asserts every type it emits appears here, so
+        # adding a collector with a new type fails a test instead of failing
+        # silently at approval time.
+        if (item.get("dev_spec") or {}).get("tier") == 1:
+            try:
+                import dev_agent
+                dev_agent.queue_append(item)
+                log(f"{action_type} queued for dev-loop build: {detail[:80]}")
+                return (f"🔧 Queued for the *nightly Dev-Loop build* (Tier 1).\n"
+                        f"CIRRUS will build + test it tonight, then ask you to "
+                        f"`ship` or `discard`.")
+            except Exception as e:
+                log(f"dev-loop queue failed for {action_type}: {e}")
+                return (f"⚠️ Could not queue this finding for the build: {e}\n"
+                        f"It is still in /approve; nothing was lost.")
+        return (f"⚠️ This finding is not Tier 1 "
+                f"(tier {(item.get('dev_spec') or {}).get('tier')}), so it is not "
+                f"auto-buildable. Left for a Cowork session.")
+
     return f"⚠️ Unknown action type: {action_type}"
 
 def cmd_knowledge():

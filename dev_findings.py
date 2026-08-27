@@ -509,6 +509,31 @@ def selftest() -> bool:
     ck("a stalled signal is typed BUG_FIX",
        to_item(F("s", 1, kind="stalled_signal"))["type"] == "BUG_FIX")
 
+    # ---- the type must actually be EXECUTABLE on approval --------------------
+    # THE bug that nearly shipped: cirrus_bot.execute_action dispatches on
+    # action_type, and TEST_GAP / BUG_FIX were not among the types it handled.
+    # Approving a finding would have printed "Unknown action type" and queued
+    # NOTHING -- a silent no-op at the exact moment Buddy believed he had
+    # approved a build. Read out of the bot's SOURCE rather than retyped, so a
+    # new collector with a new type fails here instead of at approval time.
+    kinds = {"blind_gate", "stalled_signal", "repair_giveup"}
+    emitted = {to_item(F("k", 1, kind=k))["type"] for k in kinds}
+    ck("every collector kind maps to a proposal type", len(emitted) >= 1)
+    bot = PROJECT_DIR / "cirrus_bot.py"
+    if bot.exists():
+        text = bot.read_text(errors="ignore")
+        i = text.find("def execute_action")
+        body = text[i:] if i >= 0 else ""
+        unhandled = sorted(t for t in emitted
+                           if not re.search(r"action_type\s*(?:==|in)[^\n]*"
+                                            + re.escape(t), body))
+        ck(f"every emitted type is handled by execute_action (unhandled: {unhandled})",
+           not unhandled)
+        ck("...and the handler reaches the build queue, not just a log line",
+           "queue_append" in body)
+    else:
+        ck("cirrus_bot.py readable so the type check can run (NOT verified)", False)
+
     # ---- the classifier is NOT bypassed --------------------------------------
     ok, why = buildable(it)
     ck(f"a blind-gate finding classifies as buildable Tier 1 ({why})", ok)
