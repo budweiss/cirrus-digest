@@ -78,6 +78,18 @@ sys.path.insert(0, str(PROJECT_DIR))
 # queue cannot outrun the builder and grow a backlog nobody reads.
 MAX_PER_RUN = 2
 
+# ...and never let more than this many findings sit UNACTIONED in /approve at
+# once. MAX_PER_RUN alone is not enough: it caps a single run, so a nightly job
+# adds two every night whether or not Buddy has looked at yesterday's, and the
+# queue grows without bound. Caught by running the thing twice in a row and
+# watching it propose two more (S81).
+#
+# This is the front door's actual discipline. **The scarce resource is Buddy's
+# attention, not queue space** -- so the door opens at exactly the rate he
+# drains it, and a full queue means the right answer tonight is to propose
+# NOTHING. A backlog nobody reads is the same as no front door, with more noise.
+MAX_OUTSTANDING = 2
+
 # A module needs enough substance for a selftest to be worth writing. Below
 # this, "add a selftest" is busywork that spends a build slot.
 MIN_LINES_FOR_SELFTEST = 80
@@ -298,6 +310,27 @@ def buildable(item: dict):
 
 
 # ── Dedupe ────────────────────────────────────────────────────────────────────
+def outstanding(pending) -> list:
+    """Findings sitting in /approve still waiting on a human.
+
+    Only `pending` counts. Once Buddy approves one it moves to the build queue
+    and is no longer competing for his attention, so the door may open again.
+    """
+    out = []
+    for row in (pending or []):
+        r = row or {}
+        if not r.get("finding_key"):
+            continue
+        if r.get("status") in (None, "", "pending"):
+            out.append(r)
+    return out
+
+
+def room_for(pending, per_run=MAX_PER_RUN, cap=MAX_OUTSTANDING) -> int:
+    """How many findings may be proposed right now. 0 when the queue is full."""
+    return max(0, min(int(per_run), int(cap) - len(outstanding(pending))))
+
+
 def seen_keys(pending=None, queue=None, builds=None):
     """Every finding_key already proposed, queued or built -- in ANY state.
 
@@ -344,7 +377,13 @@ def run(dry_run=True, limit=MAX_PER_RUN):
         builds = []
     known = seen_keys(pending, queue, builds)
 
-    picked = select(findings, known, limit)
+    # Top up to the backlog cap rather than adding `limit` every time.
+    room = room_for(pending, limit)
+    waiting = len(outstanding(pending))
+    if room <= 0:
+        print(f"  {waiting} finding(s) already waiting in /approve "
+              f"(cap {MAX_OUTSTANDING}) — proposing nothing tonight.")
+    picked = select(findings, known, room)
     proposed, dropped = [], []
     date = datetime.now().strftime("%Y-%m-%d")
 
@@ -380,6 +419,8 @@ def run(dry_run=True, limit=MAX_PER_RUN):
     return {
         "dry_run": bool(dry_run),
         "collected": len(findings),
+        "already_waiting": waiting,
+        "room": room,
         "already_known": len([f for f in findings if f.get("key") in known]),
         "proposed": [{"id": (i.get("dev_spec") or {}).get("id"),
                       "type": i["type"], "why": i.get("why", "")} for i in proposed],
@@ -410,6 +451,27 @@ def selftest() -> bool:
     ck("a limit of 0 proposes nothing", select(fs, set(), 0) == [])
     ck("ties break deterministically, so two runs agree",
        [f["key"] for f in select([F("z", 2), F("y", 2)], set(), 2)] == ["y", "z"])
+
+    # ---- the backlog cap ----------------------------------------------------
+    # Found by running the thing twice: dedupe correctly skipped the first two
+    # findings and then proposed two MORE. Per-run caps do not bound a nightly
+    # job; only an outstanding cap does.
+    P = lambda n, st="pending": [{"finding_key": f"k{i}", "status": st} for i in range(n)]
+    ck("an empty /approve has room for a full run", room_for([]) == MAX_PER_RUN)
+    ck("one waiting finding leaves room for one more", room_for(P(1)) == 1)
+    ck("a FULL /approve leaves no room at all", room_for(P(MAX_OUTSTANDING)) == 0)
+    ck("...and an over-full one does not go negative",
+       room_for(P(MAX_OUTSTANDING + 5)) == 0)
+    ck("an APPROVED finding no longer competes for attention",
+       room_for(P(MAX_OUTSTANDING, st="approved")) == MAX_PER_RUN)
+    ck("a FILTERED finding does not hold the door shut forever",
+       room_for(P(MAX_OUTSTANDING, st="filtered")) == MAX_PER_RUN)
+    ck("rows that are not findings do not count against the cap",
+       room_for([{"type": "CIRRUS_NOTE", "detail": "x"}] * 5) == MAX_PER_RUN)
+    ck("outstanding() counts only unactioned findings",
+       len(outstanding(P(2) + P(2, st="approved"))) == 2)
+    ck("a full queue means propose NOTHING, not one anyway",
+       select([F("a", 9), F("b", 8)], set(), room_for(P(MAX_OUTSTANDING))) == [])
 
     # ---- dedupe reaches every lane ------------------------------------------
     ck("a key already in /approve is known", "k1" in seen_keys(pending=[{"finding_key": "k1"}]))
