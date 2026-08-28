@@ -55,6 +55,9 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# S84 (T51): one definition, shared with cirrus_api and cirrus_watchdog.
+from launchd_util import launchctl_target, kickstart_cmd
+
 import dev_loop
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
@@ -1387,14 +1390,22 @@ def ship(n: int):
     svcs = sorted({RESTART_MAP[p] for p in changed if p in RESTART_MAP})
     if svcs:
         _notify(f"🚀 `{bid}` deployed ({sha}). Restarting: {', '.join(svcs)} …")
-        uid = os.getuid()
+        restart_failed = ""
         for s in svcs:
-            _run(["launchctl", "kickstart", "-k", launchctl_target(s)])
+            # S84 (T51): a system-domain daemon needs root, and this rc was
+            # DISCARDED -- so a refused kickstart left the old process running
+            # while step 5 below asked `launchctl list`, which still shows it.
+            # A failed restart read as a successful deploy.
+            rc, out = _run(kickstart_cmd(launchctl_target(s)))
+            if rc != 0 and not restart_failed:
+                restart_failed = f"restart {s}: {out[:120]}"
             time.sleep(2)
 
     # 5. verify: live files compile; restarted services are back
-    fail = ""
+    fail = restart_failed if svcs else ""
     for p in changed:
+        if fail:
+            break
         if p.endswith(".py"):
             rc, out = _run([sys.executable, "-m", "py_compile", str(PROJECT_DIR / p)])
             if rc != 0:
@@ -1413,14 +1424,22 @@ def ship(n: int):
         # auto-rollback: revert the deploy commit, push, pull, restart again
         _git(["revert", "--no-edit", "HEAD"], cwd=PROJECT_DIR)
         _git(["push", "origin", "main"], cwd=PROJECT_DIR)
-        uid = os.getuid()
+        rb_failed = []
         for s in svcs:
-            _run(["launchctl", "kickstart", "-k", launchctl_target(s)])
+            rc, _out = _run(kickstart_cmd(launchctl_target(s)))
+            if rc != 0:
+                rb_failed.append(s)
         b["status"] = "rolled-back"
         builds_save(builds)
         _ledger("rollback", bid, result=fail[:80])
-        _notify(f"↩️ `{bid}` FAILED verify ({fail[:100]}) — auto-reverted and "
-                f"restarted. Live tree is back on the previous commit.")
+        # A rollback whose restart failed has reverted the FILES while the old
+        # process keeps running the reverted-away code. Never report that as a
+        # clean recovery.
+        rb_note = (f" ⚠️ but could NOT restart: {', '.join(rb_failed)} — those "
+                   f"services are still running the failed code."
+                   if rb_failed else " restarted.")
+        _notify(f"↩️ `{bid}` FAILED verify ({fail[:100]}) — auto-reverted and"
+                f"{rb_note} Live tree is back on the previous commit.")
         return f"↩️ Verify failed — rolled back. ({fail[:150]})"
 
     b["status"] = "shipped"
@@ -1463,23 +1482,6 @@ def unhold(n: int):
     return f"🔓 Override recorded — `{b['id']}` un-held. Reply `ship {n}` to deploy it anyway."
 
 
-def launchctl_target(label: str) -> str:
-    """Which domain holds this job — system or the GUI session?
-
-    S72: the THIRD copy of this fix (after cirrus_api and cirrus_watchdog), and
-    the reason it is now linted rather than remembered. dev_agent restarts a
-    service after shipping a build; eight com.cirrus.* jobs became system
-    LaunchDaemons on 2026-08-21, so a hardcoded gui/<uid> target had already
-    stopped resolving for every one of them. Falls back to the GUI domain, so
-    nothing changes for jobs still running as agents.
-    """
-    try:
-        if subprocess.run(["launchctl", "print", f"system/{label}"],
-                          capture_output=True, timeout=10).returncode == 0:
-            return f"system/{label}"
-    except Exception:
-        pass
-    return f"gui/{os.getuid()}/{label}"
 
 
 # ── Goal-loop evaluator (S71) ─────────────────────────────────────────────────

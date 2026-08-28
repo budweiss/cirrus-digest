@@ -38,6 +38,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+# S84 (T51): one definition of these, shared with cirrus_api and dev_agent.
+from launchd_util import launchctl_target, kickstart_cmd
+
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 CREDS_PATH  = PROJECT_DIR / "config/credentials.json"
 STATE_PATH  = PROJECT_DIR / "logs/watchdog-state.json"
@@ -175,26 +178,13 @@ def cloudflared_running() -> bool:
     return r.returncode == 0
 
 
-def launchctl_target(label: str) -> str:
-    """Which domain actually holds this job — system or the GUI session?
-
-    S71: the hardcoded gui/<uid>/<label> was right only while every com.cirrus.*
-    job was a user LaunchAgent AND the watchdog was one too. A converted job
-    lives in `system`, and after a reboot with nobody logged in gui/<uid> does
-    not exist at all. Falls back to the GUI domain, so nothing changes for
-    agents that have not been converted yet.
-    """
-    try:
-        if subprocess.run(["launchctl", "print", f"system/{label}"],
-                          capture_output=True, timeout=10).returncode == 0:
-            return f"system/{label}"
-    except Exception:
-        pass
-    return f"gui/{os.getuid()}/{label}"
 
 
 def kickstart(svc: str):
-    return subprocess.run(["launchctl", "kickstart", "-k", launchctl_target(svc)],
+    # S84 (T51): a system-domain daemon needs root. Without it this returned
+    # False for every converted LaunchDaemon, i.e. the self-healing restart
+    # could not heal the jobs most worth healing.
+    return subprocess.run(kickstart_cmd(launchctl_target(svc)),
                           capture_output=True, text=True).returncode == 0
 
 

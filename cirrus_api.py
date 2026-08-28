@@ -25,6 +25,9 @@ from pathlib import Path
 from datetime import datetime
 from werkzeug.serving import WSGIRequestHandler
 
+# S84 (T51): one definition, shared with cirrus_watchdog and dev_agent.
+from launchd_util import launchctl_target, kickstart_cmd
+
 app = Flask(__name__)
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 
@@ -951,59 +954,8 @@ def service_status():
     lines = [l for l in result.stdout.splitlines() if "cirrus" in l.lower()]
     return jsonify({"services": lines})
 
-def launchctl_target(label: str) -> str:
-    """Where does this job actually live — the system domain or a GUI session?
-
-    S71. Every call site used to hardcode gui/<uid>/<label>, which was correct
-    while every com.cirrus.* job was a user LaunchAgent and the API was one too.
-    Two things break that assumption as jobs convert to system LaunchDaemons:
-
-      * a daemon is in the `system` domain, so gui/<uid>/<label> no longer
-        resolves for it; and
-      * after a reboot with nobody logged in, gui/<uid> DOES NOT EXIST AT ALL —
-        which is the whole reason for converting in the first place.
-
-    So ask launchctl which domain holds the job instead of assuming. Falls back
-    to the GUI domain, which keeps every not-yet-converted agent working exactly
-    as before — this function is a no-op until something is actually a daemon.
-    """
-    try:
-        if subprocess.run(["launchctl", "print", f"system/{label}"],
-                          capture_output=True, timeout=10).returncode == 0:
-            return f"system/{label}"
-    except Exception:
-        pass
-    return f"gui/{os.getuid()}/{label}"
 
 
-def kickstart_cmd(target: str):
-    """The argv that actually restarts `target` — sudo-ed when it has to be.
-
-    S84. launchctl_target() has picked the right DOMAIN since S71, but all
-    three call sites then ran a bare `launchctl kickstart`. Kickstarting a job
-    in the `system` domain needs root, so every deploy of a converted
-    LaunchDaemon answered:
-
-        Could not kickstart service "com.cirrus.bot": 1: Operation not permitted
-
-    The git pull LANDED and the service kept running the OLD code. That is not
-    hypothetical: S83 shipped an argv guard to cirrus_bot.py and the live bot
-    was still running the previous file a day later, because this restart had
-    quietly failed. The deploy DID report it — knowing where a job lives is not
-    the same as being able to reach it.
-
-    GUI-domain agents are deliberately left alone: they run as this user, and
-    root has no session in gui/<uid>, so sudo would break the working case.
-
-    Safe to sudo: every caller has already matched the label against
-    ALLOWED_SERVICES — an exact-match allowlist, not a charset — before getting
-    here (T11), and argv is a list, so no shell is involved. `-n` makes a
-    missing NOPASSWD grant fail at once rather than block on a password prompt
-    nobody can answer.
-    """
-    if target.startswith("system/"):
-        return ["sudo", "-n", "launchctl", "kickstart", "-k", target]
-    return ["launchctl", "kickstart", "-k", target]
 
 
 # ── Admin: Deploy ─────────────────────────────────────────────────────────────
