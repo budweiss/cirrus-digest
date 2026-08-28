@@ -2213,4 +2213,22 @@ def run_bot():
             time.sleep(5)
 
 if __name__ == "__main__":
+    # S83: this was a bare run_bot(), so ANY argument was silently ignored and
+    # the LIVE bot started anyway. On 2026-08-24 something ran
+    # `python3 cirrus_bot.py selftest` — this module has no selftest — and the
+    # result was a SECOND bot long-polling getUpdates on the same token as the
+    # launchd-owned one. The two 409-Conflicted each other for four days and
+    # wrote ~290k "HTTP Error 409: Conflict" lines that no monitor read; while
+    # it ran, which instance served a Telegram command was a race.
+    #
+    # dev_agent's S81 argument guard stops the DEV LOOP invoking it that way.
+    # This stops everything else, because the failure is not "the dev loop did
+    # a wrong thing" — it is that starting a production service is this file's
+    # response to input it does not understand.
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        print("cirrus_bot.py takes no arguments and has no selftest — running "
+              "it starts the LIVE Telegram bot, and a second instance will "
+              "409-Conflict the real one. Refusing: %s" % " ".join(_sys.argv[1:]))
+        raise SystemExit(2)
     run_bot()
