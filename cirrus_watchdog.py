@@ -199,6 +199,71 @@ def kickstart(svc: str):
 
 
 # ── main pass ────────────────────────────────────────────────────────────────
+# ── S83: log error-RATE watch ────────────────────────────────────────────────
+# The gap this closes, precisely. On 2026-08-24 a second cirrus_bot started (an
+# ignored `selftest` argument) and 409-Conflicted the launchd-owned one at ~60
+# errors/min for four days. This watchdog saw com.cirrus.bot loaded with a live
+# PID and called it healthy — and it was healthy. There were simply TWO of it,
+# and the only evidence anywhere was ~290,000 "HTTP Error 409: Conflict" lines
+# in a log that nothing read.
+#
+# So watch the RATE, not the presence. A box where every service is up and one
+# log is screaming is a broken box, and until now nothing here could say so.
+LOG_WATCH = {
+    # log file      -> error lines per hour that count as a fault
+    "bot.log":        30,   # steady state ~0; the 409 storm ran at ~3600/h
+    "watchdog.log":   30,
+    "digest.log":    120,   # legitimately logs per-source 403s and timeouts
+                            # DURING a run and still completes — a threshold
+                            # under that would cry wolf every Sunday, and a
+                            # check that cries wolf gets switched off
+}
+LOG_ERR_RX     = re.compile(r"error|failed|conflict|traceback", re.I)
+_LOG_TS_RX     = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+LOG_TAIL_BYTES = 512 * 1024
+
+
+def log_error_rates(now=None, log_dir=None):
+    """Findings for every watched log whose last-hour error rate is over its
+    threshold. Reads only the TAIL — bot.log reached 290k lines, and a check
+    that must read all of it is a check that gets turned off.
+
+    A MISSING log is reported, never skipped as clean (T8): "could not look"
+    and "looked and it was fine" are different answers.
+    """
+    now = now or datetime.now()
+    d = Path(log_dir) if log_dir else (PROJECT_DIR / "logs")
+    findings = []
+    for name, limit in sorted(LOG_WATCH.items()):
+        fp = d / name
+        try:
+            with open(fp, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - LOG_TAIL_BYTES))
+                text = f.read().decode("utf-8", "replace")
+        except FileNotFoundError:
+            findings.append(f"{name}: expected log is MISSING — cannot check it")
+            continue
+        except Exception as e:
+            findings.append(f"{name}: unreadable ({e}) — cannot check it")
+            continue
+        n = 0
+        for line in text.splitlines():
+            m = _LOG_TS_RX.match(line)
+            if not m:
+                continue          # includes the partial first line of the tail
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if 0 <= (now - ts).total_seconds() <= 3600 and LOG_ERR_RX.search(line):
+                n += 1
+        if n > limit:
+            findings.append(f"{name}: {n} error lines in the last hour "
+                            f"(limit {limit}) — something is failing quietly")
+    return findings
+
+
 def check_and_heal():
     """Returns (status, notes:list). status: ok | repaired | degraded."""
     try:
@@ -327,6 +392,13 @@ def clear_alert_episode(status):
 def main():
     log("watchdog pass start")
     status, notes = check_and_heal()
+    # S83: every service can be UP while something screams into a log nobody
+    # reads. Fold that in here so it travels the same heartbeat/alert path,
+    # including the existing per-episode dedupe.
+    lognotes = log_error_rates()
+    if lognotes:
+        status = "degraded"
+        notes = list(notes) + lognotes
     record_heartbeat(status, notes)
     alert_if_needed(status, notes)
     clear_alert_episode(status)
@@ -368,6 +440,51 @@ def _selftest():
         record_heartbeat("ok", [])
         hb = json.loads(HB_PATH.read_text())
         check("heartbeat history accumulates", len(hb["cirrus"]["history"]) == 2)
+
+        # ---- S83: log error-rate watch ----
+        ld = tdp / "logs"; ld.mkdir()
+        t = datetime.now()
+
+        def _write(name, count, minutes_ago, text="HTTP Error 409: Conflict"):
+            stamp = t - __import__("datetime").timedelta(minutes=minutes_ago)
+            (ld / name).write_text("".join(
+                "[%s] API error (getUpdates): %s\n"
+                % (stamp.strftime("%Y-%m-%d %H:%M:%S"), text)
+                for _ in range(count)))
+
+        _write("bot.log", 200, 10)                 # 200 errors, 10 min ago
+        (ld / "watchdog.log").write_text("")
+        (ld / "digest.log").write_text("")
+        f = log_error_rates(now=t, log_dir=ld)
+        check("log watch: a screaming log is reported",
+              any("bot.log" in x and "200 error lines" in x for x in f))
+
+        # the whole point of a RATE: yesterday's storm is not today's fault
+        _write("bot.log", 200, 60 * 26)
+        f = log_error_rates(now=t, log_dir=ld)
+        check("log watch: errors OLDER than the window do not fire",
+              not any("bot.log" in x for x in f))
+
+        # thresholds are per-log: 50 is a fault for the bot, normal for a digest
+        _write("bot.log", 50, 5)
+        _write("digest.log", 50, 5, text="Fetch error: 403 Forbidden")
+        f = log_error_rates(now=t, log_dir=ld)
+        check("log watch: per-log threshold — 50 trips bot.log",
+              any("bot.log" in x for x in f))
+        check("log watch: per-log threshold — 50 does NOT trip digest.log",
+              not any("digest.log" in x for x in f))
+
+        # T8: a log we could not read must not read as clean
+        (ld / "bot.log").unlink()
+        f = log_error_rates(now=t, log_dir=ld)
+        check("log watch: a MISSING log is reported, not silently clean",
+              any("bot.log" in x and "MISSING" in x for x in f))
+
+        # and a genuinely quiet box stays quiet
+        for n in ("bot.log", "watchdog.log", "digest.log"):
+            (ld / n).write_text("[%s] all good\n" % t.strftime("%Y-%m-%d %H:%M:%S"))
+        check("log watch: a quiet box produces NO findings",
+              log_error_rates(now=t, log_dir=ld) == [])
 
         # alert dedupe signature
         STATE_PATH.write_text("{}")
