@@ -109,6 +109,115 @@ SEARCH_ANGLES = [
     ("for_hire_music", "team tradition", "classic rock song NFL team stadium ritual fourth quarter anthem"),
 ]
 
+# ── TEAM-SIDE AXIS (S83) ─────────────────────────────────────────────────────
+# The catalogue above is ACT-shaped: it answers "who sells a halftime act". It
+# was built from provider-marketing queries, and after 51 acts it still cannot
+# answer the question actually asked at the end of S78 — "what did other teams
+# DO at halftime in the past five years." Those are different search problems.
+# A vendor page tells you who is selling; it does not tell you what Nebraska ran
+# on a Saturday in 2023.
+#
+# So: a third pool, keyed by TEAM rather than by act. NFL first — 32 clubs is a
+# full pass in ~8 nights against ~40 for all 162, and it is the half Justin's
+# Pittsburgh project actually touches. FBS is a second seeding once extraction
+# quality is proven on real output.
+PROGRAM_YEARS = 5              # the bound is real: fees move fast, and the same
+                               # Red Panda act is documented at $3,350 and later
+                               # ~$6,765. Older than this is context, not a quote.
+PROGRAM_ANGLES_PER_RUN = 4     # added to the nightly run alongside the act pools
+
+# (canonical name, level, match aliases). Aliases exist because a source says
+# "the Steelers", "Pittsburgh" or "Pittsburgh Steelers" and all three must land
+# on one entity. Matching against this list is also the JUNK GATE: a model that
+# invents a team name simply fails to match and the record is dropped, which is
+# why the extractor is allowed to report teams it noticed in passing.
+NFL_TEAMS = [
+    ("Arizona Cardinals",      "pro", ("arizona cardinals", "cardinals")),
+    ("Atlanta Falcons",        "pro", ("atlanta falcons", "falcons")),
+    ("Baltimore Ravens",       "pro", ("baltimore ravens", "ravens")),
+    ("Buffalo Bills",          "pro", ("buffalo bills", "bills")),
+    ("Carolina Panthers",      "pro", ("carolina panthers", "panthers")),
+    ("Chicago Bears",          "pro", ("chicago bears", "bears")),
+    ("Cincinnati Bengals",     "pro", ("cincinnati bengals", "bengals")),
+    ("Cleveland Browns",       "pro", ("cleveland browns", "browns")),
+    ("Dallas Cowboys",         "pro", ("dallas cowboys", "cowboys")),
+    ("Denver Broncos",         "pro", ("denver broncos", "broncos")),
+    ("Detroit Lions",          "pro", ("detroit lions", "lions")),
+    ("Green Bay Packers",      "pro", ("green bay packers", "packers")),
+    ("Houston Texans",         "pro", ("houston texans", "texans")),
+    ("Indianapolis Colts",     "pro", ("indianapolis colts", "colts")),
+    ("Jacksonville Jaguars",   "pro", ("jacksonville jaguars", "jaguars")),
+    ("Kansas City Chiefs",     "pro", ("kansas city chiefs", "chiefs")),
+    ("Las Vegas Raiders",      "pro", ("las vegas raiders", "raiders")),
+    ("Los Angeles Chargers",   "pro", ("los angeles chargers", "chargers")),
+    ("Los Angeles Rams",       "pro", ("los angeles rams", "rams")),
+    ("Miami Dolphins",         "pro", ("miami dolphins", "dolphins")),
+    ("Minnesota Vikings",      "pro", ("minnesota vikings", "vikings")),
+    ("New England Patriots",   "pro", ("new england patriots", "patriots")),
+    ("New Orleans Saints",     "pro", ("new orleans saints", "saints")),
+    ("New York Giants",        "pro", ("new york giants", "giants")),
+    ("New York Jets",          "pro", ("new york jets", "jets")),
+    ("Philadelphia Eagles",    "pro", ("philadelphia eagles", "eagles")),
+    ("Pittsburgh Steelers",    "pro", ("pittsburgh steelers", "steelers")),
+    ("San Francisco 49ers",    "pro", ("san francisco 49ers", "49ers", "niners")),
+    ("Seattle Seahawks",       "pro", ("seattle seahawks", "seahawks")),
+    ("Tampa Bay Buccaneers",   "pro", ("tampa bay buccaneers", "buccaneers", "bucs")),
+    ("Tennessee Titans",       "pro", ("tennessee titans", "titans")),
+    ("Washington Commanders",  "pro", ("washington commanders", "commanders")),
+]
+
+# Two templates per team, deliberately different SOURCE types rather than two
+# phrasings of one. The second is the handoff's angle 2: schools and clubs
+# publish game-day guides and promotional schedules that list halftime per game
+# — highly structured, rarely scraped, and they name the act.
+PROGRAM_QUERIES = [
+    '"{team}" halftime show performance regular season -"Super Bowl"',
+    '"{team}" game day promotional schedule halftime entertainment',
+]
+
+
+def canonical_team(raw: str, teams: list = None) -> str:
+    """Map whatever a source called a team onto our canonical name, or "".
+
+    Longest alias first, so "new york giants" is not swallowed by "giants"
+    matching some other row, and so a bare nickname still resolves.
+    """
+    if not raw:
+        return ""
+    hay = re.sub(r"[^a-z0-9 ]+", " ", str(raw).lower())
+    hay = " " + re.sub(r"\s+", " ", hay).strip() + " "
+    best, best_len = "", 0
+    for canon, _level, aliases in (teams or NFL_TEAMS):
+        for a in aliases:
+            if len(a) > best_len and (" " + a + " ") in hay:
+                best, best_len = canon, len(a)
+    return best
+
+
+def team_level(canon: str, teams: list = None) -> str:
+    for name, level, _a in (teams or NFL_TEAMS):
+        if name == canon:
+            return level
+    return "unknown"
+
+
+def program_angles_for_today(n: int = PROGRAM_ANGLES_PER_RUN, day: int = None,
+                             teams: list = None) -> list:
+    """A rotating slice of (pool, team, query), same day-of-year trick as the
+    act angles: no cursor to corrupt, and a missed night costs one slice rather
+    than desyncing the rotation for good."""
+    rows = []
+    for canon, _level, _al in (teams or NFL_TEAMS):
+        for q in PROGRAM_QUERIES:
+            rows.append(("program", canon, q.format(team=canon)))
+    if not rows:
+        return []
+    n = max(1, min(int(n), len(rows)))
+    day = int(datetime.now().strftime("%j")) if day is None else day
+    start = (day * n) % len(rows)
+    return [rows[(start + i) % len(rows)] for i in range(n)]
+
+
 # A band is the default at college level and is exactly what Buddy asked to
 # exclude. Matched on the ACT NAME only -- a dog act that happens to perform
 # "with the marching band" is still a dog act.
@@ -196,9 +305,52 @@ damaging to guess: a client who quotes our invented number to an agent has been
 embarrassed by us. If the sources contain no qualifying act, return []."""
 
 
+_PROGRAM_SYSTEM = """You record WHAT A SPECIFIC TEAM ACTUALLY RAN at halftime,
+season by season. This is not a catalogue of acts for sale — it is a record of
+programmes that happened.
+
+For every halftime programme you can tie to a NAMED team and a NAMED season,
+return one element. Multiple seasons for one team are multiple elements, and so
+are multiple acts within one season.
+
+THE SEASON IS REQUIRED. A finding with no year does not answer the question
+being asked, which is what teams have run RECENTLY — fees and formats move fast
+enough that an undated example is not usable. If you cannot determine the
+season from the source, omit that record entirely rather than guessing.
+
+BANDS ARE A FINDING HERE, NOT AN EXCLUSION. Elsewhere in this project marching
+bands are dropped. Here, "this team's halftime is always the band" is genuinely
+useful — it marks a programme that is not a prospect — and "this team has run
+non-band halftimes" is the signal we are hunting. So report band-only halftimes
+with band_only true instead of discarding them.
+
+EXCLUDE, always:
+- Super Bowl halftime shows (booked centrally by the league, not by the club)
+- pre-game and national-anthem performances (a different, shorter slot)
+- anything you cannot tie to BOTH a named team and a named season
+
+Return ONLY a JSON array, no prose. Each element:
+{"team": "the team or school, as the source names it",
+ "season": "the four-digit season year, e.g. 2023",
+ "act": "what performed or happened at halftime",
+ "act_category": "one of: dog show, drone show, acrobat/variety, bmx/fmx,
+                  pogo/trampoline, pyro/fireworks, projection/light,
+                  fan contest, mascot/novelty, music, marching band, other",
+ "band_only": true if the halftime was the marching band and nothing else,
+ "occasion": "any special slot it fell in — Black Friday, military
+              appreciation, homecoming, international series — else ''",
+ "evidence": "one sentence naming team, season and act, quoting or closely
+              paraphrasing the source"}
+
+NEVER invent a season or an act. An omitted record is correct and useful; a
+guessed one poisons a catalogue that a client may quote from. If the sources
+contain no qualifying programme, return []."""
+
+
 _SYSTEM_FOR_POOL = {
     "variety": _EXTRACT_SYSTEM,
     "for_hire_music": _MUSIC_SYSTEM,
+    "program": _PROGRAM_SYSTEM,
 }
 
 
@@ -274,7 +426,7 @@ def angles_for_today(n: int = DEFAULT_ANGLES, day: int = None,
     return out
 
 
-def parse_acts(raw: str) -> list | None:
+def parse_acts(raw: str, pool: str = "variety") -> list | None:
     """Parse the model's JSON array. None means UNUSABLE, [] means none found.
 
     The distinction matters and is the whole reason this returns a tri-state:
@@ -295,6 +447,31 @@ def parse_acts(raw: str) -> list | None:
         return None
     if not isinstance(data, list):
         return None
+    # S83: the programme pool returns a DIFFERENT record — team/season/act, with
+    # no "name" at all. Normalising it through the act schema below would drop
+    # every row on the `if not name` line and return [], which reads as "the
+    # model found nothing" rather than "we cannot read this" — so the run would
+    # not even escalate. Exactly the silent-failure shape this file already
+    # guards against with the tri-state, one layer lower down.
+    if pool == "program":
+        out = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            team = str(item.get("team") or "").strip()
+            season = str(item.get("season") or "").strip()
+            if not team or not season:
+                continue      # both are required; see _PROGRAM_SYSTEM
+            out.append({
+                "team": team[:120],
+                "season": season[:10],
+                "act": str(item.get("act") or "").strip()[:200],
+                "act_category": str(item.get("act_category") or "other").strip()[:40],
+                "band_only": bool(item.get("band_only")),
+                "occasion": str(item.get("occasion") or "").strip()[:120],
+                "evidence": str(item.get("evidence") or "").strip()[:400],
+            })
+        return out
     out = []
     for item in data:
         if not isinstance(item, dict):
@@ -337,7 +514,7 @@ def extract_acts(source_block: str, creds: dict,
     try:
         raw = llm_providers.call("ollama", system, user, creds,
                                  max_tokens=4000, retries=0)
-        acts = parse_acts(raw)
+        acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, "ollama", False
     except Exception:
@@ -346,7 +523,7 @@ def extract_acts(source_block: str, creds: dict,
     try:
         provider, raw = llm_providers.escalate(
             system, user, creds, max_tokens=4000, mode="single")
-        acts = parse_acts(raw)
+        acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, provider, True
     except Exception:
@@ -376,6 +553,96 @@ def _fields_for(act: dict, angle: str, model: str, escalated: bool,
     }
 
 
+def _program_fields_for(canon: str, season: int, band_only: bool,
+                        prior: dict, angle: str, model: str,
+                        escalated: bool) -> dict:
+    """Team-level fields. Per-season detail lives in SIGNALS, not here: fields
+    are overwritten on every upsert, so anything per-find recorded here would be
+    destroyed by the next find for the same team."""
+    # entity_kb returns the stored fields under "state", NOT "fields". Reading
+    # the wrong key here is silent: prior_latest stays 0 and the confirmation
+    # below is re-derived from scratch every time, so latest_season_seen would
+    # track the LAST WRITE rather than the newest season and a band-only find
+    # would quietly un-prove an earlier non-band one. Caught by the selftest,
+    # which is the only reason it is not in the catalogue right now.
+    prior_fields = (prior or {}).get("state") or {}
+    try:
+        prior_latest = int(prior_fields.get("latest_season_seen") or 0)
+    except (TypeError, ValueError):
+        prior_latest = 0
+    # a non-band halftime, once confirmed, STAYS confirmed — a later band-only
+    # find does not un-prove the year they ran drones (handoff angle 7)
+    confirmed = (prior_fields.get("non_band_halftime") == "yes") or (not band_only)
+    return {
+        "type": "halftime program",
+        "pool": "program",
+        "team": canon,
+        "level": team_level(canon),
+        "non_band_halftime": "yes" if confirmed else "not seen yet",
+        "latest_season_seen": str(max(prior_latest, season)),
+        "source": "halftime_catalogue",
+        "found_via": angle,
+        "extracted_by": model + (" (escalated)" if escalated else " (local)"),
+        "confidence_basis": (
+            "What a named team ran at a named halftime, extracted from public "
+            "sources. Season is required and never guessed; a record without "
+            "one is dropped rather than estimated."),
+    }
+
+
+def _record_programs(rows: list, team_hint: str, angle: str, model: str,
+                     escalated: bool, stats: dict, dry_run: bool,
+                     db_path: str = None, this_year: int = None) -> None:
+    """Record team-season programme findings. Keyed by TEAM."""
+    year = this_year or datetime.now().year
+    cutoff = year - PROGRAM_YEARS
+    for r in rows:
+        canon = canonical_team(r.get("team") or team_hint)
+        if not canon:
+            # the junk gate: an invented team simply fails to match
+            stats["unknown_team_rejected"] = stats.get("unknown_team_rejected", 0) + 1
+            continue
+        try:
+            season = int(str(r.get("season") or "")[:4])
+        except (TypeError, ValueError):
+            season = 0
+        if not season:
+            stats["undated_rejected"] = stats.get("undated_rejected", 0) + 1
+            continue
+        if season < cutoff:
+            stats["too_old_rejected"] = stats.get("too_old_rejected", 0) + 1
+            continue
+        band_only = bool(r.get("band_only"))
+        if band_only:
+            stats["band_only_programs"] = stats.get("band_only_programs", 0) + 1
+        stats["found"] += 1
+        if dry_run:
+            log("    would record: %s %s — %s%s"
+                % (canon, season, r.get("act", ""), " [band only]" if band_only else ""))
+            continue
+        slug = slug_for(canon)
+        prior = entity_kb.get_entity(KB_PROJECT, slug, db_path=db_path)
+        res = entity_kb.upsert_entity(
+            KB_PROJECT, slug, canon, entity_type="halftime_program",
+            fields=_program_fields_for(canon, season, band_only, prior,
+                                       angle, model, escalated),
+            lead_state=None if prior else "new", db_path=db_path)
+        if res.get("created"):
+            stats["new"] += 1
+        elif res.get("changed_fields"):
+            stats["updated"] += 1
+        note = "%s: %s%s%s" % (
+            season, r.get("act") or "(unnamed)",
+            " [band only]" if band_only else "",
+            (" — " + r["occasion"]) if r.get("occasion") else "")
+        try:
+            entity_kb.add_signal(KB_PROJECT, slug, "programme",
+                                 note + " — " + (r.get("evidence") or ""),
+                                 db_path=db_path)
+        except Exception:
+            pass          # the entity matters; the note is a bonus
+
+
 def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         refresh: int = REFRESH_CHUNK, creds: dict = None,
         db_path: str = None, pool: str = None) -> dict:
@@ -389,7 +656,16 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
              "bands_rejected": 0, "marquee_rejected": 0,
              "escalated": 0, "local": 0}
 
-    for pool, category, query in angles_for_today(angles, pool=pool):
+    # Build the whole worklist BEFORE the loop: the loop rebinds `pool`, so
+    # anything that reads the parameter has to happen first. The two rotations
+    # stay separate on purpose — folding 64 team angles into SEARCH_ANGLES would
+    # skew the day-of-year slice for the act pools that already work.
+    todo = list(angles_for_today(angles, pool=pool))
+    if pool is None or pool == "program":
+        todo += program_angles_for_today(
+            angles if pool == "program" else PROGRAM_ANGLES_PER_RUN)
+
+    for pool, category, query in todo:
         stats["angles"] += 1
         log(f"angle: {category} — {query}")
         try:
@@ -419,6 +695,11 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             stats["local"] += 1
         log(f"  {len(acts)} act(s) via {model or 'nothing usable'}"
             + (" [escalated]" if escalated else ""))
+
+        if pool == "program":
+            _record_programs(acts, category, category, model, escalated,
+                             stats, dry_run, db_path)
+            continue
 
         for act in acts:
             if looks_like_band(act["name"]):
@@ -588,6 +869,132 @@ def selftest() -> int:
     check("pool is recorded on the entity, not just used at search time",
           _fields_for(_sample, "a", "m", False, "for_hire_music")["pool"]
           == "for_hire_music")
+
+    # --- TEAM-SIDE PROGRAMME POOL (S83) ------------------------------------
+    check("the programme pool has its own prompt",
+          _SYSTEM_FOR_POOL.get("program") is _PROGRAM_SYSTEM)
+    check("the programme prompt REQUIRES a season",
+          "THE SEASON IS REQUIRED" in _PROGRAM_SYSTEM)
+    check("bands are a FINDING here, not an exclusion (handoff angle 7)",
+          "BANDS ARE A FINDING HERE" in _PROGRAM_SYSTEM)
+    check("the Super Bowl is still excluded — the club does not book it",
+          "Super Bowl halftime shows" in _PROGRAM_SYSTEM)
+
+    # the regression this pool would have hit silently: a programme record has
+    # no "name", so the ACT parser drops every row and returns [] — which reads
+    # as "found nothing" and does not escalate
+    _prog_json = ('[{"team":"Pittsburgh Steelers","season":"2023",'
+                  '"act":"Steel City Dog Show","act_category":"dog show",'
+                  '"band_only":false,"occasion":"","evidence":"e"}]')
+    check("programme JSON through the ACT parser is DROPPED (why pool is threaded)",
+          parse_acts(_prog_json) == [])
+    _rows = parse_acts(_prog_json, "program")
+    check("programme JSON through the PROGRAMME parser survives",
+          len(_rows) == 1 and _rows[0]["team"] == "Pittsburgh Steelers")
+    check("a programme row with no season is dropped at parse time",
+          parse_acts('[{"team":"Chicago Bears","act":"x"}]', "program") == [])
+    check("a programme row with no team is dropped at parse time",
+          parse_acts('[{"season":"2024","act":"x"}]', "program") == [])
+    check("unusable programme output still returns None so it ESCALATES",
+          parse_acts("no json here", "program") is None)
+    check("an empty programme array still means 'none found', not 'broken'",
+          parse_acts("[]", "program") == [])
+
+    # team resolution is also the junk gate
+    check("a full team name resolves", canonical_team("Pittsburgh Steelers")
+          == "Pittsburgh Steelers")
+    check("a bare nickname resolves", canonical_team("the Steelers")
+          == "Pittsburgh Steelers")
+    check("the LONGEST alias wins, so Giants does not steal New York Giants",
+          canonical_team("New York Giants") == "New York Giants")
+    check("an invented team resolves to nothing (the junk gate)",
+          canonical_team("Springfield Atoms") == "")
+    check("empty input resolves to nothing", canonical_team("") == "")
+    check("level comes from the table, not the model",
+          team_level("Green Bay Packers") == "pro")
+
+    # rotation over the generated team matrix
+    _all_prog = {q for _p, _t, q in
+                 [("program", c, qq.format(team=c))
+                  for c, _l, _a in NFL_TEAMS for qq in PROGRAM_QUERIES]}
+    _seen = set()
+    for d in range(1, 400):
+        for _p, _t, q in program_angles_for_today(PROGRAM_ANGLES_PER_RUN, day=d):
+            _seen.add(q)
+    check("team angles cover all 32 clubs x both query shapes",
+          _seen == _all_prog and len(_all_prog) == 64)
+    check("a run asks for a bounded number of team angles",
+          len(program_angles_for_today(4, day=1)) == 4)
+    check("asking for more team angles than exist does not crash",
+          len(program_angles_for_today(999, day=1)) == 64)
+    check("the nightly run picks up team angles without being asked",
+          any(a[0] == "program" for a in program_angles_for_today(4, day=5)))
+
+    # recording rules — the bounds that keep the catalogue honest
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _td:
+        _db = str(Path(_td) / "kb.sqlite3")
+        _stats = {"found": 0, "new": 0, "updated": 0}
+        _rows = [
+            {"team": "Pittsburgh Steelers", "season": "2023", "act": "Drone show",
+             "act_category": "drone show", "band_only": False, "occasion": "",
+             "evidence": "e1"},
+            {"team": "Pittsburgh Steelers", "season": "2014", "act": "Old thing",
+             "act_category": "other", "band_only": False, "occasion": "",
+             "evidence": "e2"},
+            {"team": "Springfield Atoms", "season": "2023", "act": "Fake",
+             "act_category": "other", "band_only": False, "occasion": "",
+             "evidence": "e3"},
+            {"team": "Chicago Bears", "season": "", "act": "Undated",
+             "act_category": "other", "band_only": False, "occasion": "",
+             "evidence": "e4"},
+        ]
+        _record_programs(_rows, "Pittsburgh Steelers", "angle", "m", False,
+                         _stats, False, db_path=_db, this_year=2026)
+        check("a find inside the 5-year window is recorded", _stats["found"] == 1)
+        check("a 2014 find is rejected as out of the window",
+              _stats.get("too_old_rejected") == 1)
+        check("an invented team is rejected, not recorded",
+              _stats.get("unknown_team_rejected") == 1)
+        check("an undated find is rejected — it cannot answer 'recently'",
+              _stats.get("undated_rejected") == 1)
+
+        _e = entity_kb.get_entity(KB_PROJECT, slug_for("Pittsburgh Steelers"),
+                                  db_path=_db)
+        check("the entity is keyed by TEAM, not by act",
+              bool(_e) and _e["name"] == "Pittsburgh Steelers")
+        check("it is a programme, not an act",
+              _e.get("entity_type") == "halftime_program"
+              and (_e.get("state") or {}).get("type") == "halftime program")
+        check("a non-band halftime is confirmed on the team",
+              (_e.get("state") or {}).get("non_band_halftime") == "yes")
+
+        # a later band-only find must not un-prove the year they ran drones
+        _s2 = {"found": 0, "new": 0, "updated": 0}
+        _record_programs([{"team": "Pittsburgh Steelers", "season": "2022",
+                           "act": "Marching band", "act_category": "marching band",
+                           "band_only": True, "occasion": "", "evidence": "e5"}],
+                         "Pittsburgh Steelers", "angle", "m", False, _s2, False,
+                         db_path=_db, this_year=2026)
+        _e2 = entity_kb.get_entity(KB_PROJECT, slug_for("Pittsburgh Steelers"),
+                                   db_path=_db)
+        check("a band-only find is counted, not discarded",
+              _s2.get("band_only_programs") == 1)
+        check("...and does NOT un-confirm an earlier non-band halftime",
+              (_e2.get("state") or {}).get("non_band_halftime") == "yes")
+        check("latest_season_seen keeps the MAX, not the last write",
+              (_e2.get("state") or {}).get("latest_season_seen") == "2023")
+
+        # dry run must write nothing
+        _s3 = {"found": 0, "new": 0, "updated": 0}
+        _record_programs([{"team": "Dallas Cowboys", "season": "2025",
+                           "act": "x", "act_category": "other",
+                           "band_only": False, "occasion": "", "evidence": "e"}],
+                         "Dallas Cowboys", "a", "m", False, _s3, True,
+                         db_path=_db, this_year=2026)
+        check("--dry-run counts a find but writes NO entity",
+              _s3["found"] == 1 and not entity_kb.get_entity(
+                  KB_PROJECT, slug_for("Dallas Cowboys"), db_path=_db))
     check("an unknown pool falls back to the variety prompt rather than crashing",
           _SYSTEM_FOR_POOL.get("nonsense", _EXTRACT_SYSTEM) is _EXTRACT_SYSTEM)
     check("a pool filter returns only that pool's angles",
