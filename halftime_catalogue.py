@@ -752,14 +752,31 @@ def report(db_path: str = None) -> int:
     except Exception as e:
         print(f"UNREADABLE: {e}")
         return 1
-    print(f"halftime act catalogue: {len(ents)} act(s)")
+    # S83: acts and team programmes share one KB project but are different
+    # questions — "who sells this" vs "what did this team run". Counting them
+    # together would inflate the act total and bucket every programme under "?",
+    # because a programme has no category field. A report that mixes them
+    # answers neither question.
+    acts = [e for e in ents if e.get("entity_type") != "halftime_program"]
+    progs = [e for e in ents if e.get("entity_type") == "halftime_program"]
+    print(f"halftime catalogue: {len(acts)} act(s), "
+          f"{len(progs)} team programme(s)")
     by_cat, by_model = {}, {}
     for e in ents:
         st = e.get("state") or {}
-        by_cat[st.get("category", "?")] = by_cat.get(st.get("category", "?"), 0) + 1
+        if e.get("entity_type") != "halftime_program":
+            by_cat[st.get("category", "?")] = by_cat.get(st.get("category", "?"), 0) + 1
         by_model[st.get("extracted_by", "?")] = by_model.get(st.get("extracted_by", "?"), 0) + 1
     for c, n in sorted(by_cat.items(), key=lambda t: -t[1]):
         print(f"  {c:24} {n}")
+    if progs:
+        print("\n  team programmes — what teams ACTUALLY ran:")
+        for e in sorted(progs, key=lambda x: (x.get("state") or {}).get("team", "")):
+            st = e.get("state") or {}
+            print("    %-24s latest %-6s non-band: %s"
+                  % (st.get("team", e.get("name", "?")),
+                     st.get("latest_season_seen", "?"),
+                     st.get("non_band_halftime", "?")))
     print("\n  extraction (local vs escalated — the S73 measurement):")
     for m, n in sorted(by_model.items(), key=lambda t: -t[1]):
         print(f"    {m:28} {n}")
@@ -995,6 +1012,16 @@ def selftest() -> int:
         check("--dry-run counts a find but writes NO entity",
               _s3["found"] == 1 and not entity_kb.get_entity(
                   KB_PROJECT, slug_for("Dallas Cowboys"), db_path=_db))
+
+        import io as _io, contextlib as _cl
+        _buf = _io.StringIO()
+        with _cl.redirect_stdout(_buf):
+            report(db_path=_db)
+        _out = _buf.getvalue()
+        check("report does NOT count a team programme as an act",
+              "0 act(s), 1 team programme(s)" in _out)
+        check("report names the team and what it knows about it",
+              "Pittsburgh Steelers" in _out and "non-band: yes" in _out)
     check("an unknown pool falls back to the variety prompt rather than crashing",
           _SYSTEM_FOR_POOL.get("nonsense", _EXTRACT_SYSTEM) is _EXTRACT_SYSTEM)
     check("a pool filter returns only that pool's angles",
