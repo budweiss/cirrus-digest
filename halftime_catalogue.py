@@ -332,7 +332,13 @@ EXCLUDE, always:
 Return ONLY a JSON array, no prose. Each element:
 {"team": "the team or school, as the source names it",
  "season": "the four-digit season year, e.g. 2023",
- "act": "what performed or happened at halftime",
+ "act": "the NAME of what performed, not a description of it. 'T-Pain',
+         'Lil Jon', 'Marching Ravens', 'Red Panda'. A name is a few words; if
+         you are writing a sentence you are filling in the wrong field, and the
+         sentence belongs in evidence. When the source only DESCRIBES an
+         unnamed segment, use the shortest noun phrase that identifies it --
+         'mixed-reality video board show', 'cancer survivor tribute' -- never a
+         clause with a verb in it.",
  "act_category": "one of: dog show, drone show, acrobat/variety, bmx/fmx,
                   pogo/trampoline, pyro/fireworks, projection/light,
                   fan contest, mascot/novelty, music, marching band, other",
@@ -465,7 +471,12 @@ def parse_acts(raw: str, pool: str = "variety") -> list | None:
             out.append({
                 "team": team[:120],
                 "season": season[:10],
-                "act": str(item.get("act") or "").strip()[:200],
+                # 80, not 200: this field holds a NAME. The first live run
+                # returned whole sentences here ("Cancer previvors, fighters,
+                # survivors and thrivers joined the ... Cheerleaders"), which a
+                # 200-char cap simply stored. A tight cap does not fix the
+                # prompt, but it makes prose obvious instead of plausible.
+                "act": str(item.get("act") or "").strip()[:80],
                 "act_category": str(item.get("act_category") or "other").strip()[:40],
                 "band_only": bool(item.get("band_only")),
                 "occasion": str(item.get("occasion") or "").strip()[:120],
