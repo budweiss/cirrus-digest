@@ -839,7 +839,7 @@ def restart_service():
     if service not in ALLOWED_SERVICES:
         return jsonify({"error": f"service not allowed: {service}"}), 400
     result = subprocess.run(
-        ["launchctl", "kickstart", "-k", launchctl_target(service)],
+        kickstart_cmd(launchctl_target(service)),
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -976,6 +976,36 @@ def launchctl_target(label: str) -> str:
     return f"gui/{os.getuid()}/{label}"
 
 
+def kickstart_cmd(target: str):
+    """The argv that actually restarts `target` — sudo-ed when it has to be.
+
+    S84. launchctl_target() has picked the right DOMAIN since S71, but all
+    three call sites then ran a bare `launchctl kickstart`. Kickstarting a job
+    in the `system` domain needs root, so every deploy of a converted
+    LaunchDaemon answered:
+
+        Could not kickstart service "com.cirrus.bot": 1: Operation not permitted
+
+    The git pull LANDED and the service kept running the OLD code. That is not
+    hypothetical: S83 shipped an argv guard to cirrus_bot.py and the live bot
+    was still running the previous file a day later, because this restart had
+    quietly failed. The deploy DID report it — knowing where a job lives is not
+    the same as being able to reach it.
+
+    GUI-domain agents are deliberately left alone: they run as this user, and
+    root has no session in gui/<uid>, so sudo would break the working case.
+
+    Safe to sudo: every caller has already matched the label against
+    ALLOWED_SERVICES — an exact-match allowlist, not a charset — before getting
+    here (T11), and argv is a list, so no shell is involved. `-n` makes a
+    missing NOPASSWD grant fail at once rather than block on a password prompt
+    nobody can answer.
+    """
+    if target.startswith("system/"):
+        return ["sudo", "-n", "launchctl", "kickstart", "-k", target]
+    return ["launchctl", "kickstart", "-k", target]
+
+
 # ── Admin: Deploy ─────────────────────────────────────────────────────────────
 
 @app.route("/admin/deploy", methods=["GET"])
@@ -1008,7 +1038,7 @@ def deploy():
                 "restart": {"error": f"service not allowed: {job}"}
             }), 400
         r = subprocess.run(
-            ["launchctl", "kickstart", "-k", launchctl_target(job)],
+            kickstart_cmd(launchctl_target(job)),
             capture_output=True, text=True
         )
         restart_info = {
@@ -1054,7 +1084,7 @@ def deploy_all():
                 "cumulus": {"ok": None, "output": "skipped (bad job)"},
             }), 400
         r = subprocess.run(
-            ["launchctl", "kickstart", "-k", launchctl_target(job)],
+            kickstart_cmd(launchctl_target(job)),
             capture_output=True, text=True
         )
         restart_info = {
@@ -1199,6 +1229,47 @@ class _RedactingRequestHandler(WSGIRequestHandler):
             self.requestline, self.path = original_line, original_path
 
 
+def _selftest_kickstart():
+    """Offline check: `python3 cirrus_api.py --selftest-kickstart`.
+
+    S84. The bug this guards was invisible for a day: launchctl_target() named
+    the right domain, the deploy reported a failure, and the service went on
+    running the old code. Nothing here touches launchd -- it only checks the
+    argv we would hand it.
+    """
+    cases = [
+        # (target, must the command be sudo-ed?, why)
+        ("system/com.cirrus.bot", True,
+         "a LaunchDaemon needs root -- this is the case that was broken"),
+        ("system/com.cirrus.api", True, "same, for the API itself"),
+        ("gui/501/com.ollama.serve", False,
+         "a user agent must NOT be sudo-ed: root has no gui/<uid> session"),
+        ("gui/0/com.cirrus.daily", False, "any gui/ target stays unprivileged"),
+    ]
+    bad = 0
+    for target, want_sudo, why in cases:
+        cmd = kickstart_cmd(target)
+        got_sudo = cmd[0] == "sudo"
+        ok = got_sudo == want_sudo and cmd[-1] == target and "kickstart" in cmd
+        print(("  ok   " if ok else "  FAIL ") + " ".join(cmd) + "   # " + why)
+        bad += 0 if ok else 1
+
+    # -n matters: without it a missing NOPASSWD grant BLOCKS on a password
+    # prompt that no deploy can answer, turning a clear error into a hang.
+    sys_cmd = kickstart_cmd("system/com.cirrus.bot")
+    ok = "-n" in sys_cmd
+    print(("  ok   " if ok else "  FAIL ") + "sudo is non-interactive (-n)")
+    bad += 0 if ok else 1
+
+    # argv must stay a LIST -- a string would go through a shell.
+    ok = isinstance(sys_cmd, list) and all(isinstance(a, str) for a in sys_cmd)
+    print(("  ok   " if ok else "  FAIL ") + "argv is a list, so no shell is involved")
+    bad += 0 if ok else 1
+
+    print("kickstart selftest:", "PASSED" if not bad else f"{bad} FAILED")
+    return bad
+
+
 def _selftest_redaction():
     """Offline check: `python3 cirrus_api.py --selftest-redaction`."""
     cases = [
@@ -1227,6 +1298,8 @@ if __name__ == "__main__":
     import sys
     if "--selftest-redaction" in sys.argv:
         raise SystemExit(1 if _selftest_redaction() else 0)
+    if "--selftest-kickstart" in sys.argv:
+        raise SystemExit(1 if _selftest_kickstart() else 0)
     # Bind to localhost only — Cloudflare tunnel connects via 127.0.0.1,
     # so external access still works via the tunnel. Binding to 0.0.0.0
     # would expose port 5001 to anyone on the local network unnecessarily.
