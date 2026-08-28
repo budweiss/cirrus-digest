@@ -1900,6 +1900,19 @@ def run_nightly():
 
 
 # ── Self-test (offline: no creds, no network, no git remotes) ─────────────────
+def _source_between(start_marker, end_marker):
+    """Return this file's source between two `def` markers, for source-level
+    checks. Used where exercising the real path would mean restarting a live
+    service inside a selftest."""
+    try:
+        src = Path(__file__).read_text()
+    except Exception:
+        return ""
+    i = src.find(start_marker)
+    j = src.find(end_marker, i + 1) if i >= 0 else -1
+    return src[i:j] if i >= 0 and j > i else (src[i:] if i >= 0 else "")
+
+
 def _selftest():
     globals()["_IN_SELFTEST"] = True
     ok = fail = 0
@@ -1908,6 +1921,28 @@ def _selftest():
         nonlocal ok, fail
         ok, fail = (ok + 1, fail) if cond else (ok, fail + 1)
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+
+    # S84 -- the restart rule. deploy() used to DISCARD the kickstart return
+    # code, and step 5 then asked `launchctl list`, which still lists the
+    # service because the OLD process never died. So a refused restart (a
+    # system LaunchDaemon needs root; the API runs as buddy) was recorded as a
+    # SUCCESSFUL DEPLOY, and the auto-rollback path reported "auto-reverted and
+    # restarted" while the box kept running the code that had just failed
+    # verify. Source-level, because exercising it for real means restarting a
+    # live service mid-selftest.
+    dep = _source_between("def ship(n: int)", "\ndef discard(n: int)")
+    check("deploy() captures the restart return code (not discarded)",
+          re.search(r"rc,\s*out\s*=\s*_run\(kickstart_cmd", dep or "") is not None)
+    check("a failed restart is carried into `fail`, so verify fails",
+          "restart_failed" in (dep or "") and "fail = restart_failed" in (dep or ""))
+    check("the compile loop cannot clobber a recorded restart failure",
+          re.search(r"for p in changed:\s*\n\s*if fail:\s*\n\s*break", dep or "")
+          is not None)
+    check("a failed ROLLBACK restart is reported, not called 'restarted'",
+          "rb_failed" in (dep or "") and "could NOT restart" in (dep or ""))
+    check("restarts go through kickstart_cmd (sudo for system/, T51)",
+          "kickstart_cmd(" in (dep or "")
+          and '["launchctl", "kickstart"' not in (dep or ""))
 
     # path safety
     cases = [
