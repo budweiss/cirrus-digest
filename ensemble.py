@@ -285,84 +285,94 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     return meta, vetted
 
 
-# ── self-test (python3 ensemble.py selftest) — offline, monkeypatched ───────────
+# ── self-test (python3 ensemble.py --selftest) — offline, monkeypatched ────────
+def selftest():
+    """Exercise the decision-making functions in best_answer()/_estimate_cost()/
+    _judge_prompt() with explicit inputs and expected outputs, using monkeypatched
+    llm_providers so it runs fully offline (no network, no live keys, no ledger
+    writes). Returns True on success, False on failure. Never raises — every
+    assertion is recorded via check() and the aggregate result is returned."""
+    global B
+    B = None    # isolate: force unmetered in the offline selftest (no ledger writes)
+    ok = True
+
+    def check(name, cond):
+        nonlocal ok
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        ok = ok and cond
+
+    base_creds = {"anthropic_api_key": "x", "gemini_api_key": "y",
+                  "openai_api_key": "z", "claude_model": "claude-sonnet-5",
+                  "gemini_model": "gemini-2.0-flash", "openai_model": "gpt-4o-mini"}
+
+    # non-council mode -> pure escalate passthrough, not degraded
+    _calls = {"escalate": []}
+    def fake_escalate(s, u, c, max_tokens=0, mode=None, order=None):
+        _calls["escalate"].append(mode)
+        if mode == "council":
+            return [("anthropic", '{"answer": 1}'), ("gemini", '{"answer": 1}'),
+                    ("openai", '{"answer": 2}')]
+        return ("anthropic", "single-answer")
+    L.escalate = fake_escalate
+    L.available = lambda c: [p for p in ["anthropic", "gemini", "grok", "openai", "deepseek"]
+                             if c.get(p + "_api_key")]
+    L.call = lambda prov, s, u, c, max_tokens=0: '{"answer": 1, "note": "reconciled"}'
+
+    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "single"}))
+    check("single mode -> passthrough text", t == "single-answer")
+    check("single mode -> not degraded", m["degraded"] is False)
+
+    # council mode with 3 providers -> judge synthesis, not degraded
+    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
+    check("council -> judge output", t == '{"answer": 1, "note": "reconciled"}')
+    check("council -> members recorded", set(m["members"]) == {"anthropic", "gemini", "openai"})
+    check("council -> judge is anthropic", m["judge"] == "anthropic")
+    check("council -> not degraded", m["degraded"] is False)
+
+    # kill switch forces baseline
+    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"},
+                                          ensemble={"enabled": False}))
+    check("kill switch -> baseline text", t == "single-answer")
+    check("kill switch -> degraded flag set", m["degraded"] is True)
+
+    # only one keyed provider -> baseline (nothing to cross-check)
+    one = {"anthropic_api_key": "x", "claude_model": "claude-sonnet-5",
+           "dev_escalation": {"mode": "council"}}
+    m, t = best_answer("sys", "usr", one)
+    check("one provider -> baseline", t == "single-answer" and m["degraded"] is True)
+
+    # council returns <2 usable -> reuse the single good member
+    L.escalate = lambda s, u, c, max_tokens=0, mode=None, order=None: (
+        [("anthropic", "good"), ("gemini", "ERROR: boom"), ("openai", "  ")]
+        if mode == "council" else ("anthropic", "single-answer"))
+    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
+    check("council <2 usable -> reuse member", t == "good" and m["degraded"] is True)
+
+    # judge prompt carries members + JSON-format instruction
+    jp = _judge_prompt("S", "U", [("anthropic", '{"a":1}'), ("gemini", '{"a":2}')], "draftfoo")
+    check("judge prompt includes members", "MEMBER 1: anthropic" in jp and "MEMBER 2: gemini" in jp)
+    check("judge prompt includes local draft", "draftfoo" in jp)
+    check("judge prompt demands same format", "JSON in = JSON out" in jp)
+
+    # budget estimate must TOLERATE an unpriced model (conservative fallback,
+    # never abort) — this is the S57 Phase-A finding (gemini-flash-latest gap).
+    import llm_budget as _RB
+    _cfg = {"models": {"claude-sonnet-5": {"in": 3.0, "out": 15.0}},
+            "unknown_model_out_per_m": 25.0,
+            "caps_usd": {"per_call": 100, "per_session": 100, "per_day": 200}}
+    _creds = {"claude_model": "claude-sonnet-5", "gemini_model": "brand-new-unpriced"}
+    _saveB, B = B, _RB
+    try:
+        est = _estimate_cost(["anthropic", "gemini"], "anthropic", 400, 100, _cfg, _creds)
+        check("estimate tolerates unpriced model (no raise, >0)", est > 0)
+    finally:
+        B = _saveB
+
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
-        B = None    # isolate: force unmetered in the offline selftest (no ledger writes)
-        ok = True
-
-        def check(name, cond):
-            global ok
-            print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
-            ok = ok and cond
-
-        base_creds = {"anthropic_api_key": "x", "gemini_api_key": "y",
-                      "openai_api_key": "z", "claude_model": "claude-sonnet-5",
-                      "gemini_model": "gemini-2.0-flash", "openai_model": "gpt-4o-mini"}
-
-        # non-council mode -> pure escalate passthrough, not degraded
-        _calls = {"escalate": []}
-        def fake_escalate(s, u, c, max_tokens=0, mode=None, order=None):
-            _calls["escalate"].append(mode)
-            if mode == "council":
-                return [("anthropic", '{"answer": 1}'), ("gemini", '{"answer": 1}'),
-                        ("openai", '{"answer": 2}')]
-            return ("anthropic", "single-answer")
-        L.escalate = fake_escalate
-        L.available = lambda c: [p for p in ["anthropic", "gemini", "grok", "openai", "deepseek"]
-                                 if c.get(p + "_api_key")]
-        L.call = lambda prov, s, u, c, max_tokens=0: '{"answer": 1, "note": "reconciled"}'
-
-        m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "single"}))
-        check("single mode -> passthrough text", t == "single-answer")
-        check("single mode -> not degraded", m["degraded"] is False)
-
-        # council mode with 3 providers -> judge synthesis, not degraded
-        m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
-        check("council -> judge output", t == '{"answer": 1, "note": "reconciled"}')
-        check("council -> members recorded", set(m["members"]) == {"anthropic", "gemini", "openai"})
-        check("council -> judge is anthropic", m["judge"] == "anthropic")
-        check("council -> not degraded", m["degraded"] is False)
-
-        # kill switch forces baseline
-        m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"},
-                                              ensemble={"enabled": False}))
-        check("kill switch -> baseline text", t == "single-answer")
-        check("kill switch -> degraded flag set", m["degraded"] is True)
-
-        # only one keyed provider -> baseline (nothing to cross-check)
-        one = {"anthropic_api_key": "x", "claude_model": "claude-sonnet-5",
-               "dev_escalation": {"mode": "council"}}
-        m, t = best_answer("sys", "usr", one)
-        check("one provider -> baseline", t == "single-answer" and m["degraded"] is True)
-
-        # council returns <2 usable -> reuse the single good member
-        L.escalate = lambda s, u, c, max_tokens=0, mode=None, order=None: (
-            [("anthropic", "good"), ("gemini", "ERROR: boom"), ("openai", "  ")]
-            if mode == "council" else ("anthropic", "single-answer"))
-        m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
-        check("council <2 usable -> reuse member", t == "good" and m["degraded"] is True)
-
-        # judge prompt carries members + JSON-format instruction
-        jp = _judge_prompt("S", "U", [("anthropic", '{"a":1}'), ("gemini", '{"a":2}')], "draftfoo")
-        check("judge prompt includes members", "MEMBER 1: anthropic" in jp and "MEMBER 2: gemini" in jp)
-        check("judge prompt includes local draft", "draftfoo" in jp)
-        check("judge prompt demands same format", "JSON in = JSON out" in jp)
-
-        # budget estimate must TOLERATE an unpriced model (conservative fallback,
-        # never abort) — this is the S57 Phase-A finding (gemini-flash-latest gap).
-        import llm_budget as _RB
-        _cfg = {"models": {"claude-sonnet-5": {"in": 3.0, "out": 15.0}},
-                "unknown_model_out_per_m": 25.0,
-                "caps_usd": {"per_call": 100, "per_session": 100, "per_day": 200}}
-        _creds = {"claude_model": "claude-sonnet-5", "gemini_model": "brand-new-unpriced"}
-        _saveB, B = B, _RB
-        try:
-            est = _estimate_cost(["anthropic", "gemini"], "anthropic", 400, 100, _cfg, _creds)
-            check("estimate tolerates unpriced model (no raise, >0)", est > 0)
-        finally:
-            B = _saveB
-
-        print("PASS" if ok else "FAIL")
-        sys.exit(0 if ok else 1)
+    if len(sys.argv) > 1 and sys.argv[1] in ("selftest", "--selftest"):
+        sys.exit(0 if selftest() else 1)
