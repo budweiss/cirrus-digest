@@ -30,6 +30,7 @@ import io
 import json
 import os
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,18 @@ def _reexec_under_fake_home(repo):
         with open(os.path.join(cfg_dir, "credentials.json"), "w") as f:
             json.dump(creds, f)
         env = dict(os.environ, HOME=home, **{_SANDBOX_FLAG: "1"})
+        # Moving HOME also moves the USER SITE-PACKAGES dir, which on CIRRUS is
+        # where `requests` lives -- so the child would die on cirrus_bot.py's
+        # `import requests` and the whole suite would read as broken rather than
+        # run. Resolve the real user-site path HERE, while HOME is still real,
+        # and hand it to the child explicitly. (This is not theoretical: it is
+        # exactly how this test first failed on the box, after passing on the
+        # MacBook, where requests came from a venv instead.)
+        user_site = site.getusersitepackages()
+        if isinstance(user_site, str):
+            user_site = [user_site]
+        env["PYTHONPATH"] = os.pathsep.join(
+            list(user_site) + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
         return subprocess.call([sys.executable, os.path.abspath(__file__), repo],
                                env=env)
     finally:
