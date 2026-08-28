@@ -308,13 +308,34 @@ def new_items(items, seen):
     return out
 
 
-def render(items, day):
-    """The daily file. Grouped by priority so the eye lands on rank 1 first."""
+def _incomplete_note(errors):
+    """The banner a partial run must carry. Empty string when nothing failed."""
+    if not errors:
+        return []
+    return ["> **INCOMPLETE — %d source(s) did not answer.** What follows is "
+            "not the full picture for this day:" % len(errors), ">"] + \
+           ["> - %s" % e[:200] for e in errors] + [""]
+
+
+def render(items, day, errors=()):
+    """The daily file. Grouped by priority so the eye lands on rank 1 first.
+
+    S83: `errors` used to stop at the log line. run() collected them, returned
+    them, and rendered a file that said "the sources were queried and every
+    item had been seen before" — which on 2026-08-28 was untrue: medRxiv
+    refused the connection and the day still read as a clean quiet day, ledger
+    ok=True and a green tick in jobscheck. A quiet day and a day we could not
+    see are different facts and must not render the same.
+    """
     lines = ["# Alopecia areata — daily collection %s" % day, ""]
+    lines += _incomplete_note(errors)
     if not items:
-        lines += ["_Nothing new today._", "",
-                  "A quiet day is a result, not a failure: the sources were "
-                  "queried and every item had been seen before.", ""]
+        if errors:
+            lines += ["_No new items from the sources that did answer._", ""]
+        else:
+            lines += ["_Nothing new today._", "",
+                      "A quiet day is a result, not a failure: the sources were "
+                      "queried and every item had been seen before.", ""]
         return "\n".join(lines)
     lines.append("**%d new item(s).**" % len(items))
     lines.append("")
@@ -383,14 +404,14 @@ def run(dry_run=False, days=1, collectors=None, seen_path=SEEN_PATH,
                         key=lambda i: (i.get("rank", 9), i.get("source", "")))
         day_json.write_text(json.dumps(merged, indent=1) + "\n")
         (Path(out_dir) / ("alopecia-%s.md" % day)).write_text(
-            render(merged, day) + "\n")
+            render(merged, day, errors) + "\n")
         for it in fresh:
             seen[it["key"]] = day
         save_seen(seen, seen_path)
 
     return {"found": len(found), "new": len(fresh), "day_total": len(merged),
             "seen_total": len(seen), "errors": errors, "day": day,
-            "body": render(merged, day)}
+            "body": render(merged, day, errors)}
 
 
 def report(out_dir=OUT_DIR):
@@ -521,6 +542,23 @@ def selftest():
                  out_dir=od2)
         ck("run: a truly empty day still renders 'nothing new'",
            "Nothing new today" in rq["body"])
+
+        # S83: a run where a source DIED must not read like a quiet day.
+        def _dead():
+            raise RuntimeError("connection refused")
+        od3 = Path(td) / "daily3"
+        rf = run(collectors={"f": lambda: [], "dead": _dead},
+                 seen_path=Path(td) / "s3.json", out_dir=od3)
+        ck("run: a dead source is reported, not swallowed", len(rf["errors"]) == 1)
+        ck("run: a day with a dead source says INCOMPLETE",
+           "INCOMPLETE" in rf["body"])
+        ck("run: and does NOT claim every source was queried",
+           "every item had been seen before" not in rf["body"])
+        ck("run: the INCOMPLETE banner reaches the FILE, not just the return value",
+           "INCOMPLETE" in (od3 / ("alopecia-%s.md" % rf["day"])).read_text())
+        # and a healthy day must stay clean -- a banner on every day is noise
+        ck("run: a clean quiet day carries no INCOMPLETE banner",
+           "INCOMPLETE" not in rq["body"])
 
         # assert the INVARIANT (nothing changed), not a count that any test
         # added above this line would silently invalidate

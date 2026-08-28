@@ -174,7 +174,15 @@ def _row(name, cad_h, rec, now, tag=""):
     good = bool(rec.get("ok")) and not overdue
     mark = "✅" if good else "⚠️"
     state = " OVERDUE" if overdue else (" FAILED" if not rec.get("ok") else "")
-    note = f" — {rec['note']}" if (rec.get("note") and not good) else ""
+    # S83: the note used to render ONLY when the row was already bad, so a run
+    # that succeeded WHILE degraded printed a bare tick. On 2026-08-28 the
+    # alopecia collector recorded "100 found, 0 new, 1 source error(s)" and
+    # jobscheck showed "✅ alopeciacollect" — medRxiv had refused the
+    # connection and the report could not say so. The notes are one-liners the
+    # jobs already write; showing them costs a few characters and is the
+    # difference between "it ran" and "it ran, and here is what it did".
+    raw = (rec.get("note") or "").strip()
+    note = f" — {raw if not good else raw[:70]}" if raw else ""
     return f"{mark} {name}{tag}: {rec.get('last_run', '?')[:16]}{state}{note}", good
 
 
@@ -227,6 +235,13 @@ def selftest():
     ck("recent but failed -> not good", g is False)
     line, g = _row("j", 26, None, now)
     ck("no record -> neutral (None)", g is None and "no run recorded" in line)
+
+    # S83: a healthy row must still carry what the job reported about itself.
+    line_ok, g_ok = _row("x", 26, {"epoch": now - hr, "ok": True,
+                                   "last_run": "2026-08-28T05:45:09",
+                                   "note": "100 found, 0 new, 1 source error(s)"}, now)
+    ck("a HEALTHY row still shows its note (the degraded-but-ok case)",
+       g_ok is True and "1 source error(s)" in line_ok)
     line, _ = _row("billsnow", 999, {"epoch": now, "ok": True, "last_run": "x"}, now,
                    tag=" (CUMULUS)")
     ck("remote tag renders", "(CUMULUS)" in line)
