@@ -53,6 +53,7 @@ OUT_DIR = PROJECT_DIR / "knowledge-newsletters"
 STATE_PATH = PROJECT_DIR / "logs/newsletter-state.json"
 DAYS_BACK = 60                          # newsletters are weekly; 60d covers a gap
 MAX_BODY = 200_000
+TRUNC_MARK = "\n\n[... TRUNCATED: issue exceeded %d characters ...]"
 
 
 def log(msg):
@@ -73,6 +74,18 @@ def decode_hdr(raw):
         else:
             out.append(part)
     return "".join(out).strip()
+
+
+def _cap(text):
+    """Cut to MAX_BODY, and SAY SO when it cuts (T40).
+
+    A bare `text[:MAX_BODY]` leaves a caller unable to tell a truncated issue
+    from a short one -- and a newsletter that ends mid-sentence reads as the
+    author trailing off, not as our limit. The marker is the whole point.
+    """
+    if len(text) <= MAX_BODY:
+        return text
+    return text[:MAX_BODY] + (TRUNC_MARK % MAX_BODY)
 
 
 def body_text(msg):
@@ -111,15 +124,15 @@ def body_text(msg):
         else:
             plain = text
     if plain.strip():
-        return plain[:MAX_BODY]
+        return _cap(plain)
     if html:
         stripped = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
         stripped = re.sub(r"(?s)<[^>]+>", " ", stripped)
         stripped = (stripped.replace("&nbsp;", " ").replace("&amp;", "&")
                     .replace("&lt;", "<").replace("&gt;", ">")
                     .replace("&#8217;", "'").replace("&quot;", '"'))
-        return re.sub(r"[ \t]*\n[ \t]*(\n[ \t]*)+", "\n\n",
-                      re.sub(r"[ \t]+", " ", stripped)).strip()[:MAX_BODY]
+        return _cap(re.sub(r"[ \t]*\n[ \t]*(\n[ \t]*)+", "\n\n",
+                           re.sub(r"[ \t]+", " ", stripped)).strip())
     return ""
 
 
@@ -318,6 +331,13 @@ def selftest():
     ok("html falls back to stripped text", "Hi" in bt and "there" in bt)
     ok("script and style contents are dropped",
        "bad()" not in bt and "b{}" not in bt)
+
+    # T40: a cut must announce itself.
+    ok("a short body is returned untouched", _cap("hello") == "hello")
+    ok("an over-long body is CUT", len(_cap("x" * (MAX_BODY + 500))) < MAX_BODY + 500)
+    ok("...and says that it was cut", "TRUNCATED" in _cap("x" * (MAX_BODY + 500)))
+    ok("a body exactly at the limit is NOT marked",
+       "TRUNCATED" not in _cap("x" * MAX_BODY))
 
     ok("slug is filesystem-safe",
        slugify("Agentic Engineering: #1 / What's New!") ==
