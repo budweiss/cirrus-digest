@@ -34,6 +34,11 @@ import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# S84: the error path in api_call had no backoff, which is why ONE duplicate
+# process became ~268,000 log lines. The policy lives in its own module so it
+# can be selftested -- this file deliberately has none (see __main__).
+from api_backoff import Backoff, retry_after_from
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
@@ -87,6 +92,26 @@ def log(msg):
     with open(log_file, "a") as f:
         f.write(line + "\n")
 
+# S84: one shared streak for the whole process. It is deliberately module-level
+# and not per-call — the thing being backed off is "this bot talking to this
+# API", and a per-call object would reset on every iteration, i.e. no backoff.
+_BACKOFF = Backoff()
+
+
+def _back_off(method, payload):
+    """Sleep for the current backoff, and SAY so. Returns nothing.
+
+    The log line matters as much as the sleep. Without it a 60s wait is
+    indistinguishable from a hang, and "the bot went quiet" is exactly the
+    symptom nobody could explain during the S83 incident.
+    """
+    delay = _BACKOFF.failure(retry_after_from(payload))
+    if delay > 0:
+        log(f"backing off {delay:.0f}s after {_BACKOFF.failures} "
+            f"consecutive API error(s) ({method})")
+        time.sleep(delay)
+
+
 def api_call(method, params=None):
     url = f"{API_URL}/{method}"
     if params:
@@ -101,16 +126,29 @@ def api_call(method, params=None):
     poll_timeout = int(params.get("timeout", 0)) if params else 0
     try:
         with urllib.request.urlopen(req, timeout=max(30, poll_timeout + 15)) as resp:
-            return json.loads(resp.read())
+            result = json.loads(resp.read())
+        # S84: reset the streak HERE, on a real answer from Telegram. Every
+        # path below is an error and must cost time before the caller can loop.
+        _BACKOFF.success()
+        return result
     except urllib.error.HTTPError as e:
         # Return the error body so callers can inspect ok/error_code
         log(f"API error ({method}): {e}")
         try:
-            return json.loads(e.read())
+            body = json.loads(e.read())
         except Exception:
-            return {"ok": False, "error_code": e.code}
+            body = {"ok": False, "error_code": e.code}
+        # 409 (a second bot on the same token) and 429 (flood control) both
+        # arrive here INSTANTLY, so the poll loop used to spin as fast as the
+        # network allowed: 12,400 lines in one minute, measured 2026-07-21.
+        # The outer `except Exception: time.sleep(5)` in run_bot never fired,
+        # because this function swallows the exception and returns a value.
+        # A 429 carries its own retry_after; honour it rather than guess.
+        _back_off(method, body)
+        return body
     except Exception as e:
         log(f"API error ({method}): {e}")
+        _back_off(method, None)
         return {}
 
 TELEGRAM_MAX_LEN = 4000  # Telegram hard limit is 4096 chars; keep a margin
