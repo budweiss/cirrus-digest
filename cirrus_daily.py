@@ -1734,6 +1734,98 @@ def write_digest(items, summaries):
     log(f"Daily digest saved: {filename}")
     return filename
 
+# ── Self-test ────────────────────────────────────────────────────────────────
+# Exercises the module's pure decision-making functions (keyword/dedupe/URL
+# scoring/paywall-adjacent logic) with explicit inputs and expected outputs.
+# No network calls, no file writes exist in this function — every check is
+# against pure functions or in-memory config restored immediately after use.
+# Invoked via `python3 cirrus_daily.py --selftest`, dispatched in the
+# __main__ block below (before main() runs, so it never fetches or emails).
+
+def selftest() -> bool:
+    """Run explicit input/expected-output checks against decision-making
+    helpers. Prints one PASS/FAIL line per check. Returns True iff every
+    check passed."""
+    ok = True
+
+    def check(name, got, expected):
+        nonlocal ok
+        if got != expected:
+            ok = False
+            print(f"[selftest] FAIL {name}: got {got!r}, expected {expected!r}")
+        else:
+            print(f"[selftest] pass {name}")
+
+    # whole_word_match / matches_keywords — \b matching, not substring
+    check("whole_word_match: whole-word hit",
+          whole_word_match("ai", "new AI model released"), True)
+    check("whole_word_match: rejects substring inside another word",
+          whole_word_match("ai", "sent via email"), False)
+
+    # matches_keywords reads EMAIL_CFG["keywords"] at call time — pin it to a
+    # known list for the duration of this check, then restore exactly what
+    # was loaded from sources.json so the rest of the process is unaffected.
+    _had_keywords = "keywords" in EMAIL_CFG
+    _orig_keywords = EMAIL_CFG.get("keywords")
+    EMAIL_CFG["keywords"] = ["ai", "llm"]
+    try:
+        check("matches_keywords: keyword present",
+              matches_keywords("Breaking news about AI research"), True)
+        check("matches_keywords: no keyword present",
+              matches_keywords("Weekly recipe roundup"), False)
+    finally:
+        if _had_keywords:
+            EMAIL_CFG["keywords"] = _orig_keywords
+        else:
+            EMAIL_CFG.pop("keywords", None)
+
+    # is_research_request — must match the PARSED address exactly, not a
+    # substring of the raw header (S75 hardening).
+    check("is_research_request: self address qualifies",
+          is_research_request("buddy.weiss@icloud.com", "hello"), True)
+    check("is_research_request: unrelated sender + tag does not qualify",
+          is_research_request("someone@example.com", "research: topic"), False)
+
+    # is_article_url / host_of — tracker/blocked-host filtering
+    check("is_article_url: rejects unsubscribe link",
+          is_article_url("https://example.com/unsubscribe"), False)
+    check("is_article_url: accepts a real article path",
+          is_article_url("https://example.com/2026/08/27/some-article-title"), True)
+    check("is_article_url: rejects a blocked host",
+          is_article_url("https://www.producthunt.com/posts/something"), False)
+    check("host_of: strips leading www.",
+          host_of("https://www.wired.com/story/x"), "wired.com")
+    check("host_of: leaves a bare domain untouched",
+          host_of("https://weforum.org/agenda"), "weforum.org")
+
+    # _norm_title / dedupe_items — near-duplicate collapse
+    check("_norm_title: lowercases and drops stopwords",
+          _norm_title("The Rise of the Machines"), "rise machines")
+    _dupe_items = [
+        {"subject": "OpenAI releases new model today", "source": "A", "type": "web"},
+        {"subject": "OpenAI releases new model today!", "source": "B", "type": "web"},
+        {"subject": "Completely unrelated headline here", "source": "C", "type": "web"},
+    ]
+    check("dedupe_items: collapses a near-duplicate headline",
+          len(dedupe_items(_dupe_items)), 2)
+
+    # research_candidate_urls — keeps a real link, drops image/unsubscribe
+    _body = ("Check this out https://example.com/article and also "
+             "https://example.com/image.png and unsubscribe at "
+             "https://example.com/unsubscribe")
+    check("research_candidate_urls: drops image/unsubscribe links",
+          research_candidate_urls(_body), ["https://example.com/article"])
+
+    # score_article_url — a real article path should outrank a tag page
+    _score_article = score_article_url(
+        "https://medium.com/some-long/path/article-name", ["article"])
+    _score_tag = score_article_url("https://medium.com/tag/ai", ["article"])
+    check("score_article_url: article path outranks a tag page",
+          _score_article > _score_tag, True)
+
+    print(f"[selftest] {'ALL PASS' if ok else 'FAILURES PRESENT'}")
+    return ok
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1781,6 +1873,8 @@ def main():
     log(f"Read it with: cat {digest_file}")
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     main()
 
     if DRY_RUN:
