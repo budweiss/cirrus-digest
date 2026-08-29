@@ -67,6 +67,7 @@ that. This widens the fuel line; it does not make the engine imaginative.
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -252,7 +253,90 @@ def collect_repair_giveups(path=None, limit=50):
     return out
 
 
-COLLECTORS = (collect_blind_gates, collect_stalled_signals, collect_repair_giveups)
+# ── T-series traps (S85) ──────────────────────────────────────────────────────
+# docs/TOOLING-TRAPS.md catalogues mistakes that have each cost real time ONCE.
+# runner/trap_lint.sh enforced them for Cowork sessions -- but only at the
+# MacBook, and only when a human ran a wrap. These seven checkers are pure
+# Python and take a root path, so they now live HERE, in the repo that deploys
+# to CIRRUS: one definition, two callers (trap_lint.sh still invokes them from
+# the Cowork side against the whole tree).
+#
+# WHAT THIS IS WORTH, STATED HONESTLY: all seven currently report ZERO hits in
+# this repo. That is the intended state -- a smoke detector that is not beeping
+# is working -- and it is why this collector was written as a standing net
+# rather than to clear a known backlog. It fires the night someone reintroduces
+# one of these, instead of a human finding it at wrap time days later.
+TRAP_CHECKERS = (
+    ("T20", "trap_selfstop.py"),
+    ("T26", "trap_lowtokens.py"),
+    ("T27", "trap_pgrep_self.py"),
+    ("T28", "trap_mac_timeout.py"),
+    ("T32", "trap_selftest_writes.py"),
+    ("T34", "trap_py39_unions.py"),
+    ("T40", "trap_silent_truncate.py"),
+)
+
+
+def collect_trap_findings(root=None, checkers=TRAP_CHECKERS):
+    """T-series trap hits in this repo, one finding per (trap, file).
+
+    Deliberately NOT keyed on line number: a line drifts every time the file is
+    edited, and a key that drifts re-proposes the same finding nightly forever
+    (see the `key` contract above).
+    """
+    root = Path(root or PROJECT_DIR)
+    out, seen = [], set()
+    for tnum, script in checkers:
+        sp = root / script
+        if not sp.exists():
+            continue
+        try:
+            r = subprocess.run([sys.executable, str(sp), str(root)],
+                               capture_output=True, text=True, timeout=90)
+        except Exception:
+            continue          # a broken checker must not take the sweep down
+        for line in (r.stdout or "").splitlines():
+            parts = line.split(":", 2)
+            if len(parts) < 3:
+                continue
+            path, _lineno, msg = (x.strip() for x in parts)
+            name = Path(path).name
+            if not name.endswith(".py"):
+                continue
+            # Never propose a patch to a trap CHECKER or a test: both CONTAIN
+            # the pattern they exist to detect, so "fixing" them would delete
+            # the detection. S84 shipped three assertions that were fooled by
+            # exactly this kind of self-reference.
+            if name.startswith(("trap_", "test_")):
+                continue
+            key = f"trap:{tnum}:{name}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "kind": "trap_hit",
+                "key": key,
+                # Above a stalled signal (1) and a repair give-up (2): a trap
+                # names the exact file AND the exact correct form, so it is the
+                # most actionable finding class we produce. Still below a
+                # widely-imported blind gate (1 + fan_in), which costs us the
+                # ability to verify ANY fix.
+                "rank": 3,
+                "title": f"{name} trips {tnum} from docs/TOOLING-TRAPS.md",
+                "detail": (
+                    f"{name} matches the {tnum} trap signature: {msg} "
+                    f"This pattern has already cost real time once, which is why "
+                    f"it is linted. Read the {tnum} entry in docs/TOOLING-TRAPS.md "
+                    f"for the correct form, apply it to {name}, and change nothing "
+                    f"else. Do not weaken or delete the check that found this."),
+                "evidence": f"{tnum} at {path}: {msg[:160]}",
+                "files": [name],
+            })
+    return sorted(out, key=lambda f: f["key"])
+
+
+COLLECTORS = (collect_blind_gates, collect_stalled_signals, collect_repair_giveups,
+              collect_trap_findings)
 
 
 def collect_all(collectors=None):
@@ -705,6 +789,56 @@ def selftest() -> bool:
        len(errs) == 1 and "collector exploded" in errs[0])
 
     bad = 0
+    # ---- collector: the T-series traps (S85) --------------------------------
+    # A collector that returns [] is indistinguishable from a broken one (T8),
+    # and this one legitimately returns [] against the real repo -- so its
+    # detection is proven by PLANTING a trap, not by observing silence.
+    import shutil
+    ttmp = Path(tempfile.mkdtemp())
+    checker = PROJECT_DIR / "trap_py39_unions.py"
+    if checker.exists():
+        shutil.copy(checker, ttmp / "trap_py39_unions.py")
+        only = (("T34", "trap_py39_unions.py"),)
+        # PEP 604 in a module CIRRUS must import -- python 3.9 cannot parse it.
+        (ttmp / "offender.py").write_text(
+            "def f(x: int | None) -> str | None:\n    return None\n")
+        got = collect_trap_findings(ttmp, checkers=only)
+        ck("a planted T34 trap IS detected", any(g["key"].endswith("offender.py") for g in got))
+        ck("the finding carries the file, so it is buildable",
+           all(buildable_finding(g) for g in got) and bool(got))
+        ck("the finding is ranked above a repair give-up",
+           bool(got) and all(g["rank"] > 2 for g in got))
+        ck("the key carries NO line number (a drifting key re-proposes nightly)",
+           all(not re.search(r":\d+$", g["key"]) for g in got))
+
+        # The checkers and the tests CONTAIN the pattern they detect. Proposing
+        # a patch to either would delete the detection -- S84 shipped three
+        # assertions fooled by exactly this self-reference.
+        (ttmp / "test_offender.py").write_text("def f(x: int | None): pass\n")
+        (ttmp / "trap_offender.py").write_text("def f(x: int | None): pass\n")
+        got2 = {g["key"] for g in collect_trap_findings(ttmp, checkers=only)}
+        ck("a test_*.py file is NOT proposed for a trap fix",
+           not any("test_offender" in k for k in got2))
+        ck("a trap_*.py checker is NOT proposed for a trap fix",
+           not any("trap_offender" in k for k in got2))
+
+        # A clean tree must yield nothing -- otherwise the nightly sweep would
+        # propose noise forever.
+        clean = Path(tempfile.mkdtemp())
+        shutil.copy(checker, clean / "trap_py39_unions.py")
+        (clean / "fine.py").write_text("def f(x):\n    return x\n")
+        ck("a clean tree yields no trap findings", collect_trap_findings(clean, checkers=only) == [])
+    else:
+        ck("trap_py39_unions.py ships in this repo (the collector needs it)", False)
+
+    # A missing checker must be skipped, not crash the whole nightly sweep.
+    ck("a missing checker is skipped quietly",
+       collect_trap_findings(ttmp, checkers=(("T99", "trap_does_not_exist.py"),)) == [])
+
+    # The collector must be wired in, not merely defined.
+    ck("collect_trap_findings is registered in COLLECTORS",
+       collect_trap_findings in COLLECTORS)
+
     for name, ok_ in checks:
         print(("  ok   " if ok_ else "  FAIL ") + name)
         bad += 0 if ok_ else 1
