@@ -319,4 +319,6 @@ def selftest() -> int:
 
 if __name__ == "__main__":
     import sys
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     sys.exit(selftest())
