@@ -1165,24 +1165,71 @@ def build_item(item: dict):
             # is never half-applied to the worktree.
             edited = {}
             if edits:
-                blocked = None
+                path_violation = None
                 for e in edits:
                     okp, whyp = patch_path_ok((e or {}).get("path", ""))
                     if not okp:
-                        blocked = f"{(e or {}).get('path','')}: {whyp}"
+                        path_violation = f"{(e or {}).get('path','')}: {whyp}"
                         break
-                if blocked is None:
+                rejected = None
+                if path_violation is None:
                     ok, why, edited = plan_edits(blobs, edits)
                     if not ok:
-                        blocked = why
-                if blocked is not None:
-                    rec.update(status="blocked", error=f"edits rejected: {blocked}"[:300])
-                    _ledger("build", bid, result=f"BLOCKED: {blocked[:60]}")
-                    jrn.update(outcome="blocked", refusal=blocked,
+                        rejected = why
+
+                # A PATH violation stays TERMINAL, deliberately. Reaching for a
+                # file outside the allowed set is a different signal from
+                # mis-quoting an anchor: one is a mistake, the other is a model
+                # going somewhere it was told not to. Blurring them would hand a
+                # patch that reached for config/credentials.json two more swings.
+                if path_violation is not None:
+                    rec.update(status="blocked",
+                               error=f"edits rejected: {path_violation}"[:300])
+                    _ledger("build", bid, result=f"BLOCKED: {path_violation[:60]}")
+                    jrn.update(outcome="blocked", refusal=path_violation,
                                elapsed_s=round(time.time() - t0, 1))
                     _repair_journal(jrn)
                     _cleanup_worktree(bid)
                     return rec
+
+                # A REJECTED EDIT IS REPAIRABLE (S86). It used to `return` here,
+                # which made it TERMINAL on attempt 1 while a failed GATE got
+                # three tries -- exactly backwards. plan_edits produces the most
+                # actionable error in the system ("the 'find' text does not
+                # appear in the file"), and the model fixes it by re-quoting.
+                #
+                # prop-2026-08-27-649612 (llm_providers.py) died this way with
+                # attempts=1 and sat approved-but-dead for 36 hours.
+                #
+                # Nothing was written -- plan_edits is in-memory and atomic -- so
+                # there is no partial state to undo, and the loop already resets
+                # the worktree to base_sha before each attempt precisely so the
+                # `find` strings still match the originals.
+                if rejected is not None:
+                    jrn.update(outcome="edits-rejected", refusal=rejected,
+                               elapsed_s=round(time.time() - t0, 1))
+                    _repair_journal(jrn)
+                    if attempt >= MAX_REPAIR_ATTEMPTS:
+                        rec.update(status="blocked",
+                                   error=f"edits rejected: {rejected}"[:300])
+                        _ledger("build", bid, result=f"BLOCKED: {rejected[:60]}")
+                        _cleanup_worktree(bid)
+                        return rec
+                    verdict = {
+                        "gate": "edit-application",
+                        "signature": "edits-rejected",
+                        "detail": (
+                            "Your edits were REJECTED before anything was written: "
+                            + rejected
+                            + "\n\nThe file content shown below is the current, "
+                              "unmodified file. Copy any `find` text VERBATIM from "
+                              "it -- byte for byte, including indentation and "
+                              "blank lines -- and make it long enough to appear "
+                              "exactly once."),
+                    }
+                    _log(f"{bid}: edits rejected ({rejected[:80]}) — repairing "
+                         f"(attempt {attempt + 1}/{MAX_REPAIR_ATTEMPTS})")
+                    continue
 
             # A REPAIR may not REMOVE assertions. The cheapest way to make a
             # failing gate go green is to delete the check that failed, so this
@@ -1640,6 +1687,59 @@ def selftest() -> bool:
     ck("an empty 'find' is refused rather than guessed at", not ok and "empty 'find'" in why)
     ok, why, _ = plan_edits(F, [{"path": "nope.py", "find": "x", "replace": "y"}])
     ck("a path that was never shown is refused", not ok and "not provided as context" in why)
+    # ---- the edit-application RETRY (S86) ----------------------------------
+    # Exercising this for real needs a worktree and a model call, so it is
+    # checked at source level -- the same reason ship()'s restart rule is.
+    # prop-2026-08-27-649612 died here with attempts=1: a rejected edit was
+    # TERMINAL while a failed gate got three tries, exactly backwards.
+    # These are AST checks, not text checks, and that is not decoration: the
+    # first version asked `"continue" in <source slice>` and PASSED against a
+    # deliberately reverted fix, because some other `continue` further down the
+    # slice satisfied it. A check that matches text near the thing it is
+    # checking is the S84 docstring failure wearing a different hat.
+    import ast as _ast
+    _tree = _ast.parse(Path(__file__).read_text())
+    _bi = next((n for n in _ast.walk(_tree)
+                if isinstance(n, _ast.FunctionDef) and n.name == "build_item"), None)
+    ck("build_item is parseable (every check below is vacuous without it)", _bi is not None)
+
+    def _branch(varname):
+        """The `if <varname> IS NOT None:` node inside build_item.
+
+        The operator check is load-bearing: without it this matched
+        `if path_violation is None:` -- which sits three lines earlier and has
+        no Return -- and the terminal-path assertion failed against correct
+        code. Naming the variable is not the same as naming the branch.
+        """
+        for n in _ast.walk(_bi or _ast.Module(body=[], type_ignores=[])):
+            if isinstance(n, _ast.If) and isinstance(n.test, _ast.Compare) \
+               and isinstance(n.test.left, _ast.Name) and n.test.left.id == varname \
+               and len(n.test.ops) == 1 and isinstance(n.test.ops[0], _ast.IsNot):
+                return n
+        return None
+
+    _rej, _pv = _branch("rejected"), _branch("path_violation")
+    ck("the rejected-edit branch exists", _rej is not None)
+    ck("a rejected edit CONTINUES to a repair attempt",
+       _rej is not None and any(isinstance(x, _ast.Continue) for x in _rej.body))
+    ck("a rejected edit does NOT return unconditionally (the S86 defect)",
+       _rej is not None and not any(isinstance(x, _ast.Return) for x in _rej.body))
+    ck("it still gives up at MAX_REPAIR_ATTEMPTS rather than looping forever",
+       _rej is not None and any(
+           isinstance(x, _ast.If) and any(isinstance(y, _ast.Return) for y in x.body)
+           for x in _rej.body))
+    # The asymmetry is deliberate and must not be tidied away: a model reaching
+    # for a file outside the allowed set is a different signal from one that
+    # mis-quoted an anchor.
+    ck("a PATH violation is still TERMINAL (no free retry at credentials.json)",
+       _pv is not None and any(isinstance(x, _ast.Return) for x in _pv.body)
+       and not any(isinstance(x, _ast.Continue) for x in _pv.body))
+
+    _src = _source_between("def build_item(item: dict)", "\ndef awaiting(")
+    ck("the repair verdict names the edit-application gate",
+       '"gate": "edit-application"' in _src)
+    ck("the retry tells the model to copy the find text VERBATIM", "VERBATIM" in _src)
+
     ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": "return 1"}])
     ck("a no-op edit is refused", not ok and "identical" in why)
     ok, why, _ = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": None}])
