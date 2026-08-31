@@ -812,7 +812,52 @@ _BLOCKED_HOSTS = {
     # 49 x HTTP 403 in the week to 2026-08-24 — the worst host in the pipeline
     # by a factor of five. Buddy's call to stop fetching it (S75).
     "producthunt.com",
+
+    # ── S88: the link-extraction stall, diagnosed instead of guessed ─────────
+    # stall-check read "335 of 658 link fetches unusable (51%)" for weeks. The
+    # label on that class was "a parser gap", and it was wrong: these are not
+    # articles we are failing to parse, they are URLs that are not articles.
+    #
+    # Measured across the 14 digests to 2026-08-31 (runner `linkfail-hosts`),
+    # showing failures against SUCCESSES for the same host, because a host is
+    # only safe to block if it never works:
+    #
+    #     host                       fail    ok
+    #     news.google.com             890     0
+    #     reddit.com                  353     0
+    #     email.analystratings.net    345     0
+    #
+    # 1,588 fetches, ZERO successes, 80% of every failure in the pipeline.
+    #   news.google.com          — an RSS redirect wrapper; the article body is
+    #                              never at this URL, only a consent/redirect page
+    #   email.analystratings.net — an email click-tracking domain, not content
+    #   reddit.com               — refuses non-browser clients; no article body
+    #
+    # THIS COSTS NO CONTENT, which is the part worth checking before blocking.
+    # feedparser.parse(source["rss"]) reads the FEED and is not gated by
+    # is_article_url — only the per-item full-article fetch is. That fetch
+    # already returns "" every single time for these hosts, and the caller
+    # keeps the RSS teaser whenever the fetch is not longer
+    # (`if len(fetched) > len(content)`). So the digest gets exactly what it
+    # gets today, ~113 fewer pointless fetches a day, and a failure ratio that
+    # finally describes real parser gaps.
+    #
+    # news.google.com is a configured source in BOTH sources.json and
+    # sources-pedagogy.json (Alyssa, client-facing) — hence the check above
+    # rather than a blind block.
+    "news.google.com",
+    "reddit.com",
+    "email.analystratings.net",
 }
+
+# Hosts that fail a lot but DO succeed sometimes — deliberately NOT blocked,
+# recorded so the next session does not have to re-derive the distinction:
+#   digitimes.com   78 fail / 141 ok      arxiv.org      17 fail / 497 ok
+#   huggingface.co   5 fail /  70 ok
+# And one that needs a DIFFERENT fix, not a block:
+#   medium.com      21 fail /   0 ok — a core source with cookie handling. Zero
+#   successes in 14 days points at expired cookies (the S66 shape), not at a
+#   host worth dropping. Worklisted rather than blocked.
 
 
 def host_of(url: str) -> str:
@@ -1686,9 +1731,48 @@ def write_digest(items, summaries):
                 r = (v.get("reason") or "unclassified").split(":")[0].strip()
                 fail_reasons[r] = fail_reasons.get(r, 0) + 1
 
+        # S88: break the DOMINANT cause down one level further, by HOST.
+        #
+        # S75 split "960 failed" into causes and that made the number readable.
+        # It did not make it fixable. no-extractable-text has sat at 51% of all
+        # fetches ever since -- 305 of 335 failures -- as a single count with no
+        # identity attached: the URLs live in _VISITED_LINKS during the run and
+        # nothing persisted them, so every attempt to diagnose it had to start
+        # by adding the logging. That is the same shape as the pre-S75 bug, one
+        # level down.
+        #
+        # Host is the right key because it decides WHICH fix applies, and the
+        # two candidate fixes are completely different work:
+        #   concentrated on a few domains -> a selector gap or a dead source;
+        #                                    fix or drop those, cheap.
+        #   spread across many domains     -> the pages are JS-rendered and no
+        #                                    selector will ever help; needs a
+        #                                    different fetch strategy, or an
+        #                                    honest decision to stop counting
+        #                                    them as failures.
+        # Until this is recorded we cannot tell those apart, so we cannot act.
+        fail_hosts: dict = {}
+        for v in _VISITED_LINKS:
+            if v["status"] != "failed":
+                continue
+            r = (v.get("reason") or "unclassified").split(":")[0].strip()
+            if r != "no-extractable-text":
+                continue
+            fail_hosts[host_of(v.get("url", ""))] = fail_hosts.get(
+                host_of(v.get("url", "")), 0) + 1
+        top_fail_hosts = sorted(fail_hosts.items(), key=lambda kv: -kv[1])[:15]
+
         stats = dict(RUN_STATS)
         stats.update({f"links_{k}": n for k, n in link_counts.items()})
         stats.update({f"linkfail_{k}": n for k, n in fail_reasons.items()})
+        # Persisted so stall-check and the weekly rollup can read it without a
+        # re-run. Also the concentration ratio, which is the actual decision
+        # input: how much of the problem the worst 15 hosts account for.
+        stats["linkfail_noextract_hosts"] = dict(top_fail_hosts)
+        stats["linkfail_noextract_distinct_hosts"] = len(fail_hosts)
+        stats["linkfail_noextract_top15_share"] = (
+            round(sum(n for _, n in top_fail_hosts) / sum(fail_hosts.values()), 3)
+            if fail_hosts else 0.0)
         stats["items_in_digest"] = len(items)
         stats["date"] = date_str
 
@@ -1717,6 +1801,17 @@ def write_digest(items, summaries):
                 f.write("  - _no-extractable-text: fetched fine (HTTP 200), no "
                         "article body found — a parser gap, not a blocked "
                         "request._\n")
+                # S88: name the hosts. A count cannot be acted on; a list of
+                # domains can be fixed or dropped the same day.
+                if top_fail_hosts:
+                    f.write("  - worst hosts: " + ", ".join(
+                        f"{h} ({n})" for h, n in top_fail_hosts[:8]) + "\n")
+                    f.write(f"  - _{len(fail_hosts)} distinct host(s); the top "
+                            f"15 account for "
+                            f"{stats['linkfail_noextract_top15_share']:.0%} of "
+                            f"this class. Concentrated means a selector gap or "
+                            f"a dead source; spread out means JS-rendered pages "
+                            f"no selector will fix._\n")
         f.write("\n")
         f.write("---\n\n")
 
@@ -1793,6 +1888,21 @@ def selftest() -> bool:
           is_article_url("https://example.com/2026/08/27/some-article-title"), True)
     check("is_article_url: rejects a blocked host",
           is_article_url("https://www.producthunt.com/posts/something"), False)
+    # S88 — the three hosts that were 80% of all link failures with zero
+    # successes. Asserted individually: a single combined check would still
+    # pass if two of the three were dropped from the set.
+    check("is_article_url: rejects the google-news redirect wrapper",
+          is_article_url("https://news.google.com/rss/articles/CBMiXmh0dHA"), False)
+    check("is_article_url: rejects reddit (no article body for non-browsers)",
+          is_article_url("https://www.reddit.com/r/LocalLLaMA/comments/abc/x/"), False)
+    check("is_article_url: rejects the analystratings click-tracker",
+          is_article_url("https://email.analystratings.net/c/eJx1kMt"), False)
+    # The other half of the same decision: hosts that DO work must survive.
+    # Without this, widening the blocklist by a careless prefix reads as green.
+    check("is_article_url: still ACCEPTS arxiv (17 fail / 497 ok — works)",
+          is_article_url("https://arxiv.org/abs/2508.01234"), True)
+    check("is_article_url: still ACCEPTS digitimes (78 fail / 141 ok — works)",
+          is_article_url("https://www.digitimes.com/news/a20260831pd200.html"), True)
     check("host_of: strips leading www.",
           host_of("https://www.wired.com/story/x"), "wired.com")
     check("host_of: leaves a bare domain untouched",
