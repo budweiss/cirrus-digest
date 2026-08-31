@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- S87 THE FITNESS FUNCTION, finally armed.
+
+         devloop_yield.py was written in S73/S74 as the metric the RSI loop
+         selects on, and then scheduled NOWHERE. No plist, no timer, no runner
+         command, no caller anywhere in the tree. It ran once by hand and the
+         ledger has been going stale ever since: stall-check read 3 days on
+         2026-08-27 and 7 days by 2026-08-31, degrading with nothing to stop it.
+
+         So the loop had a fitness function it never computed. Buddy's own
+         framing in S74 was that "keep it only if better" is meaningless without
+         a "better" — and the better was not being measured.
+
+         WHY 00:00. window-audit picked it as the next free CIRRUS slot, and the
+         time also has to be right semantically, which the audit cannot judge:
+         it must run AFTER com.cirrus.devloop (21:30, done by ~21:45) so it sees
+         the night's builds, and BEFORE com.cirrus.devreport (06:30) so the
+         morning report can carry a fresh number. 00:00 satisfies all three.
+
+         The job is OFFLINE — it reads logs/dev-loop/builds.json and writes one
+         JSONL line. No network, so it competes with nothing on the line, and
+         the 08:00-16:00 weekday internet rule does not apply to it.
+
+         A LaunchDAEMON in /Library/LaunchDaemons bootstrapped into the `system`
+         domain, NOT a user LaunchAgent: CIRRUS runs with nobody logged in, so
+         there is no gui/501 domain and an agent plist would never load (T43).
+
+         NOTE the absence of any double hyphen in this comment. XML forbids one
+         inside a comment; plutil accepts it anyway and a strict XML parser does
+         not, so a plist can pass `plutil -lint` and still be malformed (T46). -->
+    <key>Label</key>
+    <string>com.cirrus.devloopyield</string>
+    <key>UserName</key>
+    <string>buddy</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/buddy</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/buddy/projects/cirrus-digest/devloop_yield.py</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>0</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devloopyield-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/buddy/projects/cirrus-digest/logs/devloopyield-launchd.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
