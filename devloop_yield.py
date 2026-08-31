@@ -217,6 +217,29 @@ def main():
             "yield": (len(survived) / n) if n else None,
         }) + "\n")
     print(f"\n  appended to {LEDGER}")
+
+    # S87. Report the run to the ledger the watchers read.
+    #
+    # This is the second half of T44, and the half that is easy to skip: the
+    # job was armed as com.cirrus.devloopyield and added to job_status.MAX_AGE
+    # in the same change, but a watch entry for a job that never RECORDS a run
+    # is worse than no watch at all -- CIRRUS's ledger would have no row, so it
+    # would report OVERDUE every single day and train us to ignore the overdue
+    # signal. job_status.py says exactly that about REMOTE_JOBS a few lines
+    # below MAX_AGE; the same trap applies to a local job that stays silent.
+    #
+    # Wrapped, and deliberately not fatal: the metric has already been computed
+    # and written to the ledger by this point, and losing the yield number
+    # because the STATUS write failed would be the tail wagging the dog.
+    try:
+        import job_status
+        job_status.record(
+            "devloopyield", True,
+            f"{len(survived)}/{n} survived ({len(survived)/n:.0%})"
+            if n else "no builds to judge")
+    except Exception as e:
+        print(f"  job_status.record failed: {e}")
+
     return 0
 
 

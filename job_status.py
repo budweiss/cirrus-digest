@@ -95,6 +95,14 @@ CADENCE_H = {
     # installed the timer -- T44's rule: a job is watched from the day it
     # exists, not from the day someone notices it stopped.
     "alopeciacollect":  26,
+    # S87 THE FITNESS FUNCTION. Daily 00:00 CIRRUS. devloop_yield.py was written
+    # in S73 and scheduled NOWHERE for eight days -- no plist, no timer, no
+    # runner command, no caller -- while stall-check correctly reported the
+    # ledger going stale and nothing acted on it. Armed and watched in the same
+    # change (T44), and devloop_yield.main() now calls job_status.record: a
+    # MAX_AGE row for a job that never records is a permanent false OVERDUE,
+    # which is the REMOTE_JOBS trap described a few lines below.
+    "devloopyield":     26,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
