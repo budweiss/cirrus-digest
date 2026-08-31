@@ -1512,6 +1512,61 @@ def discard(n: int):
     return f"🗑 Discarded `{b['id']}` — branch and worktree removed."
 
 
+PATH_VIOLATION_MARK = "edits rejected: "   # see retry(); path violations read
+                                           # "edits rejected: <path> is not in
+                                           # files_to_change", edit misquotes read
+                                           # "edits rejected: edit N (...): the
+                                           # 'find' text does not appear..."
+
+
+def retry(build_id: str):
+    """Clear ONE non-terminal `blocked` record so the builder can see it again.
+
+    S87, measured. S86 made a rejected edit repairable *within* a run, and its
+    recap said the fix was to "re-queue" prop-2026-08-27-649612. It is not:
+    `findings-requeue` re-files the QUEUE row, but find_buildable skips any id
+    that has a build record at all, and `blocked` is on its terminal list. So a
+    build blocked BEFORE the repair loop existed stays dead forever, and the
+    re-queue reports success on the half it can do. Measured on the live box:
+
+        queue rows: 13 -> dropped 1
+        files_to_change now: ['llm_providers.py']
+        find_buildable sees it: NO          <- the whole point, and it was NO
+
+    A blanket "blocked is retryable" would be wrong and would undo a deliberate
+    S86 decision: `blocked` covers BOTH a model mis-quoting an anchor (a mistake,
+    worth another swing) AND a patch reaching for a file outside
+    files_to_change -- credentials, say -- which is a model going somewhere it
+    was told not to. Those must not be blurred. So this refuses the second kind
+    by name rather than by trusting the caller to know the difference.
+    """
+    builds = builds_load()
+    row = next((b for b in builds if b.get("id") == build_id), None)
+    if row is None:
+        return f"No build record for `{build_id}`."
+
+    status = row.get("status")
+    if status != "blocked":
+        return (f"`{build_id}` is `{status}`, not `blocked` — retry only clears a "
+                f"blocked record. Use dev-discard/dev-ship for the others.")
+
+    err = str(row.get("error") or "")
+    if "not in files_to_change" in err or "outside" in err.lower():
+        return (f"REFUSED: `{build_id}` was blocked for a PATH violation, which is "
+                f"terminal by design (S86) — the patch reached for a file it was "
+                f"told not to touch. Not a mis-quote, not retryable here.\n{err[:200]}")
+
+    builds = [b for b in builds if b.get("id") != build_id]
+    builds_save(builds)
+    _cleanup_worktree(build_id)
+    _ledger("retry", build_id, detail=f"cleared blocked: {err[:80]}")
+    seen = any((i.get("dev_spec") or {}).get("id") == build_id
+               for i in find_buildable())
+    return (f"♻️ Cleared blocked record for `{build_id}`.\n"
+            f"find_buildable sees it: {'YES' if seen else 'NO'}"
+            + ("" if seen else "  <- queue row missing; run findings-requeue first."))
+
+
 def unhold(n: int):
     """Clear a council auto-hold on awaiting build #n so it can be shipped (S57).
     Explicit override of a council REJECT — Buddy's decision, logged."""
@@ -2043,6 +2098,36 @@ def _selftest():
     check("restarts go through kickstart_cmd (sudo for system/, T51)",
           "kickstart_cmd(" in (dep or "")
           and '["launchctl", "kickstart"' not in (dep or ""))
+
+    # S87 -- retry(). Source-level for the same reason as deploy(): the real
+    # path reads and REWRITES the live builds.json, and a selftest must never
+    # touch a real state file (T32). The property worth asserting is ORDER --
+    # every refusal has to return BEFORE builds_save, or a path violation gets
+    # cleared and the S86 decision to keep it terminal is quietly undone.
+    import ast
+    ret = _source_between("def retry(build_id: str)", "\ndef unhold(n: int)")
+    _tree = ast.parse(ret) if ret.strip() else None
+    _fn = _tree.body[0] if _tree and isinstance(_tree.body[0], ast.FunctionDef) else None
+    _save_at = next((i for i, n in enumerate(ast.walk(_fn) if _fn else [])
+                     if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "builds_save"), None)
+    check("retry() parses as one function (the source slice is not truncated)",
+          _fn is not None and _fn.name == "retry")
+    check("retry() refuses a PATH violation by name, not by caller judgement",
+          "not in files_to_change" in ret and "REFUSED" in ret)
+    check("retry() refuses anything whose status is not 'blocked'",
+          re.search(r'status\s*!=\s*"blocked"', ret) is not None)
+    # The mutation this is written to catch: moving builds_save above the
+    # guards, or dropping a `return`. Both leave the earlier string checks
+    # passing while the function starts clearing path violations.
+    _guard_returns = [n for n in ast.walk(_fn or ast.Module(body=[], type_ignores=[]))
+                      if isinstance(n, ast.Return)]
+    check("every refusal is a real `return`, not a logged warning",
+          len(_guard_returns) >= 4)
+    check("builds_save happens AFTER the refusals, never before",
+          _save_at is not None
+          and ret.index("builds_save(") > ret.index("REFUSED"))
+    check("retry() reports whether the item is ACTUALLY buildable afterwards",
+          "find_buildable()" in ret and "YES" in ret and "NO" in ret)
 
     # path safety
     cases = [
