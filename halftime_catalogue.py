@@ -680,7 +680,12 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         stats["angles"] += 1
         log(f"angle: {category} — {query}")
         try:
-            urls = cirrus_daily.search_web(query, max_results=MAX_SEARCH_RESULTS)
+            # S90: attribute this job's spend to itself. See the same note in
+            # halftime_routing.py -- every caller of search_web was billed to
+            # "daily_digest", so the usage report could not say what any job
+            # except privacy_monitor actually costs.
+            urls = cirrus_daily.search_web(query, max_results=MAX_SEARCH_RESULTS,
+                                           caller="halftime_catalogue")
         except Exception as e:
             log(f"  search failed: {e}")
             continue

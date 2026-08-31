@@ -292,8 +292,14 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
     # default should not be a requirement.
     if searcher is None or fetcher is None:
         import cirrus_daily
+        # S90: name THIS job as the caller. Without it every Brave search the
+        # routing sweep makes was billed to "daily_digest" in the usage report,
+        # so the sweep's cost was invisible -- which mattered the moment Buddy
+        # asked to run it DAILY instead of weekly, i.e. to multiply an unmeasured
+        # spender by seven against a $25/mo cap.
         searcher = searcher or (
-            lambda q: cirrus_daily.search_web(q, max_results=MAX_SEARCH_RESULTS))
+            lambda q: cirrus_daily.search_web(q, max_results=MAX_SEARCH_RESULTS,
+                                              caller="halftime_routing"))
         fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
     extractor = extractor or (lambda block: _extract(block, creds))
 

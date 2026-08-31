@@ -339,7 +339,8 @@ def _load_brave_key() -> str:
 _BRAVE_MAX_QUERY_CHARS = 380   # Brave's documented cap is 400; leave headroom
 
 
-def brave_search(query: str, max_results: int = 3) -> list[str]:
+def brave_search(query: str, max_results: int = 3,
+                 caller: str = "daily_digest") -> list[str]:
     """Primary web search — Brave Search API (paid, reliable). Returns top result
     URLs; empty on no-key / error / quota, so the caller falls back to Gemini. A
     429 (rate or the $25/mo cap) is treated as a soft fall-back, not an error."""
@@ -356,7 +357,7 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
         cut = query[:_BRAVE_MAX_QUERY_CHARS]
         query = cut[:cut.rfind(" ")] if " " in cut else cut
         log(f"    Brave query trimmed to {len(query)} chars (API limit)")
-    _count_search("brave", "daily_digest", "ok")   # provisional; corrected below
+    _count_search("brave", caller, "ok")   # provisional; corrected below
     try:
         with hard_deadline(20, "brave_search"):
             resp = requests.get(
@@ -366,8 +367,8 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
                 params={"q": query, "count": max_results},
                 timeout=15)
         if resp.status_code == 429:
-            _count_search("brave", "daily_digest", "quota")
-            _count_search("brave", "daily_digest", "ok", -1)
+            _count_search("brave", caller, "quota")
+            _count_search("brave", caller, "ok", -1)
             log("    Brave search quota/rate hit (429) — falling back to Gemini")
             return []
         resp.raise_for_status()
@@ -382,8 +383,8 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Brave search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
-        _count_search("brave", "daily_digest", "error")
-        _count_search("brave", "daily_digest", "ok", -1)
+        _count_search("brave", caller, "error")
+        _count_search("brave", caller, "ok", -1)
         if _SPEND and _SPEND.is_funds_error(e):
             _SPEND.pause("brave", str(e))
             log("    Brave funds/quota exhausted — paused till next month; falling back to Gemini")
@@ -392,7 +393,8 @@ def brave_search(query: str, max_results: int = 3) -> list[str]:
         return []
 
 
-def gemini_search(query: str, max_results: int = 3) -> list[str]:
+def gemini_search(query: str, max_results: int = 3,
+                  caller: str = "daily_digest") -> list[str]:
     """Google-grounded web search via the Gemini API (google_search tool).
 
     Fallback for when DuckDuckGo blocks scraping (403s observed 2026-07-05).
@@ -402,7 +404,7 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
     key = _load_gemini_key()
     if not key:
         return []
-    _count_search("gemini", "daily_digest", "ok")
+    _count_search("gemini", caller, "ok")
     try:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{_GEMINI_MODEL}:generateContent?key={key}")
@@ -425,8 +427,8 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Gemini search '{query[:50]}' → {len(urls)} result(s)")
         return urls
     except Exception as e:
-        _count_search("gemini", "daily_digest", "error")
-        _count_search("gemini", "daily_digest", "ok", -1)
+        _count_search("gemini", caller, "error")
+        _count_search("gemini", caller, "ok", -1)
         log(f"    Gemini search error: {e}")
         return []
 
@@ -456,7 +458,8 @@ def _load_anthropic_key() -> str:
 _CLAUDE_SEARCH_MODEL = "claude-sonnet-5"   # supports web_search_20260209
 
 
-def claude_search(query: str, max_results: int = 3) -> list[str]:
+def claude_search(query: str, max_results: int = 3,
+                  caller: str = "daily_digest") -> list[str]:
     """Third search tier — Anthropic's server-side web_search tool.
 
     WHY THIS TIER EXISTS (S67). Buddy asked for a third tier after
@@ -485,7 +488,7 @@ def claude_search(query: str, max_results: int = 3) -> list[str]:
     key = _load_anthropic_key()
     if not key:
         return []
-    _count_search("claude", "daily_digest", "ok")
+    _count_search("claude", caller, "ok")
     try:
         with hard_deadline(60, "claude_search"):
             resp = requests.post(
@@ -521,8 +524,8 @@ def claude_search(query: str, max_results: int = 3) -> list[str]:
             # "no results" instead of "the tool failed".
             if isinstance(content, dict):
                 log(f"    Claude search tool error: {content.get('error_code')}")
-                _count_search("claude", "daily_digest", "error")
-                _count_search("claude", "daily_digest", "ok", -1)
+                _count_search("claude", caller, "error")
+                _count_search("claude", caller, "ok", -1)
                 return []
             for r in content or []:
                 u = r.get("url", "")
@@ -533,17 +536,26 @@ def claude_search(query: str, max_results: int = 3) -> list[str]:
         log(f"    Claude search '{query[:50]}' → {len(urls)} result(s)")
         return urls[:max_results]
     except Exception as e:
-        _count_search("claude", "daily_digest", "error")
-        _count_search("claude", "daily_digest", "ok", -1)
+        _count_search("claude", caller, "error")
+        _count_search("claude", caller, "ok", -1)
         log(f"    Claude search error: {e}")
         return []
 
 
-def search_web(query: str, max_results: int = 3) -> list[str]:
+def search_web(query: str, max_results: int = 3,
+               caller: str = "daily_digest") -> list[str]:
     """Web search, in cost order: Brave (paid, $5/1k) → Gemini grounding (billed
     to the Gemini account) → Claude web_search ($10/1k, Anthropic account) →
     DuckDuckGo scrape. Each provider is hard-deadline bounded, so a single hung
     lookup can't freeze the digest (the 2026-08-10 freeze cause).
+
+    caller: which JOB is spending this money. S90 -- every _count_search call
+    in this file hardcoded "daily_digest", so anything else calling search_web
+    (halftime_routing does, via cirrus_daily.search_web) had its Brave spend
+    billed to the digest in the usage report. The report exists precisely so
+    "if the bill looks wrong, that is the reason" is answerable, and it was
+    quietly answering it wrong. Threaded explicitly rather than held in a module
+    global because the digest searches on threads.
 
     S67 measured this chain instead of assuming it (runner `search-fallback-test`):
     Brave and Gemini both return usable URLs; **DuckDuckGo returns ZERO** and has
@@ -555,13 +567,13 @@ def search_web(query: str, max_results: int = 3) -> list[str]:
     Ordering note: Claude sits BELOW Gemini despite being more capable, purely on
     cost ($10/1k vs Gemini's grounding). It only runs when two providers have
     already failed, so its expected volume is ~zero."""
-    urls = brave_search(query, max_results)
+    urls = brave_search(query, max_results, caller)
     if urls:
         return urls
-    urls = gemini_search(query, max_results)
+    urls = gemini_search(query, max_results, caller)
     if urls:
         return urls
-    urls = claude_search(query, max_results)
+    urls = claude_search(query, max_results, caller)
     if urls:
         return urls
     return _ddg_search(query, max_results)
