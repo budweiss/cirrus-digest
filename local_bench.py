@@ -6,10 +6,11 @@ S73, 2026-08-22.
 WHY THIS EXISTS
 ---------------
 Both boxes held a 47 GB `qwen2.5:72b` and neither called it (S73).
-S92: no longer true — CUMULUS routes halftime_catalogue/routing and
-promise_detect at it via llm_providers.call("ollama"), and it answers
-~88% of catalogue entries there. CIRRUS never enabled the provider
-(ollama_url absent) and its copy was deleted in S92. Over seven days
+S92: no longer true on EITHER box. CUMULUS routes halftime_catalogue/
+routing and promise_detect at it via llm_providers.call("ollama") and it
+answers ~88% of catalogue entries there (qwen2.5:72b). CIRRUS was enabled
+later the same session with qwen3.8:27b, after the bench; its idle 72B was
+deleted first, because nothing could reach it while ollama_url was absent. Over seven days
 CIRRUS made 1,218 cloud LLM calls — claude-sonnet-5 594, gemini-2.5-flash 312,
 grok-3-mini 312 — because `llm_providers.py` had no local backend at all.
 

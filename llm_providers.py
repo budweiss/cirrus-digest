@@ -239,9 +239,12 @@ def _ollama(creds, system, user, max_tokens):
     is absent from DEFAULT_ORDER, so available() never lists it — that gate stops
     accidental ROUTING, not a deliberate call). The two boxes now differ:
 
-      CIRRUS  — ollama_url and ollama_model are ABSENT, so this raises
-                immediately and every caller escalates to cloud. The local
-                provider is genuinely unused here. Its 72B was deleted in S92.
+      CIRRUS  — ENABLED S92 (Buddy) with qwen3.8:27b, after the bench showed it
+                reasons better than both qwen2.5:14b and the 72B. Before that it
+                was ABSENT since S73 and every caller escalated to cloud; the
+                idle 72B there was deleted in S92 because nothing could reach
+                it. promise_detect (which runs on every client send via
+                task_solver) is the caller this actually changes.
       CUMULUS — ollama_url is set and ollama_model IS qwen2.5:72b. Measured in
                 the live halftime snapshot: 120 entries "ollama (local)" vs 16
                 "anthropic (escalated)". That 47 GB model is doing ~88% of the
@@ -251,8 +254,16 @@ def _ollama(creds, system, user, max_tokens):
                 a crash because nothing would report it.
 
     So: before removing a local model, check `ollama_model` in that box's
-    credentials.json and the `extracted_by` counts in its output. Do not reason
-    from this docstring's first paragraph, which was true in S73 and is not now.
+    credentials.json and the `extracted_by`/`by` fields in its output. Do not
+    reason from this docstring's first paragraph, which was true in S73 and is
+    not now — BOTH boxes now run a local model through this backend.
+
+    The S73 guard still holds and must keep holding: `ollama` is absent from
+    DEFAULT_ORDER, so available() does not list it even with ollama_url set
+    (verified on both boxes). Enabling the backend does NOT put local into
+    automatic routing or the council — only an explicit call("ollama", ...)
+    reaches it. If available() ever lists ollama, that is the regression S73
+    warned about.
 
     It exists to be MEASURED, not to be routed to. Adding it to DEFAULT_ORDER,
     or to the council, is a separate decision that should follow evidence — see
