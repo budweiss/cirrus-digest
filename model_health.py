@@ -230,17 +230,28 @@ def main():
         if not field:
             continue
         model = creds.get(field) or ""
+        # S91: when the field is unset, `model` is "" and every line below
+        # rendered as "healthy: anthropic=" — a check reporting a pass without
+        # naming what it inspected (docs/TOOLING-TRAPS.md, the S71 class). It is
+        # not cosmetic: with claude_model AND claude_dev_model both empty on
+        # CIRRUS, llm_providers._anthropic falls back to its hardcoded
+        # "claude-sonnet-5", so the probe was live-testing a model nobody
+        # configured and naming neither it nor the fact that it had defaulted.
+        # Label the condition instead of hiding it. Deliberately NOT resolving
+        # the provider's fallback here: duplicating that logic is how the two
+        # copies drift, and pinning a model is a cost decision, not a repair.
+        shown = model or "(unset — provider default)"
         ok, err = test_model(p, creds, model)
         if ok:
-            healthy.append(f"{p}={model}")
+            healthy.append(f"{p}={shown}")
             continue
         if not MODEL_ERR.search(err):
             # billing/credits exhaustion is distinct from a transient auth/network
             # blip — flag it so Buddy knows to check funding / auto-refill.
             if BILLING_ERR.search(err):
-                needs_funding.append(f"{p}={model}: {err[:140]}")
+                needs_funding.append(f"{p}={shown}: {err[:140]}")
             else:
-                errored.append(f"{p}={model}: {err[:120]}")   # auth/network — no change
+                errored.append(f"{p}={shown}: {err[:120]}")   # auth/network — no change
             continue
         # model-availability failure -> try to self-heal
         chosen = None
@@ -257,7 +268,7 @@ def main():
                 creds = load()
             healed.append(f"{p}: {model} -> {chosen}")
         else:
-            broken.append(f"{p}={model}: no working replacement found ({err[:80]})")
+            broken.append(f"{p}={shown}: no working replacement found ({err[:80]})")
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
