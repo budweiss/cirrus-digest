@@ -266,6 +266,31 @@ def sources_appendix(items):
     return "\n".join(out)
 
 
+_DATE_H2_RX = re.compile(r"^##\s*\d{4}-\d{2}-\d{2}\s*$")
+
+
+def strip_model_title(body):
+    """Drop a title block the judge added on top of ours.
+
+    Observed on the first live run: our header is already "# Alopecia areata —
+    weekly brief #1" plus a date line, and the judge opened its answer with
+    "# Alopecia Areata Research Brief" / "## 2026-09-01" -- so the email led
+    with two titles and two dates. Stripped here rather than forbidden in the
+    prompt, because a model instruction is a request and this is a guarantee.
+    Only a LEADING h1 (and an immediately following date-only h2 or rule) goes;
+    a real "# " later in the body is left alone.
+    """
+    lines = body.lstrip("\n").split("\n")
+    if not lines or not lines[0].startswith("# "):
+        return body
+    i = 1
+    while i < len(lines) and (not lines[i].strip()
+                              or _DATE_H2_RX.match(lines[i].strip())
+                              or lines[i].strip() == "---"):
+        i += 1
+    return "\n".join(lines[i:])
+
+
 def assemble(body, items, meta, full, since_day, today, number):
     head = ["# Alopecia areata — weekly brief #%d" % number,
             "",
@@ -282,6 +307,7 @@ def assemble(body, items, meta, full, since_day, today, number):
                    "in full for this brief." % (meta.get("reason") or "reason not recorded")
     head += ["_%s_" % council, "", "---", ""]
 
+    body = strip_model_title(body)
     parts = ["\n".join(head), body.strip(), ""]
 
     if not DISAGREE_RX.search(body):
@@ -553,6 +579,21 @@ def selftest():
        "Nothing new was collected" in empty_brief("2026-09-01", "2026-08-25", 2))
     ck("empty brief still holds the standing questions open",
        "immune privilege" in empty_brief("2026-09-01", "2026-08-25", 2))
+
+    # ── the judge's own title block ─────────────────────────────────────────
+    ck("a leading model title is stripped",
+       strip_model_title("# Their Title\n## 2026-09-01\n\n---\n\n## Real\n\nx")
+       == "## Real\n\nx")
+    ck("a body with no title is untouched",
+       strip_model_title("## What changed\n\nx") == "## What changed\n\nx")
+    ck("a later h1 is NOT stripped",
+       "# Deeper" in strip_model_title("## A\n\n# Deeper\n\nx"))
+    ck("only ONE leading title goes",
+       strip_model_title("# One\n\n# Two\n\nx") == "# Two\n\nx")
+    ck("the assembled brief has exactly one h1",
+       assemble("# Their Title\n## 2026-09-01\n\n## Real\n\nx [1].\n",
+                items, meta, True, "", "2026-09-01", 1)
+       .count("\n# ") + 1 == 1)
 
     # ── email HTML ──────────────────────────────────────────────────────────
     h = _html(md)

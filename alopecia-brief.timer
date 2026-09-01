@@ -1,0 +1,28 @@
+[Unit]
+Description=ALOPECIA weekly brief — Friday 07:00
+
+# Day chosen by Buddy (S95, 2026-09-01). The spec named no weekday, so this was
+# an open decision rather than something to infer; recording it here means the
+# next session does not re-open it.
+#
+# Slot chosen from a LIVE window-audit (S95), not by eyeballing:
+#   CUMULUS Fri  03:00 hoaleads · 05:30 modelhealth · 05:45 alopecia-collect ·
+#                06:00 pedagogy · 06:30 halftime-catalogue · 20:00 daily-brief
+#   (Bill's 04:00/04:30 client sends are Mon-only, so Friday is clear of them.)
+# 07:00 is free on CUMULUS and sits AFTER the collector, so the brief always
+# includes the morning's collection rather than reporting yesterday's corpus --
+# the producer-before-consumer rule window-audit exists to enforce. It finishes
+# well before the 08:00 local-use window.
+#
+# Persistent=true so a box that was down on Friday still sends when it comes
+# back. That is safe here and it is the whole point: the reason this unit exists
+# is that a brief went missing and nothing noticed. Two guards make a late or
+# repeated fire harmless -- send_guard blocks a second send the same day, and
+# the brief's window is "since the brief we actually sent", so a late run covers
+# the gap instead of skipping it.
+[Timer]
+OnCalendar=Fri 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
