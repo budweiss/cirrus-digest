@@ -349,6 +349,30 @@ def build_prompt(item: dict, file_blobs: dict, conventions: str = "",
     return system, "\n".join(parts)
 
 
+BUILDER_MODEL_DEFAULT = "claude-sonnet-5"
+
+
+def _builder_model(creds: dict) -> str:
+    """Which Claude model the dev-loop builds with.
+
+    S92: this was `creds.get("claude_dev_model", "claude-sonnet-5")`. A dict
+    .get returns the DEFAULT only when the key is ABSENT — when the key exists
+    holding an empty string it returns that empty string, and the default never
+    applies. CUMULUS's credentials.json has exactly that: claude_dev_model = "".
+    So a dev-loop run there would have posted model="" to the Anthropic API.
+    CIRRUS is unaffected only by luck — its key is genuinely absent.
+
+    `or` treats empty as unset, which is what every reader of this field already
+    assumes and what ensemble.py:125 already does.
+
+    DELIBERATELY NOT falling through to claude_model, the way
+    llm_providers._anthropic does. claude_model is haiku-4-5; the builder is the
+    one place we want the heavier model, and quietly inheriting the cheap one
+    would downgrade the autonomous dev-loop without anyone choosing that.
+    """
+    return (creds.get("claude_dev_model") or "").strip() or BUILDER_MODEL_DEFAULT
+
+
 def call_claude_build(system: str, user: str):
     """One-shot Claude API call. Returns raw text. Raises on transport error."""
     import requests
@@ -356,7 +380,7 @@ def call_claude_build(system: str, user: str):
     key = creds.get("anthropic_api_key", "")
     if not key:
         raise RuntimeError("no anthropic_api_key in credentials.json")
-    model = creds.get("claude_dev_model", "claude-sonnet-5")
+    model = _builder_model(creds)
     resp = requests.post(
         CLAUDE_API_URL,
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -1713,6 +1737,22 @@ def selftest() -> bool:
 
     def ck(name, cond):
         checks.append((name, bool(cond)))
+
+    # ── S92: which model does the builder actually use? ──────────────────────
+    # The bug this replaces was invisible: .get(k, default) returns the default
+    # only when the key is ABSENT, so a key present-and-empty silently defeated
+    # it. CUMULUS's credentials.json holds claude_dev_model = "".
+    ck("an explicit builder model is used", _builder_model(
+        {"claude_dev_model": "claude-opus-5"}) == "claude-opus-5")
+    ck("an ABSENT key falls back to the default",
+       _builder_model({}) == BUILDER_MODEL_DEFAULT)
+    ck("an EMPTY key falls back too (the CUMULUS case, and the whole bug)",
+       _builder_model({"claude_dev_model": ""}) == BUILDER_MODEL_DEFAULT)
+    ck("  ...as does whitespace-only",
+       _builder_model({"claude_dev_model": "   "}) == BUILDER_MODEL_DEFAULT)
+    ck("the builder NEVER inherits claude_model (that would downgrade it)",
+       _builder_model({"claude_dev_model": "", "claude_model": "claude-haiku-4-5"})
+       == BUILDER_MODEL_DEFAULT)
 
     # ── S91: repair-ticket promotion. T32 — a tempdir, never the live queue. ──
     import tempfile as _tf
