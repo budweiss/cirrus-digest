@@ -448,6 +448,137 @@ def check_model_drift():
     return (line, bool(fresh))
 
 
+CLOUD_MODELS_STATE = HERE / "logs" / "cloud-models.json"
+
+# Non-text modalities. A new image/audio/embedding model is a real release but
+# not one that affects any lane we run, and reporting it trains the channel to
+# be ignored.
+_MODALITY_NOISE = ("image", "tts", "audio", "video", "embed", "robotics",
+                   "transcribe", "whisper", "dall-e", "moderation", "realtime",
+                   "computer-use", "vision", "lyria", "nano-banana", "veo",
+                   "imagen", "sora", "rerank", "guard")
+
+_LIST_ENDPOINTS = {
+    "anthropic": ("https://api.anthropic.com/v1/models",
+                  lambda k: {"x-api-key": k, "anthropic-version": "2023-06-01"}),
+    "openai":    ("https://api.openai.com/v1/models",
+                  lambda k: {"Authorization": "Bearer " + k}),
+    "grok":      ("https://api.x.ai/v1/models",
+                  lambda k: {"Authorization": "Bearer " + k}),
+    "deepseek":  ("https://api.deepseek.com/v1/models",
+                  lambda k: {"Authorization": "Bearer " + k}),
+}
+
+
+def _list_cloud_models(provider, creds):
+    """Model ids a provider currently offers this key, or None if unreachable.
+
+    None and empty-set are DELIBERATELY different: an unreachable provider must
+    not read as "nothing new". Keys are used to build the request and are never
+    returned or printed.
+    """
+    key = creds.get(_KEY_FIELD_CLOUD.get(provider, ""))
+    if not key:
+        return None
+    try:
+        if provider == "gemini":
+            url = ("https://generativelanguage.googleapis.com/v1beta/models?key="
+                   + urllib.parse.quote(key))
+            req = urllib.request.Request(url, headers={"User-Agent": "cirrus-modelhealth"})
+        else:
+            url, hdrs = _LIST_ENDPOINTS[provider]
+            req = urllib.request.Request(url, headers=hdrs(key))
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read())
+        rows = d.get("data") or d.get("models") or []
+        return {(m.get("id") or m.get("name", "")).split("/")[-1] for m in rows if m}
+    except Exception:
+        return None
+
+
+_KEY_FIELD_CLOUD = {
+    "anthropic": "anthropic_api_key", "gemini": "gemini_api_key",
+    "openai": "openai_api_key", "grok": "grok_api_key",
+    "deepseek": "deepseek_api_key",
+}
+
+
+def check_cloud_model_releases(creds):
+    """(line, should_notify) — has a provider shipped a model we have not seen?
+
+    Buddy, 2026-09-01, after the local half landed: track cloud releases too.
+
+    The rule is deliberately a FACT, not a judgement. "Is this model better than
+    ours?" is unanswerable without benchmarking it — and this session twice
+    proved rank does not predict fitness for our prompts (a 72B reasoned no
+    better than a 14B). So this reports only: **this model id is new to this key
+    since we last looked.** Deciding whether to adopt it stays a human call, made
+    against the bench suite.
+
+    Two things keep it quiet enough to stay useful:
+      * SAME FAMILY ONLY, derived from the model we actually run — `gpt-4.1`
+        gives "gpt", so `babbage-002` and `chatgpt-image-latest` never qualify.
+        Derived from config, not a hardcoded list, so it follows a re-pin.
+      * FIRST RUN SEEDS SILENTLY. Without that, run one reports ~200 "new"
+        models across five providers and is switched off the same morning.
+    """
+    try:
+        prev = {}
+        try:
+            prev = json.loads(CLOUD_MODELS_STATE.read_text())
+        except Exception:
+            pass
+        seen = prev.get("seen") or {}
+
+        fresh, unchecked, seeded, checked = {}, [], [], 0
+        for prov in sorted(_KEY_FIELD_CLOUD):
+            if not creds.get(_KEY_FIELD_CLOUD[prov]):
+                continue
+            ids = _list_cloud_models(prov, creds)
+            if ids is None:
+                unchecked.append(prov)
+                continue
+            checked += 1
+            cur_model = creds.get(MODEL_FIELD.get(prov, ""), "") or ""
+            fam = cur_model.split("-")[0].lower()
+            rel = sorted(i for i in ids
+                         if fam and i.lower().startswith(fam)
+                         and not any(n in i.lower() for n in _MODALITY_NOISE))
+            if prov not in seen:
+                seeded.append(prov)          # baseline only — never notify
+            else:
+                new = [i for i in rel if i not in seen[prov]]
+                if new:
+                    fresh[prov] = new
+            seen[prov] = rel
+
+        try:
+            CLOUD_MODELS_STATE.parent.mkdir(parents=True, exist_ok=True)
+            CLOUD_MODELS_STATE.write_text(json.dumps(
+                {"seen": seen, "at": datetime.now().strftime("%Y-%m-%d %H:%M")},
+                indent=2) + "\n")
+        except Exception:
+            pass
+
+        parts = ["%d provider(s) checked" % checked]
+        if seeded:
+            parts.append("baseline seeded for %s (first run — not an alert)"
+                         % ", ".join(seeded))
+        if fresh:
+            parts.append("NEW: " + "; ".join(
+                "%s %s" % (p, ", ".join(v[:3])) for p, v in sorted(fresh.items())))
+        elif not seeded and checked:
+            # `checked` is load-bearing: with every provider unreachable this
+            # said "nothing new", which is a claim we had not earned. Silence
+            # and agreement must not render the same.
+            parts.append("nothing new")
+        if unchecked:
+            parts.append("%d unchecked (%s)" % (len(unchecked), ", ".join(unchecked)))
+        return ("cloud: " + " · ".join(parts), bool(fresh))
+    except Exception as e:  # noqa: BLE001 — a drift check must not break the health run
+        return ("cloud: release check failed: %s" % type(e).__name__, False)
+
+
 def main():
     creds = load()
     providers = L.available(creds)
@@ -500,11 +631,13 @@ def main():
 
     runtime_line, runtime_notify = check_local_runtime()
     models_line, models_notify = check_model_drift()
+    cloud_line, cloud_notify = check_cloud_model_releases(creds)
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
+    print(f"  {cloud_line}")
     for label, items in (("healthy", healthy), ("healed", healed),
                          ("broken", broken), ("needs_funding", needs_funding),
                          ("errored", errored)):
@@ -512,7 +645,7 @@ def main():
             print(f"  {label}: {it}")
 
     # Notify only when something needs attention or changed.
-    if healed or broken or errored or needs_funding or runtime_notify or models_notify:
+    if healed or broken or errored or needs_funding or runtime_notify or models_notify or cloud_notify:
         lines = [f"🩺 *{node_name()} model-health*"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
@@ -526,6 +659,10 @@ def main():
             lines += ["*BROKEN (needs you):*"] + [f"• {b}" for b in broken]
         if errored:
             lines += ["*errors (no change):*"] + [f"• {e}" for e in errored]
+        if cloud_notify:
+            lines += ["*a provider shipped a model we have not seen:*", f"• {cloud_line}",
+                      "_Reported as a FACT, not a recommendation — whether it beats "
+                      "what we run is a bench question. Told once per new id._"]
         if models_notify:
             lines += ["*local model(s) behind the registry:*", f"• {models_line}",
                       "_`ollama pull <tag>` refreshes one. Told once per new "
@@ -542,7 +679,7 @@ def main():
         import job_status
         note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
                 f"{len(needs_funding)} needs-funding, {len(errored)} err; "
-                f"{runtime_line}; {models_line}")
+                f"{runtime_line}; {models_line}; {cloud_line}")
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding),
                           note=note)
@@ -721,6 +858,45 @@ def selftest():
                "unchecked" in line and "0 current" in line and not notify)
         finally:
             MODEL_DRIFT_STATE, globals()["_registry_digest"], globals()["urllib"] = _sv
+
+    # ── S95: cloud model releases ────────────────────────────────────────────
+    import tempfile as _tf3
+    global CLOUD_MODELS_STATE
+    _sv3 = (CLOUD_MODELS_STATE, globals()["_list_cloud_models"])
+    _CREDS = {"anthropic_api_key": "x", "claude_model": "claude-haiku-4-5-20251001",
+              "openai_api_key": "x", "openai_model": "gpt-4.1"}
+    with _tf3.TemporaryDirectory() as td:
+        CLOUD_MODELS_STATE = Path(td) / "cloud-models.json"
+        catalog = {"anthropic": {"claude-haiku-4-5-20251001", "claude-opus-5"},
+                   "openai": {"gpt-4.1", "babbage-002", "chatgpt-image-latest"}}
+        globals()["_list_cloud_models"] = lambda p, c: catalog.get(p)
+        try:
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("first run SEEDS the baseline and never alerts (else ~200 'new')",
+               "baseline seeded" in line and not notify)
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("second run with no change says nothing new",
+               "nothing new" in line and not notify)
+
+            catalog["anthropic"] = catalog["anthropic"] | {"claude-fable-5-1"}
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("a genuinely new model in OUR family is reported and notified",
+               notify and "claude-fable-5-1" in line)
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("  ...and not reported again on the next run", not notify)
+
+            catalog["openai"] = catalog["openai"] | {"gpt-image-2", "davinci-003"}
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("an out-of-family model (davinci) is ignored", "davinci" not in line)
+            ck("  ...and an in-family IMAGE model is ignored too",
+               "gpt-image-2" not in line and not notify)
+
+            globals()["_list_cloud_models"] = lambda p, c: None
+            line, notify = check_cloud_model_releases(_CREDS)
+            ck("an unreachable provider reports UNCHECKED, never 'nothing new'",
+               "unchecked" in line and "nothing new" not in line and not notify)
+        finally:
+            CLOUD_MODELS_STATE, globals()["_list_cloud_models"] = _sv3
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
