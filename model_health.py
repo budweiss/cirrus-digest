@@ -350,6 +350,104 @@ def check_local_runtime():
         return (f"ollama drift check failed: {type(e).__name__}: {e}", False)
 
 
+MODEL_DRIFT_STATE = HERE / "logs" / "model-drift.json"
+OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
+OLLAMA_REGISTRY = "https://registry.ollama.ai/v2/%s/manifests/%s"
+
+
+def _registry_digest(name):
+    """sha256 of the registry's CURRENT manifest for this tag, or "" if unknown.
+
+    Ollama's registry sits behind Cloudflare and does NOT return the
+    Docker-Content-Digest header, so the digest has to be computed from the
+    manifest bytes. That is what the digest IS — sha256 of the canonical
+    manifest — so this is the real comparison, not an approximation of one.
+    """
+    import hashlib
+    if ":" not in name:
+        return ""
+    repo, tag = name.split(":", 1)
+    path = repo if "/" in repo else "library/" + repo
+    try:
+        req = urllib.request.Request(
+            OLLAMA_REGISTRY % (path, tag),
+            headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json",
+                     "User-Agent": "cirrus-modelhealth"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return hashlib.sha256(r.read()).hexdigest()
+    except Exception:
+        return ""
+
+
+def check_model_drift():
+    """(line, should_notify) — are our LOCAL model tags still what the registry
+    ships? Never raises.
+
+    Buddy, 2026-09-01: "can we also make sure our agents are keeping track of our
+    model releases too." check_local_runtime() watches the ollama RUNTIME; this
+    watches the MODELS running on it. An ollama tag is mutable — `qwen2.5:14b`
+    can be rebuilt upstream and the copy on disk silently becomes months old,
+    which is exactly the state CIRRUS was in (three-month-old weights) with
+    nothing able to say so.
+
+    Verified against a control before shipping: qwen3.8:27b, pulled the same day,
+    reports CURRENT. A check that flagged everything would be worse than none.
+    """
+    try:
+        with urllib.request.urlopen(OLLAMA_TAGS, timeout=20) as r:
+            models = (json.loads(r.read()) or {}).get("models") or []
+    except Exception:
+        return ("models: no local ollama to inspect", False)
+    if not models:
+        return ("models: ollama is running but holds no models", False)
+
+    stale, unknown, current = [], [], 0
+    for m in models:
+        name = m.get("name") or ""
+        local = (m.get("digest") or "").replace("sha256:", "")
+        remote = _registry_digest(name)
+        if not remote:
+            # An unreachable registry is NOT "up to date". Same rule as the
+            # runtime check: silence and agreement must not render the same.
+            unknown.append(name)
+        elif local and local != remote:
+            stale.append(name)
+        else:
+            current += 1
+
+    parts = ["%d current" % current]
+    if stale:
+        parts.append("%d STALE (%s)" % (len(stale), ", ".join(sorted(stale)[:4])))
+    if unknown:
+        parts.append("%d unchecked (%s)" % (len(unknown), ", ".join(sorted(unknown)[:3])))
+    line = "models: " + " · ".join(parts)
+
+    if not stale:
+        return (line, False)
+
+    # Notify once per (model, new digest), not daily. Refreshing a tag is a
+    # deliberate `ollama pull` on a box serving live jobs, so this can sit
+    # unactioned for a while — and a nightly repeat would train it to be ignored.
+    prev = {}
+    try:
+        prev = json.loads(MODEL_DRIFT_STATE.read_text())
+    except Exception:
+        pass
+    seen = prev.get("notified") or {}
+    fresh = [n for n in stale if seen.get(n) != _registry_digest(n)]
+    if fresh:
+        try:
+            MODEL_DRIFT_STATE.parent.mkdir(parents=True, exist_ok=True)
+            for n in stale:
+                seen[n] = _registry_digest(n)
+            MODEL_DRIFT_STATE.write_text(json.dumps(
+                {"notified": seen,
+                 "at": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
+        except Exception:
+            pass
+    return (line, bool(fresh))
+
+
 def main():
     creds = load()
     providers = L.available(creds)
@@ -401,10 +499,12 @@ def main():
             broken.append(f"{p}={shown}: no working replacement found ({err[:80]})")
 
     runtime_line, runtime_notify = check_local_runtime()
+    models_line, models_notify = check_model_drift()
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     print(f"  runtime: {runtime_line}")
+    print(f"  {models_line}")
     for label, items in (("healthy", healthy), ("healed", healed),
                          ("broken", broken), ("needs_funding", needs_funding),
                          ("errored", errored)):
@@ -412,7 +512,7 @@ def main():
             print(f"  {label}: {it}")
 
     # Notify only when something needs attention or changed.
-    if healed or broken or errored or needs_funding or runtime_notify:
+    if healed or broken or errored or needs_funding or runtime_notify or models_notify:
         lines = [f"🩺 *{node_name()} model-health*"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
@@ -426,6 +526,10 @@ def main():
             lines += ["*BROKEN (needs you):*"] + [f"• {b}" for b in broken]
         if errored:
             lines += ["*errors (no change):*"] + [f"• {e}" for e in errored]
+        if models_notify:
+            lines += ["*local model(s) behind the registry:*", f"• {models_line}",
+                      "_`ollama pull <tag>` refreshes one. Told once per new "
+                      "upstream build, not daily._"]
         if runtime_notify:
             lines += ["*local runtime is behind:*", f"• {runtime_line}",
                       "_Report only — upgrading the runtime that serves the digest "
@@ -438,7 +542,7 @@ def main():
         import job_status
         note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
                 f"{len(needs_funding)} needs-funding, {len(errored)} err; "
-                f"{runtime_line}")
+                f"{runtime_line}; {models_line}")
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding),
                           note=note)
@@ -574,6 +678,49 @@ def selftest():
        all("flash" not in m for m in prev))
     ck("image/embedding/robotics models are never candidates",
        not any(("image" in m or "embedding" in m) for m in _cands("gemini-2.5-pro") + fl))
+
+    # ── S94: model-release drift ─────────────────────────────────────────────
+    import tempfile as _tf2
+    global MODEL_DRIFT_STATE
+    _sv = (MODEL_DRIFT_STATE, globals()["_registry_digest"], globals()["urllib"])
+
+    class _FakeResp:
+        def __init__(self, payload): self._p = json.dumps(payload).encode()
+        def read(self): return self._p
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    with _tf2.TemporaryDirectory() as td:
+        MODEL_DRIFT_STATE = Path(td) / "model-drift.json"
+        _tags = {"models": [{"name": "a:1", "digest": "sha256:aaaa"},
+                            {"name": "b:1", "digest": "sha256:bbbb"}]}
+        globals()["urllib"] = type("U", (), {"request": type("R", (), {
+            "urlopen": staticmethod(lambda *a, **k: _FakeResp(_tags)),
+            "Request": staticmethod(lambda *a, **k: None)})})
+        try:
+            globals()["_registry_digest"] = lambda n: {"a:1": "aaaa", "b:1": "bbbb"}[n]
+            line, notify = check_model_drift()
+            ck("all tags matching the registry reports current, notifies nothing",
+               "2 current" in line and not notify)
+
+            globals()["_registry_digest"] = lambda n: {"a:1": "aaaa", "b:1": "zzzz"}[n]
+            line, notify = check_model_drift()
+            ck("a rebuilt upstream tag is reported STALE and notified once",
+               "STALE" in line and "b:1" in line and notify)
+            line, notify = check_model_drift()
+            ck("  ...and NOT notified again for the same upstream build",
+               "STALE" in line and not notify)
+
+            globals()["_registry_digest"] = lambda n: {"a:1": "aaaa", "b:1": "yyyy"}[n]
+            line, notify = check_model_drift()
+            ck("  ...but IS notified again when upstream moves AGAIN", notify)
+
+            globals()["_registry_digest"] = lambda n: ""
+            line, notify = check_model_drift()
+            ck("an unreachable registry reports UNCHECKED, never 'current'",
+               "unchecked" in line and "0 current" in line and not notify)
+        finally:
+            MODEL_DRIFT_STATE, globals()["_registry_digest"], globals()["urllib"] = _sv
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
