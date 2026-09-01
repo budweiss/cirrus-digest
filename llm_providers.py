@@ -229,9 +229,30 @@ def _deepseek(creds, system, user, max_tokens):
 def _ollama(creds, system, user, max_tokens):
     """The LOCAL model, via Ollama's OpenAI-compatible endpoint.
 
-    S73. Both boxes hold qwen2.5:72b and neither ever calls it: llm_providers.py
+    S73. Both boxes held qwen2.5:72b and neither ever called it: llm_providers.py
     had no local backend at all, so 1,218 cloud calls went out in 7 days while
     two 47 GB models sat idle. This is the missing backend.
+
+    ★ S92 — THAT IS NO LONGER TRUE, AND THE STALE VERSION NEARLY COST A CLIENT
+    JOB. Since S78/S79, halftime_catalogue, halftime_routing and promise_detect
+    all call `call("ollama", ...)` EXPLICITLY, which bypasses available() (ollama
+    is absent from DEFAULT_ORDER, so available() never lists it — that gate stops
+    accidental ROUTING, not a deliberate call). The two boxes now differ:
+
+      CIRRUS  — ollama_url and ollama_model are ABSENT, so this raises
+                immediately and every caller escalates to cloud. The local
+                provider is genuinely unused here. Its 72B was deleted in S92.
+      CUMULUS — ollama_url is set and ollama_model IS qwen2.5:72b. Measured in
+                the live halftime snapshot: 120 entries "ollama (local)" vs 16
+                "anthropic (escalated)". That 47 GB model is doing ~88% of the
+                extraction on Justin's job. Deleting it would not crash anything
+                — it would silently convert every entity to a PAID Claude call
+                and peg the escalation-rate metric at 100%, which is worse than
+                a crash because nothing would report it.
+
+    So: before removing a local model, check `ollama_model` in that box's
+    credentials.json and the `extracted_by` counts in its output. Do not reason
+    from this docstring's first paragraph, which was true in S73 and is not now.
 
     It exists to be MEASURED, not to be routed to. Adding it to DEFAULT_ORDER,
     or to the council, is a separate decision that should follow evidence — see
