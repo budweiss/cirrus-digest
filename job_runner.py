@@ -198,6 +198,24 @@ def selftest() -> int:
     ck("a script outside the allowlist is refused",
        validate("j1", "rm_everything.py", []) != "")
     ck("an allowlisted script is accepted", validate("j1", "cirrus_daily.py", []) == "")
+
+    # ── argv dispatch (S95 regression) ──────────────────────────────────────
+    # The bug this pins: a job whose OWN argument is --selftest must still be
+    # launched. It used to run job_runner's selftest instead, exit 0, write no
+    # ledger entry, and leave the submitter printing "submitted".
+    ck("a job arg named --selftest does NOT hijack the dispatch",
+       parse_argv(["jid", "alopecia_brief.py", "--selftest"])
+       == ("run", ["jid", "alopecia_brief.py", "--selftest"]))
+    ck("a job arg named status does NOT hijack the dispatch",
+       parse_argv(["jid", "cirrus_daily.py", "status"])[0] == "run")
+    ck("selftest as argv[0] still works",
+       parse_argv(["--selftest"])[0] == "selftest"
+       and parse_argv(["selftest"])[0] == "selftest")
+    ck("status as argv[0] still works", parse_argv(["status"]) == ("status", []))
+    ck("status passes its job id through",
+       parse_argv(["status", "j9"]) == ("status", ["j9"]))
+    ck("too few args is usage, not a crash", parse_argv(["only-one"])[0] == "usage")
+    ck("no args is usage", parse_argv([])[0] == "usage")
     ck("a bad job id is refused", validate("../etc", "cirrus_daily.py", []) != "")
     ck("an argument with a shell metacharacter is refused",
        validate("j1", "cirrus_daily.py", ["; rm -rf /"]) != "")
@@ -243,16 +261,41 @@ def selftest() -> int:
     return 1 if bad else 0
 
 
-if __name__ == "__main__":
-    a = sys.argv[1:]
-    if "selftest" in a or "--selftest" in a:
-        sys.exit(selftest())
+def parse_argv(a):
+    """-> (action, rest). Only argv[0] selects the subcommand.
+
+    S95, found live: this was `if "selftest" in a or "--selftest" in a`, which
+    scanned the WHOLE argv -- including the arguments belonging to the job. So
+
+        job_runner.py alobrief-selftest alopecia_brief.py --selftest
+
+    ran job_runner's OWN selftest, exited 0, and never launched the job. No
+    ledger entry was written, so `cumulus-job-status` correctly said "no such
+    job" while the submitting runner had already printed "submitted". A job
+    that never ran rendered as a job that was fine -- the same failure shape as
+    T39/T50, one layer up.
+
+    Pure and argv-only so it can be tested without launching anything.
+    """
+    if a and a[0] in ("selftest", "--selftest"):
+        return "selftest", []
     if a and a[0] == "status":
-        print(status(a[1] if len(a) > 1 else None))
-        sys.exit(0)
+        return "status", a[1:]
     if len(a) < 2:
+        return "usage", []
+    return "run", a
+
+
+if __name__ == "__main__":
+    action, rest = parse_argv(sys.argv[1:])
+    if action == "selftest":
+        sys.exit(selftest())
+    if action == "status":
+        print(status(rest[0] if rest else None))
+        sys.exit(0)
+    if action == "usage":
         print("usage: job_runner.py <job_id> <script.py> [args...]"
               "   |   job_runner.py status [job_id]"
               "   |   job_runner.py selftest")
         sys.exit(2)
-    sys.exit(run_job(a[0], a[1], a[2:]))
+    sys.exit(run_job(rest[0], rest[1], rest[2:]))
