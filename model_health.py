@@ -164,13 +164,40 @@ def candidates_gemini(creds):
               if "generateContent" in m.get("supportedGenerationMethods", [])]
     except Exception:
         return []
-    bad = ("image", "tts", "audio", "vision", "embedding", "preview", "lyria",
-           "nano-banana", "deep-research")
-    flash = [m for m in ms if "flash" in m and not any(b in m for b in bad)]
-    # self-updating aliases first, then newest specific flash models
-    alias = [m for m in flash if m.endswith("latest")]
-    specific = sorted([m for m in flash if m not in alias], reverse=True)
-    return alias + specific
+    bad = ("image", "tts", "audio", "vision", "embedding", "lyria",
+           "nano-banana", "deep-research", "computer-use", "robotics",
+           "transcribe", "gemma")
+    usable = [m for m in ms if not any(b in m for b in bad)]
+
+    # S92 — TWO corrections, both of which this healer would otherwise have
+    # made worse rather than better.
+    #
+    # 1. STAY IN THE CONFIGURED TIER. This used to consider FLASH models only,
+    #    so a failing Pro model was "healed" by silently dropping to the budget
+    #    tier. Buddy moved both boxes OFF Flash on 2026-09-01 precisely because
+    #    its answers were unreliable in the client-facing council; a self-heal
+    #    that quietly puts it back is undoing a human decision without saying so.
+    #    If nothing in the same tier works, return NOTHING — model_health then
+    #    reports "broken (needs you)", which is the honest outcome. An alert
+    #    beats a silent downgrade.
+    #
+    # 2. PREFER A PINNED VERSION OVER A ROLLING ALIAS. This used to return
+    #    `alias + specific`, aliases FIRST. That is how a heal lands on
+    #    `gemini-flash-latest` — the exact rolling alias that rolled onto a
+    #    thinking model and broke cirrus-modelhealth every morning from
+    #    2026-08-31 (T55). A pinned name can be retired loudly; an alias
+    #    changes underneath you silently. Aliases are kept as a LAST resort,
+    #    because some key is better than none.
+    cur = (creds.get("gemini_model") or "")
+    want_flash = "flash" in cur
+    tier = [m for m in usable if ("flash" in m) == want_flash]
+    # A preview is acceptable only if that is already what we are running --
+    # never promote a stable config onto a preview behind the operator's back.
+    if "preview" not in cur:
+        tier = [m for m in tier if "preview" not in m]
+    alias = [m for m in tier if m.endswith("latest")]
+    specific = sorted([m for m in tier if m not in alias], reverse=True)
+    return specific + alias
 
 
 def candidates_grok(creds):
@@ -508,6 +535,45 @@ def selftest():
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
     _selftest_runtime(ck)
+
+    # ── S92: the self-heal must not undo a human's tier decision ─────────────
+    _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
+               "gemini-2.5-pro", "gemini-pro-latest", "gemini-3.1-pro-preview",
+               "gemini-3-pro-image", "text-embedding-004"]
+
+    def _cands(current):
+        # Patch THIS module's global, not `import model_health`'s. Run as
+        # __main__ that import yields a SECOND module object, so patching it
+        # leaves the _get these functions actually call untouched — the test
+        # would then hit the live API and quietly prove nothing.
+        saved = globals()["_get"]
+        globals()["_get"] = lambda url: {"models": [
+            {"name": "models/" + m, "supportedGenerationMethods": ["generateContent"]}
+            for m in _MODELS]}
+        try:
+            return candidates_gemini({"gemini_api_key": "x", "gemini_model": current})
+        finally:
+            globals()["_get"] = saved
+
+    pro = _cands("gemini-2.5-pro")
+    ck("a failing PRO model is never healed down to flash (Buddy's 2026-09-01 call)",
+       pro and not any("flash" in m for m in pro))
+    ck("  ...and a pinned version is preferred over a rolling alias (T55)",
+       pro and not pro[0].endswith("latest"))
+    ck("  ...and a stable config is not promoted onto a preview",
+       not any("preview" in m for m in pro))
+
+    fl = _cands("gemini-2.5-flash")
+    ck("a failing FLASH model still heals within flash", fl and all("flash" in m for m in fl))
+    ck("  ...pinned first there too", fl and not fl[0].endswith("latest"))
+    ck("  ...but the alias is still available as a last resort",
+       any(m.endswith("latest") for m in fl))
+
+    prev = _cands("gemini-3.1-pro-preview")
+    ck("a preview config MAY heal onto another preview (it is already there)",
+       all("flash" not in m for m in prev))
+    ck("image/embedding/robotics models are never candidates",
+       not any(("image" in m or "embedding" in m) for m in _cands("gemini-2.5-pro") + fl))
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
