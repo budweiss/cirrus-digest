@@ -553,6 +553,80 @@ def reset_failed(unit: str) -> str:
     return result
 
 
+def file_repair_ticket(unit: str, diagnosis: str) -> str:
+    """S91: file a REPAIR TICKET for a unit you cannot fix by restarting, so the
+    dev-loop can write an actual code fix. Call this when you have confirmed a
+    failed unit, tried restart_service, and it failed AGAIN — i.e. the fault is
+    in the code, not in the process being dead.
+
+    This is the difference between telling Buddy and getting it fixed. On
+    2026-08-31 cirrus-modelhealth failed on a 4-line code bug; every check and
+    escalation here worked correctly and it still waited two days, because a
+    restart cannot repair a deterministic defect and a Telegram is not a repair.
+
+    `diagnosis` should carry what you already gathered — what the unit does,
+    the failing line from tail_journal, what you tried and what it did. That
+    text is what the dev-loop builds against, so a vague body produces a vague
+    patch. Include the actual error, not a paraphrase of it.
+
+    Nothing ships from this. The ticket is risk-classified; at most it becomes
+    a patch that waits in `awaiting-confirm` for Buddy's one tap. Still send
+    Buddy a short send_telegram saying you filed it — he should know the repair
+    is queued, not be surprised by a build in the morning.
+    """
+    unit = _normalize_unit(unit)
+    # T11 — namespace gate. The unit name reaches a script that writes to the
+    # dev-loop's work queue, so it is matched against the same fixed set the
+    # restart/reset tools use. Refuse rather than fall back to a default.
+    if unit not in ALLOWED_UNITS:
+        result = (f"REFUSED: '{unit}' is not on the supervised unit list. "
+                  f"Use request_guidance for anything outside it.")
+        ledger_append({"event": "action", "tool": "file_repair_ticket",
+                       "tier_name": "refused", "detail": unit, "result": result})
+        return result
+    body = (diagnosis or "").strip()
+    if len(body) < 40:
+        # A ticket with no evidence sends the dev-loop to patch a symptom.
+        result = ("REFUSED: diagnosis too thin. Include what the unit does, the "
+                  "failing line from tail_journal, and what you already tried.")
+        ledger_append({"event": "action", "tool": "file_repair_ticket",
+                       "tier_name": "refused", "detail": unit, "result": result})
+        return result
+
+    # Argument-free by design: the payload goes on stdin so the sudoers grant is
+    # an exact path match with no `*` wildcard. That file's own header calls
+    # wildcard argument matching exploitable, and it is right.
+    r = subprocess.run(
+        ["sudo", "-n", "-u", "buddy", "/usr/local/sbin/cumulus_file_ticket.py"],
+        input=json.dumps({"unit": unit, "diagnosis": body}),
+        capture_output=True, text=True, timeout=60)
+    out = (r.stdout or r.stderr).strip()
+    if r.returncode != 0:
+        result = f"FAILED to file ticket: {out[:200]}"
+        ledger_append({"event": "action", "tool": "file_repair_ticket",
+                       "tier_name": "auto", "detail": unit, "result": result})
+        return result
+    try:
+        d = json.loads(out)
+    except Exception:
+        d = {}
+    if d.get("error"):
+        result = f"FAILED to file ticket: {d['error'][:200]}"
+    elif d.get("status") == "queued":
+        result = (f"filed {d.get('id','')} (tier {d.get('tier')} "
+                  f"{d.get('tier_name','')}) — the dev-loop will build it and it "
+                  f"will wait in awaiting-confirm for Buddy's tap.")
+    else:
+        # 'session' or 'refused' — dev_loop already told Buddy. Say so plainly
+        # rather than implying a build is coming.
+        result = (f"filed {d.get('id','')} as '{d.get('status','?')}' "
+                  f"(tier {d.get('tier')} {d.get('tier_name','')}) — NOT auto-buildable; "
+                  f"this one needs a working session with Buddy.")
+    ledger_append({"event": "action", "tool": "file_repair_ticket",
+                   "tier_name": "auto", "detail": unit, "result": result})
+    return result
+
+
 def request_opus_upgrade(reason: str) -> str:
     """S64: ask Buddy's permission to use Opus for the rest of THIS reasoning
     pass onward — call this if a task genuinely seems to need deeper
@@ -669,6 +743,46 @@ def selftest() -> bool:
               "halftime-routing.service"):
         ck(f"{u} is NOT auto-restartable (oneshot: a restart re-runs the job)",
            u not in ALLOWED_UNITS)
+
+    # S91 — file_repair_ticket is the first tool here that WRITES anything, so
+    # its gates are checked, not assumed. Every refusal below returns before any
+    # subprocess call, so these run off-box too.
+    #
+    # T32: a selftest must never write to a live path. These refusals ledger,
+    # and the ledger is /opt/cumulus-supervisor/state — so point it at a
+    # tempdir for the duration and put it back afterwards.
+    import ledger as _ledger
+    import tempfile as _tempfile
+    _saved = (_ledger.STATE_DIR, _ledger.LEDGER_JSONL, _ledger.LEDGER_MD)
+    with _tempfile.TemporaryDirectory() as _td:
+        _ledger.STATE_DIR = Path(_td)
+        _ledger.LEDGER_JSONL = Path(_td) / "ledger.jsonl"
+        _ledger.LEDGER_MD = Path(_td) / "CHANGES.md"
+        try:
+            ck("file_repair_ticket refuses a unit outside the allowlist",
+               file_repair_ticket("sshd.service", "x" * 80).startswith("REFUSED"))
+            ck("file_repair_ticket refuses a path/injection in the unit name",
+               file_repair_ticket("../../etc/passwd", "x" * 80).startswith("REFUSED"))
+            ck("file_repair_ticket refuses a diagnosis too thin to build against",
+               file_repair_ticket("cirrus-modelhealth.service", "it broke")
+               .startswith("REFUSED"))
+            # Prove the redirect actually took, rather than assuming it. If the
+            # patch silently missed, these refusals just wrote to the LIVE
+            # ledger and this check is the only thing that would notice.
+            ck("...and those refusals ledgered to the TEMP path, not the live one",
+               _ledger.LEDGER_JSONL.exists()
+               and _ledger.LEDGER_JSONL.read_text().count("file_repair_ticket") == 3)
+        finally:
+            _ledger.STATE_DIR, _ledger.LEDGER_JSONL, _ledger.LEDGER_MD = _saved
+    if src is not None:
+        # The grant must exist, and must NOT carry a wildcard: this file's own
+        # header calls sudoers wildcard argument matching exploitable, which is
+        # why the script takes no arguments at all.
+        tik = [ln for ln in src.splitlines()
+               if "cumulus_file_ticket.py" in ln and not ln.lstrip().startswith("#")]
+        ck("sudoers grants the repair-ticket filer", bool(tik))
+        ck("...with NO wildcard argument match",
+           bool(tik) and not any("*" in ln for ln in tik))
 
     ck("restart_service refuses a unit outside the allowlist",
        "not in ALLOWED_UNITS" in (restart_service.__doc__ or "") or True)

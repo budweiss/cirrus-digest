@@ -188,6 +188,20 @@ def _build_mcp_tools():
     async def _send_telegram(args):
         return {"content": [{"type": "text", "text": tools.send_telegram(args["message"])}]}
 
+    @tool("file_repair_ticket",
+          "File a repair ticket so the dev-loop can write an actual CODE FIX for a unit that a "
+          "restart cannot repair. Call this after you have confirmed a failed unit, tried "
+          "restart_service, and it failed again — that means the fault is in the code, not in a "
+          "dead process. Pass the diagnosis you already gathered (what the unit does, the failing "
+          "line from tail_journal, what you tried); that text is what gets built against. Nothing "
+          "ships from this: at most it becomes a patch awaiting Buddy's one tap. Send him a short "
+          "send_telegram as well, so he knows the repair is queued.",
+          {"unit": str, "diagnosis": str})
+    async def _file_repair_ticket(args):
+        return {"content": [{"type": "text",
+                              "text": tools.file_repair_ticket(args["unit"],
+                                                               args["diagnosis"])}]}
+
     @tool("request_opus_upgrade",
           "Ask Buddy's permission (via Telegram) to use Opus starting next pass, for a task that "
           "genuinely seems to need deeper reasoning than Sonnet can give it", {"reason": str})
@@ -208,7 +222,7 @@ def _build_mcp_tools():
             _check_thread_stalls, _check_high_value_field_overwrites,
             _check_intake_health,
             _check_credentials_health, _check_cirrus_timemachine,
-            _restart_service, _reset_failed, _send_telegram,
+            _restart_service, _reset_failed, _file_repair_ticket, _send_telegram,
             _request_opus_upgrade, _request_guidance]
 
 

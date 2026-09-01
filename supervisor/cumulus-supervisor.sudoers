@@ -57,3 +57,26 @@ cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_creds_health.py
 # grants WRITE on the app checkout to a read-only agent.
 cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_client_watch.py, \
     /usr/local/sbin/cumulus_client_watch.py [0-9]*
+
+# S91 — repair-ticket filer. Same shape and same reason as the two probes above:
+# it imports dev_loop from /home/buddy, which this account cannot traverse.
+#
+# Unlike those two, this one WRITES, so the narrowing matters more:
+#   * NO ARGUMENTS AT ALL, so this grant needs no wildcard (see this file's
+#     header — wildcard argument matching is exploitable). The payload arrives
+#     on stdin, which also keeps a journal excerpt out of the world-readable
+#     process table.
+#   * It appends to ONE file, the dev-loop ticket queue, and can do nothing
+#     else. requester, origin and project are hardcoded in the script, so a
+#     ticket cannot be filed under another identity or aimed at another project.
+#   * Root-owned, mode 755, outside supervisor/app/ — cumulus-supervisor cannot
+#     edit it, so this is not arbitrary code execution as buddy.
+#
+# Why it exists: on 2026-08-31 cirrus-modelhealth failed on a code bug. Every
+# check and escalation in this agent worked correctly and it still waited two
+# days, because restart_service is the only repair on the allowlist and a
+# Telegram is not a repair. This gives the agent a way to file WORK.
+#
+# Filing is not shipping. dev_loop risk-classifies the ticket; at most it
+# becomes a patch waiting in awaiting-confirm for Buddy's one tap.
+cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_file_ticket.py

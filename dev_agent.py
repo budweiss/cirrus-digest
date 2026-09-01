@@ -1714,6 +1714,51 @@ def selftest() -> bool:
     def ck(name, cond):
         checks.append((name, bool(cond)))
 
+    # ── S91: repair-ticket promotion. T32 — a tempdir, never the live queue. ──
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _td:
+        _pd = Path(_td)
+        (_pd / "logs/dev-loop").mkdir(parents=True)
+        _tickets = _pd / "logs/dev-loop/ticket-queue.jsonl"
+
+        def _mk(tid, status, tier, detail="cirrus-modelhealth.service exits 1: "
+                                          "KeyError 'parts' in llm_providers._gemini"):
+            return json.dumps({
+                "id": tid, "created": "2026-09-01 05:32:00", "requester": "skywarden",
+                "title": "cirrus-modelhealth.service is failing", "detail": detail,
+                "tier": tier, "status": status,
+                "dev_spec": {"id": f"spec-{tid}", "type": "USER_REQUEST", "tier": tier},
+            })
+
+        _tickets.write_text("\n".join([
+            _mk("t-queued-1", "queued", dev_loop.TIER_CONFIRM),
+            _mk("t-session", "session", dev_loop.TIER_DESIGN),
+            _mk("t-refused", "refused", dev_loop.TIER_NEVER),
+            _mk("t-tier0", "queued", dev_loop.TIER_AUTO),
+        ]) + "\n")
+
+        # No CUMULUS in the selftest: it must never open a network connection.
+        _real_remote = globals()["_read_tickets_cumulus"]
+        globals()["_read_tickets_cumulus"] = lambda: None
+        try:
+            n1 = promote_tickets(_pd)
+            ck("a queued Tier-1 ticket is promoted to the build queue", n1 == 1)
+            _q = [r for r in queue_load(_pd)]
+            ck("  ...and only that one — session/refused/Tier-0 are left alone",
+               len(_q) == 1 and
+               (_q[0].get("item") or {}).get("source") == "ticket:t-queued-1")
+            ck("  ...carrying the fields may_build re-classifies from",
+               all(k in (_q[0].get("item") or {})
+                   for k in ("type", "detail", "source_line", "dev_spec")))
+            n2 = promote_tickets(_pd)
+            ck("promotion is IDEMPOTENT — a second sweep re-files nothing", n2 == 0)
+            ck("  ...and the queue still holds exactly one row", len(queue_load(_pd)) == 1)
+            ck("an unreachable CUMULUS returns None, not an empty list "
+               "(silent zero == 'nothing to file')",
+               _read_tickets_cumulus() is None)
+        finally:
+            globals()["_read_tickets_cumulus"] = _real_remote
+
     F = {"a.py": "import os\ndef one():\n    return 1\ndef two():\n    return 2\n"}
 
     ok, _, ch = plan_edits(F, [{"path": "a.py", "find": "return 1", "replace": "return 11"}])
@@ -2007,8 +2052,119 @@ def _log_job(name, ok, note=""):
 
 
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
+# ── Repair tickets -> build queue (S91) ───────────────────────────────────────
+# Buddy, 2026-09-01: "we spent 25% of our allotted time working on fixing
+# issues." The instructive case was cirrus-modelhealth, which failed every
+# morning from 2026-08-31 on a four-line code bug. Skywarden (the CUMULUS
+# supervisor) detected it, diagnosed it, tried a restart, saw the restart fail,
+# and told Buddy — all correct, all within two minutes, for $0.28. Then it sat
+# for two days, because a restart cannot repair a deterministic defect and the
+# agent had no way to hand the problem to something that writes code.
+#
+# dev_loop has had ticket_create since S36, and said so in its own source:
+# "dev_agent does not read tickets yet." This is that wiring. A ticket filed by
+# the supervisor becomes an ordinary Tier-1 build item and goes through every
+# existing gate unchanged — classify, may_build, compile, dry-run, council —
+# and lands in awaiting-confirm for Buddy's tap. Nothing here ships anything.
+CUMULUS_TICKET_HOST = "buddy@192.168.0.204"
+CUMULUS_TICKET_PATH = "~/cirrus-digest/logs/dev-loop/ticket-queue.jsonl"
+
+
+def _read_tickets_local(project_dir=None):
+    tf = dev_loop._ticket_path(Path(project_dir) if project_dir else PROJECT_DIR)
+    if not tf.exists():
+        return []
+    out = []
+    for line in tf.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
+
+
+def _read_tickets_cumulus():
+    """CUMULUS's ticket queue, over the existing CIRRUS->cumulus1 SSH link.
+
+    Best-effort ON PURPOSE: the builder lives here, but the supervisor that
+    files most repair tickets lives there. If the link is down we log it and
+    build what we can — a cross-box read failing must never stop CIRRUS's own
+    nightly sweep. It is reported, not swallowed: a silent zero here would look
+    exactly like 'CUMULUS had nothing to file', which is the failure shape this
+    whole session kept finding.
+    """
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             CUMULUS_TICKET_HOST, f"cat {CUMULUS_TICKET_PATH} 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=45)
+    except Exception as e:  # noqa: BLE001
+        _log(f"tickets: CUMULUS unreadable ({type(e).__name__}) — built CIRRUS's only")
+        return None
+    if r.returncode != 0:
+        _log(f"tickets: CUMULUS unreadable (ssh rc={r.returncode}) — built CIRRUS's only")
+        return None
+    out = []
+    for line in (r.stdout or "").splitlines():
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
+
+
+def promote_tickets(project_dir=None):
+    """Promote queued Tier-1 tickets into the build queue. Returns how many.
+
+    Idempotent: a ticket whose dev_spec id is already queued or already has a
+    build record is skipped, so running this every night never re-files one.
+    """
+    known = {(r.get("item") or {}).get("dev_spec", {}).get("id")
+             for r in queue_load(project_dir)}
+    known |= {b.get("id") for b in builds_load(project_dir)}
+    known.discard(None)
+
+    tickets = list(_read_tickets_local(project_dir))
+    remote = _read_tickets_cumulus()
+    if remote:
+        tickets += remote
+
+    n = 0
+    for t in tickets:
+        if t.get("status") != "queued":
+            continue                      # 'session'/'refused' need a human
+        spec = t.get("dev_spec") or {}
+        if spec.get("tier") != dev_loop.TIER_CONFIRM:
+            continue                      # Tier-0/2 are not dev_agent's to build
+        if spec.get("id") in known:
+            continue
+        item = {
+            "type": "USER_REQUEST",
+            "detail": t.get("detail", ""),
+            "source_line": t.get("title", ""),
+            "why": f"repair ticket filed by {t.get('requester','?')}",
+            "source": f"ticket:{t.get('id','')}",
+            "added": str(t.get("created", ""))[:10],
+            "status": "approved",
+            "dev_spec": spec,
+        }
+        if not may_build(item):
+            # The ticket classified Tier-1 when filed but does not now. Trust
+            # the stricter answer and say so — never widen at pickup time.
+            _log(f"tickets: {spec.get('id')} no longer classifies Tier-1, skipped")
+            continue
+        queue_append(item, project_dir)
+        known.add(spec.get("id"))
+        n += 1
+        _log(f"tickets: promoted {spec.get('id')} — {item['source_line'][:60]}")
+    if n:
+        _log(f"tickets: {n} repair ticket(s) promoted into the build queue")
+    return n
+
+
 def run_nightly():
     _log("nightly sweep start")
+    promote_tickets()
     todo = find_buildable()
     if not todo:
         evaluate_empty_night()      # S71: is an empty queue the RIGHT outcome?
