@@ -1725,16 +1725,26 @@ def selftest() -> bool:
                                           "KeyError 'parts' in llm_providers._gemini"):
             return json.dumps({
                 "id": tid, "created": "2026-09-01 05:32:00", "requester": "skywarden",
+                "origin": "skywarden-repair",
                 "title": "cirrus-modelhealth.service is failing", "detail": detail,
                 "tier": tier, "status": status,
                 "dev_spec": {"id": f"spec-{tid}", "type": "USER_REQUEST", "tier": tier},
             })
+
+        def _mk_client(tid):
+            """An S36 end-user intake ticket — queued, Tier-1, and NOT ours."""
+            d = json.loads(_mk(tid, "queued", dev_loop.TIER_CONFIRM))
+            d["origin"] = "ticket"
+            d["requester"] = "bill"
+            d["title"] = "Re: Pennrose PA — Snow-Removal Bid Package research"
+            return json.dumps(d)
 
         _tickets.write_text("\n".join([
             _mk("t-queued-1", "queued", dev_loop.TIER_CONFIRM),
             _mk("t-session", "session", dev_loop.TIER_DESIGN),
             _mk("t-refused", "refused", dev_loop.TIER_NEVER),
             _mk("t-tier0", "queued", dev_loop.TIER_AUTO),
+            _mk_client("t-client-email"),
         ]) + "\n")
 
         # No CUMULUS in the selftest: it must never open a network connection.
@@ -1744,6 +1754,9 @@ def selftest() -> bool:
             n1 = promote_tickets(_pd)
             ck("a queued Tier-1 ticket is promoted to the build queue", n1 == 1)
             _q = [r for r in queue_load(_pd)]
+            ck("  ...and a CLIENT intake ticket in the same queue is NOT built",
+               not any((r.get("item") or {}).get("source") == "ticket:t-client-email"
+                       for r in queue_load(_pd)))
             ck("  ...and only that one — session/refused/Tier-0 are left alone",
                len(_q) == 1 and
                (_q[0].get("item") or {}).get("source") == "ticket:t-queued-1")
@@ -2131,6 +2144,22 @@ def promote_tickets(project_dir=None):
 
     n = 0
     for t in tickets:
+        # ONLY repair tickets. This filter is the whole safety of this function.
+        #
+        # The ticket queue is SHARED with the S36 end-user direct-intake path,
+        # and it already held ten tickets on the day this shipped — old client
+        # email threads (a Pennrose snow-removal bid, Bill's Delaware leads,
+        # Justin's halftime research) plus two literal "test question" rows.
+        # Eight of them were status=queued and Tier-1, so without this line the
+        # first nightly sweep would have handed dev_agent a client email and
+        # asked it to write a code patch for it. Measured on CIRRUS before the
+        # first unattended run, not guessed at.
+        #
+        # `origin` is set by the filer, not by the ticket's author, and the
+        # privileged script hardcodes it — so this cannot be spoofed from
+        # outside. Anything else in this queue keeps whatever behaviour it had.
+        if t.get("origin") != "skywarden-repair":
+            continue
         if t.get("status") != "queued":
             continue                      # 'session'/'refused' need a human
         spec = t.get("dev_spec") or {}
