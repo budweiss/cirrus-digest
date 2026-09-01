@@ -47,7 +47,19 @@ DRY = "--dry-run" in sys.argv
 # string at max_tokens=5 and answers "OK" from 20 up — measured on CIRRUS,
 # 2026-08-24. A probe tighter than the smallest model's reasoning preamble
 # reports a healthy provider as broken every single day.
-PROBE_TOKENS = 64
+# S91 (2026-09-01): 64 was itself too tight, one provider over. gemini-flash-latest
+# is a THINKING model and draws thinking tokens from the same budget before it
+# emits any text: measured on cumulus1 over 12 runs it spent 51-61 tokens
+# thinking on this very prompt, so 5 of 12 probes came back with NO text and
+# cirrus-modelhealth reported a healthy Gemini as broken every morning from
+# 2026-08-31. Note the shape: not a clean break but a ~40% flaky one, which is
+# why it read as intermittent rather than as a bad constant.
+#
+# 512 is ~8x the largest thinking preamble measured, and the probe is five calls
+# a day in total, so headroom here costs effectively nothing while a too-tight
+# budget costs a false alarm every single morning. If this ever needs raising a
+# THIRD time, stop ratcheting and drop thinking from the probe instead.
+PROBE_TOKENS = 512
 
 # provider -> the credentials.json field holding its model
 MODEL_FIELD = {

@@ -167,8 +167,30 @@ def _gemini(creds, system, user, max_tokens):
          "contents": [{"role": "user", "parts": [{"text": user}]}],
          "generationConfig": {"maxOutputTokens": max_tokens}},
     )
-    return "".join(p.get("text", "")
-                   for p in resp["candidates"][0]["content"]["parts"])
+    # S91: this was `resp["candidates"][0]["content"]["parts"]`, unguarded.
+    # A candidate that finished on MAX_TOKENS (or a safety block) carries a
+    # `content` with NO `parts` at all, so the KeyError surfaced as the bare
+    # string 'parts' — an error message that names neither the provider, the
+    # cause, nor the fix. cirrus-modelhealth failed on it every morning from
+    # 2026-08-31 and said only "errored: gemini=...: 'parts'".
+    #
+    # Why it started: gemini-flash-latest is a THINKING model, and thinking
+    # tokens are drawn from maxOutputTokens before any text is emitted. On the
+    # health probe's trivial prompt it spends 51-61 tokens thinking (measured
+    # on cumulus1, 2026-09-01, 12 runs), so a 64-token budget left room for the
+    # answer only about half the time — 5 of 12 runs came back with no parts.
+    # Same class as the S74/S75 DeepSeek finding, one provider over.
+    cand = (resp.get("candidates") or [{}])[0]
+    parts = ((cand.get("content") or {}).get("parts")) or []
+    if not parts:
+        usage = resp.get("usageMetadata") or {}
+        raise ProviderError(
+            f"gemini returned no content: finishReason="
+            f"{cand.get('finishReason')!r}, "
+            f"{usage.get('thoughtsTokenCount', 0)} thinking token(s) of a "
+            f"{max_tokens}-token budget. If this is MAX_TOKENS the budget is "
+            f"below the model's thinking preamble — raise max_tokens.")
+    return "".join(p.get("text", "") for p in parts)
 
 
 def _grok(creds, system, user, max_tokens):
