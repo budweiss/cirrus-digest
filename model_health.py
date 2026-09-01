@@ -220,6 +220,109 @@ def node_name():
         return "CIRRUS"
 
 
+# ── Local runtime drift (S91) ─────────────────────────────────────────────────
+# Buddy, 2026-09-01: "is there any reason our agents running on Cirrus and Cumulus
+# can test for this at least once or twice a week instead of us finding this now?"
+#
+# Fair hit. This file has watched the five PAID API providers daily since S56 and
+# even self-heals a retired model — but nothing watched the LOCAL runtime. CIRRUS
+# sat on ollama 0.24.0 while 0.33.2 shipped, and we only found out because a
+# model refused to pull and blocked a benchmark. That is the same class of gap
+# this file already exists to close, one layer down.
+#
+# Deliberately REPORT-ONLY. Upgrading a runtime that serves the 02:00 digest is
+# not a self-heal: today's upgrade needed a symlink swap, a 650 MB tree, and a
+# rollback when the first attempt broke generation. Detection is automatic;
+# the upgrade stays a decision.
+RUNTIME_STATE = HERE / "logs" / "runtime-drift.json"
+OLLAMA_RELEASES = "https://api.github.com/repos/ollama/ollama/releases/latest"
+
+
+def _installed_ollama():
+    """Version of the ollama BINARY, not of whatever server happens to answer.
+
+    `ollama --version` queries the running server, so it reports the SERVER's
+    version regardless of which binary you hand it — that is exactly how S91's
+    upgrade "verified" a new binary and printed the old version back. Pointing
+    OLLAMA_HOST at a dead port makes it report the client's own version.
+    """
+    import subprocess
+    for exe in ("/usr/local/bin/ollama", "/usr/bin/ollama", "ollama"):
+        try:
+            env = dict(os.environ, OLLAMA_HOST="127.0.0.1:1")
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                               timeout=20, env=env)
+            m = re.search(r"client version is ([0-9][0-9.]*)", r.stdout + r.stderr)
+            if m:
+                return m.group(1)
+            m = re.search(r"version is ([0-9][0-9.]*)", r.stdout + r.stderr)
+            if m:
+                return m.group(1)
+        except Exception:
+            continue
+    return ""
+
+
+def _latest_ollama():
+    try:
+        req = urllib.request.Request(
+            OLLAMA_RELEASES, headers={"User-Agent": "cirrus-modelhealth"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return (json.loads(r.read().decode()).get("tag_name") or "").lstrip("v")
+    except Exception:
+        return ""
+
+
+def _ver_tuple(v):
+    out = []
+    for part in (v or "").split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out + [0, 0, 0])[:3]
+
+
+def check_local_runtime():
+    """(line, should_notify). Never raises — a drift check must not break the
+    health run it rides along with."""
+    try:
+        cur = _installed_ollama()
+        if not cur:
+            return ("ollama: NOT INSTALLED or unreadable on this box", False)
+        latest = _latest_ollama()
+        if not latest:
+            # Say so. An unreachable release API is not "up to date" — that
+            # silent-zero reading is the failure this whole file guards against.
+            return (f"ollama {cur} installed; latest UNKNOWN (release API "
+                    f"unreachable) — drift not checked", False)
+        if _ver_tuple(cur) >= _ver_tuple(latest):
+            return (f"ollama {cur} — current (latest {latest})", False)
+
+        line = f"ollama {cur} is BEHIND latest {latest}"
+        # Notify once per NEW upstream release, not once per day. A finding that
+        # repeats every morning while nobody acts is how an alert channel gets
+        # muted -- and this one would repeat for weeks by design, since the fix
+        # is a deliberate upgrade rather than a self-heal.
+        prev = {}
+        try:
+            prev = json.loads(RUNTIME_STATE.read_text())
+        except Exception:
+            pass
+        notify = prev.get("notified_latest") != latest
+        if notify:
+            try:
+                RUNTIME_STATE.parent.mkdir(parents=True, exist_ok=True)
+                RUNTIME_STATE.write_text(json.dumps(
+                    {"notified_latest": latest, "installed": cur,
+                     "at": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
+            except Exception:
+                pass
+        return (line, notify)
+    except Exception as e:  # noqa: BLE001
+        return (f"ollama drift check failed: {type(e).__name__}: {e}", False)
+
+
 def main():
     creds = load()
     providers = L.available(creds)
@@ -270,8 +373,11 @@ def main():
         else:
             broken.append(f"{p}={shown}: no working replacement found ({err[:80]})")
 
+    runtime_line, runtime_notify = check_local_runtime()
+
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
+    print(f"  runtime: {runtime_line}")
     for label, items in (("healthy", healthy), ("healed", healed),
                          ("broken", broken), ("needs_funding", needs_funding),
                          ("errored", errored)):
@@ -279,7 +385,7 @@ def main():
             print(f"  {label}: {it}")
 
     # Notify only when something needs attention or changed.
-    if healed or broken or errored or needs_funding:
+    if healed or broken or errored or needs_funding or runtime_notify:
         lines = [f"🩺 *{node_name()} model-health*"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
@@ -293,13 +399,19 @@ def main():
             lines += ["*BROKEN (needs you):*"] + [f"• {b}" for b in broken]
         if errored:
             lines += ["*errors (no change):*"] + [f"• {e}" for e in errored]
+        if runtime_notify:
+            lines += ["*local runtime is behind:*", f"• {runtime_line}",
+                      "_Report only — upgrading the runtime that serves the digest "
+                      "is a decision, not a self-heal. You are told once per new "
+                      "upstream release, not daily._"]
         tg("\n".join(lines))
 
     # Run-status ledger (best-effort).
     try:
         import job_status
         note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
-                f"{len(needs_funding)} needs-funding, {len(errored)} err")
+                f"{len(needs_funding)} needs-funding, {len(errored)} err; "
+                f"{runtime_line}")
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding),
                           note=note)
@@ -307,6 +419,61 @@ def main():
         pass
 
     sys.exit(1 if (broken or errored or needs_funding) else 0)
+
+
+def _selftest_runtime(ck):
+    """S91 — the drift comparator and the once-per-release notify rule."""
+    ck("a newer installed version is not 'behind'",
+       _ver_tuple("0.33.2") >= _ver_tuple("0.24.0"))
+    ck("0.24.0 IS behind 0.33.2 (the real case)",
+       _ver_tuple("0.24.0") < _ver_tuple("0.33.2"))
+    ck("equal versions are current", _ver_tuple("1.2.3") >= _ver_tuple("1.2.3"))
+    # 9 vs 10 must not compare as strings, or "0.9.0" reads as newer than "0.10.0".
+    ck("version compare is NUMERIC, not lexical",
+       _ver_tuple("0.9.0") < _ver_tuple("0.10.0"))
+    ck("a short version still parses", _ver_tuple("1") == (1, 0, 0))
+    ck("junk does not raise", _ver_tuple("not.a.version") == (0, 0, 0))
+
+    # The unreachable-API case must NOT read as "up to date". A silent zero here
+    # is the exact failure this file exists to catch, one layer down.
+    import tempfile as _tf
+    global RUNTIME_STATE
+    _saved_state, _saved_latest = RUNTIME_STATE, globals()["_latest_ollama"]
+    _saved_installed = globals()["_installed_ollama"]
+    with _tf.TemporaryDirectory() as td:
+        RUNTIME_STATE = Path(td) / "runtime-drift.json"
+        try:
+            globals()["_installed_ollama"] = lambda: "0.24.0"
+            globals()["_latest_ollama"] = lambda: ""
+            line, notify = check_local_runtime()
+            ck("an unreachable release API says UNKNOWN, not 'current'",
+               "UNKNOWN" in line and not notify)
+
+            globals()["_latest_ollama"] = lambda: "0.33.2"
+            line, notify = check_local_runtime()
+            ck("being behind is reported AND notified the first time",
+               "BEHIND" in line and notify)
+            line, notify = check_local_runtime()
+            ck("  ...but NOT notified again for the same release (no daily nagging)",
+               "BEHIND" in line and not notify)
+
+            globals()["_latest_ollama"] = lambda: "0.34.0"
+            line, notify = check_local_runtime()
+            ck("  ...and IS notified again when a NEW release appears", notify)
+
+            globals()["_installed_ollama"] = lambda: "0.34.0"
+            line, notify = check_local_runtime()
+            ck("once upgraded it reports current and stops notifying",
+               "current" in line and not notify)
+
+            globals()["_installed_ollama"] = lambda: ""
+            line, notify = check_local_runtime()
+            ck("a missing ollama is said out loud, not skipped",
+               "NOT INSTALLED" in line and not notify)
+        finally:
+            RUNTIME_STATE = _saved_state
+            globals()["_latest_ollama"] = _saved_latest
+            globals()["_installed_ollama"] = _saved_installed
 
 
 def selftest():
@@ -335,11 +502,21 @@ def selftest():
         ok = (m == exp_model) and (f == exp_fund)
         print(f"  [{'OK ' if ok else 'FAIL'}] model={m} funding={f} :: {txt[:50]}")
         fails += 0 if ok else 1
+    # S91 — the local-runtime drift check rides along here.
+    def ck(name, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        fails += 0 if cond else 1
+    _selftest_runtime(ck)
+
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 
 
 if __name__ == "__main__":
-    if "selftest" in sys.argv:
+    # S91: accepted only a bare `selftest`, while every other module in this
+    # repo (dev_agent, dev_loop, supervisor/tools) uses `--selftest` — so the
+    # obvious invocation ran MAIN against a live box instead of the tests.
+    if "selftest" in sys.argv or "--selftest" in sys.argv:
         sys.exit(selftest())
     main()
