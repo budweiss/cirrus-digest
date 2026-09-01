@@ -3,23 +3,33 @@
   "tasks": [
     {
       "name": "summarize",
-      "desc": "Digest lane — concise, faithful summarization (email/podcast/YouTube).",
+      "desc": "Digest lane \u2014 concise, faithful summarization (email/podcast/YouTube).",
       "prompt": "Summarize the following article in 2-3 sentences for a technical daily digest, then on a new line rate its AI-relevance as HIGH, MEDIUM, or LOW with a 6-word reason.\n\nArticle: A startup called Laguna today released Laguna XS 2.1, a 2.6-billion-parameter open-weight model that supports tool calling and a 128K context window. On a single consumer GPU it runs at roughly 60 tokens per second in Q4_K_M. The team says it targets on-device agents and edge deployments, and published GGUF weights under an Apache-2.0 license. Benchmarks show it trailing frontier models on reasoning but competitive on structured function-calling tasks."
     },
     {
       "name": "code_website",
-      "desc": "Website lane — build/maintain sites; small self-contained coding task.",
+      "desc": "Website lane \u2014 build/maintain sites; small self-contained coding task.",
       "prompt": "Write a single self-contained HTML file with inline CSS (no external libraries) for a responsive pricing section with three cards (Basic, Pro, Enterprise). It must use CSS grid, collapse to one column under 640px, and highlight the Pro card. Output only the code."
     },
     {
       "name": "reason_plan",
-      "desc": "Reasoning/planning — instruction following over a multi-step task.",
+      "desc": "Reasoning/planning \u2014 instruction following over a multi-step task.",
       "prompt": "You run a nightly job that (a) fetches 80 articles, (b) summarizes each with a local LLM, (c) emails a digest at 7am. Summarization is the bottleneck at 8s/article. List the 3 highest-impact changes to cut total wall-clock time, each with a one-sentence justification and the expected risk. Be specific and concise."
     },
     {
       "name": "tool_json",
-      "desc": "Voice/agent lane — strict structured output for tool calls.",
+      "desc": "Voice/agent lane \u2014 strict structured output for tool calls.",
       "prompt": "Extract the action from this request and return ONLY valid minified JSON with keys action, target, datetime_iso, notes. Request: 'Call Bill's office tomorrow at 2:30pm to confirm the snow contract and mention the salt price change.' Assume today is 2026-08-04. No prose, JSON only."
+    },
+    {
+      "name": "reason_plan_b",
+      "desc": "Reasoning/planning B (S92) \u2014 diagnose a contradiction, not just optimise a number. Added so the reason_plan finding does not rest on a single prompt.",
+      "prompt": "A nightly job that scrapes 9 local venue sites for concert listings reports \"0 of 9 shows inside the window\" for one city. Its log shows that 2 of that city's 3 sources returned HTTP 403 on the same run. The other 8 cities returned between 1 and 62 shows each.\n\nGive the 3 most likely explanations, ranked by probability. For EACH: state the single cheapest check that would confirm or eliminate it, and say what result would make you rule it out. Be specific about what to measure. Do not propose fixing anything yet."
+    },
+    {
+      "name": "reason_plan_c",
+      "desc": "Reasoning/planning C (S92) \u2014 a trade-off with no clean answer, to test whether the model commits and justifies rather than listing options.",
+      "prompt": "A daily digest job runs at 02:00 and must finish before a 07:30 email. It currently takes 25 minutes, summarising 178 items with a 9 GB local model at about 3 seconds each. A 17 GB model produces noticeably richer summaries but takes about 47 seconds per item.\n\nRecommend ONE course of action and defend it. State the arithmetic behind your recommendation, name the single assumption most likely to make you wrong, and describe the cheapest experiment that would test that assumption before committing."
     }
   ]
 }
