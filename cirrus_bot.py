@@ -2089,8 +2089,12 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
     if text == "approve all":
         note_count = sum(1 for item in active if item["type"] == "CIRRUS_NOTE")
         if note_count:
+            # S92: said "via qwen2.5:72b". MODEL is read from sources.json
+            # (qwen2.5:14b on CIRRUS) and has been for some time, so this told
+            # Buddy the wrong model every time — and once the 72B was deleted it
+            # named a model the box does not have. Report the model actually used.
             send_message(chat_id, f"⏳ Approving {len(active)} items, including {note_count} CIRRUS notes — "
-                                   f"each note drafts a proposal via qwen2.5:72b, this may take several minutes total...")
+                                   f"each note drafts a proposal via {MODEL}, this may take several minutes total...")
         results = []
         for item in active:
             item["status"] = "approved"
@@ -2109,7 +2113,7 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
             save_pending(pending)
             if action == "approve":
                 if item["type"] == "CIRRUS_NOTE":
-                    send_message(chat_id, "⏳ Drafting implementation proposal via qwen2.5:72b — this can take a couple minutes...")
+                    send_message(chat_id, f"⏳ Drafting implementation proposal via {MODEL} — this can take a couple minutes...")
                 return execute_action(item)
             else:
                 return f"❌ Rejected: `{item['detail']}`"
