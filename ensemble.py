@@ -325,6 +325,22 @@ def selftest():
                              if c.get(p + "_api_key")]
     L.call = lambda prov, s, u, c, max_tokens=0: '{"answer": 1, "note": "reconciled"}'
 
+    # S95: keep_answers is the EVIDENCE behind alopecia_brief's claim that a
+    # council disagreement was surfaced rather than smoothed by the judge. If it
+    # silently stopped populating, the brief would still render and the audit
+    # file would just be missing -- a silent loss of the thing that makes the
+    # claim checkable. Both directions are pinned, because the default must stay
+    # off: several callers log meta and would have their logs bloated.
+    mk, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}),
+                        keep_answers=True)
+    check("keep_answers returns the raw member answers", len(mk.get("answers") or []) == 3)
+    check("...as (provider, text) pairs, not just names",
+          all(isinstance(x, tuple) and len(x) == 2 for x in mk["answers"]))
+    check("...and they are the COUNCIL's text, not the judge's",
+          dict(mk["answers"])["openai"] == '{"answer": 2}')
+    md, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
+    check("default does NOT carry answers (callers log meta)", "answers" not in md)
+
     m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "single"}))
     check("single mode -> passthrough text", t == "single-answer")
     check("single mode -> not degraded", m["degraded"] is False)
