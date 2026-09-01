@@ -103,6 +103,14 @@ CADENCE_H = {
     # MAX_AGE row for a job that never records is a permanent false OVERDUE,
     # which is the REMOTE_JOBS trap described a few lines below.
     "devloopyield":     26,
+    # S95 ALOPECIA P2. Weekly Fri 07:00 CUMULUS. 24*8 so a single missed Friday
+    # shows before the next one is due. Registered in the same change that armed
+    # the timer (T44) -- and this project is exactly why that rule exists: the
+    # brief was DATE-CONFIRMED for 2026-09-01, nothing sent, and nothing noticed
+    # until Buddy asked. main() calls job_status.record on both the sent and the
+    # send_guard-blocked path, so this row can never become a permanent false
+    # OVERDUE for a job that simply never records.
+    "alopeciabrief":    24 * 8,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -117,7 +125,8 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  # forever and trains us to ignore the overdue signal.
                  "opportunityscout", "halftimecatalogue", "halftimerouting",
                  "cumulusdailybrief", "entitykbdigest",
-                 "alopeciacollect"}                        # S82, runs on CUMULUS
+                 "alopeciacollect",                       # S82, runs on CUMULUS
+                 "alopeciabrief"}                         # S95, runs on CUMULUS
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 

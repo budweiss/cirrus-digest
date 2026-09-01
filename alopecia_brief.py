@@ -435,6 +435,10 @@ def main(argv):
     blocked = send_guard.already_sent_today(SEND_JOB)
     if blocked:
         log(send_guard.blocked_message(SEND_JOB, blocked))
+        # Still a HEALTHY run: today's brief did go out, this is a rerun. Not
+        # recording here would let the watchdog call the job overdue for a week
+        # on the strength of a guard doing its job.
+        _record("already sent today — guard held the rerun", ok=True)
         return 0
 
     import mailer
@@ -446,7 +450,29 @@ def main(argv):
     send_guard.mark_sent(SEND_JOB, subject)
     save_state(state_update)
     log("sent to %s and advanced state to %s" % (TO_EMAIL, state_update["last_brief_day"]))
+    # Only AFTER a send that did not raise. mailer.send defaults to
+    # on_error="raise", so a failed send never reaches this line and the job
+    # goes stale in the watchdog -- which is the correct signal. This whole
+    # project exists because a brief silently did not arrive.
+    # ok=True even on a degraded council: the health question for THIS job is
+    # "did the brief go out", and it did. A degraded run is reported where it
+    # belongs -- as a banner in the brief itself, and in this note -- rather
+    # than as a red job for a brief that was delivered. A check that cries wolf
+    # stops being read.
+    _record("brief #%d sent, %d item(s), council %s%s" % (
+        state_update["count"], len(items),
+        ",".join(meta.get("members") or []) or "none",
+        " [DEGRADED: %s]" % meta.get("reason") if meta.get("degraded") else ""))
     return 0
+
+
+def _record(note, ok=True):
+    """Best-effort watchdog ping. Never turns bookkeeping into a failed send."""
+    try:
+        import job_status
+        job_status.record("alopeciabrief", ok, note)
+    except Exception as e:
+        print("job_status.record failed: %s" % e)
 
 
 _HTML_SHELL = """<!DOCTYPE html><html><head><style>
