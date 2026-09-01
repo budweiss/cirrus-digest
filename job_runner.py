@@ -55,6 +55,7 @@ ALLOWED_SCRIPTS = {
     "model_bench.py",
     "opportunity_scout.py",
     "alopecia_collect.py",
+    "alopecia_brief.py",
     "hoa_daily_research.py",
     "entity_kb.py",
 }

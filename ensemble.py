@@ -178,7 +178,8 @@ def _judge_prompt(orig_system, orig_user, members, draft):
 
 # ── public entry ────────────────────────────────────────────────────────────────
 def best_answer(system, user, creds, *, max_tokens=8000, task="",
-                local=None, session_id=None, app_dir=None, mode=None):
+                local=None, session_id=None, app_dir=None, mode=None,
+                keep_answers=False):
     """Return (meta, text). See module docstring. Degrades to escalate() on any
     council problem; only raises ProviderError if NO provider is keyed."""
     pol = creds.get("dev_escalation", {}) or {}
@@ -234,6 +235,12 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     members = [(p, t) for p, t in raw
                if t and not t.startswith("ERROR:") and t.strip()]
     meta["members"] = [p for p, _ in members]
+    if keep_answers:
+        # OPT-IN, and that direction matters: several callers log `meta`, and
+        # silently fattening it with full model answers would bloat their logs.
+        # Asked for by callers that must AUDIT the judge -- alopecia_brief
+        # checks that a real disagreement was surfaced rather than smoothed.
+        meta["answers"] = list(members)
     if len(members) < 2:
         # not enough to cross-check — fall back but reuse a good member if we have one
         if members:
