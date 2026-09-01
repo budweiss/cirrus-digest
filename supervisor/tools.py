@@ -783,6 +783,13 @@ def selftest() -> bool:
         ck("sudoers grants the repair-ticket filer", bool(tik))
         ck("...with NO wildcard argument match",
            bool(tik) and not any("*" in ln for ln in tik))
+        # The trailing "" is what actually restricts the grant to zero
+        # arguments. A bare path in sudoers permits ANY arguments — measured on
+        # cumulus1, 2026-09-01, where `... .py extra-arg` was allowed by sudo
+        # and stopped only by the script's own argv check. Without this
+        # assertion the grant could silently widen back to that.
+        ck('...and is pinned to NO arguments with a trailing ""',
+           bool(tik) and all(ln.rstrip().endswith('""') for ln in tik))
 
     ck("restart_service refuses a unit outside the allowlist",
        "not in ALLOWED_UNITS" in (restart_service.__doc__ or "") or True)

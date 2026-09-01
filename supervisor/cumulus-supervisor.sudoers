@@ -66,6 +66,13 @@ cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_client_watch.py
 #     header — wildcard argument matching is exploitable). The payload arrives
 #     on stdin, which also keeps a journal excerpt out of the world-readable
 #     process table.
+#
+#     The trailing "" is load-bearing and is NOT decoration. In sudoers a bare
+#     command path permits that command with ANY arguments; only an explicit ""
+#     restricts it to no arguments at all. Measured on cumulus1 2026-09-01:
+#     with the bare path, `... cumulus_file_ticket.py extra-arg` was permitted
+#     by sudo and stopped only by the script's own argv check. Defense in depth
+#     is good, but the grant should not be quietly wider than its comment says.
 #   * It appends to ONE file, the dev-loop ticket queue, and can do nothing
 #     else. requester, origin and project are hardcoded in the script, so a
 #     ticket cannot be filed under another identity or aimed at another project.
@@ -79,4 +86,4 @@ cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_client_watch.py
 #
 # Filing is not shipping. dev_loop risk-classifies the ticket; at most it
 # becomes a patch waiting in awaiting-confirm for Buddy's one tap.
-cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_file_ticket.py
+cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_file_ticket.py ""
