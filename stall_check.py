@@ -47,10 +47,20 @@ import glob
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
 REPO = os.path.dirname(os.path.abspath(__file__))
+
+# S96: reuse job_status's node detection and CUMULUS address rather than
+# restating them here -- a second copy of "which box am I" is how the two
+# drift apart, and this check is worthless if it asks the wrong box.
+try:
+    from job_status import _here, REMOTE_HOST
+except Exception:                                  # pragma: no cover
+    def _here(): return "CIRRUS"
+    REMOTE_HOST = "buddy@192.168.0.204"
 
 OK, STALL, UNKNOWN = "ok", "stall", "unknown"
 # S75. A finding that is REAL, KNOWN and DELIBERATELY NOT BEING FIXED needs its
@@ -400,6 +410,163 @@ def check_link_extraction(max_fail_ratio=0.40):
                 else f"{failed} of {total} unusable ({ratio:.0%})")
 
 
+
+
+# ── S96: the check that would have caught 2026-09-02 ─────────────────────────
+# Every other check in this file watches a NUMBER that should move. On
+# 2026-09-02 two jobs failed a different way: the process was alive and doing
+# nothing. cirrus_daily sat on one socket for 6h47m; pedagogy_daily (Alyssa's
+# digest) for 2h47m on 279ms of CPU. Nothing here looked at running processes,
+# so nothing saw either.
+#
+# WHY THE EXISTING LEDGER CHECK WAS NOT ENOUGH. A hung job never finishes, so it
+# never calls job_status.record(), so its ledger entry stays at YESTERDAY. That
+# does eventually read as OVERDUE -- at the 26h cadence. For a 06:00 daily job
+# that threshold is crossed around 08:00, and the morning brief goes out at
+# 07:30. The brief that morning reported pedagogy as healthy while it was hung,
+# and the failure would not have surfaced until the NEXT day. A monitor that
+# reports yesterday's outage tomorrow is not a monitor.
+#
+# This asks a question with a same-morning answer: is anything stuck RIGHT NOW?
+#
+# Two signals, one per box, each native to how that box fails:
+#
+#   CIRRUS (launchd) has no start-timeout mechanism at all, so a hung job just
+#   runs. We look at elapsed process time directly.
+#
+#   CUMULUS (systemd) now bounds every oneshot job at 30 minutes (S96 drop-ins,
+#   runner oneshot-timeouts), so a hang there self-terminates into `failed`.
+#   That is a much better signal than elapsed time -- it is unambiguous, it
+#   appears within 30 minutes, and it needs no per-job duration table. We also
+#   flag a oneshot still in `activating`, which is what the pre-drop-in hang
+#   looked like, so this keeps working if a unit ever loses its ceiling.
+#
+# CEILING: 4 hours, and it is deliberately generous. Real CIRRUS runs measured
+# 2026-09-02: daily 37min, the weekly digest 2h12m. A tight ceiling would fire
+# on the healthy weekly digest every Sunday and be muted within a month (T9).
+# 4h is above every real run and still caught today's 6h47m stall five times
+# over -- at the 07:30 brief, a job that began at 02:00 is 5h30m in.
+_STUCK_CEILING_MIN = 240
+
+# Only OUR jobs. Matching on "python" alone would flag the API, the bot, and
+# every editor the box happens to be running.
+_JOB_PATTERNS = ("cirrus_daily.py", "cirrus_digest.py", "pedagogy_daily.py",
+                 "business_idea_scan.py", "business_idea_feeds.py",
+                 "business_idea_ideate.py", "privacy_monitor.py",
+                 "vendor_mail.py", "model_health.py", "dev_agent.py",
+                 "morning_brief.py", "alopecia_collect.py", "alopecia_brief.py",
+                 "halftime_catalogue.py", "halftime_routing.py",
+                 "opportunity_scout.py", "entity_kb.py")
+
+
+def _etime_to_min(et):
+    """ps `etime` -> whole minutes. Formats: MM:SS, HH:MM:SS, D-HH:MM:SS."""
+    try:
+        days, _, rest = et.rpartition("-")
+        bits = [int(x) for x in rest.split(":")]
+        if len(bits) == 2:
+            h, m, sec = 0, bits[0], bits[1]
+        elif len(bits) == 3:
+            h, m, sec = bits
+        else:
+            return None
+        return int(days or 0) * 1440 + h * 60 + m
+    except (ValueError, TypeError):
+        return None
+
+
+def check_stuck_jobs(ceiling_min=_STUCK_CEILING_MIN):
+    """Is any scheduled job stuck RIGHT NOW? Local processes + remote units."""
+    out = []
+
+    # ── local box: a job process running past the ceiling ────────────────────
+    # `etime`, NOT `etimes`. macOS ps has no `etimes` (that is procps/Linux) and
+    # -- the part that matters -- it rejects the keyword on stderr, EXITS 0, and
+    # still prints the remaining columns. The first version of this check used
+    # `etimes` and would have parsed a path fragment as the elapsed time, found
+    # nothing, and reported "nothing stuck" forever on the box it was written
+    # for. A missing column must be UNKNOWN, never OK (T8).
+    try:
+        ps = subprocess.run(["ps", "-axo", "pid=,etime=,command="],
+                            capture_output=True, text=True, timeout=20)
+        if ps.returncode != 0 or "keyword not found" in (ps.stderr or ""):
+            out.append(_res(UNKNOWN, "stuck jobs (local)",
+                            f"ps did not give an elapsed-time column "
+                            f"(rc={ps.returncode}, stderr={(ps.stderr or '').strip()[:80]!r}) "
+                            "— could not look, which is NOT 'nothing stuck'"))
+        else:
+            stuck, parsed = [], 0
+            for line in ps.stdout.splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid, et, cmd = parts
+                mins = _etime_to_min(et)
+                if mins is None:
+                    continue
+                parsed += 1
+                if not any(p in cmd for p in _JOB_PATTERNS):
+                    continue
+                if mins >= ceiling_min:
+                    script = next(p for p in _JOB_PATTERNS if p in cmd)
+                    stuck.append(f"{script} pid {pid} running {mins//60}h{mins%60:02d}m")
+            if parsed == 0:
+                # ps printed rows but not one elapsed time parsed: the column is
+                # not what we think it is. Say so instead of reporting clean.
+                out.append(_res(UNKNOWN, "stuck jobs (local)",
+                                "ps returned rows but no parseable elapsed time — "
+                                "the output format changed; this check is blind"))
+            elif stuck:
+                out.append(_res(STALL, "stuck jobs (local)",
+                                "; ".join(stuck) +
+                                f" — past the {ceiling_min//60}h ceiling. A job "
+                                "alive this long is blocked, not working; check "
+                                "its CPU time and open sockets."))
+            else:
+                out.append(_res(OK, "stuck jobs (local)",
+                                f"no job process past {ceiling_min//60}h"))
+    except Exception as e:
+        out.append(_res(UNKNOWN, "stuck jobs (local)", f"could not check ({e})"))
+
+    # ── CUMULUS: failed or stuck-activating oneshot units ────────────────────
+    # Only meaningful from CIRRUS; on CUMULUS itself the local check above is
+    # the one that applies, and asking a box about itself over ssh would be
+    # both wrong and slow.
+    if _here() != "CIRRUS":
+        return out
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", REMOTE_HOST,
+             "systemctl list-units --type=service --state=failed,activating "
+             "--no-legend --plain 2>/dev/null | awk '{print $1, $3, $4}'"],
+            capture_output=True, text=True, timeout=45)
+        if r.returncode != 0:
+            out.append(_res(UNKNOWN, "stuck jobs (CUMULUS)",
+                            "could not reach CUMULUS — this is NOT 'nothing failed'"))
+            return out
+        bad = []
+        for line in r.stdout.splitlines():
+            f = line.split()
+            if len(f) < 2:
+                continue
+            unit, active = f[0], f[1]
+            if not unit.startswith(("cirrus-", "alopecia-", "halftime-",
+                                    "opportunity-", "cumulus-", "entity-kb-")):
+                continue
+            bad.append(f"{unit} [{active}]")
+        if bad:
+            out.append(_res(STALL, "stuck jobs (CUMULUS)",
+                            "; ".join(bad) + " — a failed unit is a job that did "
+                            "NOT produce its output today. `activating` means it "
+                            "is hung with no ceiling (see runner oneshot-timeouts)."))
+        else:
+            out.append(_res(OK, "stuck jobs (CUMULUS)", "no failed or hung unit"))
+    except Exception as e:
+        out.append(_res(UNKNOWN, "stuck jobs (CUMULUS)",
+                        f"could not check ({e}) — not the same as 'nothing failed'"))
+    return out
+
+
 def run_all():
     res = []
     res.append(check_devloop_builds())
@@ -409,13 +576,111 @@ def run_all():
     res.append(check_council_diversity())
     res.append(check_prompt_cache())
     res.append(check_link_extraction())
+    res += check_stuck_jobs()
     return res
+
+
+def selftest():
+    """S96. Pins check_stuck_jobs by FAKING the two system calls it makes.
+
+    This file had no selftest at all, so dev_agent's gate 2 reported "selftest"
+    for it while inspecting nothing. More to the point, the first draft of
+    check_stuck_jobs used `ps -o etimes` -- a Linux-only keyword that macOS ps
+    rejects on stderr while EXITING 0 and printing the other columns. On CIRRUS
+    it would have parsed a path fragment as the elapsed time, matched nothing,
+    and reported "no job process past 4h" every morning forever. Case 2 is that
+    exact failure, kept as a test so it cannot come back silently.
+
+    Every case asserts the direction that matters: a check which cannot see must
+    say UNKNOWN, never OK.
+    """
+    import types
+    ok = fail = 0
+
+    def ck(name, cond):
+        nonlocal ok, fail
+        if cond:
+            ok += 1; print(f"  PASS {name}")
+        else:
+            fail += 1; print(f"  FAIL {name}")
+
+    real_run, real_here = subprocess.run, _here
+    try:
+        def with_ps(stdout, stderr="", rc=0, ssh=None):
+            def f(cmd, **kw):
+                if cmd[0] == "ps":
+                    return types.SimpleNamespace(returncode=rc, stderr=stderr, stdout=stdout)
+                return ssh or types.SimpleNamespace(returncode=0, stderr="", stdout="")
+            return f
+
+        globals()["_here"] = lambda: "CUMULUS"      # local leg only
+
+        subprocess.run = with_ps(
+            "  501 07:12:44 /usr/bin/python3 /home/x/cirrus_daily.py\n"
+            "  999 00:03:11 /usr/bin/python3 /home/x/morning_brief.py\n")
+        r = check_stuck_jobs()[0]
+        ck("a 7h job is STALLED", r["state"] == STALL and "7h12m" in r["msg"])
+        ck("...and a 3-minute job beside it is NOT flagged",
+           "morning_brief" not in r["msg"])
+
+        # The macOS `etimes` trap: rc 0, keyword rejected, columns shift.
+        subprocess.run = with_ps("    1 /sbin/launchd\n",
+                                 stderr="ps: etimes: keyword not found\n")
+        r = check_stuck_jobs()[0]
+        ck("a rejected ps keyword is UNKNOWN, not OK", r["state"] == UNKNOWN)
+
+        subprocess.run = with_ps("  501 /usr/bin/python3 /home/x/cirrus_daily.py\n")
+        r = check_stuck_jobs()[0]
+        ck("rows with no parseable elapsed time are UNKNOWN, not OK",
+           r["state"] == UNKNOWN)
+
+        subprocess.run = with_ps("  9 00:01:00 /bin/zsh\n")
+        r = check_stuck_jobs()[0]
+        ck("a quiet box is OK", r["state"] == OK)
+
+        # Remote leg.
+        globals()["_here"] = lambda: "CIRRUS"
+        subprocess.run = with_ps("  9 00:01:00 /bin/zsh\n",
+                                 ssh=types.SimpleNamespace(returncode=255, stderr="x", stdout=""))
+        r = check_stuck_jobs()[1]
+        ck("unreachable CUMULUS is UNKNOWN, not 'nothing failed'", r["state"] == UNKNOWN)
+
+        subprocess.run = with_ps(
+            "  9 00:01:00 /bin/zsh\n",
+            ssh=types.SimpleNamespace(returncode=0, stderr="", stdout=
+                "cirrus-pedagogy.service failed failed\n"
+                "snap.mesa-2404.component-monitor.service failed failed\n"))
+        r = check_stuck_jobs()[1]
+        ck("a failed OUR unit is STALLED", r["state"] == STALL and "cirrus-pedagogy" in r["msg"])
+        ck("...and a vendor unit is not reported as ours", "snap.mesa" not in r["msg"])
+
+        subprocess.run = with_ps(
+            "  9 00:01:00 /bin/zsh\n",
+            ssh=types.SimpleNamespace(returncode=0, stderr="", stdout=
+                "cirrus-pedagogy.service activating start\n"))
+        r = check_stuck_jobs()[1]
+        ck("a oneshot stuck in `activating` is STALLED (the pre-drop-in shape)",
+           r["state"] == STALL and "activating" in r["msg"])
+
+        for et, exp in [("05:30", 5), ("01:05:30", 65), ("2-03:04:05", 3064),
+                        ("bogus", None), ("", None)]:
+            ck(f"etime {et!r} -> {exp}", _etime_to_min(et) == exp)
+    finally:
+        subprocess.run, globals()["_here"] = real_run, real_here
+
+    print(f"\n{ok} passed, {fail} failed")
+    return 1 if fail else 0
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--brief", action="store_true")
+    # T57: the subcommand is argv[0], never `"--selftest" in sys.argv` -- a
+    # wrapper's flag namespace is not its payload's.
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
     res = run_all()
     stalls = [r for r in res if r["state"] == STALL]
     unknown = [r for r in res if r["state"] == UNKNOWN]
