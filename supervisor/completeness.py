@@ -572,10 +572,33 @@ def check(status=None, state=None, now=None):
     longer than its rule allows -- escalate.
     """
     now = now or datetime.now()
+    injected = status is not None
     status = status if status is not None else _feed_jobs()
     state = state if state is not None else _load(STATE_PATH, {})
 
     stalled, unreadable = [], []
+
+    # S96. AN EMPTY LEDGER IS NOT A CLEAN BILL OF HEALTH.
+    #
+    # This is the generalisation of the single worst finding of 2026-09-02: the
+    # supervisor could not read the ledger, _load() returned {} for the missing
+    # file, and a dict with no jobs in it has nothing to complain about — so
+    # check() reported "all jobs producing" from S67 to S96 having never read a
+    # single job. Every individual rule was correct. The input was empty and
+    # nothing said so.
+    #
+    # A box that runs scheduled jobs and reports zero of them is broken, not
+    # idle. On a genuinely fresh box this fires once and clears as soon as the
+    # first job records, which is the right trade: a false alarm that resolves
+    # itself costs a glance, and this silence cost eleven weeks.
+    #
+    # Only when the ledger was READ here -- an explicitly injected status is a
+    # test or a caller who already knows what they passed.
+    if not injected and not status:
+        unreadable.append("(ledger) — read ZERO jobs. An empty ledger is NOT "
+                          "'all jobs producing'; it means the feed is broken or "
+                          "no job has ever recorded. This exact silence hid a "
+                          "dead monitor from S67 to S96.")
 
     for job, rule in RULES.items():
         entry = status.get(job)
@@ -828,6 +851,24 @@ def selftest() -> bool:
     ck("alopeciacollect is no longer 'no completeness rule for'",
        "alopeciacollect" not in unmonitored_jobs(
            {"alopeciacollect": {"ok": True, "epoch": _NOW_E, "note": "101 found, 3 new"}}))
+
+    # An empty ledger must be LOUD. This is the S67-to-S96 silence, generalised:
+    # every rule was correct and the input was empty, so there was nothing to
+    # complain about. Both directions, because an injected status (a test, or a
+    # caller who already knows) must NOT trip it.
+    _en = datetime(2026, 9, 2, 9, 0, 0)
+    _saved_fj = globals()["_feed_jobs"]
+    globals()["_feed_jobs"] = lambda: {}
+    try:
+        _r = check(state={}, now=_en)
+        ck("a ledger read as EMPTY flips ok=False, not 'all jobs producing'",
+           _r["ok"] is False)
+        ck("...and says so in words a human can act on",
+           any("ZERO jobs" in u for u in _r["unreadable"]))
+    finally:
+        globals()["_feed_jobs"] = _saved_fj
+    ck("an explicitly injected empty status does NOT trip it (tests, callers)",
+       check(status={}, state={}, now=_en)["unreadable"] == [])
 
     # ── the remaining five (S96) ─────────────────────────────────────────────
     # Every "REAL note" below was read off cumulus1's live ledger via runner
