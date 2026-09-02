@@ -238,40 +238,72 @@ def unmonitored_jobs(status=None):
     return sorted(set(status) - set(RULES))
 
 
-_CADENCE_CACHE = None
+FEED_CMD = ["sudo", "-n", "-u", "buddy", "/usr/local/sbin/cumulus_job_status.py"]
+_FEED_CACHE = None
+
+
+def supervisor_feed(force=False):
+    """The run ledger + cadence table, via the root-owned sudo helper. S96.
+
+    WHY THIS IS NOT JUST open(STATUS_PATH). Measured on cumulus1 2026-09-02 as
+    the cumulus-supervisor user: /home/buddy is 750, so this account cannot
+    traverse it, and APP_DIR defaulted to Path.home()/"cirrus-digest" —
+    /opt/cumulus-supervisor/cirrus-digest, which does not exist. `_load` returns
+    {} for a missing file and an empty ledger has nothing to complain about, so
+    check() reported "all jobs producing" from S67 onward without ever reading a
+    single job. The read had to move to something that can actually see the file.
+
+    Returns {"jobs": {...}, "cadence_h": {...}} or None. None means BLIND and
+    callers must say so — it is NOT "nothing is wrong".
+
+    Cached per process. The supervisor is a long-lived daemon calling this on a
+    60s tick, so `force=True` is what a live check uses; the cache exists so one
+    heartbeat pass does not shell out several times.
+    """
+    global _FEED_CACHE
+    if _FEED_CACHE is not None and not force:
+        return _FEED_CACHE
+    import subprocess
+    try:
+        r = subprocess.run(FEED_CMD, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        d = json.loads(r.stdout)
+    except Exception:
+        return None
+    if not isinstance(d, dict) or not d.get("ok"):
+        return None
+    out = {"jobs": d.get("jobs") or {}, "cadence_h": d.get("cadence_h") or {}}
+    _FEED_CACHE = out
+    return out
+
+
+def _feed_jobs():
+    """Ledger via the feed, falling back to the local file for a dev checkout."""
+    f = supervisor_feed()
+    if f is not None:
+        return f["jobs"]
+    return _load(STATUS_PATH, {})
 
 
 def _cadence_table():
-    """Load job_status.CADENCE_H BY FILE PATH. Returns None if unreachable.
-
-    `from job_status import CADENCE_H` cannot work here and it is worth saying
-    why, because it looks like it should: the supervisor runs with
-    WorkingDirectory=/opt/cumulus-supervisor/app, a different tree from the app
-    it watches. A plain import would have failed in production while passing
-    anywhere it was tested from the repo -- the check would have reported BLIND
-    forever and nobody would have known it was never really running.
-
-    APP_DIR is the same anchor the ledger itself is read through, so if the
-    ledger is reachable the schedule is too. The second candidate is for running
-    from a checkout (selftests, a dev box), where job_status.py sits beside the
-    supervisor/ directory.
-    """
-    global _CADENCE_CACHE
-    if _CADENCE_CACHE is not None:
-        return _CADENCE_CACHE
+    """CADENCE_H via the feed. None => cannot judge; the caller must say BLIND."""
+    f = supervisor_feed()
+    if f is not None and f["cadence_h"]:
+        return f["cadence_h"]
+    # Dev checkout / selftest: job_status.py sits beside supervisor/.
     import importlib.util
-    here = Path(__file__).resolve().parent
-    for cand in (APP_DIR / "job_status.py", here.parent / "job_status.py"):
+    for cand in (APP_DIR / "job_status.py",
+                 Path(__file__).resolve().parent.parent / "job_status.py"):
         try:
             if not cand.exists():
                 continue
             spec = importlib.util.spec_from_file_location("_js_cadence", cand)
             m = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(m)
-            table = getattr(m, "CADENCE_H", None)
-            if isinstance(table, dict) and table:
-                _CADENCE_CACHE = table
-                return table
+            t = getattr(m, "CADENCE_H", None)
+            if isinstance(t, dict) and t:
+                return t
         except Exception:
             continue
     return None
@@ -327,7 +359,7 @@ def overdue_jobs(status=None, now=None):
     Returns [] when everything is inside its window. Never raises.
     """
     now = now or datetime.now()
-    status = status if status is not None else _load(STATUS_PATH, {})
+    status = status if status is not None else _feed_jobs()
     CADENCE_H = _cadence_table()
     if CADENCE_H is None:
         # Cannot read the schedule => cannot judge. Say so; do not return [],
@@ -368,7 +400,7 @@ def check(status=None, state=None, now=None):
     longer than its rule allows -- escalate.
     """
     now = now or datetime.now()
-    status = status if status is not None else _load(STATUS_PATH, {})
+    status = status if status is not None else _feed_jobs()
     state = state if state is not None else _load(STATE_PATH, {})
 
     stalled, unreadable = [], []
@@ -626,6 +658,80 @@ def selftest() -> bool:
     # An empty ledger is not a clean bill of health, but it is also not an
     # incident -- nothing to judge, so nothing reported.
     ck("an empty ledger reports nothing", overdue_jobs({}, _now) == [])
+
+
+    # ── S96 the sudo feed: BLIND must never render as healthy ────────────────
+    # The whole reason this exists is that a missing ledger loaded as {} and
+    # then read as "all jobs producing". Every failure mode of the feed must
+    # therefore be loud, and each one is faked here rather than reasoned about.
+    import subprocess as _sp
+    _real_run = _sp.run
+
+    def _feed(stdout, rc=0):
+        def f(cmd, **kw):
+            return type("R", (), {"returncode": rc, "stdout": stdout, "stderr": ""})()
+        return f
+
+    def _reset():
+        globals()["_FEED_CACHE"] = None
+
+    try:
+        # A working feed supplies both halves.
+        _reset(); _sp.run = _feed(json.dumps(
+            {"ok": True, "jobs": {"pedagogy": {"epoch": _NOW_E, "ok": True,
+                                              "note": "sent: 1 art, 0 pod, 0 topic"}},
+             "cadence_h": {"pedagogy": 26}}))
+        f = supervisor_feed(force=True)
+        ck("a working feed returns jobs and cadence",
+           f is not None and "pedagogy" in f["jobs"] and f["cadence_h"]["pedagogy"] == 26)
+
+        # sudo denied / script missing => None => the caller must report BLIND.
+        _reset(); _sp.run = _feed("", rc=1)
+        ck("a non-zero feed is None, not an empty ledger",
+           supervisor_feed(force=True) is None)
+
+        # ok=false from the script (unreadable ledger) => None.
+        _reset(); _sp.run = _feed(json.dumps({"ok": False, "error": "cannot read ledger"}))
+        ck("an ok=false feed is None, not an empty ledger",
+           supervisor_feed(force=True) is None)
+
+        # Garbage on stdout => None, not a crash and not a clean read.
+        _reset(); _sp.run = _feed("not json at all")
+        ck("unparseable feed output is None", supervisor_feed(force=True) is None)
+
+        # THE CENTRAL ONE. When the schedule cannot be loaded at all, overdue_jobs
+        # must say BLIND. If this ever returns [], the check has silently gone
+        # back to being the thing it was built to replace.
+        #
+        # _cadence_table is stubbed rather than the feed, because on a DEV
+        # checkout the loader legitimately falls back to job_status.py sitting
+        # beside supervisor/ and would find a real table -- which is right in a
+        # checkout and impossible on the box, where /opt/cumulus-supervisor/app
+        # holds only supervisor/. Stubbing the contract boundary tests the
+        # behaviour that actually ships; the loader itself is covered above.
+        _reset(); _sp.run = _feed("", rc=1)
+        _saved_ct = globals()["_cadence_table"]
+        globals()["_cadence_table"] = lambda: None
+        try:
+            _blind = overdue_jobs({}, _now)
+            ck("no schedule => overdue_jobs reports BLIND, never 'nothing overdue'",
+               len(_blind) == 1 and "BLIND" in _blind[0]["why"])
+            ck("...and BLIND flips ok=False so it escalates",
+               check(status={}, state={}, now=_now)["ok"] is False)
+        finally:
+            globals()["_cadence_table"] = _saved_ct
+
+        # The feed reaching the real check: a stale entry from the feed is caught
+        # exactly like one passed in by hand.
+        _reset(); _sp.run = _feed(json.dumps(
+            {"ok": True,
+             "jobs": {"pedagogy": {"epoch": _yesterday, "ok": True, "note": "sent"}},
+             "cadence_h": {"pedagogy": 26}}))
+        ck("a stale job arriving VIA THE FEED is caught",
+           any(o["job"] == "pedagogy" for o in overdue_jobs(None, _now)))
+    finally:
+        _sp.run = _real_run
+        _reset()
 
     for name, ok in checks:
         print(("  ok   " if ok else "  FAIL ") + name)

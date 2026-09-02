@@ -87,3 +87,28 @@ cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_client_watch.py
 # Filing is not shipping. dev_loop risk-classifies the ticket; at most it
 # becomes a patch waiting in awaiting-confirm for Buddy's one tap.
 cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_file_ticket.py ""
+
+# S96 — read-only job-status feed. Same shape and same reason as the two probes
+# above: completeness.check() reads the run ledger under /home/buddy, which this
+# account cannot traverse (/home/buddy is 750). Measured 2026-09-02: the
+# supervisor could see ZERO jobs, and because a missing file loads as {} it had
+# been reporting "all jobs producing" since S67 without ever reading one.
+#
+# Chosen over widening filesystem access, for the reason already written above:
+# adding cumulus-supervisor to the `buddy` group grants WRITE on a 775 checkout
+# with 664 files to a read-only agent. Chosen over a copy-on-a-timer because a
+# stopped copier leaves a frozen ledger that still reads as real data; this
+# reads live, so there is nothing to go stale.
+#
+# ONE fixed, root-owned, non-editable script producing ONE fixed JSON digest:
+# job names, run timestamps, ok flags, and the short counter notes the
+# completeness rules already parse — plus the cadence table from job_status.py.
+# Operational metadata only. Not a general read of the checkout, and the agent
+# cannot repoint it.
+#
+# NO ARGUMENTS, so this grant needs no wildcard (see this file's header —
+# wildcard argument matching is exploitable). The trailing "" is load-bearing
+# and is NOT decoration: a bare command path permits that command with ANY
+# arguments; only an explicit "" restricts it to none. The script re-checks argv
+# itself, but the grant must not be quietly wider than its comment says (S91).
+cumulus-supervisor ALL=(buddy) NOPASSWD: /usr/local/sbin/cumulus_job_status.py ""
