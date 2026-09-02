@@ -146,6 +146,44 @@ RULES = {
         why="Intake admitted nothing for five runs — check the local prefilter "
             "is not over-rejecting and that the email/RSS sources still fetch.",
     ),
+    # ALOPECIA daily collector (S96). RCW's research monitor, daily 05:45 on
+    # CUMULUS. Four sources: PubMed, ClinicalTrials.gov, NAAF, medRxiv.
+    #
+    # THE SIGNAL IS `found`, NOT `new`, AND THAT IS THE WHOLE RULE.
+    # The note is "%d found, %d new". `new` is the tempting one and it is the
+    # wrong one: this corpus is nearly static by design (S95 — the first brief
+    # covered 108 items and a normal day adds 0-3), so "0 new" is an ordinary
+    # Tuesday. A rule keyed on `new` would fire most weeks and be muted inside
+    # one (T9), which costs more than having no rule.
+    #
+    # `found` is the number the four sources actually returned. Zero means every
+    # one of them came back empty, which is not a quiet day: these are whole
+    # databases answering a standing query, and today's real run was
+    # PubMed 4 + ClinicalTrials 87 + NAAF 10 + medRxiv 0 = 101.
+    #
+    # WHY 2 RUNS AND NOT 3. A run where every collector ERRORS already reports
+    # ok=False (`healthy = len(errors) < len(COLLECTORS)`) and is heartbeat's
+    # problem, which completeness skips. So a zero that reaches this rule is the
+    # nastier kind: the collectors ran WITHOUT error and returned nothing —
+    # an API version change or a silently-rejected query answering 200-with-
+    # empty-results rather than failing. hoaleads gets 3 runs because it samples
+    # only 5 properties a day on rotation, so a real zero is plausible there.
+    # Four databases returning empty on the same day is not plausible twice.
+    #
+    # This is the 2026-08-18 shape aimed at the job most exposed to it: a pure
+    # collector, where a dead source and a quiet week produce identical output.
+    "alopeciacollect": Rule(
+        "alopeciacollect",
+        [r"(\d+)\s+found"],
+        max_zero_runs=2,
+        why="The alopecia collector returned NOTHING from any source two runs "
+            "running — PubMed, ClinicalTrials.gov, NAAF and medRxiv all empty "
+            "without erroring, which is an API/query change, not a quiet week. "
+            "Check ClinicalTrials.gov API v2 first (it is ~85% of a normal "
+            "day's 101 items, so it alone going empty looks like total "
+            "failure), then PubMed E-utilities. RCW's research monitor is "
+            "blind until this is fixed.",
+    ),
     # Bill's other two client jobs — weekly, and they SEND him email, so a
     # stalled one is directly client-visible. Weekly cadence means the
     # threshold is in runs, not days: 2 runs = two weeks of silence.
@@ -604,6 +642,58 @@ def selftest() -> bool:
     ck("unmonitored alone does not flip ok", r["ok"] is True)
 
     bad = 0
+
+    # ── alopeciacollect (S96) ────────────────────────────────────────────────
+    # The note below is the REAL one from cumulus1's ledger on 2026-09-02, not a
+    # guess. S67 and S81 both shipped rules that matched nothing because the
+    # fixture was invented and the live note looked different -- one reported
+    # "unreadable" forever, the other kept three healthy client jobs permanently
+    # unhealthy. Use what the job actually writes.
+    _alo = RULES["alopeciacollect"]
+    ck("alopeciacollect's REAL note parses (101 found, 3 new)",
+       _alo.productivity("101 found, 3 new") == (101, True))
+
+    # THE ONE THAT MATTERS. This corpus is nearly static, so "0 new" is an
+    # ordinary day. If this ever reads as unproductive the rule fires most weeks
+    # and gets muted, which is worse than not having it (T9).
+    ck("0 NEW on a normal day is PRODUCTIVE — `found` is the signal, not `new`",
+       _alo.productivity("101 found, 0 new") == (101, True))
+    ck("...and a smaller but real haul is still productive",
+       _alo.productivity("87 found, 0 new")[0] == 87)
+
+    # The failure it exists for: every source came back empty without erroring.
+    ck("0 found is unproductive", _alo.productivity("0 found, 0 new") == (0, True))
+    ck("0 found with source errors is still unproductive",
+       _alo.productivity("0 found, 0 new, 4 source error(s)")[0] == 0)
+
+    # Two runs, not one -- and the second must actually fire.
+    state = {}
+    r = check({"alopeciacollect": {"ok": True, "epoch": _NOW_E + 1,
+                                   "note": "0 found, 0 new"}}, state)
+    ck("one empty collector run does NOT alert", r["ok"] is True)
+    r = check({"alopeciacollect": {"ok": True, "epoch": _NOW_E + 2,
+                                   "note": "0 found, 0 new"}}, state)
+    ck("two empty collector runs DO alert", r["ok"] is False)
+    ck("the alert names the job",
+       any(s["job"] == "alopeciacollect" for s in r["stalled"]))
+    ck("the alert says WHERE to look first (ClinicalTrials is ~85% of a haul)",
+       "ClinicalTrials.gov API v2" in r["stalled"][0]["why"])
+
+    # A productive run in between must reset the streak, or one bad day poisons
+    # the next good one.
+    state = {}
+    check({"alopeciacollect": {"ok": True, "epoch": _NOW_E + 1,
+                               "note": "0 found, 0 new"}}, state)
+    r = check({"alopeciacollect": {"ok": True, "epoch": _NOW_E + 2,
+                                   "note": "101 found, 0 new"}}, state)
+    ck("a normal haul resets the empty-run streak", r["ok"] is True)
+    ck("...and the streak is actually zeroed",
+       state["alopeciacollect"]["zero_runs"] == 0)
+
+    # It must no longer appear as unmonitored -- that is what this closes.
+    ck("alopeciacollect is no longer 'no completeness rule for'",
+       "alopeciacollect" not in unmonitored_jobs(
+           {"alopeciacollect": {"ok": True, "epoch": _NOW_E, "note": "101 found, 3 new"}}))
 
     # ── S96 cadence check: "did it run at all?" ──────────────────────────────
     # Case 1 IS 2026-09-02, replayed: pedagogy's ledger entry frozen at the
