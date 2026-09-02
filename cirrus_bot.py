@@ -2281,6 +2281,88 @@ def run_bot():
             log(f"Bot error: {e}")
             time.sleep(5)
 
+def selftest() -> bool:
+    """Exercise this module's pure decision-making functions with explicit
+    inputs and expected outputs. Touches no network, no Telegram API, no
+    Ollama, and no files other than reading config already loaded at import
+    time. Prints a summary and returns True iff every check passed — used by
+    `python3 cirrus_bot.py --selftest` (see __main__), which dev_agent's
+    gate 2 runs for this file.
+    """
+    checks = []
+
+    def check(name, cond):
+        checks.append((name, bool(cond)))
+
+    # split_for_telegram: short text passes through unchanged; long text
+    # splits into chunks that each respect the requested max_len.
+    check("split_short", split_for_telegram("hello") == ["hello"])
+    long_text = "line\n" * 2000
+    chunks = split_for_telegram(long_text, max_len=100)
+    check("split_long_multiple", len(chunks) > 1)
+    check("split_long_within_limit", all(len(c) <= 100 for c in chunks))
+
+    # is_uncertain: empty/short/hedging answers are uncertain; a confident
+    # factual answer is not.
+    check("uncertain_empty", is_uncertain("") is True)
+    check("uncertain_short", is_uncertain("ok") is True)
+    check("uncertain_dontknow",
+          is_uncertain("I don't know the answer to that question.") is True)
+    check("uncertain_confident",
+          is_uncertain("The capital of France is Paris, a city in Europe.") is False)
+
+    # _already_installed: exact tag, bare family name, and a genuinely
+    # different model.
+    check("installed_exact", _already_installed("qwen2.5:72b") is True)
+    check("installed_base", _already_installed("qwen2.5") is True)
+    check("installed_not", _already_installed("llama3.3:70b") is False)
+
+    # _clean_detail / _split_why: dangling arrow tails stripped; WHY split
+    # off when present, absent when not.
+    check("clean_detail_arrow",
+          _clean_detail("Add feature X → CIRRUS NOTE: source") == "Add feature X")
+    check("clean_detail_plain", _clean_detail("Plain detail") == "Plain detail")
+    d, w = _split_why("Do the thing — WHY: because reasons")
+    check("split_why_detail", d == "Do the thing")
+    check("split_why_reason", w == "because reasons")
+    d2, w2 = _split_why("No why here")
+    check("split_why_absent_detail", d2 == "No why here")
+    check("split_why_absent_reason", w2 == "")
+
+    # _skip_reason: monitor-only wishlist dropped; a concrete named source
+    # add kept; a hosted-product suggestion dropped.
+    check("skip_monitor",
+          _skip_reason({"detail": "Monitor AI safety developments", "source_line": ""}) != "")
+    check("skip_keep_concrete",
+          _skip_reason({"detail": 'Add RSS source "AI Weekly" at https://aiweekly.co/feed',
+                        "source_line": ""}) == "")
+    check("skip_hosted",
+          _skip_reason({"detail": "Install ChatGPT for coding help", "source_line": ""}) != "")
+
+    # defer_reason: hardware-blocked item parked; a named, actionable pull
+    # is not.
+    check("defer_hardware",
+          defer_reason({"detail": "Requires 128GB unified memory", "source_line": ""}) != "")
+    check("defer_actionable",
+          defer_reason({"detail": "Pull qwen3:8b now", "source_line": "",
+                        "type": "PULL_MODEL"}) == "")
+
+    # is_duplicate_detail: reworded twin recognized; unrelated text is not.
+    check("dup_true",
+          is_duplicate_detail("add rss feed for security news",
+                              ["Add RSS feed for security news updates"]) is True)
+    check("dup_false",
+          is_duplicate_detail("completely unrelated topic here",
+                              ["Add RSS feed for security news"]) is False)
+
+    failed = [name for name, ok in checks if not ok]
+    if failed:
+        print(f"SELFTEST FAILED ({len(failed)}/{len(checks)}): {failed}")
+        return False
+    print(f"SELFTEST OK: {len(checks)} checks passed")
+    return True
+
+
 if __name__ == "__main__":
     # S83: this was a bare run_bot(), so ANY argument was silently ignored and
     # the LIVE bot started anyway. On 2026-08-24 something ran
@@ -2293,11 +2375,14 @@ if __name__ == "__main__":
     # dev_agent's S81 argument guard stops the DEV LOOP invoking it that way.
     # This stops everything else, because the failure is not "the dev loop did
     # a wrong thing" — it is that starting a production service is this file's
-    # response to input it does not understand.
+    # response to input it does not understand. The one exception is
+    # --selftest, added so gate 2 has something real to run against this file.
     import sys as _sys
     if len(_sys.argv) > 1:
-        print("cirrus_bot.py takes no arguments and has no selftest — running "
-              "it starts the LIVE Telegram bot, and a second instance will "
-              "409-Conflict the real one. Refusing: %s" % " ".join(_sys.argv[1:]))
+        if _sys.argv[1] == "--selftest":
+            raise SystemExit(0 if selftest() else 1)
+        print("cirrus_bot.py takes no arguments except --selftest — running "
+              "it any other way starts the LIVE Telegram bot, and a second "
+              "instance will 409-Conflict the real one. Refusing: %s" % " ".join(_sys.argv[1:]))
         raise SystemExit(2)
     run_bot()
