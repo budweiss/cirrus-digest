@@ -184,6 +184,118 @@ RULES = {
             "failure), then PubMed E-utilities. RCW's research monitor is "
             "blind until this is fixed.",
     ),
+    # ALOPECIA weekly brief (S96). WEEKLY, Fri 07:00 — so the threshold is in
+    # RUNS and 2 means a FORTNIGHT of briefs carrying nothing. The billsnow
+    # shape, not the hoaleads shape; using a daily job's number here would
+    # either alarm every week or hide a month.
+    #
+    # The count is `item`, not the word "sent". "Did it send" is already
+    # answered twice over — by the cadence check (192h) and by the fact that a
+    # failed send raises before record() is reached, so the job simply goes
+    # stale. The question left for THIS rule is the one nothing else asks:
+    # the brief went out and had NOTHING IN IT, which means the collector fed
+    # it nothing all week.
+    #
+    # `guard held the rerun` is productive on purpose. That note means today's
+    # brief DID go out and this was a second invocation the send-guard stopped
+    # (S95). Reading it as zero would alarm on the guard doing its job — a
+    # check that fires on correct behaviour is one you teach yourself to
+    # ignore (S81).
+    "alopeciabrief": Rule(
+        "alopeciabrief",
+        [r"(\d+)\s+item"],
+        max_zero_runs=2,
+        produced_phrases=("guard held the rerun",),
+        why="Two consecutive weekly briefs carried ZERO items — the brief is "
+            "sending an empty shell to RCW. Check alopeciacollect first (its "
+            "own rule fires after 2 empty days, so if it is quiet the source "
+            "died between collector and brief), then the brief's own window: "
+            "from #2 it reads 'since the brief we actually sent', so a bad "
+            "state file can silently narrow the window to nothing.",
+    ),
+    # entity_kb weekly digest — Bill's Delaware HOA research. WEEKLY Mon 05:00.
+    #
+    # This rule is a HANDOFF THAT WAS NEVER PICKED UP. entity_kb_weekly_digest
+    # records a quiet week as ok=True and says why, in its own comment:
+    #
+    #   "A quiet week is ok=True on purpose: the job RAN. Whether a quiet run
+    #    is meaningful is completeness.py's question, not this one, and
+    #    conflating the two is how 'ran fine, produced nothing' hid for a
+    #    month in S67."
+    #
+    # It has been asking completeness.py that question since S81 and nothing
+    # was listening, because the supervisor could not read the ledger at all.
+    #
+    # The note is "sent" or the reason, so the signal is phrases, not counts.
+    # 3 runs = three weeks: hoaleads (daily) feeds this KB and has its own
+    # 3-run rule, so a dead upstream is already caught in days. Three quiet
+    # weeks here means the KB itself has stopped changing.
+    "entitykbdigest": Rule(
+        "entitykbdigest",
+        # Separate patterns per counter, the hoaleads idiom: Rule.productivity
+        # SUMS its patterns but each one only `search`es, so a single alternation
+        # would capture the FIRST number and silently ignore the rest.
+        [r"(\d+)\s+new", r"(\d+)\s+updated", r"(\d+)\s+change"],
+        max_zero_runs=3,
+        zero_phrases=("nothing to report", "no send"),
+        produced_phrases=("sent",),
+        why="Bill's HOA entity digest has had nothing to report for three "
+            "weeks. hoaleads feeds this KB and has its own rule, so if that is "
+            "quiet too the county sources are the cause; if hoaleads is "
+            "healthy, the digest's own change-detection has stopped seeing "
+            "diffs it should see.",
+    ),
+    # Halftime act catalogue (S78) — nightly 06:30, national non-band acts.
+    #
+    # `found` is the signal and 7 runs is deliberately patient: a normal night
+    # is small (3 found on 2026-09-02), so a single zero is an ordinary quiet
+    # night and even two or three in a row prove little. A week of zeros across
+    # 32 sources does not.
+    #
+    # `sources` is NOT in the patterns even though it is the more stable number
+    # (32 every night). Including it would make the rule unfireable: the Rule
+    # SUMS its matches, so 0 found + 32 sources = 32 = "productive", which is
+    # exactly the silent failure worth catching — sweeping 32 sources and
+    # finding nothing, night after night. It belongs in `why`, as the first
+    # thing to look at, not in the arithmetic.
+    "halftimecatalogue": Rule(
+        "halftimecatalogue",
+        [r"(\d+)\s+found"],
+        max_zero_runs=7,
+        why="The halftime catalogue found nothing for a week. Check the "
+            "`sources` count in the note first: if it is still ~32 the sweep "
+            "is running and the extractors have stopped matching (a site "
+            "redesign); if it has dropped, the source list itself is broken.",
+    ),
+    # Halftime routing sweep (S79) — nightly 22:00, who is announced near each
+    # Steelers home date.
+    #
+    # THE SIGNAL IS `game(s)`, NOT `event(s)`, and the reason is seasonal.
+    # `events` is shows found in the window and is legitimately zero for long
+    # stretches — nobody announces anything for weeks. Keying on it would fire
+    # through every quiet patch and be muted before the season started.
+    #
+    # `games_swept` is len(halftime_dashboard.HOME_GAMES) filtered by at_venue
+    # — a STATIC list, so it does not fall away in the off-season the way an
+    # "upcoming games" query would. It is 7 today and should stay 7 until
+    # someone rolls the schedule forward. Zero means HOME_GAMES is empty or
+    # unreadable, i.e. the sweep is running over nothing — a config failure,
+    # not a quiet week, so 2 runs is enough.
+    #
+    # Both patterns are listed because the Rule SUMS them: "0 event(s) across
+    # 7 game(s)" totals 7 and reads productive, which is correct, while
+    # "0 event(s) across 0 game(s)" totals 0 and fires. Listing `event` costs
+    # nothing and documents that a quiet night is expected.
+    "halftimerouting": Rule(
+        "halftimerouting",
+        [r"(\d+)\s+event", r"(\d+)\s+game"],
+        max_zero_runs=2,
+        why="The routing sweep swept ZERO games twice running — this is not a "
+            "quiet announcement week, it is the sweep running over an empty "
+            "list. Check halftime_dashboard.HOME_GAMES is populated and "
+            "readable; games_swept is a static count (7 as of 2026-09-02) and "
+            "should not move until the schedule is rolled forward.",
+    ),
     # Bill's other two client jobs — weekly, and they SEND him email, so a
     # stalled one is directly client-visible. Weekly cadence means the
     # threshold is in runs, not days: 2 runs = two weeks of silence.
@@ -248,6 +360,28 @@ RULES = {
 }
 
 
+# Jobs with NO "ran clean but produced nothing" state, and therefore deliberately
+# no zero-run rule. S96.
+#
+# This is a state, not an omission, for the same reason ACCEPTED_FINDINGS is one:
+# leaving them in `unmonitored` forever trains us to skim that list, and giving
+# them a rule that can never fire is worse — a check that cannot fail
+# manufactures confidence. Say which it is, and why.
+#
+# The bar for being here is strict: EVERY note the job can write is either
+# success or a failure that sets ok=False (which is heartbeat's, and which
+# completeness skips). If a job can write a third note meaning "ran fine,
+# produced nothing", it does not belong here — it needs a rule.
+NO_ZERO_STATE = {
+    "cumulusdailybrief":
+        "Its note is binary by construction: `\"sent\" if ok else \"email FAILED "
+        "to send\"` (cumulus_daily_brief.py). The failure path sets ok=False and "
+        "is heartbeat's; there is no third state for a zero-run rule to detect. "
+        "Cover is complete without one — the cadence check catches a run that "
+        "never happened, heartbeat catches a send that failed.",
+}
+
+
 def _load(path, default):
     try:
         return json.loads(Path(path).read_text())
@@ -273,7 +407,7 @@ def unmonitored_jobs(status=None):
     like healthy.
     """
     status = status if status is not None else _load(STATUS_PATH, {})
-    return sorted(set(status) - set(RULES))
+    return sorted(set(status) - set(RULES) - set(NO_ZERO_STATE))
 
 
 FEED_CMD = ["sudo", "-n", "-u", "buddy", "/usr/local/sbin/cumulus_job_status.py"]
@@ -694,6 +828,93 @@ def selftest() -> bool:
     ck("alopeciacollect is no longer 'no completeness rule for'",
        "alopeciacollect" not in unmonitored_jobs(
            {"alopeciacollect": {"ok": True, "epoch": _NOW_E, "note": "101 found, 3 new"}}))
+
+    # ── the remaining five (S96) ─────────────────────────────────────────────
+    # Every "REAL note" below was read off cumulus1's live ledger via runner
+    # cumulus-ledger, and every failure-shape note was read out of the job's own
+    # record() call — not invented. S67 and S81 both shipped rules that matched
+    # nothing because the fixture was guessed.
+
+    # alopeciabrief — WEEKLY. The count is `item`, because "did it send" is
+    # already answered by the cadence check and by a failed send never reaching
+    # record() at all.
+    _ab = RULES["alopeciabrief"]
+    ck("alopeciabrief's REAL ledger note parses",
+       _ab.productivity("brief #1 sent 18:00, 108 items, council anthropic,"
+                        "gemini,grok,openai,deepseek (recorded by hand: the "
+                        "send ran on the build before the record hook)")[0] == 108)
+    ck("alopeciabrief's NORMAL note shape parses",
+       _ab.productivity("brief #2 sent, 12 item(s), council anthropic,gemini")[0] == 12)
+    ck("a brief that went out EMPTY is the zero case",
+       _ab.productivity("brief #3 sent, 0 item(s), council anthropic")[0] == 0)
+    # The guard note means today's brief DID go out. Alarming here would fire on
+    # the send-guard working correctly (S81).
+    ck("'guard held the rerun' is PRODUCTIVE, not a zero",
+       _ab.productivity("already sent today — guard held the rerun") == (1, True))
+    # A degraded council is still a delivered brief.
+    ck("a DEGRADED council does not make the brief a zero",
+       _ab.productivity("brief #4 sent, 9 item(s), council anthropic "
+                        "[DEGRADED: grok timed out]")[0] == 9)
+
+    # entitykbdigest — the handoff entity_kb_weekly_digest wrote down and
+    # nothing ever picked up.
+    _ek = RULES["entitykbdigest"]
+    ck("entitykbdigest's REAL note 'sent' is productive",
+       _ek.productivity("sent") == (1, True))
+    ck("'nothing to report' is the zero case, not unreadable",
+       _ek.productivity("nothing to report this week") == (0, True))
+    ck("the 'no send' fallback is also a zero, not unreadable",
+       _ek.productivity("no send") == (0, True))
+    ck("a counted change note is productive",
+       _ek.productivity("3 new, 1 updated")[0] == 4)
+
+    # halftimecatalogue — `sources` is deliberately NOT in the arithmetic.
+    _hc = RULES["halftimecatalogue"]
+    ck("halftimecatalogue's REAL note parses",
+       _hc.productivity("3 found, 1 new, 0 updated, 32 sources")[0] == 3)
+    ck("0 found while 32 sources are still swept IS the zero case",
+       _hc.productivity("0 found, 0 new, 0 updated, 32 sources")[0] == 0)
+    ck("...so `sources` cannot mask a silent extractor failure",
+       "sources" not in " ".join(p.pattern for p in _hc.produced_patterns))
+
+    # halftimerouting — THE seasonal one. events go quiet for weeks; games do not.
+    _hr = RULES["halftimerouting"]
+    ck("halftimerouting's REAL note parses",
+       _hr.productivity("33 event(s) across 7 game(s)")[0] == 40)
+    ck("A QUIET ANNOUNCEMENT WEEK (0 events, 7 games) is PRODUCTIVE",
+       _hr.productivity("0 event(s) across 7 game(s)")[0] == 7)
+    ck("sweeping ZERO games is the zero case (HOME_GAMES empty)",
+       _hr.productivity("0 event(s) across 0 game(s)")[0] == 0)
+
+    # Thresholds are in RUNS, and weekly jobs must not use a daily number.
+    ck("alopeciabrief needs 2 runs (a fortnight), not 3", _ab.max_zero_runs == 2)
+    ck("entitykbdigest needs 3 runs (three weeks)", _ek.max_zero_runs == 3)
+    ck("halftimecatalogue is patient (7 nights) — a small nightly haul",
+       _hc.max_zero_runs == 7)
+    ck("halftimerouting fires fast (2) — zero games is config, not quiet",
+       _hr.max_zero_runs == 2)
+
+    # The exemption is a STATE, not a gap. A job may only be here if it has no
+    # third note; if this list ever grows a job that can say "ran fine, produced
+    # nothing", the exemption is hiding a real check.
+    ck("cumulusdailybrief is explicitly exempt, not silently unmonitored",
+       "cumulusdailybrief" in NO_ZERO_STATE)
+    ck("...and the exemption carries its reason",
+       len(NO_ZERO_STATE["cumulusdailybrief"]) > 80)
+    ck("an exempt job is not reported as unmonitored",
+       "cumulusdailybrief" not in unmonitored_jobs(
+           {"cumulusdailybrief": {"ok": True, "epoch": _NOW_E, "note": "sent"}}))
+    ck("no job is both exempt AND ruled (that would be a contradiction)",
+       not (set(NO_ZERO_STATE) & set(RULES)))
+
+    # The whole point: nothing on CUMULUS is unmonitored any more.
+    _live = {j: {"ok": True, "epoch": _NOW_E, "note": "x"} for j in
+             ("alopeciabrief", "alopeciacollect", "cumulusdailybrief",
+              "entitykbdigest", "halftimecatalogue", "halftimerouting",
+              "billsnow", "billnewdev", "hoaleads", "pedagogy",
+              "modelhealth", "opportunityscout")}
+    ck("every job on CUMULUS now has a rule or an explicit exemption",
+       unmonitored_jobs(_live) == [])
 
     # ── S96 cadence check: "did it run at all?" ──────────────────────────────
     # Case 1 IS 2026-09-02, replayed: pedagogy's ledger entry frozen at the
