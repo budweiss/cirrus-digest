@@ -916,6 +916,13 @@ def run(dry_run: bool = False, db_path: str = None, backfill: bool = False) -> d
     import cirrus_daily  # lazy: needs requests/bs4/feedparser, live venv only
     import feedparser
 
+    # S96: the scan reaches feedparser through its own import AND through
+    # cirrus_daily; set the ceiling here too rather than inheriting it as an
+    # import side effect that a later refactor would silently drop.
+    # See cirrus_daily.py beside hard_deadline() for why a socket-layer bound.
+    import socket
+    socket.setdefaulttimeout(60)
+
     try:
         creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     except Exception:

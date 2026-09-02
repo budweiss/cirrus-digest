@@ -12,11 +12,35 @@ import os
 import re
 import unicodedata
 import requests
+import socket
 import feedparser
 import sys
 import signal
 import threading
 from contextlib import contextmanager
+
+# ── S96 (2026-09-02): a socket-layer ceiling, because the signal one did not hold
+#
+# On 2026-09-02 TWO scheduled jobs were found blocked on a socket that never
+# timed out:
+#   cirrus_daily   PID 12208  — 6h47m, ~0 CPU, one ESTABLISHED socket to Google
+#   pedagogy_daily PID 1597383 — 2h47m, 279ms CPU, one thread
+# Neither crashed, neither logged an error, and neither produced its digest.
+#
+# The part that matters: cirrus_daily's stall was INSIDE a `hard_deadline(45)`
+# block (search_web, reached from enrich_with_references). That guard was built
+# after the 2026-08-10 four-hour freeze and it did not fire. Why it did not fire
+# is NOT established — so the replacement deliberately does not depend on
+# knowing. `hard_deadline` needs SIGALRM to be delivered AND the blocked C call
+# to surface the exception; `socket.setdefaulttimeout` is enforced by the kernel
+# on the socket itself, with no signal in the path.
+#
+# It is a CEILING, not a policy: every explicit `timeout=` on a requests call
+# still wins, because requests sets the socket timeout per connection. This only
+# bounds the calls that set nothing — chiefly `feedparser.parse(url)`, which
+# fetches over urllib and accepts no timeout argument at all. There was no
+# `setdefaulttimeout` anywhere in the tree before this.
+socket.setdefaulttimeout(60)
 
 # ── Dev-loop test harness (Session 34) ───────────────────────────────────────
 # `--dry-run` builds the digest to a daily-DRYRUN-*.md file and skips ALL side

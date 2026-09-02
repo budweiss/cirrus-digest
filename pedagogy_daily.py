@@ -38,7 +38,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import socket
 import feedparser
+
+# S96: bound every socket that sets no timeout of its own -- `feedparser.parse(url)`
+# fetches over urllib and takes no timeout argument, which is how this job hung for
+# hours on 2026-09-02 with no error. Explicit `timeout=` on requests calls still wins.
+# Full rationale: cirrus_daily.py, beside hard_deadline().
+socket.setdefaulttimeout(60)
 import requests
 
 try:

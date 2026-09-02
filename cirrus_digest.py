@@ -16,7 +16,14 @@ import shutil
 import subprocess
 import tempfile
 import requests
+import socket
 import feedparser
+
+# S96: bound every socket that sets no timeout of its own -- `feedparser.parse(url)`
+# fetches over urllib and takes no timeout argument, which is how this job hung for
+# hours on 2026-09-02 with no error. Explicit `timeout=` on requests calls still wins.
+# Full rationale: cirrus_daily.py, beside hard_deadline().
+socket.setdefaulttimeout(60)
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from pathlib import Path
