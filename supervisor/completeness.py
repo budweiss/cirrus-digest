@@ -238,6 +238,128 @@ def unmonitored_jobs(status=None):
     return sorted(set(status) - set(RULES))
 
 
+_CADENCE_CACHE = None
+
+
+def _cadence_table():
+    """Load job_status.CADENCE_H BY FILE PATH. Returns None if unreachable.
+
+    `from job_status import CADENCE_H` cannot work here and it is worth saying
+    why, because it looks like it should: the supervisor runs with
+    WorkingDirectory=/opt/cumulus-supervisor/app, a different tree from the app
+    it watches. A plain import would have failed in production while passing
+    anywhere it was tested from the repo -- the check would have reported BLIND
+    forever and nobody would have known it was never really running.
+
+    APP_DIR is the same anchor the ledger itself is read through, so if the
+    ledger is reachable the schedule is too. The second candidate is for running
+    from a checkout (selftests, a dev box), where job_status.py sits beside the
+    supervisor/ directory.
+    """
+    global _CADENCE_CACHE
+    if _CADENCE_CACHE is not None:
+        return _CADENCE_CACHE
+    import importlib.util
+    here = Path(__file__).resolve().parent
+    for cand in (APP_DIR / "job_status.py", here.parent / "job_status.py"):
+        try:
+            if not cand.exists():
+                continue
+            spec = importlib.util.spec_from_file_location("_js_cadence", cand)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            table = getattr(m, "CADENCE_H", None)
+            if isinstance(table, dict) and table:
+                _CADENCE_CACHE = table
+                return table
+        except Exception:
+            continue
+    return None
+
+
+def overdue_jobs(status=None, now=None):
+    """Which jobs have not recorded a NEW run inside their expected window?
+
+    S96, 2026-09-02. Buddy: "any reason it wasn't caught by skywarden?"
+
+    THE HOLE THIS CLOSES
+    --------------------
+    On 2026-09-02 `pedagogy_daily` hung at 06:00 and was still hung at 09:00.
+    Both halves of Skywarden were blind to it, for two different reasons:
+
+      * `heartbeat` asks `systemctl is-failed`. A hung oneshot sits in
+        **activating** -- not failed, not inactive. And with the pre-S96
+        `TimeoutStartSec=infinity`, the unit was GUARANTEED never to reach
+        `failed`, so the one state heartbeat watches was unreachable.
+      * `check()` above reads the ledger, but skips any run it has already
+        counted:
+
+              if run_id and run_id == js.get("last_run_id"): continue
+
+        The entry still said YESTERDAY, so the run_id never changed, so it was
+        skipped on every tick indefinitely. The guard that correctly stops
+        double-counting a run also silently swallows "there has not been a new
+        run in three days."
+
+    Both are right by their own definitions. Neither asks the simplest question
+    there is: **did this job run at all?** That question had no owner anywhere in
+    the supervisor -- there was no cadence or age check in it of any kind.
+
+    WHY THE CADENCE TABLE IS IMPORTED, NOT RESTATED
+    -----------------------------------------------
+    `job_status.CADENCE_H` already holds every job's expected interval with a
+    grace window baked in, and it is already maintained -- S81 corrected a
+    192h entry for a job that had been daily for months, precisely because a
+    cadence looser than the schedule is "a blind spot with a checkmark on it."
+    A second copy here would drift from it, and the first symptom of that drift
+    would be this check going quiet. One table, one place to fix.
+
+    SCOPE, AND WHY IT CANNOT FALSE-POSITIVE ON THE OTHER BOX
+    -------------------------------------------------------
+    Only jobs that have an entry in THIS box's ledger are checked. A CIRRUS-only
+    job has no entry here, so it is never judged -- otherwise every CIRRUS job
+    would read as permanently overdue on CUMULUS and the check would be muted
+    within a day (T9). "Never recorded at all" is deliberately NOT treated as
+    overdue: from the ledger alone it is indistinguishable from a job that
+    simply does not run on this box, and it is already covered on the CIRRUS
+    side by job_status.summarize() and placement-audit.
+
+    Returns [] when everything is inside its window. Never raises.
+    """
+    now = now or datetime.now()
+    status = status if status is not None else _load(STATUS_PATH, {})
+    CADENCE_H = _cadence_table()
+    if CADENCE_H is None:
+        # Cannot read the schedule => cannot judge. Say so; do not return [],
+        # which reads identically to "everything is on time".
+        return [{"job": "(cadence table)", "hours": 0, "age_h": 0,
+                 "why": "could not load job_status.CADENCE_H — this check is "
+                        "BLIND, which is not the same as nothing being overdue"}]
+
+    out = []
+    for job, entry in sorted(status.items()):
+        cad = CADENCE_H.get(job)
+        if not cad:
+            continue                       # no expected cadence => nothing to judge
+        epoch = entry.get("epoch")
+        if not epoch:
+            continue                       # pre-epoch entry; summarize() covers it
+        try:
+            age_h = (now.timestamp() - float(epoch)) / 3600.0
+        except (TypeError, ValueError):
+            continue
+        if age_h > cad:
+            out.append({
+                "job": job,
+                "hours": cad,
+                "age_h": round(age_h, 1),
+                "why": (f"last recorded run was {round(age_h, 1)}h ago, expected "
+                        f"every {cad}h — the job is not running, or it starts and "
+                        f"never finishes (a hung job never reaches record())"),
+            })
+    return out
+
+
 def check(status=None, state=None, now=None):
     """Deterministic completeness pass. Returns a dict; never raises.
 
@@ -290,7 +412,11 @@ def check(status=None, state=None, now=None):
         _save_state(state)
 
     unmon = unmonitored_jobs(status)
+    # S96: "did it run at all?" -- the question neither half of Skywarden asked.
+    overdue = overdue_jobs(status, now)
     parts = []
+    for o in overdue:
+        parts.append(f"{o['job']}: {o['why']}")
     for s in stalled:
         parts.append(f"{s['job']}: ran clean but produced nothing "
                      f"{s['zero_runs']}x (threshold {s['threshold']}) — {s['why']}")
@@ -303,16 +429,21 @@ def check(status=None, state=None, now=None):
         # `unmonitored` alone does NOT flip ok -- it is a to-do for us, not an
         # incident. `unreadable` DOES, because a note we cannot parse is a
         # check that has silently stopped working.
-        "ok": not stalled and not unreadable,
+        # S96: `overdue` DOES flip it. A job that has not run is a harder
+        # failure than one that ran and produced nothing, and it is the case
+        # that went unseen for three hours on 2026-09-02.
+        "ok": not stalled and not unreadable and not overdue,
         "stalled": stalled,
         "unreadable": unreadable,
         "unmonitored": unmon,
+        "overdue": overdue,
         "detail": "; ".join(parts) if parts else "all jobs producing",
     }
 
 
 # ── selftest ────────────────────────────────────────────────────────────────
 def selftest() -> bool:
+    import time as _t
     checks = []
 
     def ck(name, cond):
@@ -322,17 +453,27 @@ def selftest() -> bool:
     # not counters. The count-regex version reported "unreadable" forever,
     # which would have meant the alert never fired.
     real = "no genuine leads"
+
+    # S96. These fixtures used bare 1/2/3/99 as opaque run-id tokens, which the
+    # zero-run rule only ever compared for equality. `epoch` is a REAL unix
+    # timestamp in production (job_status.record writes int(time.time())), so
+    # once the cadence check started reading it, "epoch: 1" meant 1970 and every
+    # one of these jobs read as ~500,000 hours overdue. Anchor the same distinct
+    # offsets to now: the run ids stay distinct, and each fixture now means "ran
+    # just now", which is what the test was always asserting.
+    _NOW_E = int(_t.time())
+
     ck("the real prose note parses as zero, not unreadable",
        RULES["hoaleads"].productivity(real) == (0, True))
     ck("a counted note still parses",
        RULES["hoaleads"].productivity("2 new, 1 updated")[0] == 3)
-    st = {"hoaleads": {"ok": True, "epoch": 1, "note": real}}
+    st = {"hoaleads": {"ok": True, "epoch": _NOW_E + 1, "note": real}}
     r1 = check(st, {})
     ck("one zero day does NOT alert", r1["ok"] is True)
 
     # Same job, three consecutive distinct runs -> must fire.
     state = {}
-    for epoch in (1, 2, 3):
+    for epoch in (_NOW_E + 1, _NOW_E + 2, _NOW_E + 3):
         r = check({"hoaleads": {"ok": True, "epoch": epoch, "note": real}}, state)
     ck("three zero runs DO alert", r["ok"] is False)
     ck("alert names the job", any(s["job"] == "hoaleads" for s in r["stalled"]))
@@ -340,27 +481,27 @@ def selftest() -> bool:
 
     # Productivity resets the counter.
     state = {}
-    for epoch in (1, 2):
+    for epoch in (_NOW_E + 1, _NOW_E + 2):
         check({"hoaleads": {"ok": True, "epoch": epoch, "note": real}}, state)
-    r = check({"hoaleads": {"ok": True, "epoch": 3, "note": "2 new, 1 updated"}}, state)
+    r = check({"hoaleads": {"ok": True, "epoch": _NOW_E + 3, "note": "2 new, 1 updated"}}, state)
     ck("a productive run resets the streak", r["ok"] is True)
     ck("streak actually zeroed", state["hoaleads"]["zero_runs"] == 0)
 
     # The same run seen twice on consecutive 60s ticks must count once.
     state = {}
     for _ in range(5):
-        r = check({"hoaleads": {"ok": True, "epoch": 99, "note": real}}, state)
+        r = check({"hoaleads": {"ok": True, "epoch": _NOW_E + 99, "note": real}}, state)
     ck("re-reading one run does not inflate the streak",
        state["hoaleads"]["zero_runs"] == 1 and r["ok"] is True)
 
     # A FAILED run is heartbeat's job -- don't double-report or count it.
     state = {}
-    r = check({"hoaleads": {"ok": False, "epoch": 1, "note": "crashed"}}, state)
+    r = check({"hoaleads": {"ok": False, "epoch": _NOW_E + 1, "note": "crashed"}}, state)
     ck("failed runs are left to heartbeat", r["ok"] is True and not r["stalled"])
 
     # An unparseable note must NOT read as healthy.
     state = {}
-    r = check({"hoaleads": {"ok": True, "epoch": 1, "note": "finished"}}, state)
+    r = check({"hoaleads": {"ok": True, "epoch": _NOW_E + 1, "note": "finished"}}, state)
     ck("unreadable note flips ok=False", r["ok"] is False)
     ck("unreadable is reported separately from stalled",
        r["unreadable"] and not r["stalled"])
@@ -378,7 +519,7 @@ def selftest() -> bool:
         produced, matched = RULES[job].productivity(note)
         ck(f"{job}'s REAL note parses at all ({note!r})", matched)
         ck(f"{job}'s real note counts as productive", produced > 0 if want else True)
-        r = check({job: {"ok": True, "epoch": 1, "note": note}}, {})
+        r = check({job: {"ok": True, "epoch": _NOW_E + 1, "note": note}}, {})
         ck(f"{job} working normally does NOT flip ok=False", r["ok"] is True)
 
     # ...and a genuinely quiet run must still read as zero, or the fix above
@@ -418,7 +559,7 @@ def selftest() -> bool:
     ck("opportunityscout has a rule", "opportunityscout" in RULES)
     ck("the scout's real success note parses as productive",
        RULES["opportunityscout"].productivity("5 model answer(s), 7 rate card(s)")[0] > 0)
-    st = {"opportunityscout": {"ok": True, "epoch": 1,
+    st = {"opportunityscout": {"ok": True, "epoch": _NOW_E + 1,
                                "note": "0 model answer(s), 0 rate card(s)"}}
     ck("a scout run where nothing answered reads as zero",
        RULES["opportunityscout"].productivity(st["opportunityscout"]["note"])
@@ -426,11 +567,66 @@ def selftest() -> bool:
 
     # A job with no rule is surfaced, not silently ignored -- but is not an
     # incident on its own.
-    r = check({"somenewjob": {"ok": True, "epoch": 1, "note": "done"}}, {})
+    r = check({"somenewjob": {"ok": True, "epoch": _NOW_E + 1, "note": "done"}}, {})
     ck("unmonitored job is reported", "somenewjob" in r["unmonitored"])
     ck("unmonitored alone does not flip ok", r["ok"] is True)
 
     bad = 0
+
+    # ── S96 cadence check: "did it run at all?" ──────────────────────────────
+    # Case 1 IS 2026-09-02, replayed: pedagogy's ledger entry frozen at the
+    # PREVIOUS day's run while the job hung. Every field is what the real entry
+    # held; only the clock moves. This is the exact state both halves of
+    # Skywarden looked straight at and called healthy.
+    import time as _t
+    _now = datetime(2026, 9, 2, 9, 0, 0)
+    _yesterday = _now.timestamp() - (27 * 3600)      # 27h => past pedagogy's 26h
+
+    _hung = {"pedagogy": {"last_run": "2026-09-01T06:01:25",
+                          "epoch": _yesterday, "ok": True,
+                          "note": "sent: 1 art, 0 pod, 0 topic"}}
+    _od = overdue_jobs(_hung, _now)
+    ck("the 2026-09-02 hang is caught: a ledger entry older than the cadence",
+       len(_od) == 1 and _od[0]["job"] == "pedagogy")
+    ck("...and it flips ok=False, so the escalation path actually runs",
+       check(status=_hung, state={}, now=_now)["ok"] is False)
+
+    # ok=True on the stale entry must NOT rescue it. A hung job's last entry is
+    # a SUCCESS -- that is the whole trap. If this passed, the check would be
+    # blind to exactly the case it exists for.
+    ck("a stale entry that says ok=True is still overdue",
+       len(overdue_jobs({"pedagogy": {"epoch": _yesterday, "ok": True,
+                                      "note": "sent"}}, _now)) == 1)
+
+    # A job that ran on time is silent -- the direction that stops it being
+    # muted (T9). 1h old against a 26h cadence.
+    ck("a job that ran an hour ago is NOT reported",
+       overdue_jobs({"pedagogy": {"epoch": _now.timestamp() - 3600,
+                                  "ok": True, "note": "sent"}}, _now) == [])
+
+    # Scope: a job with no cadence entry is not judged, or every unknown job
+    # reads as overdue forever.
+    ck("a job with no CADENCE_H entry is not judged",
+       overdue_jobs({"not_a_real_job": {"epoch": _yesterday, "ok": True,
+                                        "note": "x"}}, _now) == [])
+
+    # A weekly job at 27h must stay silent -- proves the check reads the REAL
+    # per-job cadence and is not applying one blanket number to everything.
+    ck("a WEEKLY job 27h old is not overdue (per-job cadence, not a blanket)",
+       overdue_jobs({"billsnow": {"epoch": _yesterday, "ok": True,
+                                  "note": "sent"}}, _now) == [])
+
+    # Malformed epochs must be skipped, not crash the supervisor's 60s tick.
+    ck("a junk epoch is skipped rather than raising",
+       overdue_jobs({"pedagogy": {"epoch": "not-a-number", "ok": True,
+                                  "note": "x"}}, _now) == [])
+    ck("a missing epoch is skipped rather than raising",
+       overdue_jobs({"pedagogy": {"ok": True, "note": "x"}}, _now) == [])
+
+    # An empty ledger is not a clean bill of health, but it is also not an
+    # incident -- nothing to judge, so nothing reported.
+    ck("an empty ledger reports nothing", overdue_jobs({}, _now) == [])
+
     for name, ok in checks:
         print(("  ok   " if ok else "  FAIL ") + name)
         bad += 0 if ok else 1
