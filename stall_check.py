@@ -441,6 +441,14 @@ def check_link_extraction(max_fail_ratio=0.40):
 #   flag a oneshot still in `activating`, which is what the pre-drop-in hang
 #   looked like, so this keeps working if a unit ever loses its ceiling.
 #
+#   A `failed` unit on CUMULUS is a STRONGER signal than it looks, because the
+#   supervisor (Skywarden) auto-restarts failed allow-listed units on its next
+#   tick -- measured 2026-09-02: a unit stopped at 09:05:39 was healed at
+#   09:06:45, 66 seconds later. So a transient failure is normally gone before
+#   any check runs, and a unit still sitting in `failed` at brief time is one
+#   the supervisor tried and COULD NOT heal. That is exactly the case worth
+#   waking someone for, and it is why this check does not need to run often.
+#
 # CEILING: 4 hours, and it is deliberately generous. Real CIRRUS runs measured
 # 2026-09-02: daily 37min, the weekly digest 2h12m. A tight ceiling would fire
 # on the healthy weekly digest every Sunday and be muted within a month (T9).
