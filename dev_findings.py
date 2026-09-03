@@ -215,6 +215,92 @@ def collect_stalled_signals():
     return out
 
 
+def collect_blind_checks(root=None, profile=None, max_mutants=30):
+    """Checks whose OWN suite cannot tell them apart from broken code (S97).
+
+    collect_blind_gates finds modules with no selftest. This finds the subtler
+    and more dangerous case: a module that HAS a selftest which passes against
+    deliberately damaged code. That is not a theory about test quality -- it is
+    measured, by damaging one branch at a time and requiring the suite to go
+    red. It is the mechanised form of the discipline behind every fix that has
+    held: make the check fail FIRST.
+
+    It matters here because a blind check is how completeness.check() reported
+    "all jobs producing" for eleven weeks while reading an empty dict, and how
+    a morning brief printed a green "nothing stalled" for a checker that had
+    crashed.
+
+    Probes a THROWAWAY EXPORT of HEAD, never the live checkout -- this runs on a
+    box that serves client jobs, and a mutant must never touch it. Never raises:
+    a findings collector that breaks the nightly sweep is worse than one that
+    returns nothing.
+    """
+    try:
+        import shutil
+        import tempfile
+        import check_can_fail as ccf
+    except Exception:
+        return []
+    root = Path(root or PROJECT_DIR)
+    if profile is None:
+        # CIRRUS is the Mac Studio, CUMULUS is Linux. Mechanical, not a guess.
+        profile = "cirrus" if sys.platform == "darwin" else "cumulus"
+    targets = ccf.PROFILES.get(profile) or []
+    if not targets:
+        return []
+
+    tmp = tempfile.mkdtemp(prefix="ccf-findings-")
+    out = []
+    try:
+        if not ccf.export_head(root, tmp):
+            return []
+        real_root = ccf.COWORK
+        ccf.COWORK = Path(tmp)
+        try:
+            for rel, argv in targets:
+                try:
+                    r = ccf.probe(rel, argv, max_mutants=max_mutants)
+                except Exception:
+                    continue
+                if r.get("error") or not r.get("survivors"):
+                    continue
+                n, total = len(r["survivors"]), r.get("total") or 0
+                name = Path(rel).name
+                # Rank by how blind the suite is, not by raw survivor count: a
+                # big module with many mutations should not outrank a small one
+                # that detects nothing. Capped so this never outranks a module
+                # with no selftest at all (blind_gate, rank 1+fan_in).
+                blind_frac = n / float(total) if total else 1.0
+                out.append({
+                    "kind": "blind_check",
+                    "key": f"blind_check:{rel}",
+                    "rank": max(1, min(6, int(round(blind_frac * 6)))),
+                    "title": (f"{name}'s selftest passes against broken code: "
+                              f"{n} of {total} deliberate breakages undetected"),
+                    "detail": (
+                        f"{rel} has a selftest, and it PASSES when the module is "
+                        f"deliberately damaged: {n} of {total} single-branch "
+                        f"mutations were not detected. Each survivor is a branch "
+                        f"the suite cannot distinguish from a constant, so a real "
+                        f"regression there would also pass.\n\n"
+                        f"Add cases that pin the surviving branches — assert the "
+                        f"NOT-OK direction, not just the happy path. Verify by "
+                        f"running `python3 check_can_fail.py --scratch "
+                        f"--profile {profile} --target {rel}` and watching the "
+                        f"survivor count fall.\n\n"
+                        f"Survivors:\n  " + "\n  ".join(r["survivors"][:12])),
+                    "evidence": f"{n}/{total} mutations undetected in {rel}",
+                    "files": [rel],
+                })
+        finally:
+            ccf.COWORK = real_root
+    except Exception:
+        return out
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return out
+
+
 def collect_repair_giveups(path=None, limit=50):
     """Attempts where the repair loop ran out of road -- the agent saying what
     it could not do. S80 built this journal precisely so it could be read back."""
@@ -336,7 +422,7 @@ def collect_trap_findings(root=None, checkers=TRAP_CHECKERS):
 
 
 COLLECTORS = (collect_blind_gates, collect_stalled_signals, collect_repair_giveups,
-              collect_trap_findings)
+              collect_trap_findings, collect_blind_checks)
 
 
 def collect_all(collectors=None):
@@ -393,7 +479,8 @@ def to_item(f: dict, date=None) -> dict:
     """
     date = date or datetime.now().strftime("%Y-%m-%d")
     return {
-        "type": "BUG_FIX" if f.get("kind") != "blind_gate" else "TEST_GAP",
+        "type": ("TEST_GAP" if f.get("kind") in ("blind_gate", "blind_check")
+                 else "BUG_FIX"),
         "detail": f.get("detail", ""),
         "why": f.get("title", ""),
         "source_line": f"[{f.get('kind')}] {f.get('evidence', '')}",
@@ -838,6 +925,27 @@ def selftest() -> bool:
     # The collector must be wired in, not merely defined.
     ck("collect_trap_findings is registered in COLLECTORS",
        collect_trap_findings in COLLECTORS)
+
+    # ---- S97: the blind-check collector -------------------------------------
+    ck("collect_blind_checks is registered in COLLECTORS",
+       collect_blind_checks in COLLECTORS)
+    ck("a blind check is a TEST_GAP, not a BUG_FIX",
+       to_item({"kind": "blind_check", "key": "blind_check:x.py",
+                "rank": 3, "title": "t", "detail": "d",
+                "files": ["x.py"]})["type"] == "TEST_GAP")
+    ck("a blind gate is still a TEST_GAP",
+       to_item({"kind": "blind_gate", "key": "blind_gate:x.py", "rank": 1,
+                "title": "t", "detail": "d", "files": ["x.py"]})["type"]
+       == "TEST_GAP")
+    ck("an unrelated kind is still a BUG_FIX",
+       to_item({"kind": "stalled_signal", "key": "s:x", "rank": 1,
+                "title": "t", "detail": "d", "files": []})["type"] == "BUG_FIX")
+    # It runs on a box and shells out; the one thing that must never happen is
+    # that it breaks the nightly sweep. An unusable root must be quiet, not fatal.
+    ck("an un-exportable root yields nothing and does not raise",
+       collect_blind_checks(root="/nonexistent-root-xyz", profile="cirrus") == [])
+    ck("an unknown profile yields nothing",
+       collect_blind_checks(profile="not-a-box") == [])
 
     for name, ok_ in checks:
         print(("  ok   " if ok_ else "  FAIL ") + name)
