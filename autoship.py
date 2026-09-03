@@ -75,8 +75,22 @@ def production_ast(src):
         tree = ast.parse(src)
     except Exception:
         return None
-    tree.body = [n for n in tree.body
-                 if not _is_test_fn(n) and not _is_main_guard(n)]
+    # Test FUNCTIONS are stripped. The `if __name__ == "__main__":` guard is
+    # NOT, and that distinction is load-bearing.
+    #
+    # It looks like dispatch, so the first version treated it as test code. But
+    # cirrus_bot.py's main guard is what stops a second LIVE Telegram bot
+    # starting: on 2026-08-24 an argument it ignored started one that
+    # 409-Conflicted the real bot for four days. A build waiting right now
+    # (prop-2026-08-29-562734) edits exactly that guard, and under the first
+    # version it would have qualified as "test-only" and shipped itself
+    # unattended tonight.
+    #
+    # The cost is real and accepted: adding a `--selftest` dispatch to a module
+    # that lacks one no longer auto-ships. That is the right trade. Adding
+    # assertions to an EXISTING selftest -- which is what the blind_check
+    # findings generate, and the bulk of this queue -- still does.
+    tree.body = [n for n in tree.body if not _is_test_fn(n)]
     for node in ast.walk(tree):
         # Strip docstrings so a reworded comment-as-docstring cannot look like
         # a production change. Behaviour is what matters here.
@@ -188,10 +202,19 @@ def selftest():
     ck("a new module-level import is NOT test-only",
        not is_test_only_change(base, imported)[0])
 
-    # 6. adding the dispatch block is test-only (that is the blind_gate fix)
+    # 6. THE ONE THAT MATTERS. The __main__ guard is not test code, however much
+    #    it looks like dispatch. cirrus_bot.py's guard is what stops a second
+    #    LIVE Telegram bot starting -- an argument it ignored on 2026-08-24
+    #    started one that 409-Conflicted the real bot for four days. A build
+    #    waiting right now edits exactly that guard.
     nodispatch = base.split("if __name__")[0]
-    ck("adding a __main__ selftest dispatch is test-only",
-       is_test_only_change(nodispatch, base)[0])
+    ck("adding a __main__ dispatch is NOT auto-shippable",
+       not is_test_only_change(nodispatch, base)[0])
+    guard_changed = base.replace(
+        '    sys.exit(selftest())\n',
+        '    if sys.argv[1:]:\n        sys.exit(2)\n    sys.exit(selftest())\n')
+    ck("editing the __main__ guard is NOT auto-shippable",
+       not is_test_only_change(base, guard_changed)[0])
 
     # 7. unparseable, either side, is never auto-shippable
     ck("an unparseable patch is not auto-shippable",
