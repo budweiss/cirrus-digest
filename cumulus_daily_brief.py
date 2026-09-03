@@ -139,8 +139,17 @@ def gather_skywarden():
 
     lines = [f"  {len(checks)} routine check(s), {len(issues)} anomaly/issue "
              f"flag(s), {len(guidance)} escalation(s) to you"]
+    # S96: STAMP THE TIME. These rows are today's LEDGER — a record of what
+    # happened during the day, not a reading of current state. Without a clock
+    # the reader cannot tell a failure that is happening NOW from one that was
+    # healed minutes after it appeared, and Skywarden heals a failed unit within
+    # a tick (measured 2026-09-02: failed 09:05:39, healed 09:06:45), so most
+    # of these are already over by the time the brief goes out at 20:00. On
+    # 2026-09-02 this line read "failed units: cirrus-pedagogy.service" twelve
+    # hours after the unit had gone back to status=0/SUCCESS.
     for r in issues[:5]:
-        lines.append(f"  ⚠️ {str(r.get('detail', ''))[:100]}")
+        when = str(r.get("ts", ""))[11:16] or "??:??"
+        lines.append(f"  ⚠️ [{when}] {str(r.get('detail', ''))[:100]}")
     for r in guidance[:5]:
         lines.append(f"  🆘 {str(r.get('detail', r.get('result', '')))[:100]}")
 
