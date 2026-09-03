@@ -305,7 +305,27 @@ def gather_stalls():
             [sys.executable, os.path.join(REPO_DIR, "stall_check.py"), "--brief"],
             capture_output=True, text=True, timeout=90)
         lines = [l for l in (r.stdout or "").splitlines() if l.strip().startswith("-")]
-        return (lines or ["- ✅ nothing stalled"]), (r.returncode == 0)
+        if not lines:
+            # S97. This branch used to substitute "- ✅ nothing stalled", so a
+            # stall_check.py that died on import printed GREEN into the brief --
+            # and the ok flag saying otherwise is discarded by the caller
+            # (`_st_ok`). That is the exact S96 failure class (a check that
+            # passes because it cannot see) living inside the check built to
+            # catch it. A checker that produced no findings has not said "all
+            # clear"; it has said nothing, and nothing is not green.
+            #
+            # The clean path is unaffected: --brief always prints at least one
+            # "- ..." line, including "- ✅ nothing stalled (N signals checked)".
+            #
+            # stderr is deliberately NOT quoted into this line. The brief is an
+            # EMAIL, and piping arbitrary subprocess stderr into it is the S67
+            # hazard exactly (a read-only diagnostic whose author had no reason
+            # to think about tokens). The traceback stays in
+            # morningbrief-launchd.log, which is where this line sends you.
+            return ([f"- ⚠️ stall check produced no findings (exit {r.returncode})"
+                     f" — it did not run to completion; see morningbrief-launchd.log"],
+                    False)
+        return lines, (r.returncode == 0)
     except Exception as e:
         # A checker that cannot run must say so, not vanish. That silence is
         # exactly the failure this whole check exists to catch.
@@ -449,8 +469,99 @@ def send_all(subject, body):
     results.append(send_telegram(body))
     return results
 
+# ── Selftest ───────────────────────────────────────────────────────────────────
+def selftest():
+    """S97. Pins gather_stalls by FAKING the subprocess it shells out to.
+
+    This file had no selftest at all, which is how the crash-reads-as-green bug
+    above survived: nothing here had ever been asserted in the failing
+    direction. Every case pins the direction that matters -- a checker that did
+    not report must never render as a clear-all.
+
+    Case 1 is the actual S97 bug and is PROVEN to fail against the old code
+    (`lines or ["- ✅ nothing stalled"]`): that version returns a green line for
+    a crashed checker. A test never seen red is not known to detect anything
+    (T42).
+    """
+    ok = fail = 0
+
+    def ck(name, cond):
+        nonlocal ok, fail
+        if cond:
+            ok += 1
+            print(f"  PASS {name}")
+        else:
+            fail += 1
+            print(f"  FAIL {name}")
+
+    class R:
+        def __init__(self, stdout="", stderr="", rc=0):
+            self.stdout, self.stderr, self.returncode = stdout, stderr, rc
+
+    real_run = subprocess.run
+    try:
+        def fake(res):
+            def f(cmd, **kw):
+                return res
+            return f
+
+        # 1. THE BUG: checker crashed -- no stdout, non-zero exit.
+        subprocess.run = fake(R("", "Traceback...\nAttributeError\n", 1))
+        lines, okflag = gather_stalls()
+        joined = " ".join(lines)
+        ck("crash does not render as green", "nothing stalled" not in joined)
+        ck("crash is flagged loudly", "⚠️" in joined and "did not run to completion" in joined)
+        ck("crash reports ok=False", okflag is False)
+        ck("crash names where the traceback is", "morningbrief-launchd.log" in joined)
+        ck("crash does not leak subprocess stderr", "Traceback" not in joined
+                                                    and "AttributeError" not in joined)
+
+        # 2. Clean run: --brief prints its own green line, which must pass through.
+        subprocess.run = fake(R("- ✅ nothing stalled (11 signals checked)\n", "", 0))
+        lines, okflag = gather_stalls()
+        ck("clean run passes its line through", lines == ["- ✅ nothing stalled (11 signals checked)"])
+        ck("clean run reports ok=True", okflag is True)
+
+        # 3. Real findings: exit 1 is stall_check's NORMAL "there are unknowns"
+        #    code, not a crash. Findings must survive it.
+        subprocess.run = fake(R("- ❌ STALLED devloop: no build in 9d\n"
+                                "- ⚠️ UNCHECKED prompt cache: too few calls\n", "", 1))
+        lines, okflag = gather_stalls()
+        ck("findings survive exit 1", len(lines) == 2 and "STALLED devloop" in lines[0])
+        ck("findings report ok=False", okflag is False)
+
+        # 4. Silent success is still silence -- exit 0 with nothing printed is
+        #    not a clear-all. (Missing output reading as clean is T8.)
+        subprocess.run = fake(R("", "", 0))
+        lines, okflag = gather_stalls()
+        ck("silent exit-0 is not a clear-all", "nothing stalled" not in " ".join(lines))
+
+        # 5. Non-finding chatter must not be mistaken for a finding.
+        subprocess.run = fake(R("warming up\nchecking 11 signals\n", "", 0))
+        lines, okflag = gather_stalls()
+        ck("chatter without '-' lines is not a clear-all",
+           "nothing stalled" not in " ".join(lines) and "⚠️" in " ".join(lines))
+
+        # 6. The subprocess itself blowing up (timeout, missing interpreter)
+        #    already had the right behaviour -- pin it so it stays.
+        def boom(cmd, **kw):
+            raise OSError("no such file")
+        subprocess.run = boom
+        lines, okflag = gather_stalls()
+        ck("exception path stays loud", "could not run" in " ".join(lines) and okflag is False)
+    finally:
+        subprocess.run = real_run
+
+    print(f"\n  {ok} passed, {fail} failed")
+    return 1 if fail else 0
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
+    # T57: dispatch the subcommand BEFORE doing any work. A selftest that runs
+    # after compose() is a selftest that sends mail on the way to being run.
+    if "--selftest" in sys.argv:
+        raise SystemExit(selftest())
     dry = "--dry-run" in sys.argv or "--dry" in sys.argv
     subject, body = compose()
     if dry:
