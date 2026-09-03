@@ -392,6 +392,45 @@ def changed_files(since):
     return changed
 
 
+def export_head(repo, dest):
+    """Export the repo's tracked files at HEAD into dest. -> True on success.
+
+    This is what makes the probe safe to run ON a box. The live checkout runs
+    Bill's, Alyssa's and Justin's jobs; writing deliberately broken code into
+    it, even for the second a mutant is under test, is not a risk worth any
+    amount of coverage.
+
+    `git archive` also gets the secret handling right BY CONSTRUCTION rather
+    than by remembering: it emits tracked files only, and config/credentials.json
+    is gitignored, so credentials cannot ride along even if someone forgets they
+    exist. No .git either, so nothing can be pushed from the copy.
+
+    Written to a file and untarred as a separate step, never piped: a pipeline
+    exits with tar's status, so a failed export would silently yield an empty
+    tree that then measures as a whole module of survivors (T64).
+    """
+    tar = Path(dest) / "_export.tar"
+    try:
+        with open(tar, "wb") as fh:
+            r = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
+                               stdout=fh, stderr=subprocess.PIPE,
+                               cwd=str(repo), timeout=180)
+        if r.returncode != 0:
+            return False
+        r2 = subprocess.run(["tar", "-xf", str(tar), "-C", str(dest)],
+                            capture_output=True, timeout=180)
+        if r2.returncode != 0:
+            return False
+    except Exception:
+        return False
+    finally:
+        try:
+            tar.unlink()
+        except OSError:
+            pass
+    return True
+
+
 def changed_targets(since):
     changed = changed_files(since)
     return [(rel, argv) for rel, argv in TARGETS if rel in changed]
@@ -568,6 +607,9 @@ def main():
     # showed detail for one module and the totals for none.
     ap.add_argument("--summary", action="store_true",
                     help="per-target lines only, no per-survivor detail")
+    ap.add_argument("--scratch", action="store_true",
+                    help="export HEAD to a temp tree and probe THAT — required "
+                         "on a live box, which must never hold a mutant")
     a = ap.parse_args()
 
     if a.selftest:
@@ -577,6 +619,26 @@ def main():
     if a.repo:
         COWORK = Path(a.repo).resolve()
     TARGETS = PROFILES[a.profile]
+
+    if a.scratch:
+        import shutil
+        import tempfile
+        src = COWORK
+        tmp = tempfile.mkdtemp(prefix="ccf-")
+        try:
+            if not export_head(src, tmp):
+                print(f"== check-can-fail ==\n\n  ?? could not export HEAD from "
+                      f"{src} — nothing measured (an empty tree would have "
+                      f"scored every module as pure survivors)")
+                return 2
+            COWORK = Path(tmp)
+            return _run(a)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    return _run(a)
+
+
+def _run(a):
 
     targets = TARGETS
     if a.since:
