@@ -439,7 +439,12 @@ def gemini_search(query: str, max_results: int = 3,
                 "tools": [{"google_search": {}}],
             }, timeout=30)
         resp.raise_for_status()
-        cand = resp.json()["candidates"][0]
+        # S96: a fully-blocked prompt returns NO candidates, so [0] raised
+        # IndexError. It was caught by the except below and became "no
+        # search results" — indistinguishable from a genuine empty result.
+        # Same root cause as the KeyError S91 fixed in llm_providers.py and
+        # S96 fixed in cirrus_bot.py; linted now (runner/gemini_parts_lint.py).
+        cand = (resp.json().get("candidates") or [{}])[0]
         chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks", [])
         urls = []
         for ch in chunks:

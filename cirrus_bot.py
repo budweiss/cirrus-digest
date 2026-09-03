@@ -277,7 +277,34 @@ def call_gemini(prompt: str, timeout: int = 60):
     # Taking only parts[0] silently truncated every proposal at its first
     # code fence (the cause of proposals missing their sketch + Risks
     # sections). Join ALL text parts.
-    parts = data["candidates"][0]["content"]["parts"]
+    #
+    # S96: this was `data["candidates"][0]["content"]["parts"]`, unguarded —
+    # the SAME line S91 fixed in llm_providers.py, still live here. Found by
+    # asking why Skywarden kept repairing cirrus-modelhealth (4 days in 14):
+    # the root cause there was this exact KeyError, surfacing as the bare
+    # string 'parts' — an error naming neither provider, cause, nor fix.
+    #
+    # A candidate that finishes on MAX_TOKENS or a safety block carries a
+    # `content` with NO `parts`, and a fully-blocked prompt returns no
+    # `candidates` at all. This call is MORE exposed than the one S91 fixed,
+    # not less: it requests google_search grounding, and grounded answers run
+    # longer and trip safety filters more often than a bare completion.
+    #
+    # Raising (rather than returning "") is deliberate: ask_with_fallback
+    # catches per-provider exceptions and moves to Grok, so a diagnostic error
+    # degrades exactly like any other provider failure while leaving a message
+    # someone can act on.
+    cand = (data.get("candidates") or [{}])[0]
+    parts = ((cand.get("content") or {}).get("parts")) or []
+    if not parts:
+        usage = data.get("usageMetadata") or {}
+        raise RuntimeError(
+            f"gemini returned no content: finishReason="
+            f"{cand.get('finishReason')!r}, "
+            f"{usage.get('thoughtsTokenCount', 0)} thinking token(s). "
+            f"A thinking model spends maxOutputTokens before emitting text; a "
+            f"MAX_TOKENS finish here means the budget is below its preamble. "
+            f"SAFETY means the grounded answer was filtered.")
     return "".join(p.get("text", "") for p in parts).strip()
 
 def call_grok(prompt: str, timeout: int = 60):
