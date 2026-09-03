@@ -97,6 +97,11 @@ PROFILES = {
         ("runner/wait_state_check.py", ["--selftest"]),
         ("runner/deploy_verify.py", ["--selftest"]),
         ("runner/test_coverage_check.py", ["selftest"]),
+        # The prober holds itself to its own rule. Mutating this file while a
+        # parent copy runs is safe: Python has already loaded the parent's
+        # source, and it is the CHILD subprocess that imports the mutant.
+        ("cirrus-repo/check_can_fail.py", ["--selftest"]),
+        ("cirrus-repo/dev_findings.py", ["--selftest"]),
     ],
     # On CIRRUS. Paths are relative to the cirrus-digest checkout root.
     # morning_brief is here and not in "cowork" because it loads
@@ -362,13 +367,23 @@ def report(results, gate=False, summary=False):
     return 1 if (gate and bad) else 0
 
 
-def _git_lines(args):
+def _git_lines(args, cwd=None, prefix=""):
     try:
         r = subprocess.run(["git"] + args, capture_output=True, text=True,
-                           cwd=str(COWORK))
-        return {l.strip() for l in (r.stdout or "").splitlines() if l.strip()}
+                           cwd=str(cwd or COWORK))
+        return {prefix + l.strip()
+                for l in (r.stdout or "").splitlines() if l.strip()}
     except Exception:
         return set()
+
+
+# cirrus-repo is a SEPARATE git repository, gitignored by Cowork. Cowork's git
+# therefore reports nothing about it -- and most of the check modules live
+# there. The first version queried only Cowork, so PASS 9 was blind to every
+# change in the files it most needed to watch: a ratchet that cannot see, which
+# is the exact defect this whole tool exists to find. Found by asking what
+# changed_files actually returned instead of trusting that it worked.
+_SUBREPOS = [("cirrus-repo", "cirrus-repo/")]
 
 
 def changed_files(since):
@@ -383,12 +398,21 @@ def changed_files(since):
     to measure the check you JUST edited -- waiting until it is committed would
     move the gate to after the moment it is useful.
     """
-    changed = _git_lines(["log", "--since", since, "--name-only",
-                          "--pretty=format:"])
-    if not changed:
-        changed = _git_lines(["diff", "--name-only", f"{since}..HEAD"])
-    changed |= _git_lines(["diff", "--name-only", "HEAD"])       # uncommitted
-    changed |= _git_lines(["diff", "--name-only", "--cached"])   # staged
+    def _for(cwd, prefix):
+        got = _git_lines(["log", "--since", since, "--name-only",
+                          "--pretty=format:"], cwd, prefix)
+        if not got:
+            got = _git_lines(["diff", "--name-only", f"{since}..HEAD"],
+                             cwd, prefix)
+        got |= _git_lines(["diff", "--name-only", "HEAD"], cwd, prefix)
+        got |= _git_lines(["diff", "--name-only", "--cached"], cwd, prefix)
+        return got
+
+    changed = _for(COWORK, "")
+    for sub, prefix in _SUBREPOS:
+        d = COWORK / sub
+        if (d / ".git").exists():
+            changed |= _for(d, prefix)
     return changed
 
 
@@ -551,6 +575,23 @@ def selftest():
             r_red = probe("red.py", ["--selftest"])
             ck("a red baseline is reported as unmeasurable, not as clean",
                r_red["error"] is not None and "baseline" in r_red["error"])
+
+            # 6b. the ratchet must see BOTH repos. cirrus-repo is a separate
+            #     git repository that Cowork gitignores, and most check modules
+            #     live in it -- the first version queried only Cowork, so PASS 9
+            #     was blind to exactly the files it most needed to watch.
+            import subprocess as _sp
+            sub = Path(td) / "cirrus-repo"
+            sub.mkdir()
+            (sub / "thing.py").write_text("x = 1\n")
+            for cmd in (["init", "-q"], ["add", "thing.py"],
+                        ["-c", "user.email=t@t", "-c", "user.name=t",
+                         "commit", "-qm", "x"]):
+                _sp.run(["git"] + cmd, cwd=str(sub), capture_output=True)
+            (sub / "thing.py").write_text("x = 2\n")   # uncommitted change
+            seen = changed_files("midnight")
+            ck("the ratchet sees changes in the cirrus-repo subrepo",
+               "cirrus-repo/thing.py" in seen)
 
             # 7. a missing target is loud
             ck("a missing file is an error, not an empty pass",
