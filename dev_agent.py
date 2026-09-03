@@ -743,7 +743,12 @@ def failing_selftests(wt, mods) -> set:
     return out
 
 
-def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
+class _SkipRemote(Exception):
+    """Internal: gate 5 was switched off for this call (offline selftest)."""
+
+
+def verify_build(wt, changed, run_dryrun: bool = True, prebroken=(),
+                 run_remote: bool = True) -> dict:
     """Run the gates in order, cheapest first. Stop at the first failure.
 
     Returns {ok, gate, detail, signature, ran}. `ran` lists the gates that
@@ -857,6 +862,49 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=()) -> dict:
                     "ran": ran, "excused": excused}
 
     ran.append("dependents(%d)" % n_dep)
+
+    # gate 5 — does it still work ON CUMULUS? (S97)
+    #
+    # Gates 1-4 all run here, on a Mac. They prove the patch works on macOS. A
+    # fix for a CUMULUS job touches systemd, journald, Linux paths and Linux
+    # `ps`, and none of that is exercised — so the builder could ship to the box
+    # serving Bill, Alyssa and Justin having never run the code there. That is
+    # this session's own theme aimed at the builder: a check that passes because
+    # it could not see. `ps -o etimes` is the standing proof.
+    #
+    # It cannot simply run every changed module on CUMULUS and fail on a red
+    # one: most of this tree is CIRRUS-only and would be red there for reasons
+    # that have nothing to do with the patch. So remote_verify measures a
+    # BASELINE at HEAD first and only judges modules that were green there —
+    # the same `prebroken` logic gate 3 uses for dependents, and no
+    # hand-maintained list of which file belongs to which box (T44).
+    #
+    # An unreachable CUMULUS does NOT fail the build. A cross-box gate that
+    # hard-fails on a network blip is muted within a week, and dev_agent already
+    # treats the CUMULUS ticket read as best-effort. It is always reported,
+    # never silently skipped.
+    # run_remote=False keeps this file's own selftest OFFLINE. A suite that
+    # reaches across the network is slow, flaky, and stops being run (T32 is the
+    # same lesson about live files). The selftest exercises the gate's DECISION
+    # logic in remote_verify's own suite, where both boxes are faked.
+    try:
+        if not run_remote:
+            raise _SkipRemote()
+        import remote_verify
+        rv = remote_verify.verify_on_cumulus(wt, changed)
+        ran.append(rv.get("ran") or "cumulus(?)")
+        if not rv.get("ok"):
+            return {"ok": False, "gate": "cumulus", "detail": rv.get("detail", ""),
+                    "signature": failure_signature("cumulus", rv.get("detail", "")),
+                    "ran": ran, "excused": excused + rv.get("excused", [])}
+        excused = excused + rv.get("excused", [])
+    except _SkipRemote:
+        pass                      # offline by request; nothing claimed either way
+    except Exception as e:  # noqa: BLE001
+        # Never let a verification helper break a build that passed every gate
+        # that could actually run -- but say so rather than implying it passed.
+        ran.append("cumulus(error: %s)" % type(e).__name__)
+
     return {"ok": True, "gate": "", "detail": "", "signature": "", "ran": ran,
             "excused": excused}
 
@@ -1360,6 +1408,59 @@ def build_item(item: dict):
         _ledger("test", bid, result="PASS")
         _ledger("awaiting-confirm", bid,
                 detail=f"{rec['summary']} | council={rec.get('council',{}).get('verdict','n/a')}")
+
+        # S97 — unattended ship for TEST-ONLY builds (Buddy, 2026-09-03: "I like
+        # to have this automated without me at night").
+        #
+        # The measured bottleneck was never capability: [waiting-on-buddy] on 4
+        # of the last 7 nights, 24 findings collected with room for 1. And there
+        # was an asymmetry -- CLAUDE.md rule 3a lets the interactive agent fix
+        # and deploy without asking, while dev_agent had to wait even for a
+        # patch that only adds assertions.
+        #
+        # autoship.may_autoship decides MECHANICALLY: parse before and after,
+        # delete every test function and the __main__ dispatch from both, and
+        # require the remaining ASTs to be identical. Not "looks like tests" --
+        # structural equality on everything that is not a test. A council
+        # reject, an unparseable file, a new file, or a new import disqualify.
+        #
+        # Everything else still waits for Buddy, and external sends and
+        # client-facing behaviour never come near this path.
+        try:
+            import autoship
+            pairs = []
+            for rel in (rec.get("files") or []):
+                fp = wt / rel
+                after = fp.read_text(errors="ignore") if fp.exists() else ""
+                # stdout ONLY. _run merges stderr into its output, and a git
+                # warning prepended to the original source would silently make
+                # the baseline unparseable -- which fails safe here, but for the
+                # wrong reason, and "it worked by luck" is not a property to
+                # rely on in the code that decides what ships unattended.
+                g = subprocess.run(["git", "show", f"origin/main:{rel}"],
+                                   cwd=str(wt), capture_output=True, text=True,
+                                   timeout=60)
+                before = g.stdout if g.returncode == 0 else None
+                pairs.append((rel, before, after))
+            may, why = autoship.may_autoship(rec, pairs)
+            rec["autoship_reason"] = why
+            if may:
+                _log(f"{bid}: AUTO-SHIP — {why}")
+                _ledger("autoship", bid, detail=why)
+                idx = next((i for i, b in enumerate(awaiting(), 1)
+                            if b.get("id") == bid), None)
+                if idx:
+                    rec["autoship_result"] = str(ship(idx))[:300]
+                    _log(f"{bid}: auto-ship result: {rec['autoship_result'][:160]}")
+                else:
+                    _log(f"{bid}: auto-ship skipped — not found in the awaiting "
+                         f"list (left for Buddy)")
+            else:
+                _log(f"{bid}: needs Buddy's tap — {why}")
+        except Exception as e:  # noqa: BLE001
+            # A failure to DECIDE must leave the build waiting, never ship it.
+            _log(f"{bid}: auto-ship check errored ({type(e).__name__}) — "
+                 f"left for Buddy")
         return rec
 
     except Exception as e:
@@ -2642,29 +2743,29 @@ def _selftest():
             "if __name__ == '__main__':\n"
             "    if '--selftest' in sys.argv:\n        sys.exit(1)\n"
             "    print('PRODUCTION PATH'); sys.exit(0)\n")
-        vconv = verify_build(conv, ["dashed_fails.py"], run_dryrun=False)
+        vconv = verify_build(conv, ["dashed_fails.py"], run_dryrun=False, run_remote=False)
         check("gate 2 now FAILS a --selftest module whose tests fail",
               not vconv["ok"] and vconv["gate"] == "selftest")
 
         # -- gates, in order --------------------------------------------------
-        v = verify_build(wt, ["base.py"])
+        v = verify_build(wt, ["base.py"], run_remote=False)
         check("verify_build: a healthy patch passes", v["ok"])
         check("verify_build: it ran compile, selftest AND dependents",
               v["ran"] == ["compile", "selftest(1/1)", "dependents(1)"])
         # S80 live-run finding: a module with NO selftest must not report a
         # gate that inspected nothing as simply "selftest" (T42 shape).
         check("verify_build: a module with no selftest reports 0 checked",
-              "selftest(0/1)" in verify_build(wt, ["lonely.py"])["ran"])
+              "selftest(0/1)" in verify_build(wt, ["lonely.py"], run_remote=False)["ran"])
         check("verify_build: and 0-inspected still passes, it does not fail",
-              verify_build(wt, ["lonely.py"])["ok"])
+              verify_build(wt, ["lonely.py"], run_remote=False)["ok"])
         check("verify_build: dependents count reflects suites actually run",
-              "dependents(1)" in verify_build(wt, ["base.py"], prebroken={"dep.py"})["ran"]
-              or "dependents(0)" in verify_build(wt, ["base.py"], prebroken={"dep.py"})["ran"])
+              "dependents(1)" in verify_build(wt, ["base.py"], prebroken={"dep.py"}, run_remote=False)["ran"]
+              or "dependents(0)" in verify_build(wt, ["base.py"], prebroken={"dep.py"}, run_remote=False)["ran"])
         check("verify_build: it does NOT claim to have run the dry-run",
               "dryrun" not in v["ran"])
 
         (wt / "broken.py").write_text("def x(:\n")
-        v = verify_build(wt, ["broken.py"])
+        v = verify_build(wt, ["broken.py"], run_remote=False)
         check("verify_build: a syntax error fails at the compile gate",
               not v["ok"] and v["gate"] == "compile")
 
@@ -2672,7 +2773,7 @@ def _selftest():
             "def selftest():\n    print('FAIL the thing')\n    return 1\n\n"
             "import sys\n"
             "if __name__ == '__main__':\n    sys.exit(selftest())\n")
-        v = verify_build(wt, ["failing.py"])
+        v = verify_build(wt, ["failing.py"], run_remote=False)
         check("verify_build: a failing selftest is caught (py_compile never would)",
               not v["ok"] and v["gate"] == "selftest")
         check("verify_build: the failure text reaches the model",
@@ -2685,7 +2786,7 @@ def _selftest():
             "def selftest():\n    return 0\n\n"
             "import sys\n"
             "if __name__ == '__main__':\n    sys.exit(selftest())\n")
-        v = verify_build(wt, ["base.py"])
+        v = verify_build(wt, ["base.py"], run_remote=False)
         check("verify_build: a change that breaks a DEPENDENT's suite is caught",
               not v["ok"] and v["gate"] == "dependents")
         check("verify_build: and it names which dependent, and why",
@@ -2696,7 +2797,7 @@ def _selftest():
               failing_selftests(wt, ["failing.py", "base.py"]) == {"failing.py"})
         check("failing_selftests: ignores a module with no selftest",
               failing_selftests(wt, ["lonely.py"]) == set())
-        v = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+        v = verify_build(wt, ["base.py"], prebroken={"dep.py"}, run_remote=False)
         check("verify_build: an already-red dependent is excused, not blamed",
               v["ok"] and v["excused"] == ["dep.py"])
         check("verify_build: but the excuse is REPORTED, never silent",
@@ -2705,7 +2806,63 @@ def _selftest():
                   "summary": "s", "attempts": 1, "gates_ran": ["compile"],
                   "excused": v["excused"]}]))
         check("verify_build: a dependent NOT in prebroken still fails the gate",
-              not verify_build(wt, ["base.py"], prebroken=set())["ok"])
+              not verify_build(wt, ["base.py"], prebroken=set(), run_remote=False)["ok"])
+
+        # -- gate 5: verify on CUMULUS (S97) ----------------------------------
+        # Gates 1-4 all run on this Mac. A CUMULUS fix touches systemd, journald
+        # and Linux `ps`, and none of that is exercised here -- the builder could
+        # ship to the box serving Bill, Alyssa and Justin having never run the
+        # code there. Faked at the module boundary so this suite stays offline;
+        # remote_verify's own suite pins the decision logic with both boxes faked.
+        import types as _types
+        _saved_rv = sys.modules.get("remote_verify")
+        try:
+            _fake = _types.ModuleType("remote_verify")
+            _fake.verify_on_cumulus = lambda w, c: {
+                "ok": False, "detail": "m.py passes on CIRRUS and FAILS on CUMULUS",
+                "ran": "cumulus(1 checked, 0 excused)", "excused": []}
+            sys.modules["remote_verify"] = _fake
+            vfail = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+            check("gate 5: a patch that breaks on CUMULUS FAILS the build",
+                  not vfail["ok"] and vfail["gate"] == "cumulus")
+            check("gate 5: ...and the ran list records it",
+                  any("cumulus(" in g for g in vfail["ran"]))
+
+            _fake.verify_on_cumulus = lambda w, c: {
+                "ok": True, "detail": "", "ran": "cumulus(1 checked, 0 excused)",
+                "excused": ["dep.py (rc=1 at HEAD)"]}
+            vpass = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+            check("gate 5: a patch that survives CUMULUS passes", vpass["ok"])
+            check("gate 5: an excused module is carried, not silently dropped",
+                  any("dep.py" in e for e in vpass["excused"]))
+
+            # An unreachable box must not fail the build, and must not claim a
+            # verification either -- the same rule the rest of today enforces.
+            _fake.verify_on_cumulus = lambda w, c: {
+                "ok": True, "detail": "ssh down", "ran": "cumulus(unreachable)",
+                "excused": []}
+            vunr = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+            check("gate 5: an unreachable CUMULUS does not fail the build",
+                  vunr["ok"])
+            check("gate 5: ...and the ran list SAYS it was unreachable",
+                  any("unreachable" in g for g in vunr["ran"]))
+
+            # A broken helper must never read as a pass.
+            def _boom(w, c):
+                raise RuntimeError("helper exploded")
+            _fake.verify_on_cumulus = _boom
+            verr = verify_build(wt, ["base.py"], prebroken={"dep.py"})
+            check("gate 5: a helper that raises is reported, not treated as pass",
+                  verr["ok"] and any("cumulus(error" in g for g in verr["ran"]))
+
+            check("gate 5: run_remote=False leaves no cumulus claim at all",
+                  not any("cumulus" in g for g in
+                          verify_build(wt, ["base.py"], prebroken={"dep.py"}, run_remote=False)["ran"]))
+        finally:
+            if _saved_rv is None:
+                sys.modules.pop("remote_verify", None)
+            else:
+                sys.modules["remote_verify"] = _saved_rv
 
         # -- the journal ------------------------------------------------------
         jf = wt / "repairs.jsonl"

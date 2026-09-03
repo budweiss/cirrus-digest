@@ -102,6 +102,16 @@ PROFILES = {
         # source, and it is the CHILD subprocess that imports the mutant.
         ("cirrus-repo/check_can_fail.py", ["--selftest"]),
         ("cirrus-repo/dev_findings.py", ["--selftest"]),
+        ("cirrus-repo/autoship.py", ["--selftest"]),
+        # remote_verify.py is deliberately NOT probed. Its selftest fakes the
+        # network at the module boundary, and a mutation can disable that fake
+        # -- so probing it made REAL ssh attempts, each waiting out a 10s
+        # connect timeout, and the run had to be killed mid-mutation. (The
+        # sidecar restored it byte-for-byte, which is what that guard is for.)
+        # The general rule this stands for: a module whose selftest is hermetic
+        # only because of an injected fake is not safely mutable, because the
+        # mutation can remove the injection. Its logic is pinned by its own 18
+        # cases instead.
     ],
     # On CIRRUS. Paths are relative to the cirrus-digest checkout root.
     # morning_brief is here and not in "cowork" because it loads
