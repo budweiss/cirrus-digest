@@ -330,7 +330,7 @@ def probe(rel, argv, max_mutants=None, verbose=False):
 
 # ── reporting ─────────────────────────────────────────────────────────────────
 
-def report(results, gate=False):
+def report(results, gate=False, summary=False):
     bad = 0
     print("== check-can-fail (mutation probe) ==\n")
     for r in results:
@@ -344,10 +344,11 @@ def report(results, gate=False):
         print(f"  {mark} {r['target']:38} {r['killed']}/{r['total']} mutations "
               f"detected" + (f", {n_s} SURVIVED" if n_s else "")
               + (f", {n_i} inconclusive" if n_i else ""))
-        for s in r["survivors"]:
-            print(f"        survivor: {s}")
-        for s in r["inconclusive"]:
-            print(f"        inconclusive: {s}")
+        if not summary:
+            for s in r["survivors"]:
+                print(f"        survivor: {s}")
+            for s in r["inconclusive"]:
+                print(f"        inconclusive: {s}")
         if n_s:
             bad += 1
 
@@ -562,6 +563,11 @@ def main():
     ap.add_argument("--max", type=int, default=None,
                     help="cap mutations per target")
     ap.add_argument("--verbose", action="store_true")
+    # On-box runs page through `tail`, and a module with 100+ survivors pushes
+    # the per-target summary out of the window entirely -- the first CIRRUS run
+    # showed detail for one module and the totals for none.
+    ap.add_argument("--summary", action="store_true",
+                    help="per-target lines only, no per-survivor detail")
     a = ap.parse_args()
 
     if a.selftest:
@@ -595,7 +601,7 @@ def main():
         if a.verbose:
             print(f"  probing {rel} ...")
         results.append(probe(rel, argv, max_mutants=a.max, verbose=a.verbose))
-    return report(results, gate=a.gate)
+    return report(results, gate=a.gate, summary=a.summary)
 
 
 if __name__ == "__main__":
