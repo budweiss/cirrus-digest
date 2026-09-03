@@ -1055,6 +1055,16 @@ def selftest() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         db = str(Path(tmp) / "kb.sqlite3")
+        # T32/S97: build_snapshot() falls back to the LIVE ROUTING_PATH when no
+        # routing_path is given, so these cases were reading whatever the last
+        # real sweep wrote. "the touring pool is EMPTY" passed only for as long
+        # as no sweep had ever run; the 2026-09-02 sweep (53 events across 7
+        # games) made week 8 genuinely swept and turned it red. It went unseen
+        # because the runner piped the suite into `tail` and exited with TAIL's
+        # status (T64), reporting PASS for a red suite.
+        # A path inside the tmpdir that is never created is the honest stand-in
+        # for "no sweep has ever run" -- _load_routing returns {} for it.
+        no_routing = Path(tmp) / "never-swept.json"
         entity_kb.upsert_entity(
             KB_PROJECT, "test-patriot", "Test Patriot Band",
             entity_type="halftime_act", db_path=db,
@@ -1065,7 +1075,7 @@ def selftest() -> int:
             KB_PROJECT, "test-variety", "Test Dog Show",
             entity_type="halftime_act", db_path=db,
             fields={"pool": "variety", "category": "dog show"})
-        snap = build_snapshot(db_path=db)
+        snap = build_snapshot(db_path=db, routing_path=no_routing)
 
         check("a snapshot covers every game",
               len(snap["games"]) == len(HOME_GAMES))
@@ -1275,7 +1285,8 @@ def selftest() -> int:
         ordered = rank_for_game(HOME_GAMES[0], reach_pool)
         check("a marquee-only act does NOT outrank a Pittsburgh credit",
               ordered[0]["name"] == "Steelers Act")
-        rpage2 = render_html(build_snapshot(db_path=db))
+        rpage2 = render_html(build_snapshot(db_path=db,
+                                            routing_path=no_routing))
         check("reachability is EXPLAINED on the page, not applied invisibly",
               "reach" in rpage2 or "strongest evidence available" in rpage2)
 
