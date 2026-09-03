@@ -193,8 +193,15 @@ def plan_mutations(src, max_mutants=None):
             muts.append(_Mutation(kind, t.lineno, t.col_offset,
                                   t.end_lineno, t.end_col_offset, text, ctx))
     muts.sort(key=lambda m: (m.lineno, m.text))
-    if max_mutants:
-        muts = muts[:max_mutants]
+    if max_mutants and len(muts) > max_mutants:
+        # Sample ACROSS the file, not the first N by line. The first version
+        # sliced [:max], so a capped run only ever probed the top of the module
+        # -- imports and early helpers -- and reported "0/8 detected" for
+        # stall_check.py, whose real checks live further down. A cap is for
+        # bounding runtime; it must not quietly change WHICH code is measured
+        # into an unrepresentative sample that reads as a damning score.
+        step = len(muts) / float(max_mutants)
+        muts = [muts[int(i * step)] for i in range(max_mutants)]
     return muts
 
 
@@ -437,6 +444,16 @@ def selftest():
     m2 = plan_mutations(src2)
     ck("mutations skip the module's own selftest",
        all(m.lineno < 5 for m in m2) and len(m2) == 2)
+
+    # a cap must SAMPLE the file, not truncate to its first lines -- a capped
+    # run that only ever probes the top reports an unrepresentative score as if
+    # it were a verdict (it read "stall_check 0/8" on the first live run).
+    wide = "def f(x):\n" + "".join(
+        f"    if x == {i}:\n        return {i}\n" for i in range(1, 21))
+    capped = plan_mutations(wide, max_mutants=4)
+    ck("a cap returns exactly the requested number", len(capped) == 4)
+    ck("a capped sample spans the whole file, not just the top",
+       max(m.lineno for m in capped) > 20)
 
     # 3 & 4. end to end, on two real files that differ ONLY in test strength.
     body = ("import sys\n"
