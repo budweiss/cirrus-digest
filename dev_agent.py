@@ -1409,58 +1409,6 @@ def build_item(item: dict):
         _ledger("awaiting-confirm", bid,
                 detail=f"{rec['summary']} | council={rec.get('council',{}).get('verdict','n/a')}")
 
-        # S97 — unattended ship for TEST-ONLY builds (Buddy, 2026-09-03: "I like
-        # to have this automated without me at night").
-        #
-        # The measured bottleneck was never capability: [waiting-on-buddy] on 4
-        # of the last 7 nights, 24 findings collected with room for 1. And there
-        # was an asymmetry -- CLAUDE.md rule 3a lets the interactive agent fix
-        # and deploy without asking, while dev_agent had to wait even for a
-        # patch that only adds assertions.
-        #
-        # autoship.may_autoship decides MECHANICALLY: parse before and after,
-        # delete every test function and the __main__ dispatch from both, and
-        # require the remaining ASTs to be identical. Not "looks like tests" --
-        # structural equality on everything that is not a test. A council
-        # reject, an unparseable file, a new file, or a new import disqualify.
-        #
-        # Everything else still waits for Buddy, and external sends and
-        # client-facing behaviour never come near this path.
-        try:
-            import autoship
-            pairs = []
-            for rel in (rec.get("files") or []):
-                fp = wt / rel
-                after = fp.read_text(errors="ignore") if fp.exists() else ""
-                # stdout ONLY. _run merges stderr into its output, and a git
-                # warning prepended to the original source would silently make
-                # the baseline unparseable -- which fails safe here, but for the
-                # wrong reason, and "it worked by luck" is not a property to
-                # rely on in the code that decides what ships unattended.
-                g = subprocess.run(["git", "show", f"origin/main:{rel}"],
-                                   cwd=str(wt), capture_output=True, text=True,
-                                   timeout=60)
-                before = g.stdout if g.returncode == 0 else None
-                pairs.append((rel, before, after))
-            may, why = autoship.may_autoship(rec, pairs)
-            rec["autoship_reason"] = why
-            if may:
-                _log(f"{bid}: AUTO-SHIP — {why}")
-                _ledger("autoship", bid, detail=why)
-                idx = next((i for i, b in enumerate(awaiting(), 1)
-                            if b.get("id") == bid), None)
-                if idx:
-                    rec["autoship_result"] = str(ship(idx))[:300]
-                    _log(f"{bid}: auto-ship result: {rec['autoship_result'][:160]}")
-                else:
-                    _log(f"{bid}: auto-ship skipped — not found in the awaiting "
-                         f"list (left for Buddy)")
-            else:
-                _log(f"{bid}: needs Buddy's tap — {why}")
-        except Exception as e:  # noqa: BLE001
-            # A failure to DECIDE must leave the build waiting, never ship it.
-            _log(f"{bid}: auto-ship check errored ({type(e).__name__}) — "
-                 f"left for Buddy")
         return rec
 
     except Exception as e:
@@ -1471,6 +1419,71 @@ def build_item(item: dict):
 
 
 # ── Confirm / ship / discard ──────────────────────────────────────────────────
+def maybe_autoship(rec):
+    """Ship this build unattended if the change is provably test-only. -> str.
+
+    Buddy, 2026-09-03: "I like to have this automated without me at night."
+
+    The measured bottleneck was never capability -- dev_agent logged
+    [waiting-on-buddy] on 4 of the last 7 nights while 24 findings sat with room
+    for 1. And there was an asymmetry: CLAUDE.md rule 3a lets the INTERACTIVE
+    agent fix and deploy without asking, while dev_agent had to wait even for a
+    patch that only adds assertions. This closes that gap and only that gap.
+
+    autoship.may_autoship decides MECHANICALLY -- parse before and after, delete
+    every test function and the __main__ dispatch from both, require the
+    remaining ASTs to be identical. Structural equality on everything that is
+    not a test, not "looks like tests". A council reject, an unparseable file
+    either side, a new file, a new import, or a selftest gate that did not run
+    all disqualify. One production change anywhere blocks the whole build.
+
+    CALLED FROM THE SWEEP, AFTER builds_save -- not from build_item. The first
+    version ran inside build_item, where `awaiting()` re-reads builds.json and
+    this build is not in it yet, so the lookup always missed and auto-ship would
+    have silently NEVER FIRED. A feature that quietly does nothing is the exact
+    defect this session has spent the day removing; it was found by asking when
+    the record actually becomes durable rather than assuming it already was.
+    """
+    bid = rec.get("id")
+    if rec.get("status") != "awaiting-confirm":
+        return "not awaiting-confirm"
+    try:
+        import autoship
+        wt = Path(rec.get("worktree") or "")
+        pairs = []
+        for rel in (rec.get("files") or []):
+            fp = wt / rel
+            after = fp.read_text(errors="ignore") if fp.exists() else ""
+            # stdout ONLY. _run merges stderr into its output, and a git warning
+            # prepended to the original source would make the baseline
+            # unparseable -- which fails safe, but for the wrong reason, and
+            # "it worked by luck" is not a property to rely on in the code that
+            # decides what ships unattended.
+            g = subprocess.run(["git", "show", f"origin/main:{rel}"],
+                               cwd=str(wt), capture_output=True, text=True,
+                               timeout=60)
+            pairs.append((rel, g.stdout if g.returncode == 0 else None, after))
+        may, why = autoship.may_autoship(rec, pairs)
+        rec["autoship_reason"] = why
+        if not may:
+            _log(f"{bid}: needs Buddy's tap — {why}")
+            return why
+        idx = next((i for i, b in enumerate(awaiting(), 1)
+                    if b.get("id") == bid), None)
+        if not idx:
+            _log(f"{bid}: auto-ship skipped — not in the awaiting list")
+            return "not in the awaiting list"
+        _log(f"{bid}: AUTO-SHIP — {why}")
+        _ledger("autoship", bid, detail=why)
+        rec["autoship_result"] = str(ship(idx))[:300]
+        _log(f"{bid}: auto-ship result: {rec['autoship_result'][:160]}")
+        return rec["autoship_result"]
+    except Exception as e:  # noqa: BLE001
+        # A failure to DECIDE must leave the build waiting, never ship it.
+        _log(f"{bid}: auto-ship check errored ({type(e).__name__}) — left for Buddy")
+        return f"error: {type(e).__name__}"
+
+
 def awaiting(builds=None):
     return [b for b in (builds if builds is not None else builds_load())
             if b.get("status") == "awaiting-confirm"]
@@ -2351,6 +2364,12 @@ def run_nightly():
         builds = [b for b in builds if b.get("id") != bid]   # replace any prior record (e.g. a retried build-error)
         builds.append(rec)
         builds_save(builds)
+        # S97: AFTER the record is durable, because maybe_autoship re-reads
+        # builds.json to find this build's index. Ordering is the whole reason
+        # this call is here and not inside build_item.
+        maybe_autoship(rec)
+        builds = [b for b in builds_load() if b.get("id") != bid] + [rec]
+        builds_save(builds)
         done.append(rec)
 
     lines = [f"🌙 *Dev-Loop nightly* — {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
@@ -2863,6 +2882,27 @@ def _selftest():
                 sys.modules.pop("remote_verify", None)
             else:
                 sys.modules["remote_verify"] = _saved_rv
+
+        # -- auto-ship (S97) --------------------------------------------------
+        # The decision is pinned in autoship.py's own 17 cases. What is pinned
+        # HERE is the wiring, because the first version ran inside build_item --
+        # before builds_save -- so awaiting() never contained the build and
+        # auto-ship would have silently never fired. A feature that quietly does
+        # nothing is the defect this session exists to remove.
+        _as_src = _source_between("def maybe_autoship(rec)", "\ndef awaiting(")
+        check("maybe_autoship refuses a build that is not awaiting-confirm",
+              'rec.get("status") != "awaiting-confirm"' in (_as_src or ""))
+        check("maybe_autoship reads the ORIGINAL from git, stdout only",
+              "g.stdout if g.returncode == 0 else None" in (_as_src or ""))
+        check("a failure to DECIDE leaves the build waiting, never ships it",
+              "left for Buddy" in (_as_src or ""))
+        _sweep = _source_between("picked = todo[:MAX_BUILDS_PER_RUN]", "\n    lines = [")
+        check("the sweep calls maybe_autoship AFTER builds_save",
+              _sweep is not None
+              and _sweep.index("builds_save(builds)") < _sweep.index("maybe_autoship(rec)"))
+        check("...and build_item itself does NOT auto-ship",
+              "maybe_autoship" not in (_source_between(
+                  "def build_item(item: dict)", "\ndef maybe_autoship(") or ""))
 
         # -- the journal ------------------------------------------------------
         jf = wt / "repairs.jsonl"
