@@ -23,7 +23,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_DIR = Path.home() / "cirrus-digest"
@@ -120,15 +120,61 @@ def _sudo_cat(path):
         return ""
 
 
+# S96. How far back to look when asking "is this anomaly a blip or a habit?"
+# Two weeks covers a weekly job twice and is short enough that a fixed fault
+# ages out of the count once it is actually fixed.
+RECURRENCE_DAYS = 14
+REPAIR_TOOLS = ("restart_service", "reset_failed")
+
+
+def _unit_in(detail, unit):
+    """Does this issue line refer to this unit? Deliberately a substring test.
+
+    The two sides are written by different code paths — an issue reads
+    "heartbeat found an issue: failed units: cirrus-modelhealth.service" and the
+    repair records just "cirrus-modelhealth.service" — so there is no shared id
+    to join on. A substring match on the unit name is exact enough (unit names
+    are distinctive) and, being one-directional, cannot pair a repair with an
+    unrelated issue that merely mentions a number.
+    """
+    return bool(unit) and unit in detail
+
+
 def gather_skywarden():
-    """Skywarden's own day: ledger rows (what it did/checked) + today's spend."""
-    rows = []
+    """Skywarden's own day: ledger rows (what it did/checked) + today's spend.
+
+    S96. Buddy, reading the 2026-09-02 brief: "if skywarden fixes the issue, the
+    report doesn't show this failure if it was corrected" — and the answer this
+    grew into is the opposite of hiding it.
+
+    A healed failure is still a failure, and healing is exactly what makes it
+    silent: Skywarden repairs a unit within a tick, so a job that breaks and
+    self-fixes EVERY NIGHT leaves the same trace as one that has never broken.
+    Measured the same day, from Skywarden's own ledger:
+
+        cirrus-modelhealth.service  repaired on 4 separate days (08-25, 08-27,
+                                    08-31, 09-01) — 6 restarts + 2 reset-failed
+        cirrus-hoaleads.service     58 issue flags, and NO repair, because
+                                    Skywarden correctly judged it non-transient
+
+    Nobody saw the modelhealth pattern, because each night it looked like an
+    isolated blip. Suppressing healed rows would have made that permanent.
+
+    So: mark them healed, and make REPETITION the loud part. A row that healed
+    once is informational; the same row on four of the last fourteen days is the
+    signal, and it is the one that was missing.
+    """
+    rows, all_rows = [], []
+    cutoff = (datetime.now() - timedelta(days=RECURRENCE_DAYS)).strftime("%Y-%m-%d")
     for line in _sudo_cat(SKY_STATE_DIR / "ledger.jsonl").splitlines():
         try:
             r = json.loads(line)
         except Exception:
             continue
-        if str(r.get("ts", "")).startswith(TODAY):
+        ts = str(r.get("ts", ""))
+        if ts[:10] >= cutoff:
+            all_rows.append(r)
+        if ts.startswith(TODAY):
             rows.append(r)
 
     issues = [r for r in rows if "issue" in str(r.get("event", "")).lower()
@@ -147,9 +193,38 @@ def gather_skywarden():
     # of these are already over by the time the brief goes out at 20:00. On
     # 2026-09-02 this line read "failed units: cirrus-pedagogy.service" twelve
     # hours after the unit had gone back to status=0/SUCCESS.
+    # Today's repairs, so an anomaly can say whether it was actually fixed.
+    repairs = [r for r in rows if str(r.get("event", "")) == "action"
+               and str(r.get("tool", "")) in REPAIR_TOOLS]
+    # How many DISTINCT DAYS in the window each repaired unit needed repair.
+    repair_days = {}
+    for r in all_rows:
+        if str(r.get("event", "")) == "action" and str(r.get("tool", "")) in REPAIR_TOOLS:
+            repair_days.setdefault(str(r.get("detail", "")), set()).add(
+                str(r.get("ts", ""))[:10])
+
     for r in issues[:5]:
         when = str(r.get("ts", ""))[11:16] or "??:??"
-        lines.append(f"  ⚠️ [{when}] {str(r.get('detail', ''))[:100]}")
+        detail = str(r.get("detail", ""))
+        lines.append(f"  ⚠️ [{when}] {detail[:100]}")
+        # Was it repaired today, and is this a habit?
+        fixed = [x for x in repairs if _unit_in(detail, str(x.get("detail", "")))]
+        if fixed:
+            unit = str(fixed[0].get("detail", ""))
+            at = str(fixed[-1].get("ts", ""))[11:16] or "??:??"
+            days = len(repair_days.get(unit, ()))
+            if days >= 3:
+                lines.append(f"       ↳ healed {at} — but repaired on {days} of "
+                             f"the last {RECURRENCE_DAYS} days. RECURRING: the "
+                             f"restart is holding a real fault together.")
+            else:
+                lines.append(f"       ↳ healed {at} by Skywarden"
+                             + (f" ({days}d in {RECURRENCE_DAYS})" if days > 1 else ""))
+        else:
+            # No repair. Either Skywarden judged it non-transient (hoaleads,
+            # 58 flags and no restart) or it is outside what it may touch.
+            lines.append("       ↳ NOT repaired — still open, or outside "
+                         "Skywarden's restart allowlist.")
     for r in guidance[:5]:
         lines.append(f"  🆘 {str(r.get('detail', r.get('result', '')))[:100]}")
 
@@ -259,5 +334,92 @@ def main():
         print(f"job_status.record failed: {e}")
 
 
+def selftest() -> int:
+    """S96. Pins the three states an anomaly line can be in.
+
+    Written because the 2026-09-02 brief showed a failure with no clock and no
+    outcome, and answering "is this live?" took three separate checks against the
+    box. The fixtures below are the REAL ledger shapes from that day, taken from
+    `runner cumulus-heal-history`, not invented.
+
+    The load-bearing case is the middle one. Skywarden repairs a unit within a
+    tick, so a job that breaks and self-fixes every night looks exactly like one
+    that has never broken — cirrus-modelhealth was repaired on 4 separate days in
+    two weeks and nobody saw a pattern. Hiding healed rows, which is the obvious
+    reading of "don't show it if it was corrected", would have made that
+    permanent. Repetition has to be the loud part.
+    """
+    import json as _j
+    from datetime import datetime as _dt, timedelta as _td
+    global _sudo_cat, TODAY
+    ok = fail = 0
+
+    def ck(name, cond):
+        nonlocal ok, fail
+        if cond:
+            ok += 1; print("  ok   " + name)
+        else:
+            fail += 1; print("  FAIL " + name)
+
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    def ago(n):
+        return (_dt.now() - _td(days=n)).strftime("%Y-%m-%d")
+
+    ledger = [
+        # A one-off blip, healed. This is the 2026-09-02 pedagogy case.
+        {"ts": f"{today} 09:06:12", "event": "check", "tool": "heartbeat",
+         "detail": "heartbeat found an issue: failed units: cirrus-pedagogy.service"},
+        {"ts": f"{today} 09:06:45", "event": "action", "tool": "restart_service",
+         "detail": "cirrus-pedagogy.service", "result": "restarted"},
+        # Healed, but a habit: 4 distinct days inside the window.
+        {"ts": f"{today} 05:30:40", "event": "check", "tool": "heartbeat",
+         "detail": "heartbeat found an issue: failed units: cirrus-modelhealth.service"},
+        {"ts": f"{today} 05:31:02", "event": "action", "tool": "restart_service",
+         "detail": "cirrus-modelhealth.service", "result": "restarted"},
+        {"ts": f"{ago(2)} 05:31:00", "event": "action", "tool": "restart_service",
+         "detail": "cirrus-modelhealth.service", "result": "restarted"},
+        {"ts": f"{ago(6)} 05:31:00", "event": "action", "tool": "reset_failed",
+         "detail": "cirrus-modelhealth.service", "result": "ok"},
+        {"ts": f"{ago(8)} 05:31:00", "event": "action", "tool": "restart_service",
+         "detail": "cirrus-modelhealth.service", "result": "restarted"},
+        # Flagged and deliberately NOT repaired — Skywarden judged it
+        # non-transient. 58 of these in the real ledger, zero restarts.
+        {"ts": f"{today} 11:19:00", "event": "check", "tool": "heartbeat",
+         "detail": "cirrus-hoaleads.service: FAILED (exit code 2), not a transient issue"},
+        # Outside the window: must NOT count toward recurrence.
+        {"ts": f"{ago(40)} 05:31:00", "event": "action", "tool": "restart_service",
+         "detail": "cirrus-modelhealth.service", "result": "restarted"},
+    ]
+    saved_cat, saved_today = _sudo_cat, TODAY
+    try:
+        _sudo_cat = lambda p: ("\n".join(_j.dumps(r) for r in ledger)
+                               if "ledger" in str(p) else "")
+        TODAY = today
+        out = "\n".join(gather_skywarden())
+    finally:
+        _sudo_cat, TODAY = saved_cat, saved_today
+
+    ck("a healed one-off says so, with a time", "healed 09:06 by Skywarden" in out)
+    ck("...and is NOT hidden (a healed failure is still a failure)",
+       "cirrus-pedagogy.service" in out)
+    ck("...and is not shouted about — no RECURRING on a one-off",
+       out.count("RECURRING") == 1)
+    # THE ONE THAT MATTERS.
+    ck("a healed-but-REPEATING fault is called out as recurring",
+       "repaired on 4 of the last 14 days" in out and "RECURRING" in out)
+    ck("an unrepaired issue is marked still-open, not healed",
+       "NOT repaired" in out)
+    ck("every anomaly line carries a clock", out.count("⚠️ [") == 3)
+    ck("a repair older than the window does not inflate the count",
+       "5 of the last 14" not in out)
+    print()
+    print("all daily-brief selftests passed" if not fail else f"{fail} FAILED")
+    return 1 if fail else 0
+
+
 if __name__ == "__main__":
+    # T57: the subcommand is argv[0], never `"--selftest" in sys.argv`.
+    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+        raise SystemExit(selftest())
     main()
