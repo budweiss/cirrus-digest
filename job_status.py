@@ -25,6 +25,14 @@ STATUS_PATH = Path.home() / "projects/cirrus-digest/logs/jobs-status.json"
 # Expected cadence, in hours, with a grace window baked in. A job whose last
 # successful run is older than this is "overdue".
 CADENCE_H = {
+    # S99. Both added the same session they were created, because
+    # placement-audit refused them otherwise -- "a job nobody watches fails
+    # silently" -- and it was right: neither would have been noticed if it
+    # stopped.
+    "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
+    "cumulusstatepull": 26,     # daily 01:45 (CIRRUS pulls cumulus1 non-git
+                                # state so the backup chain does not start on
+                                # Buddy's laptop; must beat Time Machine ~02:30)
     "morningbrief":  26,        # daily 07:30
     "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)

@@ -99,5 +99,20 @@ if command -v tmutil >/dev/null 2>&1; then
     fi
 fi
 
+# Report to job_status so the daily monitor notices if this stops. Without it
+# placement-audit refuses the job outright: "a job nobody watches fails
+# silently." A backup that quietly stopped is the worst kind to lose.
+NOTE="creds+supervisor+logs"
+[ "$RC" -ne 0 ] && NOTE="INCOMPLETE — see $LOG"
+/usr/bin/python3 -c "
+import sys
+sys.path.insert(0, '$HOME/projects/cirrus-digest')
+try:
+    import job_status
+    job_status.record('cumulusstatepull', $([ "$RC" -eq 0 ] && echo True || echo False), '''$NOTE''')
+except Exception as e:
+    print('job_status.record failed: %s' % e)
+" 2>&1 | tail -1
+
 log "done (exit $RC)"
 exit $RC
