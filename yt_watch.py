@@ -23,6 +23,7 @@ No credentials. No OAuth. No API key. The per-channel RSS feed is public.
 import json
 import re
 import sys
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -257,13 +258,33 @@ def render(results, day):
     return "\n".join(lines).rstrip() + "\n"
 
 
-DEFAULT_LIMIT = 12   # bounded on purpose: escalate() can spend 120s per provider
+DEFAULT_LIMIT = 6    # bounded on purpose: escalate() can spend 120s per provider
                      # across five providers, so an unbounded 60-video backlog is
-                     # a ten-hour job. The backlog drains over a few nightly runs.
+                     # a ten-hour job. Also keeps transcript requests slow enough
+                     # not to trip YouTube's IP block -- see TRANSIENT below.
+FETCH_PAUSE = 4.0    # seconds between transcript fetches. The first backlog run
+                     # made ~60 requests as fast as it could and YouTube IpBlocked
+                     # the box. Normal daily volume is 0-4 videos, so this costs
+                     # nothing in steady state and is the whole difference between
+                     # a working monitor and a blocked one.
+
+# A transcript failure is either PERMANENT (this video has no captions and never
+# will) or TRANSIENT (we were blocked, throttled, or the network blipped). The
+# difference decides whether the video may be marked seen. Getting this wrong
+# loses content silently and forever, which is exactly what happened: 12 videos
+# were burned on an IpBlocked run and would never have been retried.
+TRANSIENT = ("IpBlocked", "TooManyRequests", "RequestBlocked", "timed out",
+             "timeout", "ConnectionError", "URLError", "HTTPError", "not installed")
+
+
+def is_transient(reason):
+    r = (reason or "")
+    return any(m.lower() in r.lower() for m in TRANSIENT)
 
 
 def run(dry_run=False, limit=None, channels=None, feed_fn=None,
-        transcript_fn=None, extract_fn=None, seen_path=None, out_dir=None):
+        transcript_fn=None, extract_fn=None, seen_path=None, out_dir=None,
+        pause=0.0):
     """Injectable throughout so the selftest touches no network and no live file (T32)."""
     channels = channels if channels is not None else load_channels()
     feed_fn = feed_fn or fetch_feed
@@ -274,6 +295,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
 
     seen = set(load_json(seen_path, {}).get("video_ids", []))
     results, errors, processed = [], [], 0
+    transient_stop = ""
 
     for ch in channels:
         try:
@@ -281,15 +303,28 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         except Exception as e:
             errors.append("%s: %s" % (ch.get("name", "?"), type(e).__name__))
             continue
+        if transient_stop:
+            break
         for v in vids:
             if v["video_id"] in seen:
                 continue
             if limit is not None and processed >= limit:
                 break
+            if processed and pause:
+                time.sleep(pause)
             processed += 1
             text, reason = transcript_fn(v["video_id"])
             rec = {"channel": ch.get("name", "?"), "lane": ch.get("lane", "hardware"),
                    "claims": [], "no_transcript": "", "extract_error": "", **v}
+            if not text and is_transient(reason):
+                # Do NOT mark it seen and do NOT keep hammering. Being blocked is
+                # a reason to STOP, not to burn through the rest of the queue
+                # recording a permanent-looking failure for every one of them.
+                transient_stop = reason
+                log("  TRANSIENT failure on %s (%s) — stopping this run, video NOT "
+                    "marked seen, will retry next run" % (v["video_id"], reason[:60]))
+                processed -= 1
+                break
             if not text:
                 rec["no_transcript"] = reason or "unknown"
             else:
@@ -334,6 +369,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
     return {"processed": len(results), "claims": sum(len(r["claims"]) for r in results),
             "no_transcript": sum(1 for r in results if r["no_transcript"]),
             "extract_errors": sum(1 for r in results if r.get("extract_error")),
+            "transient_stop": transient_stop,
             "errors": errors, "body": body}
 
 
@@ -503,6 +539,39 @@ def selftest():
         ck("run: an extractor exception is recorded, not fatal",
            r4["processed"] == 2 and len(r4["errors"]) == 2)
 
+    # ── THE LEDGER-BURN BUG. A transient transcript failure must NEVER mark a
+    # video seen. The first real run hit YouTube's IpBlocked and recorded all 12
+    # videos as permanently seen-with-no-transcript, so they would never have
+    # been retried -- silent, permanent content loss from a temporary block.
+    ck("transient: IpBlocked is transient", is_transient("IpBlocked: blah"))
+    ck("transient: TooManyRequests is transient", is_transient("TooManyRequests"))
+    ck("transient: a timeout is transient", is_transient("ReadTimeout: timed out"))
+    ck("transient: a missing library is transient, not a captionless video",
+       is_transient("youtube_transcript_api not installed"))
+    ck("transient: genuinely absent captions are NOT transient",
+       not is_transient("NoTranscriptFound: no captions for this video"))
+    ck("transient: an empty transcript is NOT transient",
+       not is_transient("empty transcript"))
+
+    with tempfile.TemporaryDirectory() as td:
+        sp = Path(td) / "s.json"
+        r = run(channels=chans, feed_fn=feed,
+                transcript_fn=lambda v: ("", "IpBlocked: "),
+                extract_fn=lambda v, t, l: [],
+                seen_path=sp, out_dir=Path(td) / "o")
+        ck("transient: the run STOPS rather than burning the queue", r["processed"] == 0)
+        ck("transient: it reports WHY it stopped", "IpBlocked" in r["transient_stop"])
+        ck("transient: NOTHING is written to the seen ledger", not sp.exists())
+
+    with tempfile.TemporaryDirectory() as td:
+        sp = Path(td) / "s.json"
+        r = run(channels=chans, feed_fn=feed,
+                transcript_fn=lambda v: ("", "NoTranscriptFound: none"),
+                extract_fn=lambda v, t, l: [],
+                seen_path=sp, out_dir=Path(td) / "o")
+        ck("permanent: a genuinely captionless video IS marked seen", sp.exists())
+        ck("permanent: and it does not stop the run", r["processed"] == 2)
+
     # a dead feed must not kill the other channels
     with tempfile.TemporaryDirectory() as td:
         def half(cid):
@@ -556,7 +625,11 @@ def main():
         except Exception:
             pass
     stats = run(dry_run="--dry-run" in args,
-                limit=DEFAULT_LIMIT if limit is None else limit)
+                limit=DEFAULT_LIMIT if limit is None else limit,
+                pause=FETCH_PAUSE)
+    if stats.get("transient_stop"):
+        log("STOPPED EARLY — transient failure: %s. Nothing was marked seen for it; "
+            "the next run retries." % stats["transient_stop"][:80])
     log("processed %d, claims %d, no-transcript %d, extract-failed %d%s"
         % (stats["processed"], stats["claims"], stats["no_transcript"],
            stats["extract_errors"],
