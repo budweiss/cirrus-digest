@@ -194,8 +194,10 @@ def extract(video, transcript, lane, caller=None):
     """caller(system, user) -> reply text. Injected so the selftest needs no network."""
     if caller is None:
         import llm_providers
-        import cirrus_config
-        creds = cirrus_config.load_credentials()
+        # There is no cirrus_config module -- that was a guess, and it made every
+        # extraction fail with ModuleNotFoundError. halftime_catalogue.py reads
+        # the credentials file directly; do the same.
+        creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
         caller = lambda s, u: llm_providers.escalate(s, u, creds, max_tokens=4000)
     user = "Video: %s\nChannel lane: %s\n\nTranscript:\n%s" % (
         video.get("title", ""), lane, transcript[:60000])
@@ -228,6 +230,11 @@ def render(results, day):
         lines.append("%s · `%s` · %s" % (r["published"], r["lane"], r["url"]))
         if r.get("no_transcript"):
             lines += ["", "> **no transcript** — %s" % r["no_transcript"], ""]
+            continue
+        if r.get("extract_error"):
+            lines += ["", "> **extraction FAILED** — %s" % r["extract_error"],
+                      "> (the transcript was fetched; this is a model/credentials"
+                      " fault, not a missing-captions one)", ""]
             continue
         if not r["claims"]:
             lines += ["", "**actionable: none**", ""]
@@ -270,15 +277,23 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
             processed += 1
             text, reason = transcript_fn(v["video_id"])
             rec = {"channel": ch.get("name", "?"), "lane": ch.get("lane", "hardware"),
-                   "claims": [], "no_transcript": "", **v}
+                   "claims": [], "no_transcript": "", "extract_error": "", **v}
             if not text:
                 rec["no_transcript"] = reason or "unknown"
             else:
                 try:
                     rec["claims"] = extract_fn(v, text, rec["lane"])
                 except Exception as e:
-                    errors.append("%s extract: %s" % (v["video_id"], type(e).__name__))
-                    rec["no_transcript"] = "extract failed: %s" % type(e).__name__
+                    # NOT no_transcript. The first live run reported
+                    # "no-transcript 3, 3 errors" for three videos whose
+                    # transcripts had been fetched perfectly (14,256 chars on the
+                    # first) -- because an extract failure was being written into
+                    # the no_transcript field. Two entirely different faults,
+                    # reported as one, and the stat pointed at the wrong half of
+                    # the pipeline. They are separate fields now.
+                    errors.append("%s extract: %s: %s"
+                                  % (v["video_id"], type(e).__name__, str(e)[:80]))
+                    rec["extract_error"] = "%s: %s" % (type(e).__name__, str(e)[:80])
             results.append(rec)
             seen.add(v["video_id"])
 
@@ -291,6 +306,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         seen_path.write_text(json.dumps({"video_ids": sorted(seen)}, indent=1))
     return {"processed": len(results), "claims": sum(len(r["claims"]) for r in results),
             "no_transcript": sum(1 for r in results if r["no_transcript"]),
+            "extract_errors": sum(1 for r in results if r.get("extract_error")),
             "errors": errors, "body": body}
 
 
@@ -401,6 +417,22 @@ def selftest():
         ck("run: no-transcript videos are COUNTED", r3["no_transcript"] == 2)
         ck("run: no-transcript never calls the model", called == [])
 
+    # An extract failure is NOT a missing transcript. The first live run on
+    # CIRRUS reported "no-transcript 3, 3 errors" for three videos whose
+    # transcripts were fetched fine (14,256 chars on one) -- the extract error
+    # was being written into the no_transcript field, so the stat blamed the
+    # wrong half of the pipeline and hid a ModuleNotFoundError.
+    with tempfile.TemporaryDirectory() as td:
+        def boom2(v, t, l):
+            raise RuntimeError("model down")
+        r = run(channels=chans, feed_fn=feed, transcript_fn=lambda v: ("real text", ""),
+                extract_fn=boom2, seen_path=Path(td) / "s.json", out_dir=Path(td) / "o")
+        ck("run: an extract failure is NOT counted as no-transcript",
+           r["no_transcript"] == 0)
+        ck("run: an extract failure IS counted separately", r["extract_errors"] == 2)
+        ck("run: the rendered report names it a model/credentials fault",
+           "extraction FAILED" in r["body"] and "not a missing-captions one" in r["body"])
+
     # an extractor that raises must not lose the whole run
     with tempfile.TemporaryDirectory() as td:
         def boom(v, t, l):
@@ -463,15 +495,21 @@ def main():
         except Exception:
             pass
     stats = run(dry_run="--dry-run" in args, limit=limit)
-    log("processed %d, claims %d, no-transcript %d%s"
+    log("processed %d, claims %d, no-transcript %d, extract-failed %d%s"
         % (stats["processed"], stats["claims"], stats["no_transcript"],
+           stats["extract_errors"],
            (", %d error(s)" % len(stats["errors"])) if stats["errors"] else ""))
     if "--dry-run" not in args:
         try:
             import job_status
             # A run that processed nothing because there were no NEW videos is
             # healthy. A run where every feed errored is not.
-            healthy = len(stats["errors"]) == 0 or stats["processed"] > 0
+            # A run that processed nothing because there were no NEW videos is
+            # healthy. A run where EVERY processed video failed extraction is
+            # not -- that is the shape of the credentials bug found on the first
+            # live run, which the old rule would have reported as healthy.
+            healthy = (not stats["errors"]) or (
+                stats["processed"] > 0 and stats["extract_errors"] < stats["processed"])
             job_status.record("ytwatch", healthy,
                               "%d video(s), %d claim(s)" % (stats["processed"], stats["claims"]))
         except Exception as e:
