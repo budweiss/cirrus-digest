@@ -1,0 +1,39 @@
+{
+  "_comment": "Curated watch list. Every id below was VERIFIED against the live RSS feed on 2026-09-04, not looked up and trusted. lane drives how a video is judged - see YT-WATCH-SPEC.md.",
+  "channels": [
+    {
+      "name": "Alex Ziskind",
+      "handle": "@AZisk",
+      "channel_id": "UCajiMK_CY9icRhLepS8_3ug",
+      "lane": "hardware",
+      "why": "DGX Spark, local LLM serving, multi-box benchmarking. Published 'DGX Spark cluster' 2026-08-29 - the exact topic we spent S98 on.",
+      "verified": "2026-09-04, 15 videos in feed"
+    },
+    {
+      "name": "Manolo Remiddi",
+      "handle": "@manolo.remiddi",
+      "channel_id": "UC9HwoV7VQpDRDXOzviV2DIQ",
+      "lane": "hardware",
+      "why": "Home AI lab builds, local-first model serving, cost/benefit of local vs frontier. Directly relevant to the Step 4/5 pooled-model decision.",
+      "verified": "2026-09-04, 15 videos in feed",
+      "trap": "The handle has a DOT. @manoloremiddi (no dot) is a DIFFERENT person - a personal channel dormant since 2013, 'Shaving my head - Becoming a monk'. A name match is not an identity match; that wrong channel was resolved, inspected, and rejected before this entry was written."
+    },
+    {
+      "name": "AI News & Strategy Daily | Nate B Jones",
+      "handle": "@NateBJones",
+      "channel_id": "UC0C-17n9iuUQPylguM1d-lQ",
+      "lane": "news",
+      "why": "Daily AI news and strategy. Buddy subscribes.",
+      "verified": "2026-09-04, 15 videos in feed",
+      "note": "Publishes near-daily. Highest noise risk of the four - see the news-lane rule in the spec."
+    },
+    {
+      "name": "Paul J Lipsky",
+      "handle": "@pauljlipsky",
+      "channel_id": "UCmeU2DYiVy80wMBGZzEWnbw",
+      "lane": "news",
+      "why": "AI tooling and news, incl. coverage of the Claude/Cowork product space. Buddy subscribes.",
+      "verified": "2026-09-04, 15 videos in feed"
+    }
+  ]
+}

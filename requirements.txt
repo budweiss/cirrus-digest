@@ -26,6 +26,12 @@ openpyxl                 # xlsx builders (newdev/build_report.py, snow workbooks
                          # missing here; pip-installed ad-hoc on CIRRUS, absent on CUMULUS.
                          # Unpinned so ARM64/CUDA + macOS both resolve a native wheel.
 
+# YT-WATCH (S99) — YouTube auto-caption fetch. No API key, no OAuth; the
+# per-channel RSS feed and the caption track are both public. CIRRUS runs
+# /usr/bin/python3 (3.9) with user site-packages, so this installs with
+# `python3 -m pip install --user`.
+youtube-transcript-api
+
 # --- Tested transitive set (captured 2026-07-17; informational) ---
 # If you need a fully-locked build, pin these too. Left unpinned by
 # default so ARM64/CUDA wheels resolve natively on CUMULUS/STRATUS:
