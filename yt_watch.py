@@ -198,7 +198,14 @@ def extract(video, transcript, lane, caller=None):
         # extraction fail with ModuleNotFoundError. halftime_catalogue.py reads
         # the credentials file directly; do the same.
         creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
-        caller = lambda s, u: llm_providers.escalate(s, u, creds, max_tokens=4000)
+        # escalate() returns a TUPLE (provider, text) -- not a string. Passing
+        # it straight to parse_claims() made .strip() raise AttributeError on
+        # EVERY video. Second interface I assumed instead of reading, in one
+        # module. Unpack it.
+        def caller(sysmsg, usermsg):
+            _provider, text = llm_providers.escalate(
+                sysmsg, usermsg, creds, max_tokens=4000)
+            return text
     user = "Video: %s\nChannel lane: %s\n\nTranscript:\n%s" % (
         video.get("title", ""), lane, transcript[:60000])
     return parse_claims(caller(system_for(lane), user))
@@ -250,6 +257,11 @@ def render(results, day):
     return "\n".join(lines).rstrip() + "\n"
 
 
+DEFAULT_LIMIT = 12   # bounded on purpose: escalate() can spend 120s per provider
+                     # across five providers, so an unbounded 60-video backlog is
+                     # a ten-hour job. The backlog drains over a few nightly runs.
+
+
 def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         transcript_fn=None, extract_fn=None, seen_path=None, out_dir=None):
     """Injectable throughout so the selftest touches no network and no live file (T32)."""
@@ -296,6 +308,21 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
                     rec["extract_error"] = "%s: %s" % (type(e).__name__, str(e)[:80])
             results.append(rec)
             seen.add(v["video_id"])
+            # Log and PERSIST after every video. The first backlog run sat for
+            # 26 minutes with zero output because everything was written at the
+            # end -- so there was no way to tell "working" from "hung" without
+            # inspecting the process, and a crash would have thrown away every
+            # completed video. Both are fixed by writing as we go.
+            log("  %s | %s | %s" % (
+                v["video_id"], rec["channel"][:22],
+                ("%d claim(s)" % len(rec["claims"])) if rec["claims"]
+                else (rec["extract_error"][:40] or rec["no_transcript"][:40] or "no claims")))
+            if not dry_run:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / ("yt-watch-%s.md" % datetime.now().strftime("%Y-%m-%d"))).write_text(
+                    render(results, datetime.now().strftime("%Y-%m-%d")))
+                seen_path.parent.mkdir(parents=True, exist_ok=True)
+                seen_path.write_text(json.dumps({"video_ids": sorted(seen)}, indent=1))
 
     day = datetime.now().strftime("%Y-%m-%d")
     body = render(results, day)
@@ -366,6 +393,40 @@ def selftest():
     ck("claims: empty reply -> []", parse_claims("") == [])
     ck("claims: wrong shape -> []", parse_claims('{"claims":"lots"}') == [])
     ck("claims: a claim with no text is dropped", parse_claims('{"claims":[{"claim":"  "}]}') == [])
+
+    # ── THE INTERFACE THE SELFTEST COULD NOT SEE.
+    # extract() takes an injected caller everywhere else in these tests, so the
+    # DEFAULT caller -- the one that actually talks to llm_providers -- was never
+    # exercised. It passed escalate()'s (provider, text) TUPLE straight into
+    # parse_claims(), where .strip() raised AttributeError on every video. The
+    # tests were all green while the only path that runs in production was broken.
+    # This drives the default path with a stub module, so the tuple contract is
+    # pinned rather than assumed.
+    import types
+    fake = types.ModuleType("llm_providers")
+    fake.escalate = lambda sysmsg, usermsg, creds, max_tokens=0: (
+        "anthropic", '{"claims":[{"claim":"c","why_it_applies":"w","how_to_test":"t"}]}')
+    _real_mod = sys.modules.get("llm_providers")
+    _real_pd = globals().get("PROJECT_DIR")
+    sys.modules["llm_providers"] = fake
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config"
+            cfg.mkdir()
+            (cfg / "credentials.json").write_text('{"anthropic_api_key":"x"}')
+            globals()["PROJECT_DIR"] = Path(td)
+            got = extract({"title": "t"}, "transcript", "hardware")
+        ck("extract: the DEFAULT caller unpacks escalate()'s (provider, text) tuple",
+           len(got) == 1 and got[0]["claim"] == "c")
+    except Exception as e:
+        ck("extract: the DEFAULT caller unpacks escalate()'s tuple (raised %s)"
+           % type(e).__name__, False)
+    finally:
+        globals()["PROJECT_DIR"] = _real_pd
+        if _real_mod is not None:
+            sys.modules["llm_providers"] = _real_mod
+        else:
+            sys.modules.pop("llm_providers", None)
 
     # ── lane routing: the two lanes must NOT share a prompt
     ck("lane: news gets the news system prompt", system_for("news") is SYSTEM_NEWS)
@@ -494,7 +555,8 @@ def main():
             limit = int(args[args.index("--limit") + 1])
         except Exception:
             pass
-    stats = run(dry_run="--dry-run" in args, limit=limit)
+    stats = run(dry_run="--dry-run" in args,
+                limit=DEFAULT_LIMIT if limit is None else limit)
     log("processed %d, claims %d, no-transcript %d, extract-failed %d%s"
         % (stats["processed"], stats["claims"], stats["no_transcript"],
            stats["extract_errors"],
