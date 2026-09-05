@@ -312,7 +312,15 @@ def selftest():
     # privacy/, stratus/). Same shape as T44 itself: the GLOB of a check is its
     # scope, and a scope narrower than reality gives a confident wrong answer.
     _SKIP = {"__pycache__", ".git", ".venv", "venv", "node_modules", "build"}
-    for f in here.rglob("*.py"):
+    # S100: *.sh TOO. cumulus_state_pull.sh records from bash (it shells out to
+    # python3 -c "import job_status; job_status.record(...)"), which is a
+    # legitimate pattern -- and this check reported it as an orphan because it
+    # only globbed *.py. That is the THIRD time this same check has been wrong
+    # for the same reason: the first version read line-by-line and cried wolf on
+    # eight wrapped calls, the second globbed too few directories and invented
+    # four more. The glob of a check is its scope, and a scope narrower than
+    # reality gives a confident wrong answer.
+    for f in sorted(list(here.rglob("*.py")) + list(here.rglob("*.sh"))):
         if _SKIP & set(f.parts):
             continue
         try:
