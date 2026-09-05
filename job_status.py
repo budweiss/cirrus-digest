@@ -343,6 +343,15 @@ def selftest():
     # jobscheck/watchdog-style keys would go here if any were read-only; today
     # every watched job is expected to write its own row.
     orphaned = sorted(set(CADENCE_H) - writers)
+    # S101: expose the scanned extensions so the selftest can assert the SCOPE,
+    # not just today's happy answer. PASS 6 flagged this file as changed without
+    # a test change, and it was right: widening the glob to *.sh was a behaviour
+    # change that only showed up as "the orphan list happens to be empty now".
+    _scan_scope = sorted({f.suffix for f in here.rglob("*") if f.suffix in (".py", ".sh")})
+    ck("the writer scan covers BOTH .py and .sh (a shell recorder is legitimate)",
+       _scan_scope == [".py", ".sh"])
+    ck("cumulusstatepull specifically is found, and it records from bash",
+       "cumulusstatepull" in writers)
     ck(f"every watched job has a record() call somewhere (missing: {orphaned})",
        not orphaned)
 
