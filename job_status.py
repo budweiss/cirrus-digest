@@ -29,6 +29,9 @@ CADENCE_H = {
     # placement-audit refused them otherwise -- "a job nobody watches fails
     # silently" -- and it was right: neither would have been noticed if it
     # stopped.
+    "accesscheck":    2,        # every 30 min on cumulus1 (S101) — watches all
+                                # three boxes at BOTH layers and is the only thing
+                                # that watches cumulus2 at all
     "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
     "cumulusstatepull": 26,     # daily 01:45 (CIRRUS pulls cumulus1 non-git
                                 # state so the backup chain does not start on
