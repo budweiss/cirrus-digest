@@ -230,9 +230,26 @@ def render(results, day):
     lines = ["# YT-WATCH findings — %s" % day, ""]
     total = sum(len(r["claims"]) for r in results)
     lines += ["**%d video(s) processed, %d claim(s).**" % (len(results), total), ""]
+    # S102. This used to print "normal and successful" for ANY zero-claim run,
+    # so the 2026-09-04 run -- 12 videos, every one IpBlocked -- reported itself
+    # as a clean night. Zero claims from 12 videos that were READ and zero from
+    # 12 that could not be fetched are entirely different facts, and rule 1 in
+    # the spec only licenses the first one.
+    unread = [r for r in results
+              if r.get("no_transcript") or r.get("extract_error")]
     if results and total == 0:
-        lines += ["_No actionable claims. This is a normal and successful result —"
-                  " see rule 1 in YT-WATCH-SPEC.md._", ""]
+        if len(unread) == len(results):
+            lines += ["> ⚠️ **NOT a clean result — none of the %d video(s) could be"
+                      " read.** Zero claims here means nothing was measured, not"
+                      " that nothing was found. Rule 1 does NOT apply."
+                      % len(results), ""]
+        elif unread:
+            lines += ["_No actionable claims in the %d video(s) that could be read"
+                      " (rule 1). **%d could not be read** — see below._"
+                      % (len(results) - len(unread), len(unread)), ""]
+        else:
+            lines += ["_No actionable claims. This is a normal and successful result —"
+                      " see rule 1 in YT-WATCH-SPEC.md._", ""]
     for r in results:
         lines.append("## %s — %s" % (r["channel"], r["title"]))
         lines.append("%s · `%s` · %s" % (r["published"], r["lane"], r["url"]))
@@ -512,6 +529,25 @@ def selftest():
                  extract_fn=lambda v, t, l: called.append(v) or [],
                  seen_path=Path(td) / "s.json", out_dir=Path(td) / "o")
         ck("run: no-transcript videos are COUNTED", r3["no_transcript"] == 2)
+
+        # S102. The 2026-09-04 file said "12 processed, 0 claims ... a normal
+        # and successful result" when all 12 were IpBlocked. Zero claims from
+        # videos that were READ and zero from videos that could not be FETCHED
+        # are different facts and must not render the same.
+        _blocked = [{"channel": "C", "title": "T", "published": "2026-09-04",
+                     "lane": "hardware", "url": "u", "claims": [],
+                     "no_transcript": "IpBlocked: ...", "extract_error": ""}]
+        _md = render(_blocked, "2026-09-04")   # render returns a STRING
+        ck("render: an ALL-UNREADABLE run is not called successful",
+           "normal and successful" not in _md)
+        ck("  ...and says plainly that nothing was measured",
+           "NOT a clean result" in _md and "Rule 1 does NOT apply" in _md)
+
+        _read = [{"channel": "C", "title": "T", "published": "2026-09-04",
+                  "lane": "hardware", "url": "u", "claims": [],
+                  "no_transcript": "", "extract_error": ""}]
+        ck("render: a genuinely quiet night IS still called successful (rule 1)",
+           "normal and successful" in render(_read, "2026-09-04"))
         ck("run: no-transcript never calls the model", called == [])
 
     # An extract failure is NOT a missing transcript. The first live run on
@@ -638,15 +674,31 @@ def main():
         try:
             import job_status
             # A run that processed nothing because there were no NEW videos is
-            # healthy. A run where every feed errored is not.
-            # A run that processed nothing because there were no NEW videos is
-            # healthy. A run where EVERY processed video failed extraction is
-            # not -- that is the shape of the credentials bug found on the first
-            # live run, which the old rule would have reported as healthy.
-            healthy = (not stats["errors"]) or (
-                stats["processed"] > 0 and stats["extract_errors"] < stats["processed"])
-            job_status.record("ytwatch", healthy,
-                              "%d video(s), %d claim(s)" % (stats["processed"], stats["claims"]))
+            # healthy. A run where every feed errored is not. A run where EVERY
+            # processed video failed EXTRACTION is not either -- that is the
+            # credentials bug found on the first live run, which an older rule
+            # reported as healthy.
+            #
+            # S102 adds the third shape, found by reading the 2026-09-04
+            # findings file: every video UNREADABLE (no_transcript), which is
+            # what an IpBlocked run looks like. extract_errors was 0 and there
+            # were no feed errors, so that run recorded ok=TRUE while nothing
+            # whatsoever had been read. An unreadable video is not a quiet night.
+            all_unreadable = (stats["processed"] > 0
+                              and stats["no_transcript"] >= stats["processed"])
+            healthy = ((not stats["errors"]) or (
+                stats["processed"] > 0
+                and stats["extract_errors"] < stats["processed"])
+            ) and not all_unreadable
+            note = "%d video(s), %d claim(s)" % (stats["processed"], stats["claims"])
+            # Carry the unread count into the NOTE as well: the monitor row is
+            # what gets read at 07:30, and "12 video(s), 0 claim(s)" looks like
+            # a quiet night no matter which of the two it was.
+            if stats["no_transcript"]:
+                note += ", %d UNREADABLE" % stats["no_transcript"]
+            if stats["extract_errors"]:
+                note += ", %d extract-failed" % stats["extract_errors"]
+            job_status.record("ytwatch", healthy, note)
         except Exception as e:
             print("job_status.record failed: %s" % e)
     return 0
