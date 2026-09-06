@@ -298,9 +298,14 @@ def check_score_variance(min_rows=10):
     return out
 
 
-def check_council_diversity(n=10):
-    """If one provider wins every decision, the council is theatre."""
-    p = os.path.join(REPO, "logs", "dev-loop", "builds.json")
+def check_council_diversity(n=10, _path=None):
+    """If one provider wins every decision, the council is theatre.
+
+    S111: `_path` is a test seam (defaults to the live ledger). Before it this
+    function had NO coverage -- every branch survived mutation, so the suite
+    could not tell "one judge won everything" from "the council is fine".
+    """
+    p = _path or os.path.join(REPO, "logs", "dev-loop", "builds.json")
     if not os.path.exists(p):
         return _res(UNKNOWN, "council diversity", "no builds.json")
     try:
@@ -318,7 +323,7 @@ def check_council_diversity(n=10):
     return _res(OK, "council diversity", f"{len(set(recent))} distinct judges in last {n}")
 
 
-def check_prompt_cache(min_calls=20):
+def check_prompt_cache(min_calls=20, _path=None):
     """Is prompt caching actually READING BACK, or only ever writing?
 
     S75. Caching was switched on for Anthropic after a live probe proved the
@@ -330,7 +335,7 @@ def check_prompt_cache(min_calls=20):
     This exists so that a fix I made cannot quietly turn out to be a cost
     increase while everyone assumes it was a saving.
     """
-    path = os.path.join(REPO, "logs", "llm_cache_usage.jsonl")
+    path = _path or os.path.join(REPO, "logs", "llm_cache_usage.jsonl")
     if not os.path.exists(path):
         return _res(UNKNOWN, "prompt cache",
                     f"no ledger at {path} — NOT the same as 'no caching problem'")
@@ -675,6 +680,62 @@ def selftest():
             ck(f"etime {et!r} -> {exp}", _etime_to_min(et) == exp)
     finally:
         subprocess.run, globals()["_here"] = real_run, real_here
+
+    # ── S111 — council diversity and prompt cache. Both had ZERO coverage, so
+    #    every branch survived mutation: the suite could not tell "one judge won
+    #    everything" from "the council is fine", nor "caching is a pure cost"
+    #    from "caching is paying off". Part of the TEST_GAP finding of
+    #    2026-09-04. Each state is pinned WITH its neighbours -- a check that
+    #    can only ever return one verdict is the failure mode here.
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _td:
+        _bp = os.path.join(_td, "builds.json")
+
+        def _judges(*names):
+            json.dump([{"judge": n} for n in names], open(_bp, "w"))
+            return check_council_diversity(n=3, _path=_bp)
+
+        ck("council: one judge winning all recent decisions is STALLED",
+           _judges("a", "a", "a", "a")["state"] == STALL)
+        ck("council: ...but a MIXED recent set is OK — the inverse, or the "
+           "check can only ever cry theatre",
+           _judges("a", "b", "a", "b")["state"] == OK)
+        ck("council: too few judged decisions is UNKNOWN, never OK — "
+           "'not enough data' and 'healthy' are different claims",
+           _judges("a", "a")["state"] == UNKNOWN)
+        ck("council: only the LAST n count, so an old monopoly does not "
+           "condemn a council that has since diversified",
+           _judges("a", "a", "a", "a", "b", "c")["state"] == OK)
+        ck("council: a missing ledger is UNKNOWN, not OK",
+           check_council_diversity(_path=os.path.join(_td, "nope.json"))["state"]
+           == UNKNOWN)
+        open(os.path.join(_td, "bad.json"), "w").write("{not json")
+        ck("council: an UNREADABLE ledger is UNKNOWN, not OK",
+           check_council_diversity(_path=os.path.join(_td, "bad.json"))["state"]
+           == UNKNOWN)
+
+        _cp = os.path.join(_td, "cache.jsonl")
+
+        def _cache(rows):
+            with open(_cp, "w") as f:
+                for r in rows:
+                    f.write(json.dumps(r) + "\n")
+            return check_prompt_cache(min_calls=3, _path=_cp)
+
+        _w = {"cache_requested": True, "cache_write": 100, "cache_read": 0}
+        _r = {"cache_requested": True, "cache_write": 0, "cache_read": 100}
+        ck("cache: writes with ZERO read-back is STALLED — that is a cost "
+           "increase, not a saving",
+           _cache([_w, _w, _w])["state"] == STALL)
+        ck("cache: ...but any read-back is OK — the inverse",
+           _cache([_w, _w, _r])["state"] == OK)
+        ck("cache: too few eligible calls is UNKNOWN, not OK",
+           _cache([_w, _w])["state"] == UNKNOWN)
+        ck("cache: calls that never REQUESTED caching are not counted",
+           _cache([_w, _w, _w, {"cache_requested": False}])["state"] == STALL)
+        ck("cache: a missing ledger is UNKNOWN, not OK",
+           check_prompt_cache(_path=os.path.join(_td, "nope.jsonl"))["state"]
+           == UNKNOWN)
 
     print(f"\n{ok} passed, {fail} failed")
     return 1 if fail else 0
