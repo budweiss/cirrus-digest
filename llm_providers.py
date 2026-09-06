@@ -37,6 +37,30 @@ from pathlib import Path
 DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek"]
 _TIMEOUT = 120
 
+# S103: the MODEL the last call actually put on the wire.
+#
+# Callers could name the provider ("ollama") but never the model, so a
+# catalogue entry could not say which local model produced it -- and the
+# qwen2.5:72b -> qwen3.8:27b switch left every pre-switch and post-switch entry
+# labelled identically. This is recorded where the request is BUILT, not
+# re-derived from creds by a second copy of the resolution logic: a copy is
+# exactly what made sm_prov a fake test in S102.
+#
+# NEVER holds a key or a URL -- _gemini builds its key into the URL, so only
+# the bare model name is recorded here.
+_LAST_MODEL = None
+
+
+def last_model():
+    """Model used by the most recent call(), or None if it never got that far.
+
+    call() clears this BEFORE dispatching, so a provider that raises leaves
+    None rather than the previous call's model -- a stale value read as this
+    call's answer is the whole failure mode this exists to avoid. Read it
+    immediately after the call that produced it; it is not per-thread.
+    """
+    return _LAST_MODEL
+
 _KEY_FIELD = {
     # S73: "ollama" is DELIBERATELY absent from DEFAULT_ORDER, and its key field
     # (ollama_url) is not in credentials.json today. available() filters on that
@@ -73,6 +97,8 @@ def _http_post(url, headers, body, timeout=_TIMEOUT):
 
 def _openai_compatible(url, key, model, system, user, max_tokens):
     """OpenAI Chat Completions shape — shared by OpenAI, xAI (Grok), DeepSeek."""
+    global _LAST_MODEL
+    _LAST_MODEL = model
     resp = _http_post(
         url,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -140,6 +166,8 @@ def _anthropic(creds, system, user, max_tokens):
     else:
         sys_field = system
 
+    global _LAST_MODEL
+    _LAST_MODEL = model
     resp = _http_post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -159,6 +187,8 @@ def _gemini(creds, system, user, max_tokens):
     model = creds.get("gemini_model")
     if not model:
         raise ProviderError("no gemini_model set in credentials.json")
+    global _LAST_MODEL
+    _LAST_MODEL = model
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent?key={key}")
     resp = _http_post(
@@ -309,6 +339,8 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1):
     failures still raise immediately (ProviderError, no retry); the caller
     handles those. Returns the (possibly still-empty) reply after the retries.
     """
+    global _LAST_MODEL
+    _LAST_MODEL = None            # never let a stale model answer for this call
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
     reply = ""
@@ -388,6 +420,54 @@ if __name__ == "__main__":
         except ProviderError:
             _unknown_raised = True
         check("call: unknown provider raises", _unknown_raised)
+
+        # ── S103: last_model() — the model that actually went on the wire ──
+        # Driven through the REAL adapters with only the HTTP layer stubbed, so
+        # it tests the resolution rather than a restatement of it. Each
+        # assertion is paired with its inverse: a recorder that is never
+        # cleared, and one that is never set, both look fine from one direction.
+        _real_providers = dict(_PROVIDERS)
+        _real_post = _http_post
+        try:
+            globals()["_http_post"] = lambda *a, **k: {
+                "choices": [{"message": {"content": "hi"}}]}
+            call("ollama", "s", "u",
+                 {"ollama_url": "http://x", "ollama_model": "qwen3.8:27b"})
+            check("last_model names the LOCAL model, not just the provider",
+                  last_model() == "qwen3.8:27b")
+
+            call("openai", "s", "u",
+                 {"openai_api_key": "k", "openai_model": "gpt-x"})
+            check("...and it moves with the provider, rather than sticking",
+                  last_model() == "gpt-x")
+
+            globals()["_http_post"] = lambda *a, **k: {
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+            # The literal below carries EXAMPLE deliberately: it is the
+            # placeholder marker runner/pre-commit-secret-scan allows, and that
+            # guard blocked this line when it was first written. It is a fixture,
+            # not a dodge -- testing "the key never leaks" needs a stand-in key.
+            _fake_key = "EXAMPLE-fake-gemini-key-not-real"
+            call("gemini", "s", "u",
+                 {"gemini_api_key": _fake_key, "gemini_model": "gemini-9"})
+            check("gemini records the bare model — its key is in the URL and "
+                  "must never reach a field that gets written to a KB",
+                  last_model() == "gemini-9"
+                  and _fake_key not in (last_model() or ""))
+
+            # The inverse that matters: a FAILED call must not leave the
+            # previous call's model standing in for an answer it never gave.
+            try:
+                call("ollama", "s", "u", {"ollama_url": "http://x"})   # no model
+            except ProviderError:
+                pass
+            check("a call that never reached the wire leaves None, not the "
+                  "last successful model",
+                  last_model() is None)
+        finally:
+            globals()["_http_post"] = _real_post
+            _PROVIDERS.clear()
+            _PROVIDERS.update(_real_providers)
 
         print("PASS" if _ok else "FAIL")
         sys.exit(0 if _ok else 1)

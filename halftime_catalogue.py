@@ -504,6 +504,41 @@ def parse_acts(raw: str, pool: str = "variety") -> list | None:
     return out
 
 
+# S103: `extracted_by` is provenance, not knowledge. Adding the model tag to it
+# means EVERY re-encountered act shows a changed field on the next run, and
+# `updated` in the monitored note is meant to say "we learned something new
+# about this act" -- not "the label on who extracted it got longer". Counting
+# provenance as an update would spike the number Buddy reads on exactly the run
+# that carries the change, and quietly dilute it forever after.
+_PROVENANCE_FIELDS = {"extracted_by"}
+
+
+def _substantive(changed) -> bool:
+    """Did anything change that a READER of the catalogue would care about?"""
+    return bool(set(changed or ()) - _PROVENANCE_FIELDS)
+
+
+def _tag(provider: str) -> str:
+    """`provider:model`, e.g. `ollama:qwen3.8:27b` — for `extracted_by`.
+
+    S103 (Buddy): every entry used to be labelled with the PROVIDER alone, so
+    the catalogue could not say which local model produced it. When
+    `ollama_model` moved qwen2.5:72b -> qwen3.8:27b on 2026-09-05, entries
+    either side of the switch were indistinguishable, and the acceptance test
+    for that switch had to be read from a log instead of the artefact.
+
+    The model comes from llm_providers.last_model() -- the value actually put
+    on the wire -- and NOT from a second reading of creds, which would be a
+    copy that can drift from what was really called.
+
+    Falls back to the bare provider name if the model is somehow unknown: a
+    slightly less specific label is fine, inventing one is not.
+    """
+    import llm_providers
+    model = llm_providers.last_model()
+    return f"{provider}:{model}" if model else provider
+
+
 def extract_acts(source_block: str, creds: dict,
                  pool: str = "variety") -> tuple:
     """(acts, model, escalated). LOCAL FIRST — requirement 4, literally.
@@ -527,7 +562,7 @@ def extract_acts(source_block: str, creds: dict,
                                  max_tokens=4000, retries=0)
         acts = parse_acts(raw, pool)
         if acts is not None:
-            return acts, "ollama", False
+            return acts, _tag("ollama"), False
     except Exception:
         pass          # no local model on this box, or it fell over — escalate
 
@@ -536,7 +571,7 @@ def extract_acts(source_block: str, creds: dict,
             system, user, creds, max_tokens=4000, mode="single")
         acts = parse_acts(raw, pool)
         if acts is not None:
-            return acts, provider, True
+            return acts, _tag(provider), True
     except Exception:
         pass
     return [], "", False
@@ -640,7 +675,7 @@ def _record_programs(rows: list, team_hint: str, angle: str, model: str,
             lead_state=None if prior else "new", db_path=db_path)
         if res.get("created"):
             stats["new"] += 1
-        elif res.get("changed_fields"):
+        elif _substantive(res.get("changed_fields")):
             stats["updated"] += 1
         note = "%s: %s%s%s" % (
             season, r.get("act") or "(unnamed)",
@@ -737,7 +772,7 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
                 lead_state=None if existing else "new", db_path=db_path)
             if res.get("created"):
                 stats["new"] += 1
-            elif res.get("changed_fields"):
+            elif _substantive(res.get("changed_fields")):
                 stats["updated"] += 1
             try:
                 entity_kb.add_signal(
@@ -795,7 +830,7 @@ def report(db_path: str = None) -> int:
                      st.get("non_band_halftime", "?")))
     print("\n  extraction (local vs escalated — the S73 measurement):")
     for m, n in sorted(by_model.items(), key=lambda t: -t[1]):
-        print(f"    {m:28} {n}")
+        print(f"    {m:40} {n}")
     return 0
 
 
@@ -1073,6 +1108,122 @@ def selftest() -> int:
           "_rate" in _src and "100.0 * _esc" in _src)
     check("  ...and a zero-denominator run reports n/a rather than dividing",
           'else "n/a"' in _src)
+
+    # ── S103 (Buddy): extracted_by names the MODEL, not just the provider ──
+    # Driven through the real extract_acts with llm_providers stubbed, because
+    # the point of the change is that the label follows what was actually
+    # called. Every assertion is paired with its inverse.
+    import types
+    _acts_json = ('[{"name": "A", "category": "dog show", "level": "regional", '
+                  '"clients": "", "booking_contact": "", "fee_note": "", '
+                  '"home_base": "", "evidence": "e", "style": ""}]')
+
+    def _fake_llm(local_raw, esc_raw, model):
+        m = types.ModuleType("llm_providers")
+        state = {"model": None}
+
+        def call(_p, _s, _u, _c, **_kw):
+            state["model"] = None
+            if local_raw is None:
+                raise RuntimeError("no local model")
+            state["model"] = model
+            return local_raw
+
+        def escalate(_s, _u, _c, **_kw):
+            state["model"] = None
+            if esc_raw is None:
+                raise RuntimeError("no cloud provider")
+            state["model"] = "claude-sonnet-5"
+            return ("anthropic", esc_raw)
+        m.call, m.escalate = call, escalate
+        m.last_model = lambda: state["model"]
+        return m
+
+    _real = sys.modules.get("llm_providers")
+    try:
+        sys.modules["llm_providers"] = _fake_llm(_acts_json, None, "qwen3.8:27b")
+        _a, _m, _e = extract_acts("block", {})
+        check("a local extraction is labelled with the MODEL, not 'ollama'",
+              _m == "ollama:qwen3.8:27b" and _e is False)
+        check("  ...and the field a reader sees carries it too",
+              _fields_for(_a[0], "angle", _m, _e)["extracted_by"]
+              == "ollama:qwen3.8:27b (local)")
+
+        sys.modules["llm_providers"] = _fake_llm("junk", _acts_json, "x")
+        _a, _m, _e = extract_acts("block", {})
+        check("an ESCALATED extraction names the cloud model, not just "
+              "'anthropic' — the inverse of the local case",
+              _m == "anthropic:claude-sonnet-5" and _e is True)
+        check("  ...and is still marked (escalated), so the S73 split survives",
+              _fields_for(_a[0], "angle", _m, _e)["extracted_by"]
+              .endswith("(escalated)"))
+
+        # An unknown model must degrade to the old label, never invent one.
+        _fl = _fake_llm(_acts_json, None, "qwen3.8:27b")
+        _fl.last_model = lambda: None
+        sys.modules["llm_providers"] = _fl
+        _a, _m, _e = extract_acts("block", {})
+        check("an unknown model falls back to the bare provider — never "
+              "'ollama:None' written into the catalogue",
+              _m == "ollama" and "None" not in _m)
+
+        check("a provenance-only change is NOT an 'updated' act — the model "
+              "tag must not spike the number Buddy reads",
+              _substantive(["extracted_by"]) is False)
+        # ...proven through a real recording path, not just on the helper:
+        # record the SAME programme twice, changing only the model tag.
+        with _tf.TemporaryDirectory() as _td2:
+            _db2 = str(Path(_td2) / "kb.sqlite3")
+            _row = [{"team": "Chicago Bears", "season": "2025", "act": "Drones",
+                     "act_category": "drone show", "band_only": False,
+                     "occasion": "", "evidence": "e"}]
+            _p1 = {"found": 0, "new": 0, "updated": 0}
+            _record_programs(_row, "Chicago Bears", "angle",
+                             "ollama:qwen2.5:72b", False, _p1, False,
+                             db_path=_db2, this_year=2026)
+            _p2 = {"found": 0, "new": 0, "updated": 0}
+            _record_programs(_row, "Chicago Bears", "angle",
+                             "ollama:qwen3.8:27b", False, _p2, False,
+                             db_path=_db2, this_year=2026)
+            check("  ...re-recording the same find under a NEW model tag "
+                  "counts as 0 updated, through the real recording path",
+                  _p1["new"] == 1 and _p2["updated"] == 0)
+            _p3 = {"found": 0, "new": 0, "updated": 0}
+            _record_programs([dict(_row[0], season="2026")], "Chicago Bears",
+                             "angle", "ollama:qwen3.8:27b", False, _p3, False,
+                             db_path=_db2, this_year=2026)
+            check("  ...while a genuinely new season DOES count as updated — "
+                  "without this the filter could be blanket-blind",
+                  _p3["updated"] == 1)
+        # Behaviour is proven at one call site; there are two. This asserts the
+        # OTHER one is wired the same way -- something no single-site test can
+        # do, and the exact mutation that slipped through before it existed.
+        # Read the branch LINES rather than counting substrings: a substring
+        # count matched this assertion's own text and reported 3 of 2, which is
+        # the trap_lint-flags-its-own-fixture shape. A check that trips over
+        # itself gets deleted, and then nothing guards the second call site.
+        _branches = [ln.strip() for ln in _src.splitlines()
+                     if ln.strip().startswith("elif") and "changed_fields" in ln]
+        check("both 'updated' branches go through _substantive — behaviour is "
+              "proven at one call site, this covers the other",
+              len(_branches) == 2
+              and all("_substantive" in ln for ln in _branches))
+        check("  ...but a real field change still counts, and so does a mixed "
+              "one — the inverse, or the counter would go permanently blind",
+              _substantive(["fee_note"]) is True
+              and _substantive(["extracted_by", "fee_note"]) is True
+              and _substantive([]) is False)
+
+        sys.modules["llm_providers"] = _fake_llm(None, None, "x")
+        _a, _m, _e = extract_acts("block", {})
+        check("both providers failing still records NO model, so a total "
+              "failure cannot pass as a local answer",
+              (_a, _m, _e) == ([], "", False))
+    finally:
+        if _real is not None:
+            sys.modules["llm_providers"] = _real
+        else:
+            sys.modules.pop("llm_providers", None)
 
     print("\nALL PASS" if not bad else f"\n{bad} FAILED")
     return 1 if bad else 0
