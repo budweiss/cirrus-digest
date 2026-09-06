@@ -75,6 +75,48 @@ def kickstart_cmd(target):
     return ["launchctl", "kickstart", "-k", target]
 
 
+def state_is_running(text):
+    """Does `launchctl print` output describe a RUNNING service?
+
+    Split out from is_running() so the parsing is testable without a launchd.
+    """
+    return any(l.strip() == "state = running" for l in (text or "").splitlines())
+
+
+def is_running(label, _run=None):
+    """Is this job running, asked in the DOMAIN THAT ACTUALLY HOLDS IT — S103.
+
+    `dev_agent.ship()` step 5 verified a restart with a bare `launchctl list`
+    and a substring test. dev_agent runs over ssh, and every com.cirrus.* job
+    is now a /Library/LaunchDaemons system daemon, so that list does not
+    contain them AT ALL:
+
+        $ ssh cirrus 'launchctl list | grep -c com.cirrus.bot'
+        0
+        $ ssh cirrus 'launchctl print system/com.cirrus.bot'
+            state = running
+            pid = 13628
+
+    So verification could only ever FAIL for the two services ship() is able to
+    restart (cirrus_bot.py, cirrus_api.py). The build deployed, restarted
+    cleanly, was declared dead and auto-rolled back. `prop-2026-08-29-562734`
+    sat stranded five days on that. This is T33 — the trap is documented, the
+    fix was written down, and the code still asked the wrong domain.
+
+    `launchctl print` needs no root for a read (verified on CIRRUS), unlike the
+    kickstart above it. Only ever used for long-running services: a periodic
+    StartInterval job is legitimately `not running` between passes (T9), and
+    reading that as failure would be the same mistake pointing the other way.
+    """
+    runner = _run or (lambda argv: subprocess.run(
+        argv, capture_output=True, text=True, timeout=10).stdout)
+    try:
+        return state_is_running(runner(["launchctl", "print",
+                                        launchctl_target(label)]))
+    except Exception:
+        return False
+
+
 def selftest():
     checks = []
 
@@ -105,6 +147,33 @@ def selftest():
     ok("an unknown label falls back to gui/, never system/",
        t.startswith("gui/") and t.endswith("com.cirrus.definitely-not-a-real-job-s84"))
     ok("the fallback carries THIS user's uid", t.split("/")[1] == str(os.getuid()))
+
+    # S103 — is_running() must be able to say NO. A verifier that always
+    # answers "running" would have hidden the very bug it was written for.
+    _RUNNING = "\tstate = running\n\tpid = 13628\n"
+    _STOPPED = "\tstate = not running\n"
+    _ABSENT = 'Could not find service "x" in domain for system\n'
+    ok("running output reads as running", state_is_running(_RUNNING))
+    ok("...a STOPPED service does not — the inverse, and the whole point",
+       not state_is_running(_STOPPED))
+    ok("...nor does a service launchd cannot find at all",
+       not state_is_running(_ABSENT))
+    ok("...nor does empty output, which is what a failed call returns",
+       not state_is_running("") and not state_is_running(None))
+    ok("a stopped service still contains the WORD 'running' — which is why "
+       "this matches the whole line and not a substring",
+       "running" in _STOPPED and not state_is_running(_STOPPED))
+    ok("is_running() reports True through an injected runner",
+       is_running("com.cirrus.bot", _run=lambda argv: _RUNNING))
+    ok("...False when that runner says stopped",
+       not is_running("com.cirrus.bot", _run=lambda argv: _STOPPED))
+    ok("...and False, never a crash, when the call raises",
+       not is_running("com.cirrus.bot",
+                      _run=lambda argv: (_ for _ in ()).throw(OSError("boom"))))
+    _seen = []
+    is_running("com.cirrus.bot", _run=lambda argv: _seen.append(argv) or _RUNNING)
+    ok("it asks `launchctl print`, NOT `launchctl list` (the T33 bug)",
+       _seen and _seen[0][:2] == ["launchctl", "print"] and "list" not in _seen[0])
 
     failed = [n for n, g in checks if not g]
     for n, g in checks:

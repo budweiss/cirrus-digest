@@ -56,7 +56,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # S84 (T51): one definition, shared with cirrus_api and cirrus_watchdog.
-from launchd_util import launchctl_target, kickstart_cmd
+from launchd_util import launchctl_target, kickstart_cmd, is_running
 
 import dev_loop
 
@@ -1598,9 +1598,16 @@ def ship(n: int):
                 break
     if not fail and svcs:
         time.sleep(3)
-        rc, out = _run(["launchctl", "list"])
+        # S103 (T33): this asked `launchctl list` and tested for a substring.
+        # dev_agent runs over ssh and every com.cirrus.* job is a
+        # /Library/LaunchDaemons SYSTEM daemon, which that list does not
+        # contain at all -- so verification could only ever FAIL for the only
+        # two services this function can restart. The build deployed, restarted
+        # cleanly, was declared dead and auto-rolled back;
+        # prop-2026-08-29-562734 sat stranded five days on it. Ask the domain
+        # that actually holds the job (launchd_util.is_running).
         for s in svcs:
-            if s not in out:
+            if not is_running(s):
                 fail = f"service {s} not running after restart"
                 break
 
@@ -2505,6 +2512,23 @@ def _selftest():
           is not None)
     check("a failed ROLLBACK restart is reported, not called 'restarted'",
           "rb_failed" in (dep or "") and "could NOT restart" in (dep or ""))
+    # S103 (T33): the verify must not ask `launchctl list`. dev_agent runs over
+    # ssh, where that list contains no system daemon -- so the check could only
+    # ever fail for the two services ship() can restart. Assert on the branch
+    # LINES, not a substring count: an earlier version of this idea matched its
+    # own source and reported a count that was off by one.
+    # ...and skip COMMENT lines: the fix's own comment names the bad call by
+    # name, so the first version of this check flagged its own explanation.
+    # That is the third self-matching source check this session (S103).
+    _verify_lines = [l.strip() for l in (dep or "").splitlines()
+                     if "launchctl" in l and "list" in l
+                     and not l.strip().startswith("#")]
+    check("ship's verify never asks `launchctl list` (wrong domain over ssh)",
+          _verify_lines == [])
+    check("...it asks launchd_util.is_running, which resolves the domain first",
+          "if not is_running(s):" in (dep or ""))
+    check("...and a service that is NOT running still fails verify",
+          'fail = f"service {s} not running after restart"' in (dep or ""))
     check("restarts go through kickstart_cmd (sudo for system/, T51)",
           "kickstart_cmd(" in (dep or "")
           and '["launchctl", "kickstart"' not in (dep or ""))
