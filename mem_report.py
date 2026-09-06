@@ -161,12 +161,24 @@ def windows_for(day, units=UNITS, runner=_run):
     return out
 
 
-def build(day, sar_text, wins):
+# Minutes to extend each window past the job's exit. ollama keeps a model
+# RESIDENT after the last request (default keep_alive 5m), and sysstat samples
+# every 10, so the peak routinely lands AFTER the job has gone. Measured
+# 2026-09-06: halftime-catalogue ran 06:30-06:38 and the samples were
+#   06:30  2.6 GB   (started, model not loaded yet)
+#   06:40  46.3 GB  (model resident, job already exited at 06:38)
+#   06:50  2.6 GB   (unloaded)
+# A window closed at 06:38 therefore reported 2.6 GB for a job that drove 46.3
+# -- confidently wrong, which is the very thing this file exists to avoid.
+TAIL_MIN = 12
+
+
+def build(day, sar_text, wins, tail=TAIL_MIN):
     rows = []
     samples = parse_sar(sar_text)
     baseline = min((gb for _t, gb in samples), default=None)
     for unit, (s, e) in sorted(wins.items(), key=lambda kv: kv[1][0]):
-        pk = peak_in(samples, s, e)
+        pk = peak_in(samples, s, e + tail)
         rows.append({
             "unit": unit,
             "start": f"{s // 60:02d}:{s % 60:02d}",
@@ -183,7 +195,8 @@ def build(day, sar_text, wins):
 
 def render(rep):
     out = [f"== memory by scheduled job — {rep['date']} ==",
-           "   (most recent run of each unit; systemd keeps only the last)"]
+           f"   (most recent run of each unit; window extended {TAIL_MIN} min "
+           f"past exit to catch the model ollama keeps resident)"]
     if rep["baseline_gb"] is not None:
         out.append(f"   idle baseline: {rep['baseline_gb']} GB")
     out.append("")
@@ -265,6 +278,18 @@ def selftest():
     ck("...and adjacent, non-overlapping ones are NOT — or the warning fires "
        "on every healthy day and gets ignored",
        overlaps({"a": (0, 30), "b": (30, 50)}) == [])
+
+    # The tail is the difference between 2.6 GB and 46.3 GB for a real job.
+    _late = [(30, 2.6), (40, 46.3), (50, 2.6)]
+    ck("a peak that lands AFTER the job exits is still attributed to it — "
+       "ollama holds the model past the run, and sysstat samples every 10 min",
+       peak_in(_late, 30, 38 + TAIL_MIN) == 46.3)
+    ck("...and without the tail the same job reads 2.6 GB, which is the bug "
+       "this constant exists to prevent",
+       peak_in(_late, 30, 38) == 2.6)
+    ck("the tail does not reach forever — a sample two hours later is not "
+       "this job's",
+       peak_in(_late + [(200, 90.0)], 30, 38 + TAIL_MIN) == 46.3)
 
     rep = build("2026-01-01", real, {"j": (0, 30)})
     ck("build attributes a peak to the job that owned the clock",
