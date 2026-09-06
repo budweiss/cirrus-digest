@@ -1923,6 +1923,38 @@ def selftest() -> bool:
             ck("an unreachable CUMULUS returns None, not an empty list "
                "(silent zero == 'nothing to file')",
                _read_tickets_cumulus() is None)
+
+            # S102 (S98 finding). The bug was that a promotion could be LOGGED
+            # while build-queue.jsonl never changed — success reported from the
+            # absence of an error. These two checks assert the code now reports
+            # the WRITE, not the intention. The second one reproduces the S98
+            # shape exactly: queue_append returns the path and writes nothing.
+            _real_log = globals()["_log"]
+            _lines = []
+            globals()["_log"] = lambda m: _lines.append(str(m))
+            try:
+                _tickets.write_text(
+                    _mk("t-queued-2", "queued", dev_loop.TIER_CONFIRM) + "\n")
+                n3 = promote_tickets(_pd)
+                ck("a landed append is reported with the resolved path and both sizes",
+                   n3 == 1 and any("append landed" in l and "build-queue.jsonl" in l
+                                   for l in _lines))
+                _lines.clear()
+                _real_qa = globals()["queue_append"]
+                globals()["queue_append"] = lambda item, pd=None: (
+                    (Path(pd) if pd else PROJECT_DIR)
+                    / "logs/dev-loop/build-queue.jsonl")
+                try:
+                    _tickets.write_text(
+                        _mk("t-queued-3", "queued", dev_loop.TIER_CONFIRM) + "\n")
+                    promote_tickets(_pd)
+                    ck("an append that does NOT land is reported as an ERROR, "
+                       "not as a promotion (the S98 bug)",
+                       any("APPEND DID NOT LAND" in l for l in _lines))
+                finally:
+                    globals()["queue_append"] = _real_qa
+            finally:
+                globals()["_log"] = _real_log
         finally:
             globals()["_read_tickets_cumulus"] = _real_remote
 
@@ -2336,7 +2368,40 @@ def promote_tickets(project_dir=None):
             # the stricter answer and say so — never widen at pickup time.
             _log(f"tickets: {spec.get('id')} no longer classifies Tier-1, skipped")
             continue
-        queue_append(item, project_dir)
+        # S102 DETECTION FIX (docs/sessions/S98-FINDING-ticket-promotion.md).
+        # Three promotions were LOGGED on 09-01 and 09-03 while
+        # build-queue.jsonl had not been written since 08-31. The old code
+        # reported a step it had not taken, and because `known` is rebuilt from
+        # that file, the same ticket was re-promoted every night forever — a
+        # closed loop that reads as progress.
+        #
+        # The finding left two candidates unseparated: a different project_dir
+        # (a scratch tree, e.g. check_can_fail --scratch), or an append that
+        # fails silently in the service context. Logging the RESOLVED PATH and
+        # the size either side of the write tells them apart by evidence in one
+        # night — a wrong path shows a wrong path; a failed write shows no
+        # growth. Behaviour is deliberately UNCHANGED: this measures, it does
+        # not repair. Do not patch the append until this has said which it is.
+        _qf = (Path(project_dir) if project_dir else PROJECT_DIR) / "logs/dev-loop/build-queue.jsonl"
+        try:
+            _before = _qf.stat().st_size if _qf.exists() else 0
+        except OSError as e:
+            _before = None
+            _log(f"tickets: could not stat queue BEFORE append: {e}")
+        qf = queue_append(item, project_dir)
+        try:
+            _after = qf.stat().st_size if qf.exists() else 0
+        except OSError as e:
+            _after = None
+            _log(f"tickets: could not stat queue AFTER append: {e}")
+        if _before is None or _after is None:
+            _log(f"tickets: queue={qf} size UNKNOWN — the append cannot be confirmed")
+        elif _after > _before:
+            _log(f"tickets: queue={qf} {_before}b -> {_after}b (append landed)")
+        else:
+            # The whole point of the finding: say so instead of claiming success.
+            _log(f"tickets: ERROR queue={qf} {_before}b -> {_after}b — APPEND DID NOT LAND; "
+                 f"{spec.get('id')} will be re-promoted on the next run")
         known.add(spec.get("id"))
         n += 1
         _log(f"tickets: promoted {spec.get('id')} — {item['source_line'][:60]}")

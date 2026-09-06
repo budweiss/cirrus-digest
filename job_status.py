@@ -36,6 +36,12 @@ CADENCE_H = {
     "cumulusstatepull": 26,     # daily 01:45 (CIRRUS pulls cumulus1 non-git
                                 # state so the backup chain does not start on
                                 # Buddy's laptop; must beat Time Machine ~02:30)
+    # S102 (S100 finding). intake was NOT in this table at all, which is the
+    # whole reason it lost one pass at every boot for at least three boots with
+    # nothing noticing. It cycles every ~15 min on both boxes (separate
+    # mailboxes), so 2h is eight cycles of grace -- tight enough to see a stall,
+    # loose enough not to cry wolf on a single slow cycle.
+    "intake":         2,
     "morningbrief":  26,        # daily 07:30
     "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)

@@ -37,6 +37,7 @@ import os
 import re
 import socket
 import sys
+import inspect
 import time
 import urllib.request
 import node_info                                    # S56: sign as the running node
@@ -75,6 +76,11 @@ FAST_POLL_WINDOW_SEC = 15 * 60
 INTAKE_ACCOUNT_LABEL = os.environ.get("INTAKE_ACCOUNT_LABEL", "gmail-research")
 DAYS_BACK            = 3                  # IMAP search window (state bounds real work)
 BODY_HEAD_CHARS      = 2000               # how much body to keep/classify
+# S102 (docs/sessions/S100-FINDING-intake-boot-race.md). credentials.json on
+# CIRRUS is a symlink into a tmpfs materialized AT BOOT; intake can start before
+# that finishes. ~38s of retries covers the race without holding the service.
+CREDS_ATTEMPTS       = 5
+CREDS_BACKOFF        = [3, 5, 10, 20]
 SCAN_ATTEMPTS        = 4                  # retry the IMAP scan this many times before alerting
 SCAN_BACKOFF         = [5, 15, 30]        # seconds between attempts (~50s window; S56 widened from
                                           # [5,15]/20s after a 2nd transient CIRRUS DNS blip outlasted it)
@@ -589,6 +595,18 @@ def is_confirmation(name: str, subject: str, body: str) -> list:
         return []
 
 
+def _record_status(ok: bool, note: str = "") -> None:
+    """Best-effort job_status record. Intake was INVISIBLE to job_status until
+    S102 — which is exactly why the boot race went unseen for at least three
+    boots. Never raises: a monitoring call must not be able to break the job
+    it monitors."""
+    try:
+        import job_status
+        job_status.record("intake", ok, note)
+    except Exception as e:                      # noqa: BLE001
+        log(f"job_status.record failed: {e}")
+
+
 def run(dry_run: bool = False, rescan: bool = False) -> int:
     allowlist = load_allowlist()
     if not allowlist:
@@ -602,9 +620,37 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     if not account:
         log(f"ERROR: no '{INTAKE_ACCOUNT_LABEL}' account in sources.json")
         return 1
-    password = creds.get(account.get("credential_key", ""))
+    key = account.get("credential_key", "")
+    password = creds.get(key)
     if not password:
-        log(f"ERROR: no '{account.get('credential_key')}' in credentials.json")
+        # S102, S100 finding. This used to log one line and give up, losing one
+        # intake pass at EVERY boot — on the path a client email arrives on. It
+        # self-heals on the next cycle, which is why nothing noticed: a cadence
+        # check measured in hours cannot see a single skipped cycle (the same
+        # shape as S64's silent require_prefix skip).
+        #
+        # Two parts, and the SECOND is the actual fix:
+        #   1. re-read the file with backoff — the race is short; and
+        #   2. RECORD it to job_status, so a recurrence is visible without a
+        #      human opening intake.log.
+        # Only the KEY NAME is ever logged, never the value.
+        for attempt in range(1, CREDS_ATTEMPTS + 1):
+            wait = CREDS_BACKOFF[min(attempt - 1, len(CREDS_BACKOFF) - 1)]
+            log(f"  credential '{key}' missing (attempt {attempt}/{CREDS_ATTEMPTS}) "
+                f"— credentials may still be materializing; retrying in {wait}s")
+            time.sleep(wait)
+            creds = load_json(CREDS_PATH) or {}
+            password = creds.get(key)
+            if password:
+                log(f"  credential '{key}' appeared after {attempt} retry(ies) "
+                    f"— boot race, not a missing secret")
+                _record_status(True, f"recovered from credential boot race after "
+                                     f"{attempt} retry(ies)")
+                break
+    if not password:
+        log(f"ERROR: no '{key}' in credentials.json")
+        _record_status(False, f"credential '{key}' still absent after "
+                              f"{CREDS_ATTEMPTS} retries — one intake pass LOST")
         return 1
 
     state = load_state()
@@ -634,6 +680,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             break
     if last_err is not None:
         log(f"ERROR: inbox scan failed after {attempt} attempt(s): {last_err}")
+        _record_status(False, f"inbox scan failed after {attempt} attempt(s)")
         if not dry_run:
             telegram(f"⚠️ *Intake*: inbox scan failed after {attempt} "
                      f"attempt(s): `{last_err}`", creds)
@@ -863,6 +910,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             telegram("\n".join(lines), creds)
     else:
         log("no new intake requests")
+    _record_status(True, f"{len(processed)} processed, {len(limited)} rate-limited, "
+                         f"{len(prefix_skipped)} prefix-skipped")
     return 0
 
 
@@ -1189,6 +1238,25 @@ def selftest() -> int:
             check("resend: no creds -> reason explains why", "credentials" in res["reason"])
         finally:
             TS.PROJECT_DIR = TS._orig_dir
+
+    # S102 (S100 finding). The defect was that a lost intake pass left NO
+    # monitored trace — it only ever reached intake.log. These assert the
+    # boot-race path now (a) retries and (b) records, and that the retry does
+    # not silently swallow a genuinely absent credential.
+    check("credential retry constants cover a real boot race, not one poll",
+          CREDS_ATTEMPTS >= 3 and sum(CREDS_BACKOFF) >= 20)
+    _run_src = inspect.getsource(run)
+    check("a LOST intake pass reaches job_status, not just the log",
+          "_record_status(False" in _run_src
+          and "one intake pass LOST" in _run_src)
+    check("  ...and a recovered boot race is recorded too, so the race stays visible",
+          "recovered from credential boot race" in _run_src)
+
+    import job_status as _js
+    check("job_status carries a cadence for intake (nothing watched it before S102)",
+          "intake" in _js.CADENCE_H)
+    check("  ...and it is tighter than a day — intake cycles every ~15 min",
+          _js.CADENCE_H.get("intake", 999) <= 6)
 
     print(f"selftest: {'OK' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
