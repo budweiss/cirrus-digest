@@ -143,7 +143,15 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "opportunityscout", "halftimecatalogue", "halftimerouting",
                  "cumulusdailybrief", "entitykbdigest",
                  "alopeciacollect",                       # S82, runs on CUMULUS
-                 "alopeciabrief"}                         # S95, runs on CUMULUS
+                 "alopeciabrief",                         # S95, runs on CUMULUS
+                 # S102: accesscheck was added in S101 and NOT listed here, so
+                 # CIRRUS looked for it locally, never found it, and printed
+                 # "no run recorded yet" every time -- neutrally, so it never
+                 # failed anything. That state is INDISTINGUISHABLE from the
+                 # monitor being dead, and this is the only monitor that watches
+                 # cumulus2 at all. Exactly the omission the comment above warns
+                 # about, made four rows below the warning.
+                 "accesscheck"}                           # S101, runs on cumulus1
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 
@@ -260,6 +268,17 @@ def selftest():
         nonlocal fails
         print(f"  [{'OK ' if cond else 'FAIL'}] {label}")
         fails += 0 if cond else 1
+
+    # S102. Two placement assertions, in both directions. A name in CADENCE_H
+    # that runs on CUMULUS but is missing from REMOTE_JOBS reads as "never ran"
+    # on CIRRUS forever; a name that runs on BOTH boxes must NOT be in it, or
+    # CIRRUS would report CUMULUS's copy and go blind to its own.
+    ck("accesscheck is read from CUMULUS — it runs on cumulus1 (S101)",
+       "accesscheck" in REMOTE_JOBS)
+    ck("intake is NOT remote — both boxes run their own, on SEPARATE mailboxes",
+       "intake" in CADENCE_H and "intake" not in REMOTE_JOBS)
+    ck("every REMOTE_JOBS name has a cadence, or it is never checked at all",
+       REMOTE_JOBS <= set(CADENCE_H))
 
     _, g = _row("j", 26, {"epoch": now - 2 * hr, "ok": True, "last_run": "x"}, now)
     ck("fresh + ok -> good", g is True)
