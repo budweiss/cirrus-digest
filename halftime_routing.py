@@ -279,12 +279,17 @@ def queries_for(game: Dict) -> List[tuple]:
 
 
 def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
-               extractor=None) -> Dict:
+               extractor=None, llm_stats: Optional[Dict] = None) -> Dict:
     """One game, every metro. Returns events + a coverage record per metro.
 
     The injectable searcher/fetcher/extractor exist so the selftest can drive
     the whole path offline — T32: a test must never reach the live web or a
     real config.
+
+    `llm_stats` (S103) accumulates the local/escalated/unusable split across
+    metros. An INJECTED extractor never touches it, which is correct: no model
+    was called, so there is no rate to report — and a caller must be able to
+    tell that apart from a real 0%.
     """
     # Import the network stack ONLY if a real one is actually needed. Importing
     # it unconditionally made the module unusable with injected dependencies —
@@ -301,7 +306,8 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
             lambda q: cirrus_daily.search_web(q, max_results=MAX_SEARCH_RESULTS,
                                               caller="halftime_routing"))
         fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
-    extractor = extractor or (lambda block: _extract(block, creds))
+    llm_stats = {} if llm_stats is None else llm_stats
+    extractor = extractor or (lambda block: _extract(block, creds, llm_stats))
 
     events, coverage = [], []
     for metro, miles, query in queries_for(game):
@@ -340,26 +346,47 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
         events.extend(near)
         log("  {} — {} source(s), {} of {} show(s) inside the window".format(
             metro, len(blocks), len(near), len(found)))
-    return {"events": events, "coverage": coverage}
+    return {"events": events, "coverage": coverage, "llm": llm_stats}
 
 
-def _extract(block: str, creds: Dict):
+def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
+    """Events, or None when nothing usable came back.
+
+    S103: `stats` counts WHICH path answered. Until now this lane threw that
+    away — it is the same local-first/escalate shape as halftime_catalogue, but
+    only the catalogue's escalation rate reached the monitored note. So when
+    `ollama_model` moved 72b -> qwen3.8:27b (2026-09-05) the acceptance test
+    covered one of the two Justin lanes that changed, and this one produced no
+    evidence about the model at all. The counter is the evidence.
+
+    `unusable` is counted separately and deliberately NOT folded into the
+    denominator: "the local model was fine" and "both models failed" must not
+    render as the same 0%.
+    """
     import llm_providers
+    if stats is None:
+        stats = {}
     user = "LISTINGS:\n\n{}".format(block[:24000])
     try:
         raw = llm_providers.call("ollama", _EXTRACT_SYSTEM, user, creds,
                                  max_tokens=4000, retries=0)
         got = parse_events(raw)
         if got is not None:
+            stats["local"] = stats.get("local", 0) + 1
             return got
     except Exception:
         pass
     try:
         _provider, raw = llm_providers.escalate(
             _EXTRACT_SYSTEM, user, creds, max_tokens=4000, mode="single")
-        return parse_events(raw)
+        got = parse_events(raw)
+        if got is not None:
+            stats["escalated"] = stats.get("escalated", 0) + 1
+            return got
     except Exception:
-        return None
+        pass
+    stats["unusable"] = stats.get("unusable", 0) + 1
+    return None
 
 
 LOCK_PATH = PROJECT_DIR / "logs" / "halftime_routing.lock"
@@ -410,8 +437,33 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(str(tmp), str(path))
 
 
+def note_for(res: Dict) -> str:
+    """The monitored note. ONE definition, called by main() and the selftest.
+
+    S103: the first cut of this had the selftest assert against its own copy of
+    the format string. Removing the rate from the real note then passed the
+    suite — the S102 `sm_prov` trap ("asserted a hardcoded copy of the thing it
+    was checking") reproduced within a day of being written down. Caught by
+    mutating the production line and watching the tests not care.
+    """
+    esc = res.get("escalated", 0)
+    tot = esc + res.get("local", 0)
+    rate = f"{100.0 * esc / tot:.0f}%" if tot else "n/a"
+    bad = res.get("unusable", 0)
+    return (f"{res.get('events', 0)} event(s) across "
+            f"{res.get('games_swept', 0)} game(s), "
+            f"escalated {esc}/{tot} ({rate})"
+            + (f", {bad} unusable" if bad else ""))
+
+
 def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
-        creds: Optional[Dict] = None, out_path: Optional[Path] = None) -> Dict:
+        creds: Optional[Dict] = None, out_path: Optional[Path] = None,
+        searcher=None, fetcher=None) -> Dict:
+    """S103: searcher/fetcher are injectable here for the same reason they
+    already were on sweep_game — so the selftest can drive the WHOLE path
+    offline. Without it the aggregation between sweep_game and this function
+    was untested, and two mutations that silently zeroed the escalation rate
+    for good passed the entire suite."""
     import halftime_dashboard
     games = games if games is not None else halftime_dashboard.HOME_GAMES
     creds = creds if creds is not None else json.loads(
@@ -421,17 +473,27 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
             if g.get("date") and g.get("at_venue", True)
             and (not only_targets or g.get("target"))]
     result = {"generated_at": _now(), "window_days": WINDOW_DAYS, "games": {}}
+    # S103: one counter across every game, so the escalation rate is a per-RUN
+    # figure like halftime_catalogue's. It is deliberately kept OUT of
+    # routing.json — that file is the dashboard's input and its shape stays
+    # exactly as it was.
+    llm = {}
     for game in todo:
         gid = halftime_dashboard.game_id(game)
         log("game {} — {} vs {}".format(gid, game["date"], game["opponent"]))
-        result["games"][gid] = sweep_game(game, creds)
+        swept = sweep_game(game, creds, llm_stats=llm,
+                           searcher=searcher, fetcher=fetcher)
+        result["games"][gid] = {k: v for k, v in swept.items() if k != "llm"}
     out = Path(out_path) if out_path else OUT_PATH
     out.parent.mkdir(parents=True, exist_ok=True)
     _write_atomic(out, json.dumps(result, indent=2))
     total = sum(len(v["events"]) for v in result["games"].values())
-    log("done: {} game(s) swept, {} show(s) in window".format(
-        len(todo), total))
-    return {"games_swept": len(todo), "events": total, "out": str(out)}
+    log("done: {} game(s) swept, {} show(s) in window, extraction {}".format(
+        len(todo), total, llm or "(none called)"))
+    return {"games_swept": len(todo), "events": total, "out": str(out),
+            "local": llm.get("local", 0),
+            "escalated": llm.get("escalated", 0),
+            "unusable": llm.get("unusable", 0)}
 
 
 def selftest() -> int:
@@ -575,12 +637,160 @@ def selftest() -> int:
           all(c["error"] and "search failed" in c["error"]
               for c in dead["coverage"]))
 
+    # ── S103: the escalation counter ──────────────────────────────────────
+    # Every assertion below is paired with its inverse. S102 shipped seven
+    # things that reported a success they had not earned, two of them tests;
+    # the ones that were caught were caught by asserting the negative case
+    # beside the positive one. A counter is exactly the kind of code that
+    # passes by never being incremented.
+    import types
+
+    def _fake_llm(local_raw=None, escalate_raw=None):
+        """A stand-in llm_providers. `None` raw = that provider blows up."""
+        m = types.ModuleType("llm_providers")
+
+        def call(_provider, _sys, _user, _creds, **_kw):
+            if local_raw is None:
+                raise RuntimeError("no local model")
+            return local_raw
+
+        def escalate(_sys, _user, _creds, **_kw):
+            if escalate_raw is None:
+                raise RuntimeError("no cloud provider")
+            return ("anthropic", escalate_raw)
+        m.call, m.escalate = call, escalate
+        return m
+
+    _good = '[{"artist": "A", "date": "2026-11-01", "venue": "V", "city": "C"}]'
+    _real = sys.modules.get("llm_providers")
+    try:
+        sys.modules["llm_providers"] = _fake_llm(local_raw=_good)
+        st = {}
+        _extract("block", {}, st)
+        check("a local answer counts as LOCAL",
+              st.get("local") == 1)
+        check("...and NOT as escalated — the inverse, which is the whole point",
+              st.get("escalated", 0) == 0 and st.get("unusable", 0) == 0)
+
+        sys.modules["llm_providers"] = _fake_llm(local_raw="not json at all",
+                                                 escalate_raw=_good)
+        st = {}
+        got = _extract("block", {}, st)
+        check("an unusable LOCAL answer escalates, and is counted as escalated",
+              st.get("escalated") == 1 and st.get("local", 0) == 0)
+        check("...and the escalated events still reach the caller",
+              got and got[0]["artist"] == "A")
+
+        sys.modules["llm_providers"] = _fake_llm()          # both blow up
+        st = {}
+        check("both providers failing returns None, not []",
+              _extract("block", {}, st) is None)
+        check("a total failure is UNUSABLE — never a silent 'local answered'",
+              st.get("unusable") == 1
+              and st.get("local", 0) == 0 and st.get("escalated", 0) == 0)
+
+        # The note is what a monitor actually reads, so assert the STRING --
+        # from note_for(), the function main() calls. Never from a copy of it.
+        check("the note carries the rate",
+              "escalated 2/8 (25%)" in note_for({"escalated": 2, "local": 6}))
+        check("a zero denominator says n/a — it never divides, and never "
+              "renders as a flattering 0%",
+              "escalated 0/0 (n/a)" in note_for({}))
+        check("unusable extractions are named in the note, not folded into 0%",
+              "3 unusable" in note_for({"local": 1, "unusable": 3})
+              and "unusable" not in note_for({"local": 1}))
+
+        # ...and that main()'s recording path actually USES it. Without this,
+        # main() could stop calling note_for() and every test above still
+        # passes -- verified by mutating exactly that and watching it slip.
+        seen = []
+        _js = types.ModuleType("job_status")
+        _js.record = lambda *a: seen.append(a)
+        _real_js = sys.modules.get("job_status")
+        sys.modules["job_status"] = _js
+        try:
+            note = record_run({"events": 4, "games_swept": 2,
+                               "escalated": 1, "local": 3})
+            check("what gets RECORDED is the note, not something re-derived",
+                  seen and seen[0] == ("halftimerouting", True, note)
+                  and "escalated 1/4 (25%)" in seen[0][2])
+            _js.record = lambda *a: 1 / 0
+            check("a ledger that blows up cannot take the job down with it",
+                  record_run({}).startswith("0 event"))
+        finally:
+            if _real_js is not None:
+                sys.modules["job_status"] = _real_js
+            else:
+                sys.modules.pop("job_status", None)
+
+        # WHOLE PATH, offline: extraction -> sweep_game -> run -> note.
+        # The counter being right is not the same as the counter SURVIVING the
+        # trip to the note; two mutations that zeroed it permanently passed
+        # every test above until this one existed.
+        import tempfile
+        sys.modules["llm_providers"] = _fake_llm(local_raw="junk",
+                                                 escalate_raw=_good)
+        with tempfile.TemporaryDirectory() as td:
+            out = run(games=[{"date": "2026-11-01", "opponent": "Team A",
+                              "week": 8, "at_venue": True},
+                             {"date": "2026-11-08", "opponent": "Team B",
+                              "week": 9, "at_venue": True}],
+                      creds={}, out_path=Path(td) / "routing.json",
+                      searcher=lambda q: ["http://x"],
+                      fetcher=lambda u: "listing text")
+            per_run = 2 * len(METROS)
+            check("run() carries the escalation count out of every game",
+                  out["escalated"] == per_run and out["local"] == 0)
+            check("...as ONE per-run figure, not one game's worth",
+                  note_for(out).endswith(f"escalated {per_run}/{per_run} (100%)"))
+            check("routing.json keeps the shape the dashboard reads — no "
+                  "counter leaks into the client artefact",
+                  all("llm" not in g for g in
+                      json.loads((Path(td) / "routing.json").read_text())
+                      ["games"].values()))
+    finally:
+        if _real is not None:
+            sys.modules["llm_providers"] = _real
+        else:
+            sys.modules.pop("llm_providers", None)
+
+    # An INJECTED extractor must leave the counter untouched: a test harness
+    # must never be able to look like a real 0% escalation run.
+    check("an injected extractor records no rate at all (n/a, not 0%)",
+          res.get("llm") == {})
+
     print()
     if failures:
         print("FAILURES: {}".format(len(failures)))
         return 1
     print("ALL PASS")
     return 0
+
+
+def record_run(res: Dict) -> str:
+    """Write the run into the job_status ledger. Returns the note it recorded.
+
+    S81: this job used to run unwatched, so an overdue or failed sweep was
+    invisible. Best-effort and never allowed to change the exit status --
+    monitoring must not break the thing it monitors.
+
+    S103: it is a function so the selftest can assert what main() ACTUALLY
+    records. Testing note_for() alone left a live gap -- main() could stop
+    calling it and every test still passed.
+
+    The call below is written out literally, NOT through an injected recorder,
+    because job_status.py's own placement check greps for exactly this shape to
+    prove every watched job writes its own row. An indirection here reads to
+    that guard as "halftimerouting records nothing" -- which is how the first
+    cut of this function was caught. The test stubs the MODULE instead.
+    """
+    note = note_for(res)
+    try:
+        import job_status
+        job_status.record("halftimerouting", True, note)
+    except Exception as e:
+        print(f"job_status.record failed: {e}")
+    return note
 
 
 def main() -> int:
@@ -596,20 +806,7 @@ def main() -> int:
     finally:
         lock.__exit__()
     print(json.dumps(res))
-
-# S81: record into the job_status ledger so an overdue/failed run is actually
-# SEEN. Until today this job ran unwatched -- opportunity_scout wrote its
-# status correctly and nothing read it, and these jobs did not even write one.
-# Best-effort and never allowed to change the exit status: monitoring must not
-# break the thing it monitors.
-    try:
-        import job_status
-        job_status.record(
-            "halftimerouting", True,
-            f"{res.get('events', 0)} event(s) across "
-            f"{res.get('games_swept', 0)} game(s)")
-    except Exception as e:
-        print(f"job_status.record failed: {e}")
+    record_run(res)
     return 0
 
 
