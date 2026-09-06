@@ -204,6 +204,11 @@ def check_service_status(service_name: str = "", **kwargs) -> str:
     """
     try:
         if service_name:
+            # T33-OK: called as a BOT TOOL, and the bot is launchd-spawned, so
+            # it inherits the system bootstrap namespace where these daemons are
+            # visible. Verified S104: the identical call over ssh returns
+            # "NOT loaded" for every com.cirrus.* job, so if this module is ever
+            # driven from a shell instead of from the bot, it will lie quietly.
             result = subprocess.run(
                 ["launchctl", "list", service_name],
                 capture_output=True, text=True, timeout=5
@@ -220,6 +225,8 @@ def check_service_status(service_name: str = "", **kwargs) -> str:
             return f"Service '{service_name}': loaded\n{result.stdout.strip()}"
         else:
             # List all cirrus services
+            # T33-OK: same reasoning as the branch above — bot-spawned, system
+            # namespace. Over ssh this one returns "No com.cirrus.* services".
             result = subprocess.run(
                 ["launchctl", "list"],
                 capture_output=True, text=True, timeout=5

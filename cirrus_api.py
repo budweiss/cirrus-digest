@@ -950,6 +950,10 @@ def client_watch_status():
 def service_status():
     """List all com.cirrus.* launchd services and their run state."""
     require_token()
+    # T33-OK: this process is launchd-spawned, so it inherits the SYSTEM
+    # bootstrap namespace and `launchctl list` really does see the daemons.
+    # That is why T33 tells callers to use this endpoint instead of asking
+    # launchctl themselves over ssh, where the same call returns nothing.
     result = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
     lines = [l for l in result.stdout.splitlines() if "cirrus" in l.lower()]
     return jsonify({"services": lines})
