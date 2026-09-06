@@ -229,12 +229,69 @@ def kb_stats() -> dict:
         "kb_size_mb": round((KB_VECTORS.stat().st_size / 1024 / 1024) if KB_VECTORS.exists() else 0, 2)
     }
 
+# ── Selftest ──────────────────────────────────────────────────────────────────
+
+def selftest() -> bool:
+    """Run basic sanity checks on pure decision-making functions. Returns True if all pass."""
+    ok = True
+
+    # cosine_similarity: identical vectors -> 1.0
+    v = np.array([1.0, 2.0, 3.0])
+    sim = cosine_similarity(v, v)
+    if abs(sim - 1.0) > 1e-6:
+        print(f"FAIL cosine_similarity(identical): expected 1.0, got {sim}")
+        ok = False
+
+    # cosine_similarity: orthogonal vectors -> 0.0
+    a = np.array([1.0, 0.0])
+    b = np.array([0.0, 1.0])
+    sim = cosine_similarity(a, b)
+    if abs(sim - 0.0) > 1e-6:
+        print(f"FAIL cosine_similarity(orthogonal): expected 0.0, got {sim}")
+        ok = False
+
+    # cosine_similarity: zero vector -> 0.0 (guards against div by zero)
+    zero = np.array([0.0, 0.0])
+    sim = cosine_similarity(zero, a)
+    if sim != 0.0:
+        print(f"FAIL cosine_similarity(zero vector): expected 0.0, got {sim}")
+        ok = False
+
+    # chunk_text: short text below threshold produces no chunks
+    chunks = chunk_text("too short", chunk_size=500)
+    if chunks != []:
+        print(f"FAIL chunk_text(short text): expected [], got {chunks}")
+        ok = False
+
+    # chunk_text: long text produces at least one chunk, each above the length threshold
+    words = ["word"] * 100
+    text = " ".join(words)
+    chunks = chunk_text(text, chunk_size=50)
+    if not chunks or not all(len(c.strip()) > 50 for c in chunks):
+        print(f"FAIL chunk_text(long text): expected non-empty chunks >50 chars, got {chunks}")
+        ok = False
+
+    # is_already_indexed: found / not found
+    index = [{"source_file": "daily-2026-01-01.md"}]
+    if not is_already_indexed("daily-2026-01-01.md", index):
+        print("FAIL is_already_indexed: expected True for present file")
+        ok = False
+    if is_already_indexed("daily-2026-01-02.md", index):
+        print("FAIL is_already_indexed: expected False for absent file")
+        ok = False
+
+    if ok:
+        print("selftest: all checks passed")
+    return ok
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "index":
         index_all_digests()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+        sys.exit(0 if selftest() else 1)
     elif len(sys.argv) > 1 and sys.argv[1] == "stats":
         stats = kb_stats()
         print(json.dumps(stats, indent=2))
