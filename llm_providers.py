@@ -390,17 +390,33 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
     return (p, call(p, system, user, creds, max_tokens))
 
 
-# ── self-test (python3 llm_providers.py selftest) ─────────────────────────────
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
-        _ok = True
+# ── self-test (python3 llm_providers.py selftest | --selftest) ────────────────
+def selftest():
+    """Exercise the decision functions with explicit inputs. Returns True/False.
 
-        def check(name, cond):
-            global _ok
-            print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
-            _ok = _ok and cond
+    S104: lifted out of `if __name__ == "__main__":` into a plain function so
+    dev_agent's gate 2 can import and call it directly. That was the ask in
+    dev-loop build `prop-2026-08-27-649612`, which could not be shipped as
+    built: it was cut against the 2026-08-31 file and conflicts with the S103
+    last_model() work, so a rebase would have clobbered it. Its new assertions
+    are carried over here instead -- `escalate()` had NO coverage at all, and
+    it is the fallback every lane uses when the local model fails.
 
+    No network and no credentials: the provider adapters and the HTTP layer are
+    stubbed for the duration and restored in a `finally`. That restore matters
+    more now than it did as a __main__ block -- an importable selftest that
+    leaves `_PROVIDERS` monkeypatched would poison the caller's process.
+    """
+    _ok = True
+
+    def check(name, cond):
+        nonlocal _ok
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        _ok = _ok and cond
+
+    _real_providers = dict(_PROVIDERS)
+    _real_post = _http_post
+    try:
         # retry-on-empty: provider returns '' then '  ' then a real reply
         _seq = iter(["", "  ", "real answer"])
         _PROVIDERS["anthropic"] = lambda c, s, u, m: next(_seq)
@@ -414,6 +430,11 @@ if __name__ == "__main__":
 
         # available() reflects only keyed providers, in DEFAULT_ORDER
         check("available: only keyed", available({"openai_api_key": "y"}) == ["openai"])
+        check("available: empty creds -> no providers", available({}) == [])
+        check("available: ordering follows DEFAULT_ORDER, not dict order",
+              available({"grok_api_key": "g", "anthropic_api_key": "a"})
+              == ["anthropic", "grok"])
+
         try:
             call("nope", "s", "u", {})
             _unknown_raised = False
@@ -421,53 +442,101 @@ if __name__ == "__main__":
             _unknown_raised = True
         check("call: unknown provider raises", _unknown_raised)
 
+        # ── escalate(): the fallback path every lane uses. Ported from
+        #    prop-2026-08-27-649612, which found it wholly untested.
+        try:
+            escalate("s", "u", {})
+            _no_keys_raised = False
+        except ProviderError:
+            _no_keys_raised = True
+        check("escalate: no keys configured raises", _no_keys_raised)
+
+        _PROVIDERS["anthropic"] = lambda c, s, u, m: "claude reply"
+        _PROVIDERS["openai"] = lambda c, s, u, m: "openai reply"
+        check("escalate: single picks the FIRST available in order",
+              escalate("s", "u", {"anthropic_api_key": "a", "openai_api_key": "o"},
+                       mode="single") == ("anthropic", "claude reply"))
+
+        _PROVIDERS["anthropic"] = lambda c, s, u, m: (
+            _ for _ in ()).throw(ProviderError("down"))
+        check("escalate: failover falls through to the next provider",
+              escalate("s", "u", {"anthropic_api_key": "a", "openai_api_key": "o"},
+                       mode="failover") == ("openai", "openai reply"))
+        check("escalate: council asks every provider and captures the failure "
+              "inline rather than losing it",
+              dict(escalate("s", "u",
+                            {"anthropic_api_key": "a", "openai_api_key": "o"},
+                            mode="council"))
+              == {"anthropic": "ERROR: down", "openai": "openai reply"})
+
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so
         # it tests the resolution rather than a restatement of it. Each
         # assertion is paired with its inverse: a recorder that is never
         # cleared, and one that is never set, both look fine from one direction.
-        _real_providers = dict(_PROVIDERS)
-        _real_post = _http_post
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
+        globals()["_http_post"] = lambda *a, **k: {
+            "choices": [{"message": {"content": "hi"}}]}
+        call("ollama", "s", "u",
+             {"ollama_url": "http://x", "ollama_model": "qwen3.8:27b"})
+        check("last_model names the LOCAL model, not just the provider",
+              last_model() == "qwen3.8:27b")
+
+        call("openai", "s", "u",
+             {"openai_api_key": "k", "openai_model": "gpt-x"})
+        check("...and it moves with the provider, rather than sticking",
+              last_model() == "gpt-x")
+
+        globals()["_http_post"] = lambda *a, **k: {
+            "candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+        # The literal below carries EXAMPLE deliberately: it is the placeholder
+        # marker runner/pre-commit-secret-scan allows, and that guard blocked
+        # this line when it was first written. It is a fixture, not a dodge --
+        # testing "the key never leaks" needs a stand-in key.
+        _fake_key = "EXAMPLE-fake-gemini-key-not-real"
+        call("gemini", "s", "u",
+             {"gemini_api_key": _fake_key, "gemini_model": "gemini-9"})
+        check("gemini records the bare model — its key is in the URL and "
+              "must never reach a field that gets written to a KB",
+              last_model() == "gemini-9"
+              and _fake_key not in (last_model() or ""))
+
+        # The inverse that matters: a FAILED call must not leave the previous
+        # call's model standing in for an answer it never gave.
         try:
-            globals()["_http_post"] = lambda *a, **k: {
-                "choices": [{"message": {"content": "hi"}}]}
-            call("ollama", "s", "u",
-                 {"ollama_url": "http://x", "ollama_model": "qwen3.8:27b"})
-            check("last_model names the LOCAL model, not just the provider",
-                  last_model() == "qwen3.8:27b")
+            call("ollama", "s", "u", {"ollama_url": "http://x"})   # no model
+        except ProviderError:
+            pass
+        check("a call that never reached the wire leaves None, not the "
+              "last successful model",
+              last_model() is None)
+    finally:
+        globals()["_http_post"] = _real_post
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
 
-            call("openai", "s", "u",
-                 {"openai_api_key": "k", "openai_model": "gpt-x"})
-            check("...and it moves with the provider, rather than sticking",
-                  last_model() == "gpt-x")
+    return _ok
 
-            globals()["_http_post"] = lambda *a, **k: {
-                "candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
-            # The literal below carries EXAMPLE deliberately: it is the
-            # placeholder marker runner/pre-commit-secret-scan allows, and that
-            # guard blocked this line when it was first written. It is a fixture,
-            # not a dodge -- testing "the key never leaks" needs a stand-in key.
-            _fake_key = "EXAMPLE-fake-gemini-key-not-real"
-            call("gemini", "s", "u",
-                 {"gemini_api_key": _fake_key, "gemini_model": "gemini-9"})
-            check("gemini records the bare model — its key is in the URL and "
-                  "must never reach a field that gets written to a KB",
-                  last_model() == "gemini-9"
-                  and _fake_key not in (last_model() or ""))
 
-            # The inverse that matters: a FAILED call must not leave the
-            # previous call's model standing in for an answer it never gave.
-            try:
-                call("ollama", "s", "u", {"ollama_url": "http://x"})   # no model
-            except ProviderError:
-                pass
-            check("a call that never reached the wire leaves None, not the "
-                  "last successful model",
-                  last_model() is None)
-        finally:
-            globals()["_http_post"] = _real_post
-            _PROVIDERS.clear()
-            _PROVIDERS.update(_real_providers)
-
-        print("PASS" if _ok else "FAIL")
-        sys.exit(0 if _ok else 1)
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("selftest", "--selftest"):
+        # selftest() is now IMPORTABLE, which is the whole point of lifting it
+        # out of this block -- so its cleanup is load-bearing in a way it never
+        # was as a __main__ script: a caller like dev_agent's gate 2 keeps
+        # running afterwards with whatever this left behind. Nothing inside
+        # selftest() can check its own `finally`, so the check lives here.
+        # Without it, deleting the restore passes the entire suite (measured).
+        _snap_providers = dict(_PROVIDERS)
+        _snap_post = _http_post
+        _passed = selftest()
+        _clean = (_PROVIDERS == _snap_providers
+                  and all(_PROVIDERS[k] is _snap_providers[k] for k in _snap_providers)
+                  and _http_post is _snap_post
+                  and last_model() is None)
+        print(f"  [{'OK ' if _clean else 'FAIL'}] selftest leaves no stubbed "
+              f"provider, HTTP layer or last_model behind (it is importable)")
+        _passed = _passed and _clean
+        print("PASS" if _passed else "FAIL")
+        sys.exit(0 if _passed else 1)
