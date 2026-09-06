@@ -644,6 +644,33 @@ def selftest():
                not r_wrong["survivors"] and r_wrong["total"] == 0)
             ck("the same file with the RIGHT argv form measures fine",
                r_right["error"] is None and r_right["total"] > 0)
+
+            # 9. S112 — the same silence, one level down. Case 8 covers the
+            #    BASELINE; this covers a MUTANT that silences the suite.
+            #    Mutating a `__main__` dispatch to False makes the suite not
+            #    run: no output, exit 0 -- and that scored as GREEN, i.e. a
+            #    SURVIVOR. Every module with that dispatch shape carried two
+            #    phantom survivors it could never fix, inflating both TEST_GAP
+            #    findings raised against this tree. A suite that did not run has
+            #    not judged the mutant: that is inconclusive, not survived.
+            #    `guard.py`'s only branch IS its dispatch, so mutating it
+            #    silences the suite -- exactly the shape being pinned.
+            (Path(td) / "guard.py").write_text(
+                "import sys\n"
+                "def selftest():\n"
+                "    print('ran')\n"
+                "    return 0\n"
+                "if __name__ == '__main__':\n"
+                "    if 'selftest' in sys.argv:\n"
+                "        sys.exit(selftest())\n")
+            r_guard = probe("guard.py", ["selftest"])
+            _silent = [x for x in r_guard["inconclusive"] if "NO OUTPUT" in x]
+            ck("a mutant that stops the suite RUNNING is inconclusive, not a "
+               "survivor — silence is not a passing suite",
+               bool(_silent))
+            ck("...and it is not double-counted as killed either",
+               r_guard["killed"] + len(r_guard["survivors"])
+               + len(r_guard["inconclusive"]) == r_guard["total"])
     finally:
         COWORK = real_cowork
 
