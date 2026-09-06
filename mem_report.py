@@ -131,15 +131,18 @@ def windows_for(day, units=UNITS, runner=_run):
         "overlapped" every other job on the box. Six spurious warnings, which
         is how a report stops being read.
 
-    ActiveEnter/InactiveEnter are systemd's own record, need no privilege, and
-    are exact. The cost is that only the LAST run of each unit is available --
+    InactiveExit/InactiveEnter are systemd's own record, need no privilege, and
+    are exact. NOT ActiveEnter, which the first version used and which is EMPTY
+    for every one of these units: they are Type=oneshot, so they go
+    activating -> inactive and never enter "active" at all. That produced a
+    confident "no scheduled job ran on this date" on a day when seven had. The cost is that only the LAST run of each unit is available --
     stated in the output rather than hidden.
     """
     out = {}
     for u in units:
         try:
             txt = runner(["systemctl", "show", f"{u}.service",
-                          "-p", "ActiveEnterTimestamp",
+                          "-p", "InactiveExitTimestamp",
                           "-p", "InactiveEnterTimestamp"])
         except Exception:
             continue
@@ -148,7 +151,7 @@ def windows_for(day, units=UNITS, runner=_run):
             if "=" in line:
                 k, _, v = line.partition("=")
                 vals[k.strip()] = v.strip()
-        start = parse_ts(vals.get("ActiveEnterTimestamp"), day)
+        start = parse_ts(vals.get("InactiveExitTimestamp"), day)
         end = parse_ts(vals.get("InactiveEnterTimestamp"), day)
         if start is None:
             continue
@@ -233,7 +236,7 @@ def selftest():
        peak_in(smp, 5, 9) is None)
 
     # windows_for: the two bugs the first version shipped, pinned.
-    _fake = ("ActiveEnterTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
+    _fake = ("InactiveExitTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
              "InactiveEnterTimestamp=Sun 2026-09-06 06:38:01 EDT\n")
     w = windows_for("2026-09-06", units=["u"], runner=lambda a: _fake)
     ck("a run window comes from systemd's own start AND end stamps",
@@ -247,11 +250,15 @@ def selftest():
                    _fake.replace("2026-09-06", "2026-09-05")) == {})
     ck("a still-running unit (no exit stamp) is start..start, not start..0",
        windows_for("2026-09-06", units=["u"], runner=lambda a:
-                   "ActiveEnterTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
+                   "InactiveExitTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
                    "InactiveEnterTimestamp=n/a\n") == {"u": (390, 390)})
+    ck("a oneshot's EMPTY ActiveEnterTimestamp is not mistaken for 'never "
+       "ran' — these units never enter 'active', so InactiveExit is the start",
+       windows_for("2026-09-06", units=["u"], runner=lambda a:
+                   "ActiveEnterTimestamp=\n" + _fake) == {"u": (390, 398)})
     ck("a unit that has never run yields no window at all",
        windows_for("2026-09-06", units=["u"], runner=lambda a:
-                   "ActiveEnterTimestamp=\nInactiveEnterTimestamp=\n") == {})
+                   "InactiveExitTimestamp=\nInactiveEnterTimestamp=\n") == {})
 
     ck("overlapping windows are reported",
        overlaps({"a": (0, 30), "b": (20, 50)}) == [("a", "b")])
