@@ -1061,6 +1061,19 @@ def selftest() -> int:
         check("report() reads a real DB without raising",
               report(db_path=db) == 0)
 
+    # S102 — the escalation rate must reach the MONITORED note, not just the run
+    # log. It is the acceptance test for which model serves this lane, and it was
+    # invisible to every monitor until now. Assert on the source of the note so a
+    # future edit cannot quietly drop it.
+    import inspect
+    _src = open(__file__).read()
+    check("the job_status note carries the escalation count",
+          "escalated {_esc}/{_tot}" in _src or "escalated {" in _src)
+    check("  ...and computes a rate, not just a raw count",
+          "_rate" in _src and "100.0 * _esc" in _src)
+    check("  ...and a zero-denominator run reports n/a rather than dividing",
+          'else "n/a"' in _src)
+
     print("\nALL PASS" if not bad else f"\n{bad} FAILED")
     return 1 if bad else 0
 
@@ -1095,10 +1108,27 @@ def main() -> int:
         try:
             import job_status
             st = stats or {}
+            # S102: carry the ESCALATION RATE into the monitored note. It was
+            # only ever in the run log, so the one number that decides whether
+            # the local model is good enough was invisible to every monitor and
+            # to the morning brief -- checkable only by grepping by hand.
+            #
+            # This is the acceptance test for which model serves this lane
+            # (Buddy, 2026-09-05, on switching ollama_model 72b -> qwen3.8:27b).
+            # Baseline on the 72B, measured over 12 runs: 13/85 = 15.3%.
+            #
+            # ⚠️ n is ~8 blocks per run, so a SINGLE run swings 0-50% and proves
+            # nothing. Read the trend across several runs, which is exactly why
+            # it belongs in a ledger rather than in one night's log line.
+            _esc = st.get("escalated", 0)
+            _loc = st.get("local", 0)
+            _tot = _esc + _loc
+            _rate = f"{100.0 * _esc / _tot:.0f}%" if _tot else "n/a"
             job_status.record(
                 "halftimecatalogue", True,
                 f"{st.get('found', 0)} found, {st.get('new', 0)} new, "
-                f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources")
+                f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources, "
+                f"escalated {_esc}/{_tot} ({_rate})")
         except Exception as e:
             print(f"job_status.record failed: {e}")
     return 0
