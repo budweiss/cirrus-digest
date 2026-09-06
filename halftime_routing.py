@@ -497,6 +497,26 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
 
 
 def selftest() -> int:
+    # S110: EVERY path in here reaches log(), which appends to the LIVE
+    # logs/halftime-routing.log -- sweep_game() logs per metro, run() logs a
+    # `done:` summary. That put fake "done: 2 game(s) swept ... {'escalated':
+    # 14}" rows into the exact file the escalation trend is read from.
+    # Redirect for the WHOLE function: a first attempt covered only the run()
+    # block and still leaked 7 lines per invocation, which a before/after
+    # byte-check on the live file caught.
+    import shutil as _shutil
+    import tempfile as _tempfile
+    _real_log_path = LOG_PATH
+    _tmp_log_dir = _tempfile.mkdtemp(prefix="halftime-routing-selftest-")
+    globals()["LOG_PATH"] = Path(_tmp_log_dir) / "halftime-routing.log"
+    try:
+        return _selftest_body(_real_log_path)
+    finally:
+        globals()["LOG_PATH"] = _real_log_path
+        _shutil.rmtree(_tmp_log_dir, ignore_errors=True)
+
+
+def _selftest_body(_real_log_path) -> int:
     failures = []
 
     def check(label, ok):
@@ -730,6 +750,14 @@ def selftest() -> int:
         import tempfile
         sys.modules["llm_providers"] = _fake_llm(local_raw="junk",
                                                  escalate_raw=_good)
+        # S110: redirect LOG_PATH too. run() calls log(), which appends to the
+        # LIVE logs/halftime-routing.log -- so this test was writing fake
+        # "done: 2 game(s) swept ... {'escalated': 14}" rows into the same file
+        # the escalation trend is read from. Found by running the scheduled
+        # check early: its `tail` of done-lines showed three selftest runs and
+        # no real one. T32 in its interprocedural form -- the AST lint only
+        # sees writes made DIRECTLY in the selftest, not ones reached through
+        # two calls.
         with tempfile.TemporaryDirectory() as td:
             out = run(games=[{"date": "2026-11-01", "opponent": "Team A",
                               "week": 8, "at_venue": True},
@@ -748,6 +776,10 @@ def selftest() -> int:
                   all("llm" not in g for g in
                       json.loads((Path(td) / "routing.json").read_text())
                       ["games"].values()))
+            check("the WHOLE selftest logs to a temp path, never to the live "
+                  "file the escalation trend is read from",
+                  LOG_PATH != _real_log_path
+                  and not str(LOG_PATH).startswith(str(PROJECT_DIR)))
     finally:
         if _real is not None:
             sys.modules["llm_providers"] = _real
