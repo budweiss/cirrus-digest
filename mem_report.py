@@ -103,24 +103,58 @@ def _run(argv):
                           timeout=30).stdout
 
 
+_TS_RE = re.compile(r"\w{3} (\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):")
+
+
+def parse_ts(value, day):
+    """systemd timestamp -> minutes since midnight, or None if not on `day`."""
+    m = _TS_RE.match((value or "").strip())
+    if not m or m.group(1) != day:
+        return None
+    return int(m.group(2)) * 60 + int(m.group(3))
+
+
 def windows_for(day, units=UNITS, runner=_run):
-    """{unit: (start_min, end_min)} from the journal, for `day`."""
+    """{unit: (start_min, end_min)} for each unit's MOST RECENT run on `day`.
+
+    From systemd, NOT the journal. The journal is unusable for this, for two
+    reasons found by running the first version against real data:
+
+      * every line of a run carries the same wall-clock stamp -- the job
+        buffers stdout and systemd receives the lot at EXIT. The first version
+        read those as the run's start AND end, so `halftime-catalogue` showed
+        as `06:38-06:38` for a run that took eight minutes.
+      * `buddy` is not in `adm`/`systemd-journal`, so systemd's own
+        Started/Finished records are not visible at all -- only the unit's own
+        output. Taking min..max across the day then merged EVERY run of a
+        2-hourly job into one window: accesscheck rendered as 00:23-15:26 and
+        "overlapped" every other job on the box. Six spurious warnings, which
+        is how a report stops being read.
+
+    ActiveEnter/InactiveEnter are systemd's own record, need no privilege, and
+    are exact. The cost is that only the LAST run of each unit is available --
+    stated in the output rather than hidden.
+    """
     out = {}
     for u in units:
         try:
-            txt = runner(["journalctl", "-u", f"{u}.service",
-                          "--since", f"{day} 00:00:00",
-                          "--until", f"{day} 23:59:59",
-                          "-o", "short-iso", "--no-pager"])
+            txt = runner(["systemctl", "show", f"{u}.service",
+                          "-p", "ActiveEnterTimestamp",
+                          "-p", "InactiveEnterTimestamp"])
         except Exception:
             continue
-        stamps = []
+        vals = {}
         for line in txt.splitlines():
-            m = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):", line)
-            if m:
-                stamps.append(int(m.group(2)) * 60 + int(m.group(3)))
-        if stamps:
-            out[u] = (min(stamps), max(stamps))
+            if "=" in line:
+                k, _, v = line.partition("=")
+                vals[k.strip()] = v.strip()
+        start = parse_ts(vals.get("ActiveEnterTimestamp"), day)
+        end = parse_ts(vals.get("InactiveEnterTimestamp"), day)
+        if start is None:
+            continue
+        if end is None or end < start:
+            end = start          # still running, or exit not recorded
+        out[u] = (start, end)
     return out
 
 
@@ -145,7 +179,8 @@ def build(day, sar_text, wins):
 
 
 def render(rep):
-    out = [f"== memory by scheduled job — {rep['date']} =="]
+    out = [f"== memory by scheduled job — {rep['date']} ==",
+           "   (most recent run of each unit; systemd keeps only the last)"]
     if rep["baseline_gb"] is not None:
         out.append(f"   idle baseline: {rep['baseline_gb']} GB")
     out.append("")
@@ -196,6 +231,27 @@ def selftest():
     ck("a window with NO samples is None, never 0 — a job shorter than the "
        "10-minute sample gap must not read as 'used nothing'",
        peak_in(smp, 5, 9) is None)
+
+    # windows_for: the two bugs the first version shipped, pinned.
+    _fake = ("ActiveEnterTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
+             "InactiveEnterTimestamp=Sun 2026-09-06 06:38:01 EDT\n")
+    w = windows_for("2026-09-06", units=["u"], runner=lambda a: _fake)
+    ck("a run window comes from systemd's own start AND end stamps",
+       w == {"u": (6 * 60 + 30, 6 * 60 + 38)})
+    ck("...so an 8-minute run is 8 minutes, not a single instant — the "
+       "journal read both ends as the EXIT time",
+       w["u"][1] - w["u"][0] == 8)
+    ck("a unit whose last run was a DIFFERENT day is excluded, not merged "
+       "into today (a 2-hourly job spanned 00:23-15:26 that way)",
+       windows_for("2026-09-06", units=["u"], runner=lambda a:
+                   _fake.replace("2026-09-06", "2026-09-05")) == {})
+    ck("a still-running unit (no exit stamp) is start..start, not start..0",
+       windows_for("2026-09-06", units=["u"], runner=lambda a:
+                   "ActiveEnterTimestamp=Sun 2026-09-06 06:30:08 EDT\n"
+                   "InactiveEnterTimestamp=n/a\n") == {"u": (390, 390)})
+    ck("a unit that has never run yields no window at all",
+       windows_for("2026-09-06", units=["u"], runner=lambda a:
+                   "ActiveEnterTimestamp=\nInactiveEnterTimestamp=\n") == {})
 
     ck("overlapping windows are reported",
        overlaps({"a": (0, 30), "b": (20, 50)}) == [("a", "b")])
