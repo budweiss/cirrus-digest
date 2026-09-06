@@ -89,6 +89,29 @@ def _parse_promise_json(raw: str):
     return bool(d.get("promise")), str(d.get("what") or "").strip()
 
 
+def _tag(provider: str) -> str:
+    """`provider:model`, e.g. `ollama:qwen3.8:27b` — for the ledger's
+    `detected_by`.
+
+    S103 (Buddy), the same change halftime_catalogue got: every promise was
+    stamped with the PROVIDER alone, so client_promises.escalation_rate()'s
+    by_model split could not say WHICH local model decided. When ollama_model
+    moved qwen2.5:72b -> qwen3.8:27b on 2026-09-05, promises either side of the
+    switch were indistinguishable in the one report built to answer that.
+
+    The model comes from llm_providers.last_model() -- the value actually put
+    on the wire -- never from a second reading of creds, which would be a copy
+    that can drift from what was really called. Falls back to the bare provider
+    name if the model is unknown: less specific is fine, invented is not.
+    """
+    try:
+        import llm_providers
+        model = llm_providers.last_model()
+    except Exception:
+        model = None
+    return f"{provider}:{model}" if model else provider
+
+
 def detect_promise(text: str, creds: dict) -> dict | None:
     """Returns {"what":..., "by":..., "escalated":bool} or None.
 
@@ -112,7 +135,8 @@ def detect_promise(text: str, creds: dict) -> dict | None:
                 if not is_p:
                     return None
                 if what:
-                    return {"what": what, "by": "ollama", "escalated": False}
+                    return {"what": what, "by": _tag("ollama"),
+                            "escalated": False}
                 # A "yes" with no deliverable named is not usable -- escalate
                 # rather than open a promise nobody can act on.
         except Exception:
@@ -128,7 +152,7 @@ def detect_promise(text: str, creds: dict) -> dict | None:
                 return None
             is_p, what = parsed
             if is_p and what:
-                return {"what": what, "by": provider, "escalated": True}
+                return {"what": what, "by": _tag(provider), "escalated": True}
         except Exception:
             pass
         return None
@@ -198,6 +222,100 @@ def selftest() -> int:
           record("Status: cold.", {}, client="bill", subject="x") is None)
     check("record() survives a detection that cannot reach any model",
           record("We'll send it next week.", {}, client="bill", subject="x") is None)
+    # ── S103 (Buddy): detected_by names the MODEL, not just the provider ──
+    # Driven through the real detect_promise with llm_providers stubbed, so
+    # this tests the label that actually reaches the ledger rather than a
+    # restatement of the format. Each assertion is paired with its inverse.
+    import sys
+    import types
+    _yes = '{"promise": true, "what": "send the workbook"}'
+    _text = "We'll send you the whole 224 as a workbook next week."
+
+    def _fake_llm(local_raw, esc_raw, model):
+        m = types.ModuleType("llm_providers")
+        st = {"model": None}
+
+        def call(_p, _s, _u, _c, **_kw):
+            st["model"] = None
+            if local_raw is None:
+                raise RuntimeError("no local model")
+            st["model"] = model
+            return local_raw
+
+        def escalate(_s, _u, _c, **_kw):
+            st["model"] = None
+            if esc_raw is None:
+                raise RuntimeError("no cloud provider")
+            st["model"] = "claude-sonnet-5"
+            return ("anthropic", esc_raw)
+        m.call, m.escalate = call, escalate
+        m.last_model = lambda: st["model"]
+        return m
+
+    _real = sys.modules.get("llm_providers")
+    try:
+        sys.modules["llm_providers"] = _fake_llm(_yes, None, "qwen3.8:27b")
+        _got = detect_promise(_text, {})
+        check("a locally-decided promise names the MODEL, not 'ollama'",
+              _got and _got["by"] == "ollama:qwen3.8:27b"
+              and _got["escalated"] is False)
+
+        sys.modules["llm_providers"] = _fake_llm("junk", _yes, "x")
+        _got = detect_promise(_text, {})
+        check("an ESCALATED decision names the cloud model — the inverse of "
+              "the local case, so neither can pass by never being reached",
+              _got and _got["by"] == "anthropic:claude-sonnet-5"
+              and _got["escalated"] is True)
+
+        _fl = _fake_llm(_yes, None, "qwen3.8:27b")
+        _fl.last_model = lambda: None
+        sys.modules["llm_providers"] = _fl
+        _got = detect_promise(_text, {})
+        check("an unknown model degrades to the bare provider — never "
+              "'ollama:None' written into a client ledger",
+              _got and _got["by"] == "ollama")
+
+        # record() is what writes the ledger, and record() has no path
+        # argument -- so it is driven with open_promise STUBBED rather than
+        # pointed at a file. T32: a test never touches the live ledger, and
+        # this one would otherwise open a real promise against a real client.
+        sys.modules["llm_providers"] = _fake_llm(_yes, None, "qwen3.8:27b")
+        _opened = {}
+        _real_open = client_promises.open_promise
+        try:
+            client_promises.open_promise = (
+                lambda **kw: _opened.update(kw) or "p-test")
+            _pid = record(_text, {}, client="bill", subject="s")
+            check("record() passes the TAGGED label through to the ledger, "
+                  "which is where escalation_rate() reads it from",
+                  _pid == "p-test"
+                  and _opened.get("detected_by") == "ollama:qwen3.8:27b")
+            check("  ...and still records the escalated flag separately, so "
+                  "the relabel cannot move the rate",
+                  _opened.get("escalated") is False)
+        finally:
+            client_promises.open_promise = _real_open
+
+        # And the report that consumes it splits on the tag, end to end.
+        import pathlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as _td:
+            _lp = pathlib.Path(_td) / "promises.jsonl"
+            _f = detect_promise(_text, {})
+            client_promises.open_promise(
+                client="bill", project="p", subject="s", promise=_f["what"],
+                detected_by=_f["by"], escalated=_f["escalated"], path=_lp)
+            _rate = client_promises.escalation_rate(path=_lp)
+            check("escalation_rate()'s by_model split carries the model tag",
+                  _rate["by_model"] == {"ollama:qwen3.8:27b": 1})
+            check("  ...and the escalated COUNT is unchanged by the relabel",
+                  _rate["decided"] == 1 and _rate["escalated"] == 0)
+    finally:
+        if _real is not None:
+            sys.modules["llm_providers"] = _real
+        else:
+            sys.modules.pop("llm_providers", None)
+
     print("\nALL PASS" if not bad else f"\n{bad} FAILED")
     return 1 if bad else 0
 
