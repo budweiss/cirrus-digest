@@ -192,14 +192,21 @@ def _load_local():
         return {}
 
 
-def _fetch_remote():
+def _fetch_remote(_run=None):
     """Read CUMULUS's jobs-status.json over the read-only SSH link (S57). Returns
-    the parsed dict, or None if the box is unreachable (never raises)."""
+    the parsed dict, or None if the box is unreachable (never raises).
+
+    S111: `_run` is a test seam. This branch survived every mutation because
+    nothing could reach it without an ssh — and it is the branch that decides
+    whether a whole box reads as "unreachable" or as garbage. Returning None is
+    load-bearing: summarize() turns it into "can't confirm", NOT into overdue.
+    """
+    runner = _run or (lambda argv: subprocess.run(
+        argv, capture_output=True, text=True, timeout=15))
     try:
-        r = subprocess.run(
+        r = runner(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-             REMOTE_HOST, f"cat {REMOTE_STATUS}"],
-            capture_output=True, text=True, timeout=15)
+             REMOTE_HOST, f"cat {REMOTE_STATUS}"])
         if r.returncode == 0 and r.stdout.strip():
             return json.loads(r.stdout)
     except Exception:
@@ -228,8 +235,14 @@ def _row(name, cad_h, rec, now, tag=""):
     return f"{mark} {name}{tag}: {rec.get('last_run', '?')[:16]}{state}{note}", good
 
 
-def summarize():
+def summarize(_local=None, _node=None, _fetch=None):
     """Return (lines, all_ok).
+
+    S111: the three underscore parameters are TEST SEAMS and default to the
+    live sources, so every existing caller is unchanged. Before them this
+    function could not be called offline at all, and its two branches — "remote
+    box unreachable" and "one bad job makes the run not-ok" — survived every
+    mutation. Those are the two the whole ledger rests on.
 
     Node-aware (S57): jobs in REMOTE_JOBS now run on CUMULUS, so when this runs on
     CIRRUS their status is read from CUMULUS's ledger over the SSH link and tagged
@@ -238,10 +251,10 @@ def summarize():
     read locally. all_ok is False only if a KNOWN job is overdue or last-run failed;
     a not-yet-recorded or unconfirmable job is neutral.
     """
-    local = _load_local()
-    node = _here()
+    local = _load_local() if _local is None else _local
+    node = _here() if _node is None else _node
     use_remote = node == "CIRRUS"
-    remote = _fetch_remote() if use_remote else None
+    remote = (_fetch or _fetch_remote)() if use_remote else None
     now = int(time.time())
     lines, all_ok = [], True
     for name, cad_h in CADENCE_H.items():
@@ -384,6 +397,79 @@ def selftest():
     _, g = _row("hoaleads", CADENCE_H["hoaleads"],
                 {"epoch": now - 30 * hr, "ok": True, "last_run": "x"}, now)
     ck("hoaleads silent for 30h reads as overdue", g is False)
+
+    # ── S111 — summarize() and _fetch_remote(), the two branches the ledger
+    #    rests on. Both survived EVERY mutation (8 of 10) because nothing here
+    #    ever called them: the suite tested _row and the tables only. This is
+    #    the TEST_GAP finding dev_findings raised on 2026-09-05.
+    _now = int(time.time())
+    _fresh = {"last_run": "x", "epoch": _now - 60, "ok": True, "note": "fine"}
+    _failed = {"last_run": "x", "epoch": _now - 60, "ok": False, "note": "bad"}
+    _rj = sorted(REMOTE_JOBS)[0] if REMOTE_JOBS else None
+    _lj = next(n for n in CADENCE_H if n not in REMOTE_JOBS)
+
+    if _rj:
+        # The accesscheck shape (S102): an unreachable box must read NEUTRALLY.
+        # "can't confirm" and "overdue" are different claims, and reporting the
+        # second when you mean the first is how a dead monitor looks like a
+        # late one.
+        _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
+                                _fetch=lambda: None)
+        _rline = [l for l in _lines if _rj in l]
+        ck("an unreachable CUMULUS renders the remote job as can't-confirm",
+           _rline and "unreachable — can't confirm" in _rline[0])
+        ck("...and that does NOT make the run not-ok — unconfirmable is "
+           "neutral, not failed",
+           _ok is True)
+
+        # The inverse: reachable box -> a real row, not the excuse line.
+        _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
+                                _fetch=lambda: {_rj: _fresh})
+        _rline = [l for l in _lines if _rj in l]
+        ck("...while a REACHABLE CUMULUS produces a real row instead",
+           _rline and "can't confirm" not in _rline[0]
+           and "(CUMULUS)" in _rline[0])
+
+        # A remote job that FAILED must still fail the run.
+        _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
+                                _fetch=lambda: {_rj: _failed})
+        ck("a FAILED remote job makes the whole run not-ok", _ok is False)
+
+        # On CUMULUS nothing is fetched remotely at all.
+        _called = []
+        summarize(_local={_lj: _fresh}, _node="CUMULUS",
+                  _fetch=lambda: _called.append(1))
+        ck("on CUMULUS the remote fetch is never attempted", _called == [])
+
+    # all_ok aggregation, both directions.
+    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS")
+    ck("one failed LOCAL job makes the run not-ok", _ok is False)
+    _lines, _ok = summarize(_local={n: _fresh for n in CADENCE_H},
+                            _node="CUMULUS")
+    ck("...and an all-healthy ledger is ok — or the flag is stuck off",
+       _ok is True)
+
+    # _fetch_remote: the branch that decides "unreachable" vs "garbage".
+    class _R:
+        def __init__(self, rc, out): self.returncode, self.stdout = rc, out
+    ck("_fetch_remote parses a good reply",
+       _fetch_remote(_run=lambda a: _R(0, '{"j": {"ok": true}}')) == {"j": {"ok": True}})
+    ck("...returns None when ssh FAILS, rather than raising",
+       _fetch_remote(_run=lambda a: _R(255, "")) is None)
+    ck("...returns None on an EMPTY reply — a blank file is not an empty ledger",
+       _fetch_remote(_run=lambda a: _R(0, "   ")) is None)
+    ck("...returns None on unparseable JSON rather than propagating",
+       _fetch_remote(_run=lambda a: _R(0, "not json")) is None)
+    ck("...and never raises even if the runner itself explodes",
+       _fetch_remote(_run=lambda a: (_ for _ in ()).throw(OSError("boom"))) is None)
+    # The case that separates "checked the exit code" from "parsed whatever came
+    # back": a FAILED ssh that still printed valid JSON on stdout. Every other
+    # bad input is caught by the json.loads exception either way, so without
+    # this the returncode test can be deleted and nothing notices. Trusting
+    # stdout from a non-zero exit is how a half-open connection becomes a
+    # confident, wrong ledger.
+    ck("a FAILED ssh is not trusted even when its stdout parses as JSON",
+       _fetch_remote(_run=lambda a: _R(255, '{"j": {"ok": true}}')) is None)
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0

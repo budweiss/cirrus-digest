@@ -321,8 +321,23 @@ def probe(rel, argv, max_mutants=None, verbose=False):
     try:
         for m in muts:
             path.write_text(apply_mutation(original, m))
-            st, det, _ = run_suite(path, argv)
-            if st == "red":
+            st, det, mout = run_suite(path, argv)
+            if st == "green" and not mout.strip():
+                # S111: the SAME trap the baseline guard above already refuses,
+                # applied where it was missing. A mutation of the __main__
+                # dispatch (`if "selftest" in sys.argv:` -> False) makes the
+                # suite not run: no output, exit 0 -- and this loop scored that
+                # as GREEN, i.e. a survivor. So every module with that dispatch
+                # shape reported two phantom survivors it could never fix, and
+                # both TEST_GAP findings raised against this tree (job_status
+                # 8/10, stall_check 26/30) included them.
+                #
+                # A suite that did not run has not judged the mutant. That is
+                # inconclusive, not survived -- the exact distinction this file
+                # exists to enforce, missing from the file itself.
+                res["inconclusive"].append(
+                    f"{m.label()} [exited 0 with NO OUTPUT — suite did not run]")
+            elif st == "red":
                 res["killed"] += 1
             elif st == "green":
                 res["survivors"].append(m.label())
