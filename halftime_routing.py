@@ -279,16 +279,30 @@ def queries_for(game: Dict) -> List[tuple]:
             for metro, miles in METROS]
 
 
-# S119. The metro sweep runs concurrently. Measured before the change: ~60 min
-# for 7 games, ~63 s between consecutive metros -- and that interval is mostly
-# Brave search plus article fetches, i.e. network wait, not compute.
+# S119. The metro sweep runs concurrently.
 #
-# WHAT THIS DOES AND DOES NOT BUY. Under ollama the MODEL calls do not speed up
-# at all: aggregate throughput there is flat at ~22.7 tok/s from concurrency 1
-# to 16 (S119, docs/DGX-SPARK-PERFORMANCE.md section 12), so concurrent
-# extractions simply queue. The win here is the search/fetch half. The model
-# half only moves if the engine moves -- which is the vLLM finding, and a
-# separate decision.
+# ★ WHAT THIS ACTUALLY BUYS TODAY: **about 8%.** Not the 2.7x the first version
+# appeared to give. Measured live, same game, 7 metros, one run each:
+#
+#     serial    workers=1   498.6s   local=4 escalated=3
+#     parallel  workers=7   462.3s   local=5 escalated=2   -> 1.08x
+#
+# I expected far more, on the reasoning that the ~63 s between metros was mostly
+# Brave search and article fetches. **That reasoning was wrong.** Back out the
+# numbers: 7-way search parallelism saved 36 s of 498 s, so the web portion is
+# only ~6 s per metro and the MODEL call is ~65 s of it -- roughly 90% of the
+# sweep. Overlapping the web half cannot move a total the model dominates.
+#
+# The model half does not overlap under ollama, which does not batch: aggregate
+# throughput is flat at ~22.7 tok/s however many requests are in flight
+# (docs/DGX-SPARK-PERFORMANCE.md section 12), so extractions are throttled to
+# one on purpose -- see DEFAULT_EXTRACT_WORKERS below for what happened when
+# they were not.
+#
+# **So this change is the PREREQUISITE, not the win.** The structure is now in
+# place and provably safe; the payoff arrives when the engine can serve the
+# model calls concurrently. Under vLLM the same box did 325 tok/s at 16-way,
+# and raising HALFTIME_ROUTING_EXTRACT_WORKERS is then a one-line change.
 #
 # 7 metros per game, so 7 saturates one game's worth of work; games still run
 # one after another, capping requests in flight at `workers` regardless of how
