@@ -2531,7 +2531,9 @@ def _selftest():
           'fail = f"service {s} not running after restart"' in (dep or ""))
     check("restarts go through kickstart_cmd (sudo for system/, T51)",
           "kickstart_cmd(" in (dep or "")
-          and '["launchctl", "kickstart"' not in (dep or ""))
+          # T51-OK: this line NAMES the bad argv in order to assert its
+          # ABSENCE. It is the guard against T51, not an instance of it.
+          and '["launchctl", "kickstart"' not in (dep or ""))  # T51-OK
 
     # S87 -- retry(). Source-level for the same reason as deploy(): the real
     # path reads and REWRITES the live builds.json, and a selftest must never
