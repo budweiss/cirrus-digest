@@ -167,6 +167,31 @@ def _selftest() -> bool:
         ck("report names the biggest consumer first",
            "privacy_monitor" in report().split("daily_digest")[0])
 
+        # ── S119: concurrent record() must not LOSE counts. This is the paid
+        # -search counter (S90, a $25/mo cap), and record() is a
+        # load->increment->save on one file. halftime_routing now sweeps its
+        # metros concurrently, so unsynchronised callers would silently
+        # under-report money -- a wrong number that looks like reduced usage.
+        import threading as _th
+        USAGE_PATH = Path(tmpdir) / "concurrent.json"
+        _N = 40
+        _start = _th.Barrier(_N)
+
+        def _hammer():
+            _start.wait(timeout=10)      # maximise the overlap on purpose
+            record("brave", "concurrency_probe", "ok")
+
+        _ts = [_th.Thread(target=_hammer) for _ in range(_N)]
+        for _t in _ts:
+            _t.start()
+        for _t in _ts:
+            _t.join(15)
+        _got = totals()["brave"]["concurrency_probe"]["ok"]
+        ck(f"{_N} concurrent record() calls all land ({_got}/{_N}) — "
+           "an unlocked read-modify-write loses some",
+           _got == _N)
+        USAGE_PATH = Path(tmpdir) / "usage.json"
+
         # Must never raise, whatever happens to the file.
         USAGE_PATH = Path("/nonexistent-dir-xyz/usage.json")
         try:
