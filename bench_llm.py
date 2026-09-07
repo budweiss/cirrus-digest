@@ -62,6 +62,31 @@ PROMPT = (
     "opened the second half.\n\nANSWER:"
 )
 
+# S116 -- ONE PROMPT IS NOT A BENCHMARK, and this cost a wrong ranking.
+#
+# Every run before today used PROMPT above and nothing else. That prompt is a
+# structured extraction task, and a model carrying a multi-token-prediction head
+# gets a large speculative-decoding boost on predictable structured output. Our
+# incumbent qwen3.8:27b has such a head; the two MoE models measured against it
+# do not. Measured, 3 samples each, same box, same session:
+#
+#     model             counting  structured  open-ended   spread
+#     qwen3.8:27b  MTP      38.6        32.1        20.9   1.84x
+#     qwen3:30b-a3b  -       90.3        89.4        90.5   1.01x
+#     gpt-oss:120b   -       43.8        43.5        43.2   1.01x
+#
+# So the single prompt flattered the incumbent by up to 1.84x and understated
+# every replacement. The shapes below are ordered by how PREDICTABLE the
+# continuation is, which is what draft acceptance tracks -- run more than one
+# whenever a result will be used to CHOOSE between models.
+# Full write-up: docs/DGX-SPARK-PERFORMANCE.md 5c.
+PROMPTS = {
+    "structured": PROMPT,
+    "counting": "Count from 1 to 300. Output one number per line, nothing else.",
+    "openended": ("Write several paragraphs about the ocean, its moods and "
+                  "its depths."),
+}
+
 
 def _post(payload, timeout=300):
     req = urllib.request.Request(
@@ -71,12 +96,12 @@ def _post(payload, timeout=300):
         return json.load(r)
 
 
-def one_call(model, num_predict, results, idx, runner=None):
+def one_call(model, num_predict, results, idx, runner=None, prompt=None):
     """One request. Records server-side timings, or the error."""
     call = runner or _post
     t0 = time.time()
     try:
-        d = call({"model": model, "prompt": PROMPT, "stream": False,
+        d = call({"model": model, "prompt": prompt or PROMPT, "stream": False,
                   "options": {"num_predict": num_predict}})
         results[idx] = {
             "ok": True,
@@ -167,18 +192,25 @@ def environment(model):
     }
 
 
-def run(model, levels, num_predict, label, runner=None, warmup=True):
+def run(model, levels, num_predict, label, runner=None, warmup=True,
+        prompt_name="structured"):
+    prompt = PROMPTS.get(prompt_name, PROMPT)
     if warmup:
         w = {}
-        one_call(model, 8, w, 0, runner)      # discard: pays load_duration
+        one_call(model, 8, w, 0, runner, prompt)   # discard: pays load_duration
+    # `prompt` is recorded in the report because it CHANGES the answer (S116).
+    # Every file saved before 2026-09-07 used the structured shape and does not
+    # say so -- which is exactly how the bias stayed invisible across a dozen
+    # runs. A number without its prompt shape is not comparable to anything.
     out = {"label": label, "env": environment(model),
-           "num_predict": num_predict, "levels": {}}
+           "num_predict": num_predict, "prompt": prompt_name, "levels": {}}
     for n in levels:
         rows, threads = {}, []
         t0 = time.time()
         for i in range(n):
             t = threading.Thread(target=one_call,
-                                 args=(model, num_predict, rows, i, runner))
+                                 args=(model, num_predict, rows, i, runner,
+                                       prompt))
             t.start(); threads.append(t)
         for t in threads:
             t.join()
@@ -209,7 +241,11 @@ def render(rep):
     e = rep["env"]
     L = [f"== bench {rep.get('label','')} — {e['host']} — {e['when']} ==",
          f"   model {e['model']}   OLLAMA_NUM_PARALLEL={e['OLLAMA_NUM_PARALLEL']}"
-         f"   num_predict={rep['num_predict']}", ""]
+         f"   num_predict={rep['num_predict']}"
+         # S116: printed, not just stored. A tok/s figure read off a terminal
+         # without its prompt shape is what produced a wrong model ranking.
+         f"   prompt={rep.get('prompt', 'structured (assumed — pre-S116 file)')}",
+         ""]
     gain = scaling_verdict(rep["levels"])
     L.append("   conc  agg tok/s  per-req  prefill  median s  overlap  vs conc-1")
     for n, s in sorted(rep["levels"].items(), key=lambda kv: int(kv[0])):
@@ -282,6 +318,31 @@ def selftest():
         return _r
 
     # Fake concurrency is the failure this tool exists to prevent.
+    # ── S116: the prompt shape is part of the measurement ────────────────
+    # These exist because a single-prompt benchmark ranked three models wrong
+    # and nothing in the saved artefact revealed it.
+    ck("PROMPTS has the three shapes, ordered by predictability",
+       set(PROMPTS) == {"counting", "structured", "openended"})
+    ck("the default shape is still the original prompt (old runs stay comparable)",
+       PROMPTS["structured"] == PROMPT)
+    _seen = {}
+    def _capture(payload):
+        _seen["prompt"] = payload["prompt"]
+        return {"eval_count": 5, "eval_duration": int(0.01 * 1e9),
+                "prompt_eval_count": 3, "prompt_eval_duration": int(0.01 * 1e9),
+                "load_duration": 0}
+    _r = run("m", [1], 8, "t", runner=_capture, warmup=False,
+             prompt_name="counting")
+    ck("--prompt actually reaches the request body, not just the report",
+       _seen.get("prompt") == PROMPTS["counting"])
+    ck("the report RECORDS which shape was used",
+       _r.get("prompt") == "counting")
+    ck("an unknown shape falls back to the default rather than sending None",
+       run("m", [1], 8, "t", runner=_capture, warmup=False,
+           prompt_name="nonsense") and _seen["prompt"] == PROMPT)
+    ck("render() prints the prompt shape",
+       "prompt=counting" in render(_r))
+
     seq = summarise([{"ok": True, "wall_s": 1.0, "gen_tokens": 10, "gen_s": 1.0,
                       "prefill_tokens": 5, "prefill_s": 0.1, "load_s": 0}
                      for _ in range(4)], wall_s=4.0)
@@ -396,6 +457,10 @@ def main():
     ap.add_argument("--num-predict", type=int, default=128)
     ap.add_argument("--label", default="run")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
+    ap.add_argument("--prompt", default="structured", choices=sorted(PROMPTS),
+                    help="prompt SHAPE (S116: this changes the answer by up to "
+                         "1.84x on a model with an MTP head -- run more than "
+                         "one before choosing between models)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -412,7 +477,8 @@ def main():
     if not model:
         print("no model: pass --model or set ollama_model in credentials.json")
         return 1
-    rep = run(model, [int(x) for x in a.levels.split(",")], a.num_predict, a.label)
+    rep = run(model, [int(x) for x in a.levels.split(",")], a.num_predict,
+              a.label, prompt_name=a.prompt)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     p = OUT_DIR / f"{stamp}-{a.label}.json"
