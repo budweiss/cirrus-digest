@@ -106,6 +106,14 @@ def summarise(rows, wall_s):
     server_s = sum(r["wall_s"] for r in ok)
     # If the server ran them one after another, summed time ~= wall time and the
     # ratio is ~1. Real concurrency pushes it toward the request count.
+    #
+    # S115: overlap ALONE is not enough, and the first live run proved it.
+    # With OLLAMA_NUM_PARALLEL=4 the overlap ratio reached 4.5x while aggregate
+    # throughput stayed FLAT at ~30 tok/s -- the requests were interleaved but
+    # the machine did no more work per second. That is queueing dressed as
+    # concurrency, and the flag called it "concurrent". The caller needs the
+    # THROUGHPUT question answered, so it is computed here and compared against
+    # the single-request rate by the caller.
     overlap = (server_s / wall_s) if wall_s > 0 else 0.0
     return {
         "requests": len(rows), "failed": len(bad), "usable": len(ok),
@@ -118,6 +126,19 @@ def summarise(rows, wall_s):
         "concurrency_real": overlap >= 1.5 or len(rows) == 1,
         "errors": [r["error"] for r in bad][:3],
     }
+
+
+def env_value(raw):
+    """Value from a `systemctl show -p Environment` line.
+
+    It returns "KEY=VALUE"; keeping the whole string made a saved result read
+    `OLLAMA_NUM_PARALLEL=OLLAMA_NUM_PARALLEL=4`. These files are the permanent
+    record of what a measurement was taken under, so the field has to be clean.
+    """
+    raw = (raw or "").strip().strip('"')
+    if not raw:
+        return "unset"
+    return raw.split("=", 1)[-1].strip('"') or "unset"
 
 
 def environment(model):
@@ -134,9 +155,14 @@ def environment(model):
         "ollama_version": sh("ollama --version 2>/dev/null | head -1"),
         # WITHOUT these two, comparing runs is meaningless -- the whole point is
         # to see what a settings change did.
+        # `systemctl show` returns "KEY=VALUE"; keeping the whole string made a
+        # saved result read "OLLAMA_NUM_PARALLEL=OLLAMA_NUM_PARALLEL=4". Take
+        # the value only -- these files are the permanent record of what a
+        # measurement was taken under.
         "OLLAMA_NUM_PARALLEL": os.environ.get("OLLAMA_NUM_PARALLEL")
-            or sh("systemctl show ollama.service -p Environment --value"
-                  " | tr ' ' '\\n' | grep OLLAMA_NUM_PARALLEL") or "unset",
+            or env_value(sh("systemctl show ollama.service -p Environment"
+                            " --value | tr ' ' '\\n'"
+                            " | grep OLLAMA_NUM_PARALLEL")),
         "endpoint": ENDPOINT,
     }
 
@@ -161,23 +187,53 @@ def run(model, levels, num_predict, label, runner=None, warmup=True):
     return out
 
 
+def scaling_verdict(levels):
+    """Did aggregate throughput actually RISE with concurrency?
+
+    The question the benchmark exists to answer. Overlap says requests were
+    interleaved; this says whether that bought anything. Measured 2026-09-07:
+    overlap 4.5x, throughput +0% -- interleaved and worthless.
+    """
+    base = levels.get("1", {}).get("aggregate_gen_tok_s")
+    out = {}
+    for n, s in levels.items():
+        agg = s.get("aggregate_gen_tok_s")
+        if base in (None, 0) or agg is None or n == "1":
+            out[n] = None
+        else:
+            out[n] = round((agg - base) / base * 100, 1)
+    return out
+
+
 def render(rep):
     e = rep["env"]
     L = [f"== bench {rep.get('label','')} — {e['host']} — {e['when']} ==",
          f"   model {e['model']}   OLLAMA_NUM_PARALLEL={e['OLLAMA_NUM_PARALLEL']}"
          f"   num_predict={rep['num_predict']}", ""]
-    L.append("   conc  agg tok/s  per-req  prefill  median s  overlap")
+    gain = scaling_verdict(rep["levels"])
+    L.append("   conc  agg tok/s  per-req  prefill  median s  overlap  vs conc-1")
     for n, s in sorted(rep["levels"].items(), key=lambda kv: int(kv[0])):
         if not s.get("usable"):
             L.append(f"   {n:>4}  ALL {s['requests']} REQUESTS FAILED — no number")
             continue
         flag = "" if s["concurrency_real"] else "  <-- NOT concurrent"
-        L.append("   {:>4}  {:>9}  {:>7}  {:>7}  {:>8}  {:>6}x{}".format(
+        g = gain.get(n)
+        gs = "  base" if g is None else f"{g:+6.0f}%"
+        L.append("   {:>4}  {:>9}  {:>7}  {:>7}  {:>8}  {:>6}x  {}{}".format(
             n, s["aggregate_gen_tok_s"], s["per_request_gen_tok_s"],
-            s["prefill_tok_s"], s["median_latency_s"], s["overlap_ratio"], flag))
+            s["prefill_tok_s"], s["median_latency_s"], s["overlap_ratio"],
+            gs, flag))
         if s["failed"]:
             L.append(f"         {s['failed']} of {s['requests']} FAILED: "
                      f"{s['errors'][0][:70]}")
+    _g = [v for v in gain.values() if v is not None]
+    if _g and max(_g) < 10:
+        L += ["", "   ⚠️  Concurrency bought NOTHING — aggregate throughput did not",
+              "      rise above the single-request rate at any level. Requests",
+              "      were interleaved but the machine did no more work per",
+              "      second. Generation here is memory-bandwidth bound, and",
+              "      ollama's NUM_PARALLEL does not change that; only kernel-",
+              "      level batching (vLLM) or a smaller/quantised model would."]
     if any(not s.get("concurrency_real", True) for s in rep["levels"].values()):
         L += ["", "   ⚠️  A level marked NOT concurrent means the server ran the",
               "      requests one after another. The aggregate figure there is",
@@ -274,6 +330,46 @@ def selftest():
     ck("a sweep records every level", set(rep["levels"]) == {"1", "4"})
     ck("...and captures the settings a comparison depends on",
        "OLLAMA_NUM_PARALLEL" in rep["env"] and rep["env"]["model"] == "m")
+
+    ck("env_value takes the VALUE, not the whole KEY=VALUE pair",
+       env_value("OLLAMA_NUM_PARALLEL=4") == "4")
+    ck("...an empty reading is 'unset', never a blank field",
+       env_value("") == "unset" and env_value(None) == "unset")
+    ck("...quotes from systemd are stripped",
+       env_value('"OLLAMA_NUM_PARALLEL=8"') == "8")
+    ck("...and a bare value is passed through unharmed",
+       env_value("4") == "4")
+
+    # scaling_verdict — the question the whole tool exists to answer, and the
+    # one the first live run got wrong: overlap 4.5x with throughput FLAT.
+    flat = {"1": {"aggregate_gen_tok_s": 30.0}, "4": {"aggregate_gen_tok_s": 29.0},
+            "8": {"aggregate_gen_tok_s": 30.0}}
+    v = scaling_verdict(flat)
+    ck("flat throughput scores ~0% gain, however much requests overlapped",
+       v["1"] is None and abs(v["4"]) < 5 and abs(v["8"]) < 5)
+    real = {"1": {"aggregate_gen_tok_s": 30.0}, "4": {"aggregate_gen_tok_s": 90.0}}
+    ck("...while genuine scaling scores +200% — the inverse",
+       scaling_verdict(real)["4"] == 200.0)
+    ck("a missing baseline yields None, not a fabricated percentage",
+       scaling_verdict({"4": {"aggregate_gen_tok_s": 90.0}})["4"] is None)
+    ck("a level with no usable result yields None rather than 0%",
+       scaling_verdict({"1": {"aggregate_gen_tok_s": 30.0},
+                        "4": {}})["4"] is None)
+    env = {"host": "h", "model": "m", "when": "t", "OLLAMA_NUM_PARALLEL": "4"}
+    flat_full = {k: dict(v, per_request_gen_tok_s=30, prefill_tok_s=400,
+                         median_latency_s=4, overlap_ratio=4.5, usable=1,
+                         failed=0, requests=1, concurrency_real=True)
+                 for k, v in flat.items()}
+    ck("a flat result says CONCURRENCY BOUGHT NOTHING, loudly",
+       "bought NOTHING" in render({"label": "x", "num_predict": 8,
+                                   "levels": flat_full, "env": env}))
+    real_full = {k: dict(v, per_request_gen_tok_s=30, prefill_tok_s=400,
+                         median_latency_s=4, overlap_ratio=4.5, usable=1,
+                         failed=0, requests=1, concurrency_real=True)
+                 for k, v in real.items()}
+    ck("...and a genuinely scaling result does NOT — or the warning is noise",
+       "bought NOTHING" not in render({"label": "x", "num_predict": 8,
+                                       "levels": real_full, "env": env}))
 
     import tempfile
     with tempfile.TemporaryDirectory() as td:
