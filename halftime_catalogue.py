@@ -775,7 +775,36 @@ def _record_programs(rows: list, team_hint: str, angle: str, model: str,
 #
 # Revert: set HALFTIME_CATALOGUE_MODEL to qwen3.8:27b, or empty to inherit the
 # global. No deploy needed.
-DEFAULT_CATALOGUE_MODEL = "gpt-oss:120b"
+# ★ SET BACK TO INHERIT AFTER A LIVE DRY-RUN. Buddy asked for the switch and it
+# was made; the dry-run that verified it is the reason it is off again.
+#
+# gpt-oss:120b delivered exactly the throughput and cost it promised -- 8 angles,
+# escalated 0, local 8, so the paid-call rate really did go to zero. And the
+# output was unusable. Of 12 acts it would have recorded, 11 were junk:
+#
+#   Minnesota Vikings 2025 — Snoop Dogg      <- touring musician, AND a
+#   Detroit Lions 2025 — Snoop Dogg             malformed name; the same
+#   Minnesota Vikings 2025 — Lainey Wilson      artist duplicated per team
+#   Detroit Lions 2025 — Andrea Bocelli
+#   Minnesota Vikings 2024 — Rogers High School ... Flag Game
+#
+# Existing entities are clean act names ("Stunt Dog Productions") or plain team
+# names ("Baltimore Ravens"). "Minnesota Vikings 2025 — Snoop Dogg" is neither.
+# Only "Harry Blackstone Jr." was plausible.
+#
+# Two failures at once: it ignores the touring-musician exclusion wholesale --
+# the risk flagged in this comment before the run, and looks_like_sponsor()
+# rejects brands and venues, not bands -- and it emits team+year+artist strings
+# instead of act names.
+#
+# THIS CONTRADICTS SECTION 9, which measured 120b at 6/6 parse and matching the
+# 27B's extractions. Section 9 used six curated *variety* blocks; the live
+# rotation covers other angle pools, and its instruction-following collapses
+# there. A sample of six was not a certification, as section 9 itself said.
+#
+# The mechanism below is kept and proven -- it is one string from switching
+# back, and the dry-run is how to check any future candidate before it writes.
+DEFAULT_CATALOGUE_MODEL = ""
 
 
 def _catalogue_model() -> str:
@@ -1106,11 +1135,12 @@ def selftest() -> int:
     # caller's dict, which would silently repoint the other two.
     _prev_m = os.environ.pop("HALFTIME_CATALOGUE_MODEL", None)
     try:
-        check("the catalogue runs gpt-oss:120b by default (S119, Buddy)",
+        check("the catalogue INHERITS the global model by default — gpt-oss:120b "
+              "was tried and reverted, see the note at DEFAULT_CATALOGUE_MODEL",
+              _catalogue_model() == "")
+        os.environ["HALFTIME_CATALOGUE_MODEL"] = "gpt-oss:120b"
+        check("...and a candidate can be switched in with no deploy",
               _catalogue_model() == "gpt-oss:120b")
-        os.environ["HALFTIME_CATALOGUE_MODEL"] = "qwen3.8:27b"
-        check("...and an env override reverts it with no deploy",
-              _catalogue_model() == "qwen3.8:27b")
         os.environ["HALFTIME_CATALOGUE_MODEL"] = ""
         check("...empty means INHERIT the global, not 'no model'",
               _catalogue_model() == "")
