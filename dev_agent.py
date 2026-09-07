@@ -578,6 +578,83 @@ _MAIN_IS_ONLY_SELFTEST_RX = re.compile(
     r"\s*\Z", re.M)
 
 
+# S116. The regex above demands the __main__ body be a SINGLE line calling
+# selftest(). Two modules in this tree write the same intent in two lines --
+#
+#     if __name__ == "__main__":
+#         import sys
+#         sys.exit(0 if selftest() else 1)
+#
+# -- and the regex misses both, so gate 2 skips deep_research.py and
+# promise_detect.py entirely AND dev_findings then files a blind_gate finding
+# telling us to "add an argv dispatch", which those files do not need. The
+# finding was wrong on its face: their __main__ IS the selftest, and invoking
+# either bare runs it and exits non-zero on failure. Verified by running both.
+#
+# Widening the regex again is how this function got burned twice already (once
+# too narrow, once about to be too broad). The property wanted is not textual:
+# "every statement in the __main__ block is safe to execute, and the only work
+# it does is call the selftest." That is a statement-level property, so it is
+# checked at the statement level.
+#
+# STRICT BY CONSTRUCTION, because a false PASS here is worse than no gate (S81):
+# it can only ever ADD an invokable selftest, never remove one; it runs only
+# when every other recogniser has already declined; and ANY statement it does
+# not positively recognise disqualifies the whole file.
+_SAFE_MAIN_IMPORTS = {"sys"}
+_EXIT_CALLS = {"exit", "SystemExit"}
+
+
+def _main_is_only_selftest_ast(text) -> bool:
+    """True only if `if __name__ == "__main__":` does nothing but call selftest.
+
+    Allowed in that block, and nothing else:
+      * `import sys` (needed for the sys.exit on the next line)
+      * one statement that exits, whose calls are exactly the exit plus
+        selftest() -- so `sys.exit(0 if selftest() else 1)`, `sys.exit(not
+        selftest())` and `raise SystemExit(selftest())` all qualify.
+
+    Any other call, assignment, loop, print or conditional means the block does
+    real work, and the file must NOT be invoked bare by a gate.
+    """
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    block = None
+    for node in tree.body:
+        if isinstance(node, ast.If):
+            dumped = ast.dump(node.test)
+            if "__name__" in dumped and "__main__" in dumped:
+                block = node
+                break
+    if block is None or not block.body:
+        return False
+    saw_selftest = False
+    for stmt in block.body:
+        if isinstance(stmt, ast.Import):
+            if not all(a.name in _SAFE_MAIN_IMPORTS and a.asname is None
+                       for a in stmt.names):
+                return False
+            continue
+        if isinstance(stmt, (ast.Expr, ast.Raise)):
+            names = set()
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Call):
+                    f = sub.func
+                    names.add(f.id if isinstance(f, ast.Name) else
+                              getattr(f, "attr", "?"))
+            selfs = {n for n in names if n in ("selftest", "_selftest")}
+            others = names - selfs - _EXIT_CALLS
+            if not selfs or others:
+                return False
+            saw_selftest = True
+            continue
+        return False          # anything else at all: not safe to invoke bare
+    return saw_selftest
+
+
 def selftest_argvs(fp):
     """The argument this module actually dispatches its selftest on, or None.
 
@@ -634,6 +711,8 @@ def selftest_argvs(fp):
     # whose __main__ also does real work is reported as having no invokable
     # selftest rather than having its production path run by a gate.
     if not out and _MAIN_IS_ONLY_SELFTEST_RX.search(text):
+        out.append([])
+    if not out and _main_is_only_selftest_ast(text):
         out.append([])
     return out
 
@@ -2794,6 +2873,55 @@ def _selftest():
               selftest_argvs(conv / "busy_main.py") == [])
         check("selftest_argvs: a file with no selftest at all yields nothing",
               selftest_argvs(wt / "lonely.py") == [])
+        # S116 -- the two-line __main__. deep_research.py and promise_detect.py
+        # both write `import sys` then `sys.exit(0 if selftest() else 1)`, which
+        # the single-line regex above misses. Gate 2 skipped BOTH files, and
+        # dev_findings then filed a blind_gate finding telling us to add an argv
+        # dispatch neither file needs -- their __main__ IS the selftest. Handled
+        # by _main_is_only_selftest_ast, which is strict by construction: it can
+        # only ADD a selftest, and any statement it does not recognise refuses
+        # the whole file.
+        (conv / "twoline.py").write_text(
+            "def selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    import sys\n    sys.exit(0 if selftest() else 1)\n")
+        check("selftest_argvs: a two-line `import sys` + ternary __main__ is invoked bare",
+              selftest_argvs(conv / "twoline.py") == [[]])
+        # The safety property, asserted from BOTH sides. A block that exits on
+        # something OTHER than the selftest is a production path, and a gate
+        # running it would be the S81 false-pass all over again.
+        (conv / "twoline_busy.py").write_text(
+            "def selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    import sys\n    print('live')\n"
+            "    sys.exit(0 if selftest() else 1)\n")
+        check("selftest_argvs: a two-line __main__ that ALSO prints is refused",
+              selftest_argvs(conv / "twoline_busy.py") == [])
+        (conv / "twoline_prod.py").write_text(
+            "def selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    import sys\n    sys.exit(run_daily())\n")
+        check("selftest_argvs: a __main__ exiting on NON-selftest work is refused",
+              selftest_argvs(conv / "twoline_prod.py") == [])
+        (conv / "twoline_import.py").write_text(
+            "def selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    import requests\n    sys.exit(0 if selftest() else 1)\n")
+        check("selftest_argvs: only `import sys` is allowed in a bare-invoked __main__",
+              selftest_argvs(conv / "twoline_import.py") == [])
+        # And the real files, because the fixtures are only a model of them.
+        # Anchored to THIS file's directory, not PROJECT_DIR: PROJECT_DIR is the
+        # server path (~/projects/cirrus-digest) and does not exist on a dev Mac,
+        # so an `if exists() else True` guard here passed vacuously in the very
+        # mutation run that was meant to prove these checks detect something.
+        # That is T8 -- a missing file reading as clean -- so the existence of
+        # the file is now itself asserted rather than used as an escape.
+        _here = Path(__file__).resolve().parent
+        for _real in ("deep_research.py", "promise_detect.py"):
+            check(f"selftest_argvs: {_real} is present next to dev_agent.py",
+                  (_here / _real).exists())
+            check(f"selftest_argvs: {_real} is visible to gate 2 (two-line __main__)",
+                  has_selftest(_here / _real))
         # The commonest idiom in this tree, and the one a first tightening of
         # the regex broke: `args = sys.argv[1:]` on one line, `"selftest" in
         # args` on another. Ten real modules are written this way.
