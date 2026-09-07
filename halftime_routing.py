@@ -278,6 +278,40 @@ def queries_for(game: Dict) -> List[tuple]:
             for metro, miles in METROS]
 
 
+# S119. The metro sweep runs concurrently. Measured before the change: ~60 min
+# for 7 games, ~63 s between consecutive metros -- and that interval is mostly
+# Brave search plus article fetches, i.e. network wait, not compute.
+#
+# WHAT THIS DOES AND DOES NOT BUY. Under ollama the MODEL calls do not speed up
+# at all: aggregate throughput there is flat at ~22.7 tok/s from concurrency 1
+# to 16 (S119, docs/DGX-SPARK-PERFORMANCE.md section 12), so concurrent
+# extractions simply queue. The win here is the search/fetch half. The model
+# half only moves if the engine moves -- which is the vLLM finding, and a
+# separate decision.
+#
+# 7 metros per game, so 7 saturates one game's worth of work; games still run
+# one after another, capping requests in flight at `workers` regardless of how
+# many games are due.
+#
+# **Set HALFTIME_ROUTING_WORKERS=1 to get the exact serial path back** -- not an
+# approximation of it: at 1 the executor is skipped entirely. That is the kill
+# switch if concurrency is ever suspected, and it is what the selftest compares
+# against to prove the two paths agree.
+DEFAULT_ROUTING_WORKERS = 7
+MAX_ROUTING_WORKERS = 16
+
+
+def _worker_count(n_tasks: int) -> int:
+    """How many metros to sweep at once. Clamped, and never more than tasks."""
+    raw = os.environ.get("HALFTIME_ROUTING_WORKERS")
+    try:
+        want = int(raw) if raw not in (None, "") else DEFAULT_ROUTING_WORKERS
+    except (TypeError, ValueError):
+        want = DEFAULT_ROUTING_WORKERS
+    want = max(1, min(want, MAX_ROUTING_WORKERS))
+    return max(1, min(want, n_tasks or 1))
+
+
 def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
                extractor=None, llm_stats: Optional[Dict] = None) -> Dict:
     """One game, every metro. Returns events + a coverage record per metro.
@@ -307,18 +341,35 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
                                               caller="halftime_routing"))
         fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
     llm_stats = {} if llm_stats is None else llm_stats
+    # Remembered before the default is built: an INJECTED extractor is used as
+    # given and never gets a per-task stats dict, which preserves the documented
+    # contract that injection reports no rate at all (see this function's
+    # docstring) rather than a misleading 0%.
+    _injected_extractor = extractor is not None
     extractor = extractor or (lambda block: _extract(block, creds, llm_stats))
 
-    events, coverage = [], []
-    for metro, miles, query in queries_for(game):
+    todo = list(queries_for(game))
+
+    def _one(item):
+        """One metro, start to finish. Returns everything the caller assembles.
+
+        Returns its OWN stats dict and its OWN log lines rather than touching
+        shared state: merging afterwards in list order keeps the result
+        byte-identical to the serial version, which a lock would not (two
+        threads incrementing llm_stats is a lost update, and interleaved log()
+        calls scramble the run log).
+        """
+        metro, miles, query = item
+        stats = {}
+        ex = extractor if _injected_extractor else (
+            lambda block: _extract(block, creds, stats))
         rec = {"metro": metro, "miles": miles, "query": query,
                "swept_at": _now(), "sources": 0, "found": 0, "error": None}
         try:
             urls = searcher(query)
         except Exception as e:
             rec["error"] = "search failed: {}".format(e)[:200]
-            coverage.append(rec)
-            continue
+            return rec, [], stats, []
         blocks = []
         for url in urls or []:
             try:
@@ -331,21 +382,37 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
         rec["sources"] = len(blocks)
         if not blocks:
             rec["error"] = "no fetchable source"
-            coverage.append(rec)
-            continue
-        found = extractor("\n\n".join(blocks))
+            return rec, [], stats, []
+        found = ex("\n\n".join(blocks))
         if found is None:
             rec["error"] = "extraction unusable"
-            coverage.append(rec)
-            continue
+            return rec, [], stats, []
         near = [dict(e, metro=metro, miles=miles,
                      gap=gap_days(e["date"], game["date"]))
                 for e in found if near_game(e["date"], game["date"])]
         rec["found"] = len(near)
+        return rec, near, stats, [
+            "  {} — {} source(s), {} of {} show(s) inside the window".format(
+                metro, len(blocks), len(near), len(found))]
+
+    workers = _worker_count(len(todo))
+    if workers > 1 and len(todo) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_one, todo))
+    else:
+        results = [_one(item) for item in todo]
+
+    # Assemble in the ORIGINAL metro order, never completion order. This is what
+    # makes the parallel path produce the same routing.json as the serial one.
+    events, coverage = [], []
+    for rec, near, stats, lines in results:
         coverage.append(rec)
         events.extend(near)
-        log("  {} — {} source(s), {} of {} show(s) inside the window".format(
-            metro, len(blocks), len(near), len(found)))
+        for k, v in stats.items():
+            llm_stats[k] = llm_stats.get(k, 0) + v
+        for line in lines:
+            log(line)
     return {"events": events, "coverage": coverage, "llm": llm_stats}
 
 
@@ -656,6 +723,69 @@ def _selftest_body(_real_log_path) -> int:
     check("a failed search is recorded as an error, not as 'nothing on'",
           all(c["error"] and "search failed" in c["error"]
               for c in dead["coverage"]))
+
+    # ── S119: the metro sweep is CONCURRENT. Two things must hold, and the
+    # second is the one a naive test would miss.
+    import os as _os
+    import threading as _threading
+    import time as _time
+
+    def _sweep_with(workers, searcher=None):
+        """Run the same game at a given worker count. Restores the env after."""
+        prev = _os.environ.get("HALFTIME_ROUTING_WORKERS")
+        _os.environ["HALFTIME_ROUTING_WORKERS"] = str(workers)
+        try:
+            return sweep_game(
+                game, {},
+                searcher=searcher or (lambda q: ["http://x"]),
+                fetcher=lambda u: "listing text",
+                extractor=lambda b: fake)
+        finally:
+            if prev is None:
+                _os.environ.pop("HALFTIME_ROUTING_WORKERS", None)
+            else:
+                _os.environ["HALFTIME_ROUTING_WORKERS"] = prev
+
+    serial = _sweep_with(1)
+    parallel = _sweep_with(7)
+    # THE property. routing.json feeds Justin's dashboard, so concurrency is
+    # only acceptable if the artefact is unchanged -- including ORDER, which is
+    # why results are assembled by list position and never by completion.
+    check("parallel sweep produces byte-identical output to the serial sweep",
+          json.dumps(serial, sort_keys=True) == json.dumps(parallel, sort_keys=True))
+    check("...and the metros come back in METRO order, not completion order",
+          [c["metro"] for c in parallel["coverage"]] == [m for m, _ in METROS])
+
+    # ...and it is ACTUALLY parallel. Without this, a bug that silently ran the
+    # tasks one at a time would pass every check above -- the output would be
+    # identical because it always is. That is T8: a check that cannot fail.
+    inflight = {"now": 0, "max": 0}
+    guard = _threading.Lock()
+
+    def _slow_searcher(q):
+        with guard:
+            inflight["now"] += 1
+            inflight["max"] = max(inflight["max"], inflight["now"])
+        _time.sleep(0.05)
+        with guard:
+            inflight["now"] -= 1
+        return ["http://x"]
+
+    inflight["max"] = 0
+    _sweep_with(7, searcher=_slow_searcher)
+    check("the parallel path really does overlap metros (max in-flight > 1)",
+          inflight["max"] > 1)
+    inflight["max"] = 0
+    _sweep_with(1, searcher=_slow_searcher)
+    check("...and WORKERS=1 is genuinely serial — the documented kill switch",
+          inflight["max"] == 1)
+
+    check("_worker_count clamps to the task count, never oversubscribes",
+          _worker_count(3) <= 3 and _worker_count(0) == 1)
+    check("_worker_count survives a garbage env value instead of crashing a run",
+          (lambda: (_os.environ.__setitem__("HALFTIME_ROUTING_WORKERS", "banana"),
+                    _worker_count(7) == DEFAULT_ROUTING_WORKERS,
+                    _os.environ.pop("HALFTIME_ROUTING_WORKERS", None))[1])())
 
     # ── S103: the escalation counter ──────────────────────────────────────
     # Every assertion below is paired with its inverse. S102 shipped seven

@@ -34,6 +34,7 @@ over its older log-scraping estimate.
 
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -49,20 +50,35 @@ RETAIN_DAYS = 120
 COST_PER_1K = {"brave": 5.00, "gemini": 0.0, "ddg": 0.0}
 
 
+# S119: record() is a read-modify-write on one JSON file. It was safe while
+# every caller was single-threaded; halftime_routing now sweeps its metros
+# concurrently, and two threads doing load->increment->save interleaved LOSE a
+# count. This is the PAID-SEARCH counter -- S90 added it so Brave spend is
+# visible against a $25/mo cap -- so a lost update under-reports money, silently.
+# A threading.Lock closes the case this change introduces.
+#
+# NOT closed: two PROCESSES racing (a timer job and a manual runner invocation
+# at the same moment). That hazard predates this change and is unaffected by it;
+# _save() is at least atomic (os.replace), so the file cannot be corrupted, only
+# a count lost. Fixing it needs an flock and is deliberately not bundled here.
+_RECORD_LOCK = threading.Lock()
+
+
 def record(provider: str, caller: str, outcome: str = "ok", n: int = 1) -> None:
-    """Count n search requests. Never raises.
+    """Count n search requests. Never raises. Thread-safe (S119).
 
     outcome: "ok" | "empty" | "error" | "quota". All of them count as requests,
     because all of them consumed one -- the split exists so a spike in "quota"
     or "error" is visible rather than looking like reduced usage.
     """
     try:
-        day = datetime.now().strftime("%Y-%m-%d")
-        data = _load()
-        bucket = data.setdefault(day, {}).setdefault(provider, {}).setdefault(
-            caller, {"ok": 0, "empty": 0, "error": 0, "quota": 0})
-        bucket[outcome] = bucket.get(outcome, 0) + n
-        _save(data)
+        with _RECORD_LOCK:
+            day = datetime.now().strftime("%Y-%m-%d")
+            data = _load()
+            bucket = data.setdefault(day, {}).setdefault(provider, {}).setdefault(
+                caller, {"ok": 0, "empty": 0, "error": 0, "quota": 0})
+            bucket[outcome] = bucket.get(outcome, 0) + n
+            _save(data)
     except Exception:
         pass
 
