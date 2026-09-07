@@ -29,6 +29,7 @@ Public API
 """
 
 import json
+import threading
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -48,18 +49,27 @@ _TIMEOUT = 120
 #
 # NEVER holds a key or a URL -- _gemini builds its key into the URL, so only
 # the bare model name is recorded here.
-_LAST_MODEL = None
+# S119: PER-THREAD, and it has to be. This used to be a module global with a
+# docstring that said "it is not per-thread" -- fine while every caller was
+# serial. halftime_catalogue reads last_model() through _tag() to stamp
+# extracted_by on every catalogue entry, so once that job sweeps concurrently
+# two in-flight calls would overwrite each other's model and the CLIENT ARTEFACT
+# would be labelled with whichever finished last. threading.local() gives each
+# thread its own slot; a single-threaded caller sees exactly what it saw before.
+_LAST = threading.local()
 
 
 def last_model():
-    """Model used by the most recent call(), or None if it never got that far.
+    """Model used by the most recent call() ON THIS THREAD, or None.
 
     call() clears this BEFORE dispatching, so a provider that raises leaves
     None rather than the previous call's model -- a stale value read as this
     call's answer is the whole failure mode this exists to avoid. Read it
-    immediately after the call that produced it; it is not per-thread.
+    immediately after the call that produced it.
+
+    Per-thread since S119: concurrent callers must not see each other's model.
     """
-    return _LAST_MODEL
+    return getattr(_LAST, "model", None)
 
 _KEY_FIELD = {
     # S73: "ollama" is DELIBERATELY absent from DEFAULT_ORDER, and its key field
@@ -97,8 +107,7 @@ def _http_post(url, headers, body, timeout=_TIMEOUT):
 
 def _openai_compatible(url, key, model, system, user, max_tokens):
     """OpenAI Chat Completions shape — shared by OpenAI, xAI (Grok), DeepSeek."""
-    global _LAST_MODEL
-    _LAST_MODEL = model
+    _LAST.model = model
     resp = _http_post(
         url,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -166,8 +175,7 @@ def _anthropic(creds, system, user, max_tokens):
     else:
         sys_field = system
 
-    global _LAST_MODEL
-    _LAST_MODEL = model
+    _LAST.model = model
     resp = _http_post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -187,8 +195,7 @@ def _gemini(creds, system, user, max_tokens):
     model = creds.get("gemini_model")
     if not model:
         raise ProviderError("no gemini_model set in credentials.json")
-    global _LAST_MODEL
-    _LAST_MODEL = model
+    _LAST.model = model
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent?key={key}")
     resp = _http_post(
@@ -339,8 +346,7 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1):
     failures still raise immediately (ProviderError, no retry); the caller
     handles those. Returns the (possibly still-empty) reply after the retries.
     """
-    global _LAST_MODEL
-    _LAST_MODEL = None            # never let a stale model answer for this call
+    _LAST.model = None            # never let a stale model answer for this call
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
     reply = ""
@@ -510,6 +516,32 @@ def selftest():
             pass
         check("a call that never reached the wire leaves None, not the "
               "last successful model",
+              last_model() is None)
+
+        # ── S119: last_model() is PER-THREAD. halftime_catalogue stamps every
+        # entry's extracted_by from it, so if two concurrent extractions shared
+        # one slot the client artefact would be labelled with whichever call
+        # happened to finish last -- silently, and only in the parallel path.
+        import threading as _threading
+        _seen = {}
+        _ready = _threading.Barrier(2)
+
+        def _worker(name):
+            # Set the slot exactly as a provider does, then wait for the other
+            # thread to have set ITS value before reading. Both writes land
+            # before either read, so a SHARED slot cannot pass by scheduling
+            # luck -- one of the two reads would see the other's model.
+            _LAST.model = name
+            _ready.wait(timeout=5)
+            _seen[name] = last_model()
+        _t1 = _threading.Thread(target=_worker, args=("model-A",))
+        _t2 = _threading.Thread(target=_worker, args=("model-B",))
+        _t1.start(); _t2.start(); _t1.join(5); _t2.join(5)
+        check("last_model() is isolated per thread — concurrent calls cannot "
+              "mislabel each other",
+              _seen.get("model-A") == "model-A"
+              and _seen.get("model-B") == "model-B")
+        check("...and the MAIN thread is untouched by what worker threads set",
               last_model() is None)
     finally:
         globals()["_http_post"] = _real_post

@@ -48,6 +48,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -689,6 +690,26 @@ def _record_programs(rows: list, team_hint: str, angle: str, model: str,
             pass          # the entity matters; the note is a bonus
 
 
+# S119. Angles are gathered concurrently (search + fetch + extract); recording
+# stays serial and in order -- see the note inside run(). Same knob shape as
+# halftime_routing: HALFTIME_CATALOGUE_WORKERS=1 restores the exact serial path
+# by skipping the executor entirely, which is both the kill switch and what the
+# selftest compares against.
+DEFAULT_CATALOGUE_WORKERS = 6
+MAX_CATALOGUE_WORKERS = 16
+
+
+def _worker_count(n_tasks: int) -> int:
+    """How many angles to gather at once. Clamped, never more than tasks."""
+    raw = os.environ.get("HALFTIME_CATALOGUE_WORKERS")
+    try:
+        want = int(raw) if raw not in (None, "") else DEFAULT_CATALOGUE_WORKERS
+    except (TypeError, ValueError):
+        want = DEFAULT_CATALOGUE_WORKERS
+    want = max(1, min(want, MAX_CATALOGUE_WORKERS))
+    return max(1, min(want, n_tasks or 1))
+
+
 def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         refresh: int = REFRESH_CHUNK, creds: dict = None,
         db_path: str = None, pool: str = None) -> dict:
@@ -711,20 +732,28 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         todo += program_angles_for_today(
             angles if pool == "program" else PROGRAM_ANGLES_PER_RUN)
 
-    for pool, category, query in todo:
-        stats["angles"] += 1
-        log(f"angle: {category} — {query}")
+    # ── S119: GATHER concurrently, RECORD serially ────────────────────────
+    # Only the network + model half runs in parallel. Everything that mutates
+    # `stats` or writes to the entity KB stays exactly where it was, on one
+    # thread, in the original angle order -- so the catalogue this job produces
+    # for Justin is unchanged, and sqlite is never written from two threads.
+    #
+    # Depends on the S119 fix making llm_providers.last_model() thread-local:
+    # extract_acts() tags every entry's `extracted_by` from it, and with a
+    # shared global two in-flight extractions would label each other's entries.
+    def _gather(item):
+        """Search + fetch + extract for one angle. Touches no shared state."""
+        pool_, category_, query_ = item
+        lines = [f"angle: {category_} — {query_}"]
         try:
             # S90: attribute this job's spend to itself. See the same note in
             # halftime_routing.py -- every caller of search_web was billed to
             # "daily_digest", so the usage report could not say what any job
             # except privacy_monitor actually costs.
-            urls = cirrus_daily.search_web(query, max_results=MAX_SEARCH_RESULTS,
+            urls = cirrus_daily.search_web(query_, max_results=MAX_SEARCH_RESULTS,
                                            caller="halftime_catalogue")
         except Exception as e:
-            log(f"  search failed: {e}")
-            continue
-
+            return item, None, lines + [f"  search failed: {e}"]
         sources = []
         for url in urls:
             try:
@@ -734,18 +763,33 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             if content:
                 sources.append((url, content[:MAX_FETCH_CHARS]))
         if not sources:
-            log("  no fetchable sources")
-            continue
-        stats["sources"] += len(sources)
-
+            return item, None, lines + ["  no fetchable sources"]
         block = "\n\n".join(f"SOURCE: {u}\n{t}" for u, t in sources)
-        acts, model, escalated = extract_acts(block, creds, pool)
+        acts, model, escalated = extract_acts(block, creds, pool_)
+        lines.append(f"  {len(acts)} act(s) via {model or 'nothing usable'}"
+                     + (" [escalated]" if escalated else ""))
+        return item, (len(sources), acts, model, escalated), lines
+
+    _workers = _worker_count(len(todo))
+    if _workers > 1 and len(todo) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=_workers) as _pool:
+            gathered = list(_pool.map(_gather, todo))
+    else:
+        gathered = [_gather(item) for item in todo]
+
+    for (pool, category, query), got, _lines in gathered:
+        stats["angles"] += 1
+        for _line in _lines:
+            log(_line)
+        if got is None:
+            continue
+        _n_sources, acts, model, escalated = got
+        stats["sources"] += _n_sources
         if escalated:
             stats["escalated"] += 1
         elif model:
             stats["local"] += 1
-        log(f"  {len(acts)} act(s) via {model or 'nothing usable'}"
-            + (" [escalated]" if escalated else ""))
 
         if pool == "program":
             _record_programs(acts, category, category, model, escalated,
@@ -1224,6 +1268,32 @@ def selftest() -> int:
             sys.modules["llm_providers"] = _real
         else:
             sys.modules.pop("llm_providers", None)
+
+    # ── S119: the concurrency knob. These exist because the first version of
+    # _worker_count referenced `os` in a module that never imported it -- a
+    # NameError that would have killed the live 06:30 run, and the whole
+    # selftest still passed, because nothing here called the function. A gate
+    # that never touches the new code cannot fail on it (T8).
+    _prev_w = os.environ.pop("HALFTIME_CATALOGUE_WORKERS", None)
+    try:
+        check("_worker_count runs at all (its module imports what it uses)",
+              _worker_count(10) == DEFAULT_CATALOGUE_WORKERS)
+        os.environ["HALFTIME_CATALOGUE_WORKERS"] = "3"
+        check("...and honours the env override", _worker_count(10) == 3)
+        os.environ["HALFTIME_CATALOGUE_WORKERS"] = "1"
+        check("...WORKERS=1 is the documented serial kill switch",
+              _worker_count(10) == 1)
+        os.environ["HALFTIME_CATALOGUE_WORKERS"] = "banana"
+        check("...a garbage value falls back instead of crashing the run",
+              _worker_count(10) == DEFAULT_CATALOGUE_WORKERS)
+        os.environ.pop("HALFTIME_CATALOGUE_WORKERS", None)
+        check("...and it never oversubscribes past the task count",
+              _worker_count(2) == 2 and _worker_count(0) == 1)
+    finally:
+        if _prev_w is None:
+            os.environ.pop("HALFTIME_CATALOGUE_WORKERS", None)
+        else:
+            os.environ["HALFTIME_CATALOGUE_WORKERS"] = _prev_w
 
     print("\nALL PASS" if not bad else f"\n{bad} FAILED")
     return 1 if bad else 0
