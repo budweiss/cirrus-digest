@@ -996,8 +996,17 @@ def selftest() -> int:
     check("style survives parsing", _st and _st[0]["style"] == "hip hop / rap")
     check("a missing style parses as empty, not as a guess",
           parse_acts('[{"name":"B"}]')[0]["style"] == "")
-    check("the variety prompt still excludes touring concerts",
-          "concerts by touring musicians" in _EXTRACT_SYSTEM)
+    # S119: this asserted ONE exact phrase, and broke the moment that clause was
+    # reworded while keeping its meaning -- during the prompt-tightening
+    # experiment that was ultimately reverted. Checking each exclusion by its
+    # SUBJECT survives rewording and still names the one that went missing.
+    for _need, _why in (
+            ("touring", "touring musicians are a different pipeline"),
+            ("marching band", "excluding bands is the point of this catalogue"),
+            ("Super Bowl", "Super Bowl acts are booked centrally, not by a club"),
+    ):
+        check(f"variety prompt still excludes '{_need}' — {_why}",
+              _need.lower() in _EXTRACT_SYSTEM.lower())
     _sample = {"name": "x", "category": "c", "level": "pro", "clients": "",
                "booking_contact": "", "fee_note": "", "home_base": "",
                "evidence": ""}
