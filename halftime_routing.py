@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -300,6 +301,39 @@ def queries_for(game: Dict) -> List[tuple]:
 DEFAULT_ROUTING_WORKERS = 7
 MAX_ROUTING_WORKERS = 16
 
+# ── S119, MEASURED THE HARD WAY: cap concurrent MODEL calls separately ───────
+# The first parallel version ran everything 7-wide and a live A/B caught the
+# cost: same game, same 7 metros, escalation went 2/7 serial -> 6/7 parallel.
+# Escalation is a PAID Anthropic call, so "2.7x faster" also meant "3x the API
+# bill", and nothing in the artefact would have shown it.
+#
+# The mechanism is arithmetic, not bad luck. ollama does not batch -- aggregate
+# throughput is flat at ~22.7 tok/s however many requests are in flight
+# (docs/DGX-SPARK-PERFORMANCE.md section 12). Seven concurrent extractions of
+# ~500 tokens each therefore need ~7*500/22.7 = 154s of wall time, and
+# llm_providers._TIMEOUT is 120. The later requests time out, and a timeout
+# escalates. Concurrency did not make the model faster; it made it fail.
+#
+# So search and fetch stay 7-wide -- they are network wait and genuinely
+# parallel -- while the model calls are throttled to what the engine can
+# actually serve. Default 1, which is what ollama is.
+#
+# RAISE THIS WHEN THE ENGINE CHANGES: under vLLM the same box served 325 tok/s
+# at 16-way concurrency, so HALFTIME_ROUTING_EXTRACT_WORKERS could go to the
+# metro count and the timeouts would not come back.
+DEFAULT_EXTRACT_WORKERS = 1
+MAX_EXTRACT_WORKERS = 16
+
+
+def _extract_worker_count() -> int:
+    """How many model calls may be in flight. 1 = what ollama can actually do."""
+    raw = os.environ.get("HALFTIME_ROUTING_EXTRACT_WORKERS")
+    try:
+        want = int(raw) if raw not in (None, "") else DEFAULT_EXTRACT_WORKERS
+    except (TypeError, ValueError):
+        want = DEFAULT_EXTRACT_WORKERS
+    return max(1, min(want, MAX_EXTRACT_WORKERS))
+
 
 def _worker_count(n_tasks: int) -> int:
     """How many metros to sweep at once. Clamped, and never more than tasks."""
@@ -383,7 +417,8 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
         if not blocks:
             rec["error"] = "no fetchable source"
             return rec, [], stats, []
-        found = ex("\n\n".join(blocks))
+        with _extract_gate:          # the model is the serialised resource
+            found = ex("\n\n".join(blocks))
         if found is None:
             rec["error"] = "extraction unusable"
             return rec, [], stats, []
@@ -395,6 +430,8 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
             "  {} — {} source(s), {} of {} show(s) inside the window".format(
                 metro, len(blocks), len(near), len(found))]
 
+    # One gate for the whole sweep, so the cap is across metros, not per task.
+    _extract_gate = threading.BoundedSemaphore(_extract_worker_count())
     workers = _worker_count(len(todo))
     if workers > 1 and len(todo) > 1:
         from concurrent.futures import ThreadPoolExecutor
@@ -779,6 +816,54 @@ def _selftest_body(_real_log_path) -> int:
     _sweep_with(1, searcher=_slow_searcher)
     check("...and WORKERS=1 is genuinely serial — the documented kill switch",
           inflight["max"] == 1)
+
+    # ── S119: the MODEL calls must stay throttled even while search fans out.
+    # A live A/B measured escalation going 2/7 -> 6/7 when everything ran
+    # 7-wide: ollama does not batch, so concurrent extractions queue past the
+    # 120s timeout and a timeout escalates to a PAID call. Speed that triples
+    # the API bill is not speed. These assert the two halves behave differently.
+    ex_inflight = {"now": 0, "max": 0}
+    se_inflight = {"now": 0, "max": 0}
+    exguard = _threading.Lock()
+
+    def _tracked(counter):
+        def _fn(*_a, **_k):
+            with exguard:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            _time.sleep(0.05)
+            with exguard:
+                counter["now"] -= 1
+            return ["http://x"] if counter is se_inflight else fake
+        return _fn
+
+    prev_ex = _os.environ.get("HALFTIME_ROUTING_EXTRACT_WORKERS")
+    _os.environ.pop("HALFTIME_ROUTING_EXTRACT_WORKERS", None)
+    prev_w = _os.environ.get("HALFTIME_ROUTING_WORKERS")
+    _os.environ["HALFTIME_ROUTING_WORKERS"] = "7"
+    try:
+        sweep_game(game, {}, searcher=_tracked(se_inflight),
+                   fetcher=lambda u: "listing text",
+                   extractor=_tracked(ex_inflight))
+        check("search still fans out across metros (max in-flight > 1)",
+              se_inflight["max"] > 1)
+        check("but MODEL calls are throttled to one — ollama cannot batch, and "
+              "queued calls time out into paid escalations",
+              ex_inflight["max"] == 1)
+        _os.environ["HALFTIME_ROUTING_EXTRACT_WORKERS"] = "4"
+        ex_inflight["max"] = 0
+        sweep_game(game, {}, searcher=lambda q: ["http://x"],
+                   fetcher=lambda u: "listing text",
+                   extractor=_tracked(ex_inflight))
+        check("...and the cap lifts when told to, for an engine that CAN batch",
+              ex_inflight["max"] > 1)
+    finally:
+        for k, v in (("HALFTIME_ROUTING_EXTRACT_WORKERS", prev_ex),
+                     ("HALFTIME_ROUTING_WORKERS", prev_w)):
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
 
     check("_worker_count clamps to the task count, never oversubscribes",
           _worker_count(3) <= 3 and _worker_count(0) == 1)

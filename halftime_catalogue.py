@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -698,6 +699,26 @@ def _record_programs(rows: list, team_hint: str, angle: str, model: str,
 DEFAULT_CATALOGUE_WORKERS = 6
 MAX_CATALOGUE_WORKERS = 16
 
+# S119: model calls are capped SEPARATELY from search/fetch, for the reason
+# measured on the routing lane -- a live A/B there showed escalation going
+# 2/7 -> 6/7 once extractions ran concurrently. ollama does not batch, so
+# queued calls run past llm_providers._TIMEOUT (120s) and a timeout escalates
+# to a PAID Anthropic call. Faster and three times the bill is not a win.
+# Default 1 = what ollama can actually serve; raise it under vLLM, which can.
+DEFAULT_CATALOGUE_EXTRACT_WORKERS = 1
+MAX_CATALOGUE_EXTRACT_WORKERS = 16
+
+
+def _extract_worker_count() -> int:
+    """How many model calls may be in flight at once."""
+    raw = os.environ.get("HALFTIME_CATALOGUE_EXTRACT_WORKERS")
+    try:
+        want = (int(raw) if raw not in (None, "")
+                else DEFAULT_CATALOGUE_EXTRACT_WORKERS)
+    except (TypeError, ValueError):
+        want = DEFAULT_CATALOGUE_EXTRACT_WORKERS
+    return max(1, min(want, MAX_CATALOGUE_EXTRACT_WORKERS))
+
 
 def _worker_count(n_tasks: int) -> int:
     """How many angles to gather at once. Clamped, never more than tasks."""
@@ -765,11 +786,13 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         if not sources:
             return item, None, lines + ["  no fetchable sources"]
         block = "\n\n".join(f"SOURCE: {u}\n{t}" for u, t in sources)
-        acts, model, escalated = extract_acts(block, creds, pool_)
+        with _extract_gate:          # the model is the serialised resource
+            acts, model, escalated = extract_acts(block, creds, pool_)
         lines.append(f"  {len(acts)} act(s) via {model or 'nothing usable'}"
                      + (" [escalated]" if escalated else ""))
         return item, (len(sources), acts, model, escalated), lines
 
+    _extract_gate = threading.BoundedSemaphore(_extract_worker_count())
     _workers = _worker_count(len(todo))
     if _workers > 1 and len(todo) > 1:
         from concurrent.futures import ThreadPoolExecutor
@@ -1289,6 +1312,18 @@ def selftest() -> int:
         os.environ.pop("HALFTIME_CATALOGUE_WORKERS", None)
         check("...and it never oversubscribes past the task count",
               _worker_count(2) == 2 and _worker_count(0) == 1)
+        os.environ.pop("HALFTIME_CATALOGUE_EXTRACT_WORKERS", None)
+        check("model calls default to ONE in flight — ollama cannot batch, and "
+              "queued calls time out into paid escalations (routing measured "
+              "2/7 -> 6/7 without this)",
+              _extract_worker_count() == 1)
+        os.environ["HALFTIME_CATALOGUE_EXTRACT_WORKERS"] = "8"
+        check("...and the cap lifts for an engine that CAN batch",
+              _extract_worker_count() == 8)
+        os.environ["HALFTIME_CATALOGUE_EXTRACT_WORKERS"] = "banana"
+        check("...garbage falls back to the safe default, never to unlimited",
+              _extract_worker_count() == DEFAULT_CATALOGUE_EXTRACT_WORKERS)
+        os.environ.pop("HALFTIME_CATALOGUE_EXTRACT_WORKERS", None)
     finally:
         if _prev_w is None:
             os.environ.pop("HALFTIME_CATALOGUE_WORKERS", None)
