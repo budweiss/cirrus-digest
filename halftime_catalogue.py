@@ -749,6 +749,41 @@ def _record_programs(rows: list, team_hint: str, angle: str, model: str,
 # halftime_routing: HALFTIME_CATALOGUE_WORKERS=1 restores the exact serial path
 # by skipping the executor entirely, which is both the kill switch and what the
 # selftest compares against.
+# ── S119 (Buddy): this job runs gpt-oss:120b, and ONLY this job ─────────────
+# `ollama_model` in credentials.json is GLOBAL -- halftime_routing and
+# promise_detect read the same field, and promise_detect runs on every client
+# send via task_solver. Editing that field would have switched all three at
+# once, which is not what was asked and is a much larger blast radius.
+#
+# So the model is overridden here, on an in-memory copy of the creds, exactly
+# the way model_compare.py does it. credentials.json is never written, and every
+# other caller keeps qwen3.8:27b.
+#
+# WHY 120b (docs/DGX-SPARK-PERFORMANCE.md):
+#   section 9  - 6/6 parse, 0% escalation, vs the 27B's 5/6 and 17%. Escalation
+#                is a paid Anthropic call, so this should REDUCE spend.
+#   section 5b - 43 tok/s vs the 27B's 32, and it never exceeded 39.6s against
+#                the 120s timeout the 27B was hitting.
+#   section 16 - its one known failure mode, returning sponsors as acts, is now
+#                caught deterministically by looks_like_sponsor().
+#
+# ⚠️ KNOWN, NOT YET GUARDED: section 9 also saw 120b return touring musicians
+# (Journey, Minnesota Orchestra, The New Power Generation, The Steeles) from a
+# projection/light page. The prompt excludes them and looks_like_sponsor() does
+# NOT catch them -- it rejects brands and venues, not bands. Watch the first
+# runs for musician names in the catalogue.
+#
+# Revert: set HALFTIME_CATALOGUE_MODEL to qwen3.8:27b, or empty to inherit the
+# global. No deploy needed.
+DEFAULT_CATALOGUE_MODEL = "gpt-oss:120b"
+
+
+def _catalogue_model() -> str:
+    """The model THIS job uses. Empty string means inherit the global."""
+    raw = os.environ.get("HALFTIME_CATALOGUE_MODEL")
+    return DEFAULT_CATALOGUE_MODEL if raw is None else raw
+
+
 DEFAULT_CATALOGUE_WORKERS = 6
 MAX_CATALOGUE_WORKERS = 16
 
@@ -792,6 +827,13 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
 
     creds = creds if creds is not None else (
         json.loads((PROJECT_DIR / "config/credentials.json").read_text()))
+    # Scoped override -- a COPY, so nothing else sees it (see the note above).
+    _model = _catalogue_model()
+    if _model:
+        _global = creds.get("ollama_model")
+        creds = dict(creds)                     # COPY -- see the note above
+        creds["ollama_model"] = _model
+        log(f"model for this job: {_model} (global ollama_model stays {_global})")
 
     stats = {"angles": 0, "sources": 0, "found": 0, "new": 0, "updated": 0,
              "bands_rejected": 0, "marquee_rejected": 0, "sponsors_rejected": 0,
@@ -1057,6 +1099,33 @@ def selftest() -> int:
     # reworded while keeping its meaning -- during the prompt-tightening
     # experiment that was ultimately reverted. Checking each exclusion by its
     # SUBJECT survives rewording and still names the one that went missing.
+    # ── S119: the catalogue-scoped model override. ollama_model is GLOBAL --
+    # halftime_routing and promise_detect read the same field, and
+    # promise_detect runs on every client send -- so the override must never
+    # escape this job. The mutation that matters is writing through to the
+    # caller's dict, which would silently repoint the other two.
+    _prev_m = os.environ.pop("HALFTIME_CATALOGUE_MODEL", None)
+    try:
+        check("the catalogue runs gpt-oss:120b by default (S119, Buddy)",
+              _catalogue_model() == "gpt-oss:120b")
+        os.environ["HALFTIME_CATALOGUE_MODEL"] = "qwen3.8:27b"
+        check("...and an env override reverts it with no deploy",
+              _catalogue_model() == "qwen3.8:27b")
+        os.environ["HALFTIME_CATALOGUE_MODEL"] = ""
+        check("...empty means INHERIT the global, not 'no model'",
+              _catalogue_model() == "")
+    finally:
+        if _prev_m is None:
+            os.environ.pop("HALFTIME_CATALOGUE_MODEL", None)
+        else:
+            os.environ["HALFTIME_CATALOGUE_MODEL"] = _prev_m
+    _caller_creds = {"ollama_model": "GLOBAL-MODEL", "ollama_url": "http://x"}
+    _copy = dict(_caller_creds)
+    _copy["ollama_model"] = _catalogue_model()
+    check("overriding the model never mutates the caller's creds — routing and "
+          "promise_detect must keep the global",
+          _caller_creds["ollama_model"] == "GLOBAL-MODEL")
+
     # ── S119: looks_like_sponsor(). Section 15 -- gpt-oss:120b returned Cisco
     # and U.S. Bank as halftime acts, and tightening the prompt cost 43-64% of
     # the genuine acts. This rejects named things instead, so recall is
