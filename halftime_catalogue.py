@@ -406,6 +406,59 @@ def looks_like_band(name: str) -> bool:
     return bool(_BAND_RX.search(name or ""))
 
 
+# ── S119: sponsors and venues are not acts ───────────────────────────────────
+# Section 15 in docs/DGX-SPARK-PERFORMANCE.md: gpt-oss:120b returned `Cisco` and
+# `U.S. Bank` from a projection/light page as though they were halftime acts.
+# Tightening the prompt DID remove them and cost 43-64% of the genuine acts on
+# the same six blocks, twice -- so this is done the way looks_like_band() and
+# marquee_only() already are: reject a named thing in code, deterministically,
+# instead of discouraging the model and losing everything else with it.
+#
+# The production model qwen3.8:27b has never produced one of these, so this is
+# not fixing a live defect. It is the guard that has to exist BEFORE
+# gpt-oss:120b could be adopted, because that model does it reliably.
+#
+# EXACT match after normalisation, never substring. `Lumen` is a stadium sponsor
+# (Lumen Field) and `Lumen and Forge` is a real projection company that appeared
+# in these very results -- a substring rule would eat it. Every name below was
+# either observed in output or is a current NFL stadium naming-rights holder.
+_SPONSOR_NAMES = frozenset({
+    # observed in real output (section 15)
+    "cisco", "u.s. bank", "us bank",
+    # current or recent NFL stadium naming-rights holders and common
+    # in-stadium sponsors -- the brands most likely to sit on a halftime page
+    "verizon", "at&t", "pepsi", "pepsico", "coca-cola", "coke", "gatorade",
+    "state farm", "mercedes-benz", "metlife", "gillette", "heinz", "acrisure",
+    "lincoln financial", "levi's", "sofi", "allegiant", "caesars", "ford",
+    "nissan", "lumen", "paycor", "paycom", "raymond james", "hard rock",
+    "highmark", "m&t bank", "everbank", "huntington bank", "lucas oil",
+    "nrg", "geha", "empower",
+})
+
+# A venue, not an act. No halftime act is called "Something Stadium", and this
+# catches the sponsor-named venues the exact list would otherwise miss
+# ("U.S. Bank Stadium", "Acrisure Stadium").
+_VENUE_LAST_WORDS = frozenset(
+    ("stadium", "arena", "coliseum", "dome", "fieldhouse", "ballpark", "field"))
+
+
+def looks_like_sponsor(name: str) -> bool:
+    """A brand or a venue rather than something that performed. S119.
+
+    Deliberately narrow: an exact normalised match, or a venue suffix. It is
+    meant to reject the handful of things that are obviously not acts, not to
+    adjudicate every company -- a projection firm and a pyrotechnics contractor
+    are both companies and both belong in the catalogue.
+    """
+    n = " ".join((name or "").lower().split()).strip(" .,-")
+    if not n:
+        return False
+    if n in _SPONSOR_NAMES:
+        return True
+    words = n.split()
+    return len(words) > 1 and words[-1] in _VENUE_LAST_WORDS
+
+
 def slug_for(name: str) -> str:
     return entity_kb.slugify(name)
 
@@ -741,7 +794,7 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         json.loads((PROJECT_DIR / "config/credentials.json").read_text()))
 
     stats = {"angles": 0, "sources": 0, "found": 0, "new": 0, "updated": 0,
-             "bands_rejected": 0, "marquee_rejected": 0,
+             "bands_rejected": 0, "marquee_rejected": 0, "sponsors_rejected": 0,
              "escalated": 0, "local": 0}
 
     # Build the whole worklist BEFORE the loop: the loop rebinds `pool`, so
@@ -826,6 +879,10 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             if pool == "for_hire_music" and marquee_only(act.get("clients", "")):
                 stats["marquee_rejected"] += 1
                 log(f"    rejected (marquee-only credit): {act['name']}")
+                continue
+            if looks_like_sponsor(act["name"]):
+                stats["sponsors_rejected"] += 1
+                log(f"    rejected (sponsor or venue, not an act): {act['name']}")
                 continue
             stats["found"] += 1
             slug = slug_for(act["name"])
@@ -1000,6 +1057,34 @@ def selftest() -> int:
     # reworded while keeping its meaning -- during the prompt-tightening
     # experiment that was ultimately reverted. Checking each exclusion by its
     # SUBJECT survives rewording and still names the one that went missing.
+    # ── S119: looks_like_sponsor(). Section 15 -- gpt-oss:120b returned Cisco
+    # and U.S. Bank as halftime acts, and tightening the prompt cost 43-64% of
+    # the genuine acts. This rejects named things instead, so recall is
+    # untouched. BOTH directions are asserted: the false-positive list is every
+    # real act seen in those runs, because a filter that quietly eats real acts
+    # is worse than the sponsors it removes.
+    for _bad in ("Cisco", "U.S. Bank", "  cisco  ", "AT&T",
+                 "U.S. Bank Stadium", "Acrisure Stadium", "Lumen Field",
+                 "MetLife Stadium"):
+        check(f"looks_like_sponsor rejects {_bad!r}", looks_like_sponsor(_bad))
+    for _good in ("Quince Imaging", "Lumen and Forge", "Image Engineering",
+                  "Rozzi Fireworks", "Zambelli Fireworks", "Premier Pyrotechnics",
+                  "Performance Dogs of Ohio", "Mutts Gone Nuts LLC",
+                  "Xpogo Stunt Team", "Dunk All Stars", "TNT Dunk Squad",
+                  "BMX Stunt Team", "Dialed Action Sports", "FMX Pros",
+                  "Scarlett Entertainment", "Red Panda", "All Star Stunt Dogs",
+                  "DJ Mal-Ski", "Hussein & The Fire Drummers", "Cornell Freeney",
+                  "Jonathan Rinny", "Tyler's Amazing Balancing Act", "", None):
+        check(f"looks_like_sponsor KEEPS {_good!r}",
+              not looks_like_sponsor(_good))
+    # `Lumen` is a stadium sponsor and `Lumen and Forge` is a real projection
+    # company that appeared in these results. Substring matching would eat it,
+    # which is why the rule is exact-match plus a venue suffix.
+    check("...exact match, not substring — the Lumen case",
+          looks_like_sponsor("Lumen") and not looks_like_sponsor("Lumen and Forge"))
+    check("a bare venue word is not itself rejected (needs a qualifier)",
+          not looks_like_sponsor("Stadium"))
+
     for _need, _why in (
             ("touring", "touring musicians are a different pipeline"),
             ("marching band", "excluding bands is the point of this catalogue"),
