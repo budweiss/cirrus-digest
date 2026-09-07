@@ -203,16 +203,29 @@ def selftest() -> bool:
     ck("every model is unloaded after its turn (the box is shared)",
        stopped == ["m1", "m2"])
 
+    # T32: a fixed name under $TMPDIR is NOT a tempfile -- this selftest both
+    # writes and unlinks, so a collision would delete somebody else's file.
+    # Caught by trap_lint on the wrap of the very session that added it.
     caps = []
-    out = Path(os.environ.get("TMPDIR", "/tmp")) / "model_compare_selftest.json"
-    capture(angles=[("variety", "c", "q")], out_path=out,
-            searcher=lambda q: ["http://a"],
-            fetcher=lambda u: caps.append(u) or "text here")
-    got = json.loads(out.read_text())
-    ck("capture writes blocks and fetches each search hit",
-       len(got) == 1 and got[0]["n_sources"] == 1 and caps == ["http://a"])
-    ck("capture never writes outside the path it was given", out.exists())
-    out.unlink(missing_ok=True)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "blocks.json"
+        capture(angles=[("variety", "c", "q")], out_path=out,
+                searcher=lambda q: ["http://a"],
+                fetcher=lambda u: caps.append(u) or "text here")
+        got = json.loads(out.read_text())
+        ck("capture writes blocks and fetches each search hit",
+           len(got) == 1 and got[0]["n_sources"] == 1 and caps == ["http://a"])
+        # Was written as `out.exists() and not X or out.exists() and X`,
+        # which is just `out.exists()` wearing a disguise -- a check that
+        # LOOKS like it tests the default-path property and cannot fail on it.
+        # The honest form: capture must not have touched the default path.
+        before = BLOCKS_PATH.exists()
+        capture(angles=[("variety", "c", "q")], out_path=out,
+                searcher=lambda q: ["http://a"],
+                fetcher=lambda u: "text here")
+        ck("capture writes to the path it was GIVEN and never the default",
+           out.exists() and BLOCKS_PATH.exists() == before)
 
     print("\n%s" % ("ALL PASS" if not bad else "FAILURES: %d" % len(bad)))
     return not bad
