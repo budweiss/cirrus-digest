@@ -33,6 +33,31 @@ from datetime import datetime, timezone
 # ── config ──────────────────────────────────────────────────────────────────────
 _DEFAULT_CAPS = {"per_session": 100.0, "per_day": 200.0, "per_call": 10.0}
 
+# S135 / T77: the recording kill switch for record_call(). Callers that ledger
+# their own HTTP responses (cirrus_bot, dev_agent) go through record_call(), not
+# llm_providers, so llm_providers' switch cannot protect their test suites. Same
+# shape, same rule: a suite runs under recording(False); only the block that
+# injects a tempfile ledger flips it on. Production never touches this.
+_ENABLED = True
+
+
+class recording:
+    """Context manager: `with recording(False): ...` suppresses record_call()
+    writes for the block and restores the previous state on exit."""
+
+    def __init__(self, enabled):
+        self._want = bool(enabled)
+
+    def __enter__(self):
+        global _ENABLED
+        self._prev, _ENABLED = _ENABLED, self._want
+        return self
+
+    def __exit__(self, *exc):
+        global _ENABLED
+        _ENABLED = self._prev
+        return False
+
 
 def load_config(cfg_path):
     """Load pricing/caps JSON. Returns {} on any failure (→ fail-closed downstream)."""
@@ -195,20 +220,27 @@ def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
 
 
 def record_call(creds, provider, model, in_chars, out_chars, *, task="",
-                session_id=None, tier="", app_dir=None):
-    """S132: best-effort ledger row for ONE completed model call, from what a
-    generic caller has -- the prompt and reply LENGTHS, not provider usage
-    fields. Tokens are estimated at 4 chars each (the same estimate ensemble has
-    used since S57). Never raises: a broken ledger must not break a client job.
-    Returns the row, or None when nothing was written (no pricing file, or an
-    unwritable path). Local models are priced at $0 in config/llm_pricing.json so
-    their VOLUME shows in the report at a true cost."""
+                session_id=None, tier="", app_dir=None, in_tok=None, out_tok=None):
+    """S132: best-effort ledger row for ONE completed model call. Never raises: a
+    broken ledger must not break a client job. Returns the row, or None when
+    nothing was written (recording off, no pricing file, unwritable path).
+
+    Tokens: pass the provider's REAL usage as in_tok/out_tok when the caller has
+    the response body (S135: cirrus_bot, dev_agent); otherwise they are estimated
+    from the prompt/reply LENGTHS at 4 chars each -- the estimate ensemble has
+    used since S57, and what llm_providers.call() has to work with. A real count
+    wins over an estimate whenever it is present (not None). Local models are
+    priced at $0 in config/llm_pricing.json so their VOLUME shows at a true cost."""
+    if not _ENABLED:
+        return None
     try:
         cfg, box, ledger = resolve(creds, app_dir)
         if cfg is None:
             return None
+        i = int(in_tok) if in_tok is not None else max(0, int(in_chars)) // 4
+        o = int(out_tok) if out_tok is not None else max(0, int(out_chars)) // 4
         return record(session_id or task or "untagged", provider, model or "?",
-                      max(0, int(in_chars)) // 4, max(0, int(out_chars)) // 4, cfg,
+                      max(0, i), max(0, o), cfg,
                       box=box, ledger_path=ledger, task=task or "", tier=tier,
                       strict=False)
     except Exception:
@@ -297,6 +329,20 @@ def selftest():
         check("record_call: no pricing file -> None, no raise",
               record_call({"llm_budget": {"pricing_path": os.path.join(td, "missing.json")}},
                           "anthropic", "paid", 10, 10, task="t") is None)
+        # S135: real usage beats the estimate; the switch is honoured and restored.
+        rc = record_call(creds, "anthropic", "paid", 4000, 400, task="real",
+                         in_tok=123, out_tok=45)
+        check("record_call: in_tok/out_tok (REAL usage) override the chars//4 estimate",
+              rc is not None and rc["in_tok"] == 123 and rc["out_tok"] == 45)
+        rc = record_call(creds, "anthropic", "paid", 4000, 400, task="mixed", in_tok=0)
+        check("record_call: a real 0 is a real count, not 'missing' (only None falls back)",
+              rc is not None and rc["in_tok"] == 0 and rc["out_tok"] == 100)
+        n = sum(1 for _ in open(ledger))
+        with recording(False):
+            off = record_call(creds, "anthropic", "paid", 400, 40, task="off")
+        check("record_call: under recording(False) it returns None and writes nothing (T77)",
+              off is None and sum(1 for _ in open(ledger)) == n)
+        check("recording(): the switch is restored on exit", _ENABLED is True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
 

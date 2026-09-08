@@ -39,6 +39,11 @@ from pathlib import Path
 # can be selftested -- this file deliberately has none (see __main__).
 from api_backoff import Backoff, retry_after_from
 
+try:
+    import llm_budget as _B      # S135: ledger every cloud call (LOCAL-MODEL-PLAN.md step 6b)
+except Exception:                # optional -- the bot must run without it
+    _B = None
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
@@ -259,6 +264,34 @@ def is_uncertain(answer: str) -> bool:
         return True
     return bool(UNCERTAIN_RE.search(answer))
 
+def _ledger(provider, model, data, task, prompt="", reply="", creds=None):
+    """S135 (LOCAL-MODEL-PLAN.md step 6b): one spend-ledger row for a cloud call
+    this file makes with its own requests.post, from the provider's REAL usage
+    fields -- Anthropic `usage.input_tokens`, xAI `usage.prompt_tokens`, Gemini
+    `usageMetadata.promptTokenCount` -- falling back to the prompt/reply lengths
+    only if a field is missing. Best-effort: never raises, never blocks a reply.
+    These three helpers were two of the seven callers llm-spend-report could not
+    see; llm_providers.call() covers the rest."""
+    if _B is None:
+        return None
+    try:
+        d = data or {}
+        if provider == "anthropic":
+            u = d.get("usage") or {}
+            i, o = u.get("input_tokens"), u.get("output_tokens")
+        elif provider == "gemini":
+            u = d.get("usageMetadata") or {}
+            i, o = u.get("promptTokenCount"), u.get("candidatesTokenCount")
+        else:                                   # OpenAI-compatible (xAI)
+            u = d.get("usage") or {}
+            i, o = u.get("prompt_tokens"), u.get("completion_tokens")
+        return _B.record_call(CREDS if creds is None else creds, provider, model,
+                              len(prompt or ""), len(reply or ""),
+                              in_tok=i, out_tok=o, task=task)
+    except Exception:
+        return None
+
+
 def call_gemini(prompt: str, timeout: int = 60):
     if not GEMINI_API_KEY:
         return None
@@ -305,7 +338,9 @@ def call_gemini(prompt: str, timeout: int = 60):
             f"A thinking model spends maxOutputTokens before emitting text; a "
             f"MAX_TOKENS finish here means the budget is below its preamble. "
             f"SAFETY means the grounded answer was filtered.")
-    return "".join(p.get("text", "") for p in parts).strip()
+    _txt = "".join(p.get("text", "") for p in parts).strip()
+    _ledger("gemini", GEMINI_MODEL, data, "cirrus_bot:gemini", prompt, _txt)
+    return _txt
 
 def call_grok(prompt: str, timeout: int = 60):
     if not GROK_API_KEY:
@@ -317,7 +352,10 @@ def call_grok(prompt: str, timeout: int = 60):
         timeout=timeout
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    data = resp.json()
+    _txt = data["choices"][0]["message"]["content"].strip()
+    _ledger("grok", GROK_MODEL, data, "cirrus_bot:grok", prompt, _txt)
+    return _txt
 
 def call_claude(prompt: str, timeout: int = 60):
     if not ANTHROPIC_API_KEY:
@@ -334,7 +372,10 @@ def call_claude(prompt: str, timeout: int = 60):
         timeout=timeout
     )
     resp.raise_for_status()
-    return resp.json()["content"][0]["text"].strip()
+    data = resp.json()
+    _txt = data["content"][0]["text"].strip()
+    _ledger("anthropic", CLAUDE_MODEL, data, "cirrus_bot:claude", prompt, _txt)
+    return _txt
 
 FALLBACK_CHAIN = [
     ("Gemini", call_gemini),
@@ -2354,6 +2395,75 @@ def selftest() -> bool:
     check("dup_false",
           is_duplicate_detail("completely unrelated topic here",
                               ["Add RSS feed for security news"]) is False)
+
+    # ── S135: the three cloud helpers ledger their REAL usage (step 6b). ──────
+    # requests.post is stubbed with each provider's response shape; the ledger
+    # and pricing are a tempfile injected through the same creds block the boxes
+    # use (T32); the inverse -- recording OFF writes nothing -- is checked too,
+    # because a hook that fires always or never both look fine from one side.
+    if _B is not None:
+        import tempfile as _tf, shutil as _sh
+        _td = _tf.mkdtemp(prefix="cirrus-bot-selftest-")
+        _led = os.path.join(_td, "ledger.jsonl")
+        _pr = os.path.join(_td, "pricing.json")
+        with open(_pr, "w") as _f:
+            json.dump({"models": {GEMINI_MODEL: {"in": 1.0, "out": 1.0},
+                                  GROK_MODEL: {"in": 1.0, "out": 1.0},
+                                  CLAUDE_MODEL: {"in": 1.0, "out": 1.0}}}, _f)
+        _tc = {"llm_budget": {"pricing_path": _pr, "ledger_path": _led, "box": "selftest"}}
+
+        class _Resp:
+            def __init__(self, payload): self._p = payload
+            def raise_for_status(self): pass
+            def json(self): return self._p
+
+        _payloads = {
+            "generativelanguage": {"candidates": [{"content": {"parts": [{"text": "g"}]}}],
+                                   "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7}},
+            "api.x.ai": {"choices": [{"message": {"content": "x"}}],
+                         "usage": {"prompt_tokens": 13, "completion_tokens": 5}},
+            "api.anthropic.com": {"content": [{"type": "text", "text": "c"}],
+                                  "usage": {"input_tokens": 17, "output_tokens": 3}},
+        }
+
+        def _fake_post(url, *a, **k):
+            for key, p in _payloads.items():
+                if key in url:
+                    return _Resp(p)
+            raise AssertionError("selftest: unexpected url " + url)
+
+        def _rows():
+            return [json.loads(l) for l in open(_led)] if os.path.exists(_led) else []
+
+        def _row(task, key):
+            return next((r.get(key) for r in _rows() if r.get("task") == task), None)
+
+        _saved = (requests.post, CREDS, GEMINI_API_KEY, GROK_API_KEY, ANTHROPIC_API_KEY)
+        requests.post = _fake_post
+        globals()["CREDS"] = _tc
+        globals().update(GEMINI_API_KEY="k", GROK_API_KEY="k", ANTHROPIC_API_KEY="k")
+        try:
+            _g, _x, _c = call_gemini("p"), call_grok("p"), call_claude("p")
+            check("ledger_helpers_still_return_text", (_g, _x, _c) == ("g", "x", "c"))
+            check("ledger_three_rows_one_per_helper", len(_rows()) == 3)
+            check("ledger_gemini_REAL_usage", _row("cirrus_bot:gemini", "in_tok") == 11
+                  and _row("cirrus_bot:gemini", "out_tok") == 7)
+            check("ledger_grok_REAL_usage", _row("cirrus_bot:grok", "in_tok") == 13
+                  and _row("cirrus_bot:grok", "out_tok") == 5)
+            check("ledger_claude_REAL_usage", _row("cirrus_bot:claude", "in_tok") == 17
+                  and _row("cirrus_bot:claude", "out_tok") == 3)
+            check("ledger_names_the_configured_models_and_box",
+                  {r.get("model") for r in _rows()} == {GEMINI_MODEL, GROK_MODEL, CLAUDE_MODEL}
+                  and all(r.get("box") == "selftest" for r in _rows()))
+            with _B.recording(False):
+                call_gemini("p"); call_grok("p"); call_claude("p")
+            check("ledger_recording_off_writes_nothing_T77", len(_rows()) == 3)
+        finally:
+            requests.post = _saved[0]
+            globals()["CREDS"] = _saved[1]
+            globals().update(GEMINI_API_KEY=_saved[2], GROK_API_KEY=_saved[3],
+                             ANTHROPIC_API_KEY=_saved[4])
+            _sh.rmtree(_td, ignore_errors=True)
 
     failed = [name for name, ok in checks if not ok]
     if failed:

@@ -105,6 +105,10 @@ RESTART_MAP = {"cirrus_bot.py": "com.cirrus.bot", "cirrus_api.py": "com.cirrus.a
 # together.
 DRYRUN_TIMEOUT = 45 * 60
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+try:
+    import llm_budget as _LB     # S135: ledger the builder's direct call (step 6b)
+except Exception:                # optional -- the loop must run without it
+    _LB = None
 
 # ── Patch safety (pure, unit-tested) ─────────────────────────────────────────
 _FORBIDDEN_NAME_RX = re.compile(
@@ -390,6 +394,16 @@ def call_claude_build(system: str, user: str):
         timeout=300)
     resp.raise_for_status()
     data = resp.json()
+    if _LB is not None:
+        # S135 step 6b: this was the one llm_providers-bypassing cloud call in the
+        # dev loop. Ledger the REAL usage; never let the ledger break a build.
+        try:
+            _u = data.get("usage") or {}
+            _LB.record_call(creds, "anthropic", model, len(system) + len(user), 0,
+                            in_tok=_u.get("input_tokens"), out_tok=_u.get("output_tokens"),
+                            task="dev_agent:build")
+        except Exception:
+            pass
     for block in data.get("content", []):
         if block.get("type") == "text":
             return block["text"]
@@ -1953,6 +1967,46 @@ def selftest() -> bool:
     ck("the builder NEVER inherits claude_model (that would downgrade it)",
        _builder_model({"claude_dev_model": "", "claude_model": "claude-haiku-4-5"})
        == BUILDER_MODEL_DEFAULT)
+
+    # ── S135: the builder's direct Anthropic call is ledgered with REAL usage.
+    # requests.post and _creds are stubbed; the ledger is a tempfile (T32); the
+    # inverse (recording OFF) is checked so the hook cannot pass by always firing.
+    if _LB is not None:
+        import tempfile as _tf2, shutil as _sh2, requests as _rq
+        _td2 = _tf2.mkdtemp(prefix="dev-agent-selftest-")
+        _led2 = str(Path(_td2) / "ledger.jsonl")
+        _pr2 = str(Path(_td2) / "pricing.json")
+        Path(_pr2).write_text(json.dumps({"models": {BUILDER_MODEL_DEFAULT: {"in": 1.0, "out": 1.0}}}))
+        _tc2 = {"anthropic_api_key": "k",
+                "llm_budget": {"pricing_path": _pr2, "ledger_path": _led2, "box": "selftest"}}
+
+        class _R2:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"content": [{"type": "text", "text": "PATCH"}],
+                        "usage": {"input_tokens": 321, "output_tokens": 54}}
+
+        _saved_post, _saved_creds = _rq.post, globals()["_creds"]
+        _rq.post = lambda *a, **k: _R2()
+        globals()["_creds"] = lambda: _tc2
+        try:
+            _txt = call_claude_build("s", "u")
+            _rows2 = [json.loads(l) for l in open(_led2)] if Path(_led2).exists() else []
+            ck("S135: call_claude_build still returns the model text", _txt == "PATCH")
+            ck("S135: ...and ledgers ONE row tagged dev_agent:build with REAL usage",
+               len(_rows2) == 1 and _rows2[0].get("task") == "dev_agent:build"
+               and _rows2[0].get("in_tok") == 321 and _rows2[0].get("out_tok") == 54
+               and _rows2[0].get("model") == BUILDER_MODEL_DEFAULT)
+            with _LB.recording(False):
+                call_claude_build("s", "u")
+            # Guarded read: if the hook never fired the file does not exist, and
+            # this check must FAIL legibly, not crash the suite before its summary
+            # (the mutation control has to read the full pattern -- T77 lesson).
+            _n2 = len([l for l in open(_led2)]) if Path(_led2).exists() else 0
+            ck("S135: under recording(False) the same call writes nothing (T77)", _n2 == 1)
+        finally:
+            _rq.post, globals()["_creds"] = _saved_post, _saved_creds
+            _sh2.rmtree(_td2, ignore_errors=True)
 
     # ── S91: repair-ticket promotion. T32 — a tempdir, never the live queue. ──
     import tempfile as _tf
