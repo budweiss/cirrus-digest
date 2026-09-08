@@ -1,32 +1,94 @@
 {
   "_comment": "LLM API pricing + spend caps for the budget guard (llm_budget.py). Rates in USD per 1,000,000 tokens. Confirm against https://docs.claude.com pricing at wire time. Discount multipliers: batch=0.5, cache_read=0.1 (cached input only), cache_write=1.25.",
-  "_updated": "2026-08-06",
-
+  "_updated": "2026-09-08 (S132: local models at $0)",
   "models": {
-    "claude-opus-5":        {"in": 5.0,  "out": 25.0},
-    "claude-opus-5-fast":   {"in": 10.0, "out": 50.0},
-    "claude-sonnet-5":      {"in": 3.0,  "out": 15.0},
-    "claude-haiku-4-5-20251001": {"in": 0.8, "out": 4.0},
-    "gemini-2.0-flash":     {"in": 0.15, "out": 0.60},
-    "gemini-flash-latest":  {"in": 0.30, "out": 2.50},
-    "gemini-2.5-flash":     {"in": 0.30, "out": 2.50},
-    "gemini-flash-lite-latest": {"in": 0.10, "out": 0.40},
-    "grok-3-mini":          {"in": 0.30, "out": 0.50},
-    "gpt-4o-mini":          {"in": 0.15, "out": 0.60},
-    "deepseek-chat":        {"in": 0.27, "out": 1.10}
+    "claude-opus-5": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "claude-opus-5-fast": {
+      "in": 10.0,
+      "out": 50.0
+    },
+    "claude-sonnet-5": {
+      "in": 3.0,
+      "out": 15.0
+    },
+    "claude-haiku-4-5-20251001": {
+      "in": 0.8,
+      "out": 4.0
+    },
+    "gemini-2.0-flash": {
+      "in": 0.15,
+      "out": 0.6
+    },
+    "gemini-flash-latest": {
+      "in": 0.3,
+      "out": 2.5
+    },
+    "gemini-2.5-flash": {
+      "in": 0.3,
+      "out": 2.5
+    },
+    "gemini-flash-lite-latest": {
+      "in": 0.1,
+      "out": 0.4
+    },
+    "grok-3-mini": {
+      "in": 0.3,
+      "out": 0.5
+    },
+    "gpt-4o-mini": {
+      "in": 0.15,
+      "out": 0.6
+    },
+    "deepseek-chat": {
+      "in": 0.27,
+      "out": 1.1
+    },
+    "qwen3.8:27b": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "qwen3.8-27b-fp8": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "qwen2.5:14b": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "qwen2.5-coder:14b": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "qwen3-coder:30b": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "llama3.2:3b": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "nomic-embed-text:latest": {
+      "in": 0.0,
+      "out": 0.0
+    },
+    "nomic-embed-text": {
+      "in": 0.0,
+      "out": 0.0
+    }
   },
-
   "discounts": {
     "batch": 0.5,
     "cache_read": 0.1,
     "cache_write": 1.25
   },
-
   "caps_usd": {
     "per_session": 100.0,
     "per_day": 200.0,
     "per_call": 10.0
   },
-
-  "unknown_model_out_per_m": 25.0
+  "unknown_model_out_per_m": 25.0,
+  "_comment_local": "S132: local models (ollama on either box, the TP=2 vLLM endpoint on cumulus1) are priced at $0 so llm_providers.call() can record their VOLUME to the ledger at a true cost. A local model missing here is still recorded, flagged unpriced at unknown_model_out_per_m -- add it rather than let the ceiling stand."
 }

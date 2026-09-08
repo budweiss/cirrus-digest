@@ -29,6 +29,7 @@ Public API
 """
 
 import json
+import sys
 import threading
 import urllib.request
 import urllib.error
@@ -37,6 +38,47 @@ from pathlib import Path
 
 DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek"]
 _TIMEOUT = 120
+
+# S132: every call() records itself to the spend ledger (llm_budget.record_call).
+# Buddy, 2026-09-08: "make every cloud call visible." Before this, only
+# ensemble's council/judge and Skywarden wrote rows, so llm-spend-report could
+# not see halftime, pedagogy, promise_detect or task_solver at all.
+#
+# The TASK tag defaults to the running script's name -- `halftime_catalogue`,
+# `pedagogy_daily`, `intake` (which hosts promise_detect) -- because that is the
+# bucket the report maps to a project, and it costs the callers nothing. A
+# caller that knows better passes task=; a process can set_default_task().
+# "adhoc" is the tag for `python -c` and REPL sessions.
+def _derive_default_task():
+    try:
+        stem = Path(sys.argv[0]).stem if sys.argv and sys.argv[0] else ""
+    except Exception:
+        stem = ""
+    return stem if stem and not stem.startswith("-") else "adhoc"
+
+
+DEFAULT_TASK = _derive_default_task()
+
+
+def set_default_task(task):
+    """Name the ledger bucket for every subsequent call() in this process that
+    does not pass its own task=. Empty/None leaves the current default."""
+    global DEFAULT_TASK
+    if task:
+        DEFAULT_TASK = str(task)
+
+
+def _record(provider, system, user, reply, creds, task):
+    """Best-effort ledger row. Imported lazily and wrapped: the ledger must never
+    be able to break a client job, and llm_budget is optional to this module."""
+    try:
+        import llm_budget as _B
+        _B.record_call(creds, provider, last_model() or "?",
+                       len(system or "") + len(user or ""), len(reply or ""),
+                       task=(task or DEFAULT_TASK),
+                       app_dir=str(Path(__file__).resolve().parent))
+    except Exception:
+        pass
 
 # S103: the MODEL the last call actually put on the wire.
 #
@@ -378,7 +420,8 @@ def available(creds):
     return [p for p in DEFAULT_ORDER if creds.get(_KEY_FIELD[p])]
 
 
-def call(provider, system, user, creds, max_tokens=16384, retries=1):
+def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
+         task=None, record=True):
     """Call ONE provider by name. Returns reply text. Raises ProviderError.
 
     Retries once (retries=1) on an EMPTY/whitespace reply. Guards the S47 #8
@@ -386,6 +429,12 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1):
     shouldn't silently cede the primary provider to failover. Transport/config
     failures still raise immediately (ProviderError, no retry); the caller
     handles those. Returns the (possibly still-empty) reply after the retries.
+
+    S132: a NON-EMPTY reply is recorded to the spend ledger (llm_budget) under
+    `task` (default: this process's script name) -- local providers too, at $0,
+    so the report shows local volume beside cloud cost. record=False is for a
+    caller that records the call itself with richer tags (ensemble's council
+    and judge rows) -- without it those calls would be counted twice.
     """
     _LAST.model = None            # never let a stale model answer for this call
     if provider not in _PROVIDERS:
@@ -394,11 +443,14 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1):
     for _ in range(retries + 1):
         reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""
         if reply.strip():
-            return reply
+            break
+    if record and reply.strip():
+        _record(provider, system, user, reply, creds, task)
     return reply
 
 
-def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
+def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
+             task=None, record=True):
     """Policy-driven call across configured providers.
 
     Reads defaults from creds['dev_escalation'] = {"mode":..., "order":[...]}.
@@ -406,6 +458,7 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
       failover -> (provider, text)     try in order until one succeeds
       council  -> [(provider, text_or_'ERROR: ...'), ...]  every available
     Raises ProviderError if no provider has a key.
+    S132: task= and record= are forwarded to every call() (see call()).
     """
     pol = creds.get("dev_escalation", {}) or {}
     mode = mode or pol.get("mode", "single")
@@ -418,7 +471,8 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
         out = []
         for p in avail:
             try:
-                out.append((p, call(p, system, user, creds, max_tokens)))
+                out.append((p, call(p, system, user, creds, max_tokens,
+                                    task=task, record=record)))
             except ProviderError as e:
                 out.append((p, f"ERROR: {e}"))
         return out
@@ -427,14 +481,15 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None):
         last = None
         for p in avail:
             try:
-                return (p, call(p, system, user, creds, max_tokens))
+                return (p, call(p, system, user, creds, max_tokens,
+                                task=task, record=record))
             except ProviderError as e:
                 last = e
         raise ProviderError(f"all providers failed; last error: {last}")
 
     # "single" (default)
     p = avail[0]
-    return (p, call(p, system, user, creds, max_tokens))
+    return (p, call(p, system, user, creds, max_tokens, task=task, record=record))
 
 
 # ── self-test (python3 llm_providers.py selftest | --selftest) ────────────────
@@ -617,6 +672,94 @@ def selftest():
               and _seen.get("model-B") == "model-B")
         check("...and the MAIN thread is untouched by what worker threads set",
               last_model() is None)
+
+        # ── S132: every call() lands in the spend ledger. Tempfile ledger and
+        # pricing (T32: never the live out/ ledger) injected through the same
+        # creds["llm_budget"] block the boxes use, so the resolution under test
+        # is the real one. Each positive check has its inverse (record=False,
+        # empty reply, unwritable path) so a hook that fires ALWAYS or NEVER
+        # both fail here.
+        import tempfile as _tf, os as _os, shutil as _sh
+        _td = _tf.mkdtemp(prefix="llmprov-selftest-")
+        _pricing = _os.path.join(_td, "pricing.json")
+        _ledger = _os.path.join(_td, "sub", "ledger.jsonl")
+        with open(_pricing, "w") as _f:
+            json.dump({"models": {"stub-model": {"in": 1.0, "out": 2.0},
+                                  "local-free": {"in": 0.0, "out": 0.0}}}, _f)
+        _bud = {"llm_budget": {"pricing_path": _pricing, "ledger_path": _ledger,
+                               "box": "selftest"}}
+
+        def _rows():
+            return ([json.loads(l) for l in open(_ledger)]
+                    if _os.path.exists(_ledger) else [])
+
+        class _NoRow(dict):
+            # Missing keys read as None, so `_last()["task"] == "x"` is simply
+            # False when nothing was written. A hook that never fires must FAIL
+            # these checks legibly -- not crash the suite with IndexError or
+            # KeyError -- because the mutation control needs the full pattern.
+            def __missing__(self, key):
+                return None
+
+        def _last():
+            return (_rows() or [_NoRow()])[-1]
+
+        def _stub(model, text="reply"):
+            def _p(c, s, u, m):
+                _LAST.model = model       # exactly what a real adapter does
+                return text
+            return _p
+
+        _PROVIDERS["anthropic"] = _stub("stub-model")
+        call("anthropic", "sys", "usr", dict(_bud, anthropic_api_key="k"))
+        _r = _rows()
+        check("ledger: a cloud call writes exactly one row", len(_r) == 1)
+        check("ledger: the row carries provider, the WIRE model, the box and a cost",
+              bool(_r) and _r[0]["provider"] == "anthropic"
+              and _r[0]["model"] == "stub-model" and _r[0]["box"] == "selftest"
+              and _r[0]["cost"] > 0)
+        check("ledger: the default task is this process's script name",
+              bool(_r) and _r[0]["task"] == DEFAULT_TASK and DEFAULT_TASK != "")
+        call("anthropic", "s", "u", dict(_bud, anthropic_api_key="k"), task="tagged-x")
+        check("ledger: task= overrides the default and doubles as session_id",
+              _last()["task"] == "tagged-x" and _last()["session_id"] == "tagged-x")
+        _n = len(_rows())
+        call("anthropic", "s", "u", dict(_bud, anthropic_api_key="k"), record=False)
+        check("ledger: record=False writes nothing (ensemble records its own "
+              "council/judge -- otherwise counted twice)", len(_rows()) == _n)
+        _PROVIDERS["ollama"] = _stub("local-free")
+        call("ollama", "s", "u", dict(_bud, ollama_url="http://o", ollama_model="local-free"))
+        check("ledger: a LOCAL call is recorded at $0 -- volume visible, cost true",
+              _last()["provider"] == "ollama" and _last()["cost"] == 0.0
+              and not _last().get("unpriced"))
+        _PROVIDERS["openai"] = _stub("brand-new-unpriced")
+        call("openai", "s", "u", dict(_bud, openai_api_key="k"))
+        check("ledger: an UNPRICED model is still written, flagged, at the "
+              "conservative rate -- never silently dropped (S103)",
+              _last()["model"] == "brand-new-unpriced"
+              and _last().get("unpriced") is True and _last()["cost"] > 0)
+        _PROVIDERS["anthropic"] = _stub("stub-model", "")
+        _n = len(_rows())
+        call("anthropic", "s", "u", dict(_bud, anthropic_api_key="k"))
+        check("ledger: an EMPTY reply is not a billable call -- no row", len(_rows()) == _n)
+        _PROVIDERS["anthropic"] = _stub("stub-model")
+        _bad = {"llm_budget": dict(_bud["llm_budget"],
+                                   ledger_path=_os.path.join(_pricing, "under-a-file", "x.jsonl"))}
+        _got = call("anthropic", "s", "u", dict(_bad, anthropic_api_key="k"))
+        check("ledger: an unwritable ledger never breaks the call (best-effort)",
+              _got == "reply")
+        _PROVIDERS["anthropic"] = _stub("stub-model", "A")
+        _PROVIDERS["openai"] = _stub("stub-model", "B")
+        _n = len(_rows())
+        escalate("s", "u", dict(_bud, anthropic_api_key="a", openai_api_key="o"),
+                 mode="council", task="esc-tag")
+        check("ledger: escalate() forwards task= to EVERY member call",
+              len(_rows()) == _n + 2 and all(x["task"] == "esc-tag" for x in _rows()[-2:]))
+        _n = len(_rows())
+        escalate("s", "u", dict(_bud, anthropic_api_key="a"), mode="single", record=False)
+        check("ledger: escalate() forwards record=False", len(_rows()) == _n)
+        _LAST.model = None            # leave the thread slot as the caller found it
+        _sh.rmtree(_td, ignore_errors=True)
     finally:
         globals()["_http_post"] = _real_post
         _PROVIDERS.clear()

@@ -108,25 +108,11 @@ def _load_budget(creds, app_dir):
     (same as today's client path, which already spends without a guard)."""
     if B is None:
         return None, None, None, {}
-    bud = creds.get("llm_budget") or {}
-    app_dir = Path(app_dir or Path(__file__).resolve().parent)
-    pricing_path = bud.get("pricing_path", "config/llm_pricing.json")
-    if not os.path.isabs(pricing_path):
-        pricing_path = str(app_dir / pricing_path)
-    cfg = B.load_config(pricing_path)
-    if not cfg:
+    # S132: the resolution moved to llm_budget.resolve() so llm_providers.call()
+    # writes to the SAME ledger; this is a delegate, not a second copy.
+    cfg, box, ledger = B.resolve(creds, str(app_dir) if app_dir else None)
+    if cfg is None:
         return None, None, None, {}
-    # let per-box caps override the pricing file's defaults
-    caps = cfg.get("caps_usd", {})
-    for k, src in (("per_session", "per_session_usd"), ("per_day", "per_day_usd"),
-                   ("per_call", "per_call_usd")):
-        if bud.get(src) is not None:
-            caps[k] = float(bud[src])
-    cfg["caps_usd"] = caps
-    box = bud.get("box", "unknown")
-    ledger = bud.get("ledger_path", "out/llm-spend-ledger.jsonl")
-    if not os.path.isabs(ledger):
-        ledger = str(app_dir / ledger)
     return cfg, box, ledger, {}
 
 
@@ -204,8 +190,11 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     def _baseline(reason):
         meta["degraded"] = (mode == "council")
         meta["reason"] = reason
+        # S132: task= so the baseline lands in the caller's bucket. This path was
+        # never recorded before -- it is one of the seven "invisible" callers.
         prov, text = L.escalate(system, user, creds, max_tokens=max_tokens,
-                                mode=("failover" if mode == "council" else mode))
+                                mode=("failover" if mode == "council" else mode),
+                                task=task)
         meta["members"] = [prov]
         meta["judge"] = prov
         return meta, text
@@ -257,7 +246,8 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         # Only Bill's job was approved (rule 3). Caught by the caller audit S131.
         try:
             draft = (L.call("vllm", system, user, creds,
-                            max_tokens=DRAFT_MAX_TOKENS) or "").strip()
+                            max_tokens=DRAFT_MAX_TOKENS,
+                            task=f"{task}:draft") or "").strip()
         except Exception:
             draft = ""
         if draft:
@@ -269,7 +259,11 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
 
     # 2) council: every keyed provider answers independently
     try:
-        raw = L.escalate(system, user, creds, max_tokens=max_tokens, mode="council")
+        # record=False: the members are recorded BELOW with ":council" tags and
+        # the member's own model; letting call() record them too would double
+        # every council row (S132).
+        raw = L.escalate(system, user, creds, max_tokens=max_tokens, mode="council",
+                         record=False)
     except Exception as e:
         return _baseline(f"council call failed ({e})")
     members = [(p, t) for p, t in raw
@@ -304,7 +298,8 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     try:
         vetted = L.call(judge, _JUDGE_SYSTEM,
                         _judge_prompt(system, user, members, draft),
-                        creds, max_tokens=max_tokens)
+                        creds, max_tokens=max_tokens,
+                        record=False)      # recorded below as ":judge" (S132)
         meta["judge"] = judge
     except Exception as e:
         # judge failed — return the answer from the most-preferred available member
@@ -353,9 +348,10 @@ def selftest():
                   "gemini_model": "gemini-2.0-flash", "openai_model": "gpt-4o-mini"}
 
     # non-council mode -> pure escalate passthrough, not degraded
-    _calls = {"escalate": []}
-    def fake_escalate(s, u, c, max_tokens=0, mode=None, order=None):
+    _calls = {"escalate": [], "esc_kw": [], "call_kw": []}
+    def fake_escalate(s, u, c, max_tokens=0, mode=None, order=None, **kw):
         _calls["escalate"].append(mode)
+        _calls["esc_kw"].append(dict(kw, mode=mode))
         if mode == "council":
             return [("anthropic", '{"answer": 1}'), ("gemini", '{"answer": 1}'),
                     ("openai", '{"answer": 2}')]
@@ -363,7 +359,10 @@ def selftest():
     L.escalate = fake_escalate
     L.available = lambda c: [p for p in ["anthropic", "gemini", "grok", "openai", "deepseek"]
                              if c.get(p + "_api_key")]
-    L.call = lambda prov, s, u, c, max_tokens=0: '{"answer": 1, "note": "reconciled"}'
+    def _fake_judge(prov, s, u, c, max_tokens=0, **kw):
+        _calls["call_kw"].append(dict(kw, prov=prov))
+        return '{"answer": 1, "note": "reconciled"}'
+    L.call = _fake_judge
 
     # S95: keep_answers is the EVIDENCE behind alopecia_brief's claim that a
     # council disagreement was surfaced rather than smoothed by the judge. If it
@@ -381,9 +380,22 @@ def selftest():
     md, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
     check("default does NOT carry answers (callers log meta)", "answers" not in md)
 
-    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "single"}))
+    m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "single"}),
+                       task="bill-x")
     check("single mode -> passthrough text", t == "single-answer")
     check("single mode -> not degraded", m["degraded"] is False)
+    # S132: the anti-double-count contract with llm_providers.call().
+    check("S132: the BASELINE escalate is recorded by call() under the caller's task "
+          "(it was one of the invisible callers)",
+          _calls["esc_kw"][-1].get("record", True) is True
+          and _calls["esc_kw"][-1].get("task") == "bill-x")
+    _calls["call_kw"].clear(); _calls["esc_kw"].clear()
+    best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}), task="bill-y")
+    check("S132: the COUNCIL escalate passes record=False (members are recorded "
+          "below with ':council' tags -- not twice)",
+          any(k.get("mode") == "council" and k.get("record") is False for k in _calls["esc_kw"]))
+    check("S132: the JUDGE call passes record=False (recorded below as ':judge')",
+          any(k.get("prov") == "anthropic" and k.get("record") is False for k in _calls["call_kw"]))
 
     # council mode with 3 providers -> judge synthesis, not degraded
     m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
@@ -402,10 +414,11 @@ def selftest():
     _saved_call, _saved_draft = L.call, _local_draft
     _seen = {"provs": [], "judge_u": "", "vllm_max": None}
     _vllm = {"reply": "VDRAFT", "raise": False}
-    def _fake_call(prov, s, u, c, max_tokens=0, retries=1):
+    def _fake_call(prov, s, u, c, max_tokens=0, retries=1, **kw):
         _seen["provs"].append(prov)
         if prov == "vllm":
             _seen["vllm_max"] = max_tokens   # what the draft call actually asked for
+            _seen["vllm_task"] = kw.get("task")
             if _vllm["raise"]:
                 raise L.ProviderError("endpoint down")
             return _vllm["reply"]
@@ -428,6 +441,9 @@ def selftest():
               "VDRAFT" in _seen["judge_u"] and "ODRAFT" not in _seen["judge_u"])
         check("vllm draft: capped at DRAFT_MAX_TOKENS, not the council's 8000",
               _seen["vllm_max"] == DRAFT_MAX_TOKENS)
+        check("S132: the draft is ledgered under '<task>:draft' so the report files "
+              "it with the client, not under the script name",
+              _seen.get("vllm_task") == ":draft")   # task="" in this fixture
         # (ii) vLLM raises -> ollama draft
         _seen.update(provs=[], judge_u="")
         _vllm["raise"] = True
@@ -474,7 +490,7 @@ def selftest():
     check("one provider -> baseline", t == "single-answer" and m["degraded"] is True)
 
     # council returns <2 usable -> reuse the single good member
-    L.escalate = lambda s, u, c, max_tokens=0, mode=None, order=None: (
+    L.escalate = lambda s, u, c, max_tokens=0, mode=None, order=None, **kw: (
         [("anthropic", "good"), ("gemini", "ERROR: boom"), ("openai", "  ")]
         if mode == "council" else ("anthropic", "single-answer"))
     m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
