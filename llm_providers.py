@@ -79,6 +79,11 @@ _KEY_FIELD = {
     # file is on the path of every heavy job on the box and a routing change
     # nobody asked for is the worst kind.
     "ollama":    "ollama_url",
+    # S125: the TP=2 vLLM endpoint on cumulus1 (CUMULUS2-TP2-PLAN.md). Same
+    # two gates as ollama: absent from DEFAULT_ORDER, and its key field is
+    # unset unless someone sets it -- so only an explicit call("vllm", ...)
+    # ever reaches it, and blanking vllm_url is the whole rollback.
+    "vllm":      "vllm_url",
     "anthropic": "anthropic_api_key",
     "gemini":    "gemini_api_key",
     "grok":      "grok_api_key",
@@ -105,8 +110,14 @@ def _http_post(url, headers, body, timeout=_TIMEOUT):
         raise ProviderError(str(e))
 
 
-def _openai_compatible(url, key, model, system, user, max_tokens):
-    """OpenAI Chat Completions shape — shared by OpenAI, xAI (Grok), DeepSeek."""
+def _openai_compatible(url, key, model, system, user, max_tokens,
+                       timeout=_TIMEOUT):
+    """OpenAI Chat Completions shape — shared by OpenAI, xAI (Grok), DeepSeek.
+
+    `timeout` exists for the vLLM path only (S125): a thinking-on extraction
+    measured 17-442 s at 12 tok/s, so 120 s would escalate most of them to a
+    paid call. Every other provider keeps the module default.
+    """
     _LAST.model = model
     resp = _http_post(
         url,
@@ -114,6 +125,7 @@ def _openai_compatible(url, key, model, system, user, max_tokens):
         {"model": model, "max_tokens": max_tokens,
          "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}]},
+        timeout=timeout,
     )
     return resp["choices"][0]["message"]["content"]
 
@@ -321,8 +333,37 @@ def _ollama(creds, system, user, max_tokens):
                               "local", model, system, user, max_tokens)
 
 
+VLLM_DEFAULT_TIMEOUT = 900
+
+
+def _vllm(creds, system, user, max_tokens):
+    """The TP=2 vLLM endpoint (cumulus1 127.0.0.1:8000, cumulus2 as the other
+    tensor-parallel rank). S125, CUMULUS2-TP2-PLAN.md.
+
+    Same OpenAI-compatible shape as _ollama, two differences: its own timeout
+    (`vllm_timeout`, default VLLM_DEFAULT_TIMEOUT) because the model thinks
+    for 2-6k tokens per extraction block, and its own key field so the
+    halftime jobs can prefer it and fall back to ollama when it is absent or
+    down. `vllm_url` unset = this function is never reached.
+    """
+    url = creds.get("vllm_url")
+    if not url:
+        raise ProviderError("no vllm_url — TP=2 endpoint not enabled")
+    model = creds.get("vllm_model")
+    if not model:
+        raise ProviderError("no vllm_model set in credentials.json")
+    try:
+        timeout = float(creds.get("vllm_timeout") or VLLM_DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout = VLLM_DEFAULT_TIMEOUT
+    return _openai_compatible(url.rstrip("/") + "/v1/chat/completions",
+                              "local", model, system, user, max_tokens,
+                              timeout=timeout)
+
+
 _PROVIDERS = {
     "ollama":    _ollama,
+    "vllm":      _vllm,
     "anthropic": _anthropic,
     "gemini":    _gemini,
     "grok":      _grok,
@@ -474,6 +515,39 @@ def selftest():
                             {"anthropic_api_key": "a", "openai_api_key": "o"},
                             mode="council"))
               == {"anthropic": "ERROR: down", "openai": "openai reply"})
+
+        # ── S125: the vLLM provider. Two gates, then the timeout. ──────────
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
+        check("vllm: NOT in available() even with vllm_url set (S73 gate)",
+              "vllm" not in available({"vllm_url": "http://x",
+                                       "anthropic_api_key": "a"}))
+        try:
+            call("vllm", "s", "u", {})
+            _vllm_raised = False
+        except ProviderError:
+            _vllm_raised = True
+        check("vllm: no vllm_url raises rather than guessing an endpoint",
+              _vllm_raised)
+        _seen_timeout = {}
+
+        def _recording_post(url, headers, body, timeout=_TIMEOUT):
+            _seen_timeout["t"] = timeout
+            _seen_timeout["url"] = url
+            return {"choices": [{"message": {"content": "ok"}}]}
+        globals()["_http_post"] = _recording_post
+        call("vllm", "s", "u", {"vllm_url": "http://v/", "vllm_model": "srv"})
+        check("vllm: the 900 s default timeout REACHES the transport",
+              _seen_timeout.get("t") == VLLM_DEFAULT_TIMEOUT
+              and _seen_timeout.get("url") == "http://v/v1/chat/completions")
+        check("vllm: last_model names the SERVED model (extracted_by reads it)",
+              last_model() == "srv")
+        call("vllm", "s", "u", {"vllm_url": "http://v", "vllm_model": "m",
+                                "vllm_timeout": "30"})
+        check("vllm: vllm_timeout overrides it", _seen_timeout.get("t") == 30.0)
+        call("ollama", "s", "u", {"ollama_url": "http://o", "ollama_model": "m"})
+        check("...and ollama still gets the module default, untouched",
+              _seen_timeout.get("t") == _TIMEOUT)
 
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so

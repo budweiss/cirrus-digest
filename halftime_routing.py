@@ -485,6 +485,21 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
     if stats is None:
         stats = {}
     user = "LISTINGS:\n\n{}".format(block[:24000])
+    # S125 (CUMULUS2-TP2-PLAN.md): TP=2 vLLM endpoint first when configured;
+    # any failure falls through to ollama and is counted as `vllm_fallback`,
+    # separately from `escalated`, so a dead endpoint is seen, not paid for.
+    if creds.get("vllm_url"):
+        try:
+            raw = llm_providers.call("vllm", _EXTRACT_SYSTEM, user, creds,
+                                     max_tokens=4000, retries=0)
+            got = parse_events(raw)
+            if got is not None:
+                stats["local"] = stats.get("local", 0) + 1
+                stats["vllm"] = stats.get("vllm", 0) + 1
+                return got
+        except Exception:
+            pass
+        stats["vllm_fallback"] = stats.get("vllm_fallback", 0) + 1
     try:
         raw = llm_providers.call("ollama", _EXTRACT_SYSTEM, user, creds,
                                  max_tokens=4000, retries=0)
@@ -568,10 +583,12 @@ def note_for(res: Dict) -> str:
     tot = esc + res.get("local", 0)
     rate = f"{100.0 * esc / tot:.0f}%" if tot else "n/a"
     bad = res.get("unusable", 0)
+    vfb = res.get("vllm_fallback", 0)
     return (f"{res.get('events', 0)} event(s) across "
             f"{res.get('games_swept', 0)} game(s), "
             f"escalated {esc}/{tot} ({rate})"
-            + (f", {bad} unusable" if bad else ""))
+            + (f", {bad} unusable" if bad else "")
+            + (f", vllm fell back {vfb}x" if vfb else ""))
 
 
 def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
@@ -611,7 +628,9 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
     return {"games_swept": len(todo), "events": total, "out": str(out),
             "local": llm.get("local", 0),
             "escalated": llm.get("escalated", 0),
-            "unusable": llm.get("unusable", 0)}
+            "unusable": llm.get("unusable", 0),
+            "vllm": llm.get("vllm", 0),
+            "vllm_fallback": llm.get("vllm_fallback", 0)}
 
 
 def selftest() -> int:
@@ -929,6 +948,47 @@ def _selftest_body(_real_log_path) -> int:
               st.get("escalated") == 1 and st.get("local", 0) == 0)
         check("...and the escalated events still reach the caller",
               got and got[0]["artist"] == "A")
+
+        # ── S125: the vLLM-first path, three shapes ──────────────────────
+        def _fake_vllm(vllm_raw, ollama_raw):
+            m = types.ModuleType("llm_providers")
+
+            def call(provider, _s, _u, _c, **_kw):
+                raw = vllm_raw if provider == "vllm" else ollama_raw
+                if raw is None:
+                    raise RuntimeError("%s down" % provider)
+                return raw
+
+            def escalate(_s, _u, _c, **_kw):
+                raise RuntimeError("no cloud provider")
+            m.call, m.escalate = call, escalate
+            return m
+
+        sys.modules["llm_providers"] = _fake_vllm(_good, "not json")
+        st = {}
+        _extract("block", {"vllm_url": "http://v"}, st)
+        check("vllm answers first when vllm_url is set — counted local + vllm",
+              st.get("vllm") == 1 and st.get("local") == 1
+              and st.get("vllm_fallback", 0) == 0)
+
+        sys.modules["llm_providers"] = _fake_vllm(None, _good)
+        st = {}
+        got = _extract("block", {"vllm_url": "http://v"}, st)
+        check("a DEAD vllm falls back to ollama, counted as vllm_fallback, "
+              "NOT as escalated (the S92-with-a-bill inverse)",
+              st.get("vllm_fallback") == 1 and st.get("local") == 1
+              and st.get("escalated", 0) == 0 and got[0]["artist"] == "A")
+
+        sys.modules["llm_providers"] = _fake_vllm(_good, None)
+        st = {}
+        _extract("block", {}, st)
+        check("without vllm_url the vllm provider is never called at all",
+              st.get("vllm", 0) == 0 and st.get("vllm_fallback", 0) == 0
+              and st.get("local", 0) == 0)
+        check("note_for prints the fallback count only when it is non-zero",
+              "vllm fell back 2x" in note_for({"events": 1, "games_swept": 1,
+                                               "vllm_fallback": 2})
+              and "vllm" not in note_for({"events": 1, "games_swept": 1}))
 
         sys.modules["llm_providers"] = _fake_llm()          # both blow up
         st = {}

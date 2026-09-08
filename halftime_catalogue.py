@@ -595,7 +595,7 @@ def _tag(provider: str) -> str:
 
 
 def extract_acts(source_block: str, creds: dict,
-                 pool: str = "variety") -> tuple:
+                 pool: str = "variety", stats: dict = None) -> tuple:
     """(acts, model, escalated). LOCAL FIRST — requirement 4, literally.
 
     qwen2.5:72b answers unless it cannot produce usable JSON, and only then does
@@ -611,6 +611,23 @@ def extract_acts(source_block: str, creds: dict,
 
     system = _SYSTEM_FOR_POOL.get(pool, _EXTRACT_SYSTEM)
     user = f"SOURCES:\n\n{source_block[:24000]}"
+
+    # S125 (CUMULUS2-TP2-PLAN.md): the TP=2 vLLM endpoint answers first when
+    # `vllm_url` is set. Any failure -- down, timed out, unparseable -- falls
+    # through to ollama exactly as before, and is COUNTED on `stats` under
+    # `vllm_fallback`, never as an escalation: a dead endpoint that quietly
+    # turned every call into a paid one would be the S92 failure with a bill.
+    if creds.get("vllm_url"):
+        try:
+            raw = llm_providers.call("vllm", system, user, creds,
+                                     max_tokens=4000, retries=0)
+            acts = parse_acts(raw, pool)
+            if acts is not None:
+                return acts, _tag("vllm"), False
+        except Exception:
+            pass
+        if stats is not None:
+            stats["vllm_fallback"] = stats.get("vllm_fallback", 0) + 1
 
     try:
         raw = llm_providers.call("ollama", system, user, creds,
@@ -863,10 +880,19 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
         creds = dict(creds)                     # COPY -- see the note above
         creds["ollama_model"] = _model
         log(f"model for this job: {_model} (global ollama_model stays {_global})")
+    # S125: HALFTIME_VLLM_URL / HALFTIME_VLLM_MODEL point THIS process at the
+    # TP=2 endpoint on an in-memory copy of creds -- the Phase B dry-run and
+    # gate run that way. Going live is a credentials change (Phase D), not this.
+    _vurl = os.environ.get("HALFTIME_VLLM_URL")
+    if _vurl:
+        creds = dict(creds)
+        creds["vllm_url"] = _vurl
+        creds["vllm_model"] = os.environ.get("HALFTIME_VLLM_MODEL") or "qwen3.8-27b-fp8"
+        log(f"vllm endpoint for this job: {_vurl} ({creds['vllm_model']}) -- env override")
 
     stats = {"angles": 0, "sources": 0, "found": 0, "new": 0, "updated": 0,
              "bands_rejected": 0, "marquee_rejected": 0, "sponsors_rejected": 0,
-             "escalated": 0, "local": 0}
+             "escalated": 0, "local": 0, "vllm_fallback": 0}
 
     # Build the whole worklist BEFORE the loop: the loop rebinds `pool`, so
     # anything that reads the parameter has to happen first. The two rotations
@@ -911,10 +937,15 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             return item, None, lines + ["  no fetchable sources"]
         block = "\n\n".join(f"SOURCE: {u}\n{t}" for u, t in sources)
         with _extract_gate:          # the model is the serialised resource
-            acts, model, escalated = extract_acts(block, creds, pool_)
+            # a per-worker dict: `stats` is mutated on the recording thread only
+            _vs = {}
+            acts, model, escalated = extract_acts(block, creds, pool_, stats=_vs)
+            if _vs.get("vllm_fallback"):
+                lines.append("  vllm endpoint did not answer usably — fell back to ollama")
         lines.append(f"  {len(acts)} act(s) via {model or 'nothing usable'}"
                      + (" [escalated]" if escalated else ""))
-        return item, (len(sources), acts, model, escalated), lines
+        return item, (len(sources), acts, model, escalated,
+                      _vs.get("vllm_fallback", 0)), lines
 
     _extract_gate = threading.BoundedSemaphore(_extract_worker_count())
     _workers = _worker_count(len(todo))
@@ -931,7 +962,8 @@ def run(dry_run: bool = False, angles: int = DEFAULT_ANGLES,
             log(_line)
         if got is None:
             continue
-        _n_sources, acts, model, escalated = got
+        _n_sources, acts, model, escalated, _vfb = got
+        stats["vllm_fallback"] += _vfb
         stats["sources"] += _n_sources
         if escalated:
             stats["escalated"] += 1
@@ -1409,6 +1441,44 @@ def selftest() -> int:
               _fields_for(_a[0], "angle", _m, _e)["extracted_by"]
               == "ollama:qwen3.8:27b (local)")
 
+        # ── S125: the vLLM-first path ─────────────────────────────────────
+        def _fake_vllm(vllm_raw, ollama_raw):
+            m = types.ModuleType("llm_providers")
+            state = {"model": None}
+
+            def call(provider, _s, _u, _c, **_kw):
+                state["model"] = None
+                raw = vllm_raw if provider == "vllm" else ollama_raw
+                if raw is None:
+                    raise RuntimeError("%s down" % provider)
+                state["model"] = "qwen3.8-27b-fp8" if provider == "vllm" else "qwen3.8:27b"
+                return raw
+
+            def escalate(_s, _u, _c, **_kw):
+                raise RuntimeError("no cloud provider")
+            m.call, m.escalate = call, escalate
+            m.last_model = lambda: state["model"]
+            return m
+
+        sys.modules["llm_providers"] = _fake_vllm(_acts_json, "junk")
+        _st = {}
+        _a, _m, _e = extract_acts("block", {"vllm_url": "http://v"}, stats=_st)
+        check("vllm answers first when vllm_url is set, tagged vllm:<served model>",
+              _m == "vllm:qwen3.8-27b-fp8" and _e is False
+              and _st.get("vllm_fallback", 0) == 0)
+        sys.modules["llm_providers"] = _fake_vllm(None, _acts_json)
+        _st = {}
+        _a, _m, _e = extract_acts("block", {"vllm_url": "http://v"}, stats=_st)
+        check("a DEAD vllm falls back to ollama: counted vllm_fallback, NOT escalated",
+              _m == "ollama:qwen3.8:27b" and _e is False
+              and _st.get("vllm_fallback") == 1)
+        sys.modules["llm_providers"] = _fake_vllm(_acts_json, None)
+        _st = {}
+        _a, _m, _e = extract_acts("block", {}, stats=_st)
+        check("without vllm_url the vllm provider is never called (ollama down -> "
+              "escalation path, exactly today's behaviour)",
+              _st.get("vllm_fallback", 0) == 0 and _m == "")
+
         sys.modules["llm_providers"] = _fake_llm("junk", _acts_json, "x")
         _a, _m, _e = extract_acts("block", {})
         check("an ESCALATED extraction names the cloud model, not just "
@@ -1577,7 +1647,9 @@ def main() -> int:
                 "halftimecatalogue", True,
                 f"{st.get('found', 0)} found, {st.get('new', 0)} new, "
                 f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources, "
-                f"escalated {_esc}/{_tot} ({_rate})")
+                f"escalated {_esc}/{_tot} ({_rate})"
+                + (f", vllm fell back {st['vllm_fallback']}x"
+                   if st.get("vllm_fallback") else ""))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     return 0
