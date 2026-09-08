@@ -8,9 +8,9 @@
   },
   "beta": {
     "node": "CUMULUS",
-    "digest_model": "qwen3-coder:30b",
+    "digest_model": "qwen3.8:27b",
     "num_ctx": 32768,
-    "note": "DGX Spark 128GB (256GB pooled w/ #2). Qwen3-Coder 30B-A3B MoE, 256K-capable; larger ctx for long articles/transcripts + codebases."
+    "note": "DGX Spark 121GB; cumulus2 holds the other TP=2 rank of the vLLM endpoint -- memory is NOT pooled (DGX-SPARK-PERFORMANCE.md s2). S132 (2026-09-08): digest_model was qwen3-coder:30b. Its ONE scheduled consumer, Bill's Monday ensemble draft, now drafts on the vLLM endpoint and reads this only as the fallback, so it points at the endpoint's twin -- the configured ollama_model, the model that passed the extraction gate. The 30b is removed 2026-09-14 (LOCAL-MODEL-PLAN.md Phase 1 step 4)."
   },
   "prod": {
     "node": "STRATUS",
