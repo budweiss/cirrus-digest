@@ -332,6 +332,27 @@ def _count_search(provider: str, caller: str, outcome: str, n: int = 1) -> None:
         pass
 
 
+try:
+    import llm_budget as _LB     # S136: ledger the search wrappers' token usage (plan step 6c)
+except Exception:                # optional -- the digest must run without it
+    _LB = None
+
+_CREDS_CACHE = None
+
+def _load_creds() -> dict:
+    """The credentials dict, loaded once, for llm_budget.record_call's `llm_budget`
+    block (ledger path, box). Never logged. {} on any failure -- record_call then
+    resolves its defaults and still records."""
+    global _CREDS_CACHE
+    if _CREDS_CACHE is None:
+        try:
+            with open(Path.home() / "projects/cirrus-digest/config/credentials.json") as f:
+                _CREDS_CACHE = json.load(f)
+        except Exception:
+            _CREDS_CACHE = {}
+    return _CREDS_CACHE
+
+
 _BRAVE_KEY = None
 
 def _load_brave_key() -> str:
@@ -444,7 +465,20 @@ def gemini_search(query: str, max_results: int = 3,
         # search results" — indistinguishable from a genuine empty result.
         # Same root cause as the KeyError S91 fixed in llm_providers.py and
         # S96 fixed in cirrus_bot.py; linted now (runner/gemini_parts_lint.py).
-        cand = (resp.json().get("candidates") or [{}])[0]
+        data = resp.json()
+        cand = (data.get("candidates") or [{}])[0]
+        if _LB is not None:
+            # S136: the grounding call's REAL token usage. The SEARCH itself is
+            # counted by _count_search() above and priced per request; this is
+            # the generation cost around it, which the ledger never saw.
+            try:
+                _u = data.get("usageMetadata") or {}
+                _LB.record_call(_load_creds(), "gemini", _GEMINI_MODEL, len(query), 0,
+                                in_tok=_u.get("promptTokenCount"),
+                                out_tok=_u.get("candidatesTokenCount"),
+                                task="cirrus_daily:gemini_search")
+            except Exception:
+                pass
         chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks", [])
         urls = []
         for ch in chunks:
@@ -541,6 +575,17 @@ def claude_search(query: str, max_results: int = 3,
                 timeout=55)
         resp.raise_for_status()
         data = resp.json()
+        if _LB is not None:
+            # S136: REAL token usage of the web_search call (the per-search fee
+            # is counted separately by _count_search). Recorded even when the
+            # tool returned an error object -- the tokens were still consumed.
+            try:
+                _u = data.get("usage") or {}
+                _LB.record_call(_load_creds(), "anthropic", _CLAUDE_SEARCH_MODEL, len(query), 0,
+                                in_tok=_u.get("input_tokens"), out_tok=_u.get("output_tokens"),
+                                task="cirrus_daily:claude_search")
+            except Exception:
+                pass
         urls = []
         for block in data.get("content", []) or []:
             if block.get("type") != "web_search_tool_result":
@@ -1883,6 +1928,12 @@ def selftest() -> bool:
     helpers. Prints one PASS/FAIL line per check. Returns True iff every
     check passed."""
     ok = True
+    # S136 / T77: ledger recording OFF for the whole suite. Only the block near
+    # the end, which injects a tempfile ledger, turns it on. Nothing in this
+    # suite may write to out/ -- the first hook of this kind leaked live rows.
+    _rg = _LB.recording(False) if _LB is not None else None
+    if _rg is not None:
+        _rg.__enter__()
 
     def check(name, got, expected):
         nonlocal ok
@@ -1973,6 +2024,77 @@ def selftest() -> bool:
     _score_tag = score_article_url("https://medium.com/tag/ai", ["article"])
     check("score_article_url: article path outranks a tag page",
           _score_article > _score_tag, True)
+
+    # ── S136: the two search wrappers ledger their REAL token usage (step 6c). ──
+    # requests.post is stubbed per provider shape; the key loaders, the creds
+    # loader and the LIVE search counter (_count_search -> logs/search-usage.json)
+    # are stubbed too; ledger + pricing are a tempfile (T32). The inverse --
+    # recording OFF writes nothing -- is checked so the hook cannot pass by
+    # always firing.
+    if _LB is not None:
+        import tempfile as _tf, shutil as _sh
+        _td = _tf.mkdtemp(prefix="cirrus-daily-selftest-")
+        _led = str(Path(_td) / "ledger.jsonl")
+        _pr = str(Path(_td) / "pricing.json")
+        Path(_pr).write_text(json.dumps({"models": {_GEMINI_MODEL: {"in": 1.0, "out": 1.0},
+                                                    _CLAUDE_SEARCH_MODEL: {"in": 1.0, "out": 1.0}}}))
+        _tc = {"llm_budget": {"pricing_path": _pr, "ledger_path": _led, "box": "selftest"}}
+
+        class _R:
+            def __init__(self, p): self._p = p
+            def raise_for_status(self): pass
+            def json(self): return self._p
+
+        _pay = {
+            "generativelanguage": {
+                "candidates": [{"groundingMetadata": {"groundingChunks": [{"web": {"uri": "https://ex.com/a"}}]}}],
+                "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 4}},
+            "api.anthropic.com": {
+                "content": [{"type": "web_search_tool_result", "content": [{"url": "https://ex.com/b"}]}],
+                "usage": {"input_tokens": 33, "output_tokens": 6}},
+        }
+
+        def _fake_post(url, *a, **k):
+            for key, p in _pay.items():
+                if key in url:
+                    return _R(p)
+            raise AssertionError("selftest: unexpected url " + url)
+
+        _saved = (requests.post, globals()["_load_gemini_key"], globals()["_load_anthropic_key"],
+                  globals()["_load_creds"], globals()["_count_search"])
+        requests.post = _fake_post
+        globals()["_load_gemini_key"] = lambda: "k"
+        globals()["_load_anthropic_key"] = lambda: "k"
+        globals()["_load_creds"] = lambda: _tc
+        globals()["_count_search"] = lambda *a, **k: None      # never the live counter
+        try:
+            with _LB.recording(True):
+                _g = gemini_search("q", caller="selftest")
+                _c = claude_search("q", caller="selftest")
+            _rows = [json.loads(l) for l in open(_led)] if Path(_led).exists() else []
+            _by = {r.get("task"): r for r in _rows}
+            check("S136: search wrappers still return their URLs",
+                  (_g, _c), (["https://ex.com/a"], ["https://ex.com/b"]))
+            check("S136: gemini_search ledgers REAL usage",
+                  (_by.get("cirrus_daily:gemini_search", {}).get("in_tok"),
+                   _by.get("cirrus_daily:gemini_search", {}).get("out_tok")), (21, 4))
+            check("S136: claude_search ledgers REAL usage",
+                  (_by.get("cirrus_daily:claude_search", {}).get("in_tok"),
+                   _by.get("cirrus_daily:claude_search", {}).get("out_tok")), (33, 6))
+            check("S136: exactly two rows, box named",
+                  (len(_rows), all(r.get("box") == "selftest" for r in _rows)), (2, True))
+            with _LB.recording(False):
+                gemini_search("q", caller="selftest")
+                claude_search("q", caller="selftest")
+            check("S136: recording OFF writes nothing (T77)",
+                  len([l for l in open(_led)]) if Path(_led).exists() else 0, 2)
+        finally:
+            requests.post = _saved[0]
+            globals()["_load_gemini_key"], globals()["_load_anthropic_key"] = _saved[1], _saved[2]
+            globals()["_load_creds"], globals()["_count_search"] = _saved[3], _saved[4]
+            _sh.rmtree(_td, ignore_errors=True)
+    if _rg is not None:
+        _rg.__exit__(None, None, None)
 
     print(f"[selftest] {'ALL PASS' if ok else 'FAILURES PRESENT'}")
     return ok

@@ -1,6 +1,6 @@
 {
   "_comment": "LLM API pricing + spend caps for the budget guard (llm_budget.py). Rates in USD per 1,000,000 tokens. Confirm against https://docs.claude.com pricing at wire time. Discount multipliers: batch=0.5, cache_read=0.1 (cached input only), cache_write=1.25.",
-  "_updated": "2026-09-08 (S132: local models at $0)",
+  "_updated": "2026-09-08 (S136: search_per_1k)",
   "models": {
     "claude-opus-5": {
       "in": 5.0,
@@ -90,5 +90,12 @@
     "per_call": 10.0
   },
   "unknown_model_out_per_m": 25.0,
-  "_comment_local": "S132: local models (ollama on either box, the TP=2 vLLM endpoint on cumulus1) are priced at $0 so llm_providers.call() can record their VOLUME to the ledger at a true cost. A local model missing here is still recorded, flagged unpriced at unknown_model_out_per_m -- add it rather than let the ceiling stand."
+  "_comment_local": "S132: local models (ollama on either box, the TP=2 vLLM endpoint on cumulus1) are priced at $0 so llm_providers.call() can record their VOLUME to the ledger at a true cost. A local model missing here is still recorded, flagged unpriced at unknown_model_out_per_m -- add it rather than let the ceiling stand.",
+  "search_per_1k": {
+    "_source": "S136: ONE price table for web-search TOOL calls, read by search_usage.report() on each box and by runner/llm_spend_report.py on the Mac. brave 5.0 = Search plan $5/1k with $5 free credit/mo (docs/PAID-ACCESS-REGISTRY.md:35). claude 10.0 = web_search_20260209 $10/1k (PAID-ACCESS-REGISTRY.md:104, cirrus_daily.py:577). gemini 0.0 = grounding ASSUMED within the free tier -- not verified against the vendor page; set the real rate when known. A provider missing here is shown UNPRICED by the report, never as $0.",
+    "brave": 5.0,
+    "claude": 10.0,
+    "gemini": 0.0,
+    "ddg": 0.0
+  }
 }

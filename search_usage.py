@@ -47,7 +47,29 @@ RETAIN_DAYS = 120
 
 # Rough unit costs, only so the report can show dollars alongside counts.
 # Not billing truth -- the provider dashboard is. Update if a plan changes.
-COST_PER_1K = {"brave": 5.00, "gemini": 0.0, "ddg": 0.0}
+#
+# S136: the numbers now live in config/llm_pricing.json ("search_per_1k") so
+# the Mac-side runner/llm_spend_report.py reads the SAME table instead of a
+# second copy that drifts (S102). The literals below are the fallback when the
+# file or key is missing -- and they now carry claude ($10/1k, docs/PAID-ACCESS-
+# REGISTRY.md), which this dict never had, so report() priced Claude at $0.
+_FALLBACK_COST_PER_1K = {"brave": 5.00, "claude": 10.00, "gemini": 0.0, "ddg": 0.0}
+
+
+def _load_rates(pricing_path=None) -> dict:
+    """search_per_1k from config/llm_pricing.json (keys starting with '_' are
+    comments), else the fallback literals. Never raises."""
+    try:
+        p = Path(pricing_path) if pricing_path else PROJECT_DIR / "config/llm_pricing.json"
+        raw = json.loads(p.read_text()).get("search_per_1k") or {}
+        rates = {k: float(v) for k, v in raw.items()
+                 if v is not None and not str(k).startswith("_")}
+        return rates or dict(_FALLBACK_COST_PER_1K)
+    except Exception:
+        return dict(_FALLBACK_COST_PER_1K)
+
+
+COST_PER_1K = _load_rates()
 
 
 # S119: record() is a read-modify-write on one JSON file. It was safe while
@@ -166,6 +188,16 @@ def _selftest() -> bool:
         ck("providers are kept separate", requests_for("gemini") == 2)
         ck("report names the biggest consumer first",
            "privacy_monitor" in report().split("daily_digest")[0])
+
+        # S136: rates come from the shared pricing file when present
+        _pp = Path(tmpdir) / "pricing.json"
+        _pp.write_text(json.dumps({"search_per_1k": {"brave": 7.5, "claude": 10.0,
+                                                     "_source": "test"}}))
+        _r = _load_rates(_pp)
+        ck("rates load from the pricing file and skip '_' comment keys",
+           _r.get("brave") == 7.5 and "_source" not in _r)
+        ck("a missing pricing file falls back to the literals -- which now price claude",
+           _load_rates(Path(tmpdir) / "nope.json").get("claude") == 10.0)
 
         # ── S119: concurrent record() must not LOSE counts. This is the paid
         # -search counter (S90, a $25/mo cap), and record() is a
