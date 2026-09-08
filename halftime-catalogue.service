@@ -10,6 +10,11 @@ Group=buddy
 WorkingDirectory=/home/buddy/cirrus-digest
 Environment=HOME=/home/buddy
 Environment=TARGET_ENV=beta
+# S127 (Buddy: "start phase D, catalogue first"): the extraction calls go to
+# the TP=2 vLLM endpoint (vllm_url in credentials), which batches, so eight
+# concurrent model calls instead of one. Without vllm_url this must stay 1 --
+# ollama cannot batch and S119 measured escalation 2/7 -> 6/7 at concurrency.
+Environment=HALFTIME_CATALOGUE_EXTRACT_WORKERS=8
 ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/halftime_catalogue.py
 
 # Rebuild the page this job feeds. Without it the sweep and the
