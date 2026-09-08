@@ -29,6 +29,7 @@ Public API
 """
 
 import json
+import os
 import sys
 import threading
 import urllib.request
@@ -183,20 +184,27 @@ def _http_post(url, headers, body, timeout=_TIMEOUT):
 
 
 def _openai_compatible(url, key, model, system, user, max_tokens,
-                       timeout=_TIMEOUT):
+                       timeout=_TIMEOUT, extra=None):
     """OpenAI Chat Completions shape — shared by OpenAI, xAI (Grok), DeepSeek.
 
     `timeout` exists for the vLLM path only (S125): a thinking-on extraction
     measured 17-442 s at 12 tok/s, so 120 s would escalate most of them to a
     paid call. Every other provider keeps the module default.
+
+    `extra` (S139) is merged into the request body — also vLLM-only today, for
+    `chat_template_kwargs`. Every other provider passes nothing and its body is
+    byte-for-byte what it was.
     """
     _LAST.model = model
+    body = {"model": model, "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}]}
+    if extra:
+        body.update(extra)
     resp = _http_post(
         url,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        {"model": model, "max_tokens": max_tokens,
-         "messages": [{"role": "system", "content": system},
-                      {"role": "user", "content": user}]},
+        body,
         timeout=timeout,
     )
     return resp["choices"][0]["message"]["content"]
@@ -407,6 +415,26 @@ def _ollama(creds, system, user, max_tokens):
 
 VLLM_DEFAULT_TIMEOUT = 900
 
+# S139 (LOCAL-MODEL-PLAN step 5): per-JOB reasoning effort for the endpoint.
+# The server's default is `--default-chat-template-kwargs reasoning_effort=medium`
+# (serve-tp2.sh); a unit that sets VLLM_REASONING_EFFORT overrides it for its own
+# requests only, via the OpenAI-compatible `chat_template_kwargs` field -- no
+# server restart, no effect on any other job. Unset = the body is unchanged.
+# Anything outside the template's vocabulary is ignored (and the request goes out
+# at the server default) rather than 400-ing a client job over a typo. The
+# vocabulary is the Qwen3.8 chat_template.jinja's, read 2026-09-08: it raises on
+# anything but these three -- "high" is NOT one of them (probed: HTTP error).
+VLLM_EFFORT_ENV = "VLLM_REASONING_EFFORT"
+VLLM_EFFORT_VALUES = ("low", "medium", "xhigh")
+
+
+def _vllm_extra():
+    """{} or {"chat_template_kwargs": {"reasoning_effort": <env>}}."""
+    v = (os.environ.get(VLLM_EFFORT_ENV) or "").strip().lower()
+    if v in VLLM_EFFORT_VALUES:
+        return {"chat_template_kwargs": {"reasoning_effort": v}}
+    return {}
+
 
 def _vllm(creds, system, user, max_tokens):
     """The TP=2 vLLM endpoint (cumulus1 127.0.0.1:8000, cumulus2 as the other
@@ -430,7 +458,7 @@ def _vllm(creds, system, user, max_tokens):
         timeout = VLLM_DEFAULT_TIMEOUT
     return _openai_compatible(url.rstrip("/") + "/v1/chat/completions",
                               "local", model, system, user, max_tokens,
-                              timeout=timeout)
+                              timeout=timeout, extra=_vllm_extra())
 
 
 _PROVIDERS = {
@@ -638,6 +666,48 @@ def selftest():
         call("ollama", "s", "u", {"ollama_url": "http://o", "ollama_model": "m"})
         check("...and ollama still gets the module default, untouched",
               _seen_timeout.get("t") == _TIMEOUT)
+
+        # ── S139: per-job reasoning effort reaches the wire, and ONLY when set ──
+        _seen_body = {}
+
+        def _body_post(url, headers, body, timeout=_TIMEOUT):
+            _seen_body["b"] = body
+            return {"choices": [{"message": {"content": "ok"}}]}
+        globals()["_http_post"] = _body_post
+        _vc = {"vllm_url": "http://v", "vllm_model": "m"}
+        _saved_effort = os.environ.pop(VLLM_EFFORT_ENV, None)
+        try:
+            call("vllm", "s", "u", _vc)
+            check("effort: env unset -> no chat_template_kwargs in the body",
+                  "chat_template_kwargs" not in _seen_body["b"])
+            os.environ[VLLM_EFFORT_ENV] = "low"
+            call("vllm", "s", "u", _vc)
+            check("effort: env=low -> chat_template_kwargs.reasoning_effort=low",
+                  _seen_body["b"].get("chat_template_kwargs")
+                  == {"reasoning_effort": "low"})
+            check("...and the rest of the body is intact (model, max_tokens, 2 messages)",
+                  _seen_body["b"]["model"] == "m"
+                  and isinstance(_seen_body["b"]["max_tokens"], int)
+                  and len(_seen_body["b"]["messages"]) == 2)
+            os.environ[VLLM_EFFORT_ENV] = " Medium "
+            call("vllm", "s", "u", _vc)
+            check("effort: case/whitespace normalised",
+                  _seen_body["b"].get("chat_template_kwargs")
+                  == {"reasoning_effort": "medium"})
+            os.environ[VLLM_EFFORT_ENV] = "turbo"
+            call("vllm", "s", "u", _vc)
+            check("effort: a value outside the template vocabulary is DROPPED, "
+                  "not sent (no 400 on a client job)",
+                  "chat_template_kwargs" not in _seen_body["b"])
+            os.environ[VLLM_EFFORT_ENV] = "low"
+            call("ollama", "s", "u", {"ollama_url": "http://o", "ollama_model": "m"})
+            check("effort: ollama body untouched even with the env set",
+                  "chat_template_kwargs" not in _seen_body["b"])
+        finally:
+            if _saved_effort is None:
+                os.environ.pop(VLLM_EFFORT_ENV, None)
+            else:
+                os.environ[VLLM_EFFORT_ENV] = _saved_effort
 
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so
