@@ -68,9 +68,39 @@ def set_default_task(task):
         DEFAULT_TASK = str(task)
 
 
+# S133: the recording KILL SWITCH for test suites. The hook's DEFAULT destination
+# is the real out/ ledger, so any selftest that calls call() with bare creds and a
+# stubbed non-empty reply writes a LIVE row. That happened on both boxes the first
+# time this shipped -- 10 junk rows each, tagged "llm_providers", box "unknown"
+# (T77 in docs/TOOLING-TRAPS.md). selftest() runs under recording(False); only
+# its own ledger block, which injects a tempfile ledger, re-enables it. Production
+# never touches this; the default is True and the __main__ check pins it there.
+_RECORDING = True
+
+
+class recording:
+    """Context manager: `with recording(False): ...` suppresses ledger writes for
+    the block and restores the previous state on exit (exceptions included)."""
+
+    def __init__(self, enabled):
+        self._want = bool(enabled)
+
+    def __enter__(self):
+        global _RECORDING
+        self._prev, _RECORDING = _RECORDING, self._want
+        return self
+
+    def __exit__(self, *exc):
+        global _RECORDING
+        _RECORDING = self._prev
+        return False
+
+
 def _record(provider, system, user, reply, creds, task):
     """Best-effort ledger row. Imported lazily and wrapped: the ledger must never
     be able to break a client job, and llm_budget is optional to this module."""
+    if not _RECORDING:
+        return
     try:
         import llm_budget as _B
         _B.record_call(creds, provider, last_model() or "?",
@@ -518,6 +548,11 @@ def selftest():
 
     _real_providers = dict(_PROVIDERS)
     _real_post = _http_post
+    # S133 / T77: the whole suite runs with ledger recording OFF. Every check
+    # below that calls call() with bare creds and a stubbed reply would
+    # otherwise append to the REAL out/ ledger on the box running it.
+    _rec_guard = recording(False)
+    _rec_guard.__enter__()
     try:
         # retry-on-empty: provider returns '' then '  ' then a real reply
         _seq = iter(["", "  ", "real answer"])
@@ -710,7 +745,17 @@ def selftest():
                 return text
             return _p
 
+        # T77 first: with recording OFF (as the suite has been running so far), a
+        # call that would otherwise record writes NOTHING -- this is the guard
+        # that keeps every other check in this file off the live ledger.
         _PROVIDERS["anthropic"] = _stub("stub-model")
+        call("anthropic", "sys", "usr", dict(_bud, anthropic_api_key="k"))
+        check("ledger: with recording(False) a recordable call writes NOTHING "
+              "(T77 -- the suite's live-ledger guard)",
+              not _os.path.exists(_ledger) and _RECORDING is False)
+        _prev_rec = _RECORDING
+        globals()["_RECORDING"] = True      # this block, and only this block, records
+
         call("anthropic", "sys", "usr", dict(_bud, anthropic_api_key="k"))
         _r = _rows()
         check("ledger: a cloud call writes exactly one row", len(_r) == 1)
@@ -759,11 +804,13 @@ def selftest():
         escalate("s", "u", dict(_bud, anthropic_api_key="a"), mode="single", record=False)
         check("ledger: escalate() forwards record=False", len(_rows()) == _n)
         _LAST.model = None            # leave the thread slot as the caller found it
+        globals()["_RECORDING"] = _prev_rec   # back to OFF for the rest of the suite
         _sh.rmtree(_td, ignore_errors=True)
     finally:
         globals()["_http_post"] = _real_post
         _PROVIDERS.clear()
         _PROVIDERS.update(_real_providers)
+        _rec_guard.__exit__(None, None, None)   # recording back to its pre-suite state
 
     return _ok
 
@@ -783,9 +830,11 @@ if __name__ == "__main__":
         _clean = (_PROVIDERS == _snap_providers
                   and all(_PROVIDERS[k] is _snap_providers[k] for k in _snap_providers)
                   and _http_post is _snap_post
-                  and last_model() is None)
+                  and last_model() is None
+                  and _RECORDING is True)      # S133: recording must be back ON
         print(f"  [{'OK ' if _clean else 'FAIL'}] selftest leaves no stubbed "
-              f"provider, HTTP layer or last_model behind (it is importable)")
+              f"provider, HTTP layer, last_model or recording switch behind "
+              f"(it is importable)")
         _passed = _passed and _clean
         print("PASS" if _passed else "FAIL")
         sys.exit(0 if _passed else 1)
