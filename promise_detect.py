@@ -123,12 +123,52 @@ def detect_promise(text: str, creds: dict) -> dict | None:
             return None
         user = f"The outbound email:\n\n{text[:6000]}"
 
-        # 1. Local first. Absent ollama_url this raises and we fall through --
+        # S137 (Buddy: "go ahead with step 7"): the TP=2 vLLM endpoint FIRST when
+        # this box has one (cumulus1 since S127), then ollama exactly as before,
+        # then the paid escalation -- the same chain the halftime jobs run
+        # (LOCAL-MODEL-PLAN.md Phase 1 step 7). A vLLM miss is not an escalation:
+        # it falls through to ollama, and the spend ledger tells them apart by
+        # provider under task "intake:promise_detect" -- vllm / ollama rows at $0,
+        # anthropic rows at cost -- which is how the fallback rate is measured
+        # (S103: unprinted is unmeasured). On a box with no vllm_url this block
+        # is skipped and the path below is byte-for-byte the old one.
+        #
+        # LOCAL_MAX_TOKENS: the budget was 300, sized in S78 for a non-thinking
+        # qwen2.5:72b. Both local models now THINK (qwen3.8), and reasoning tokens
+        # count against max_tokens, so at 300 the JSON was being cut off mid-value
+        # -- measured 2026-09-08 on a realistic two-clause email: vLLM@300 and
+        # ollama@300 both unparseable, both parse at 2000. Every such truncation
+        # became a paid escalation or a MISSED promise. Escalation keeps 300: the
+        # cloud model does not think and 300 is ample for the JSON.
+        LOCAL_MAX_TOKENS = 2000
+        _TASK = "intake:promise_detect"
+
+        # 0. vLLM endpoint first, when configured.
+        if creds.get("vllm_url"):
+            try:
+                import llm_providers
+                raw = llm_providers.call("vllm", _PROMISE_SYSTEM, user, creds,
+                                         max_tokens=LOCAL_MAX_TOKENS, retries=0,
+                                         task=_TASK)
+                parsed = _parse_promise_json(raw)
+                if parsed is not None:
+                    is_p, what = parsed
+                    if not is_p:
+                        return None
+                    if what:
+                        return {"what": what, "by": _tag("vllm"),
+                                "escalated": False}
+                    # yes-with-no-deliverable: fall through, same as ollama below
+            except Exception:
+                pass
+
+        # 1. Local (ollama). Absent ollama_url this raises and we fall through --
         #    which is the correct behaviour on a box where it is not enabled.
         try:
             import llm_providers
             raw = llm_providers.call("ollama", _PROMISE_SYSTEM, user, creds,
-                                     max_tokens=300, retries=0)
+                                     max_tokens=LOCAL_MAX_TOKENS, retries=0,
+                                     task=_TASK)
             parsed = _parse_promise_json(raw)
             if parsed is not None:
                 is_p, what = parsed
@@ -146,7 +186,8 @@ def detect_promise(text: str, creds: dict) -> dict | None:
         try:
             import llm_providers
             provider, raw = llm_providers.escalate(
-                _PROMISE_SYSTEM, user, creds, max_tokens=300, mode="single")
+                _PROMISE_SYSTEM, user, creds, max_tokens=300, mode="single",
+                task=_TASK)
             parsed = _parse_promise_json(raw)
             if parsed is None:
                 return None
@@ -231,18 +272,31 @@ def selftest() -> int:
     _yes = '{"promise": true, "what": "send the workbook"}'
     _text = "We'll send you the whole 224 as a workbook next week."
 
-    def _fake_llm(local_raw, esc_raw, model):
+    def _fake_llm(local_raw, esc_raw, model, vllm_raw="__unset__"):
+        """Fake llm_providers. `vllm_raw`: "__unset__" = vLLM behaves like the
+        local model (legacy checks below never set vllm_url, so it is never
+        reached); a string = what call("vllm") returns; None = call("vllm")
+        raises. `seen` records (provider, max_tokens) for every call() and
+        ("escalate", max_tokens) for escalate() -- the S137 checks read it."""
         m = types.ModuleType("llm_providers")
         st = {"model": None}
+        seen = []
 
         def call(_p, _s, _u, _c, **_kw):
+            seen.append((_p, _kw.get("max_tokens")))
             st["model"] = None
+            if _p == "vllm" and vllm_raw != "__unset__":
+                if vllm_raw is None:
+                    raise RuntimeError("endpoint down")
+                st["model"] = "qwen3.8-27b-fp8"
+                return vllm_raw
             if local_raw is None:
                 raise RuntimeError("no local model")
             st["model"] = model
             return local_raw
 
         def escalate(_s, _u, _c, **_kw):
+            seen.append(("escalate", _kw.get("max_tokens")))
             st["model"] = None
             if esc_raw is None:
                 raise RuntimeError("no cloud provider")
@@ -250,6 +304,7 @@ def selftest() -> int:
             return ("anthropic", esc_raw)
         m.call, m.escalate = call, escalate
         m.last_model = lambda: st["model"]
+        m.seen = seen
         return m
 
     _real = sys.modules.get("llm_providers")
@@ -274,6 +329,48 @@ def selftest() -> int:
         check("an unknown model degrades to the bare provider — never "
               "'ollama:None' written into a client ledger",
               _got and _got["by"] == "ollama")
+
+        # ── S137: vLLM first, ollama second, paid third -- and the budget fix.
+        # Same three shapes the halftime jobs got in Phase B, asserted on which
+        # providers were actually CALLED (the fake records them), not only on the
+        # label that came back.
+        _vc = {"vllm_url": "http://v", "vllm_model": "m"}
+        _fl = _fake_llm(_yes, None, "qwen3.8:27b", vllm_raw=_yes)
+        sys.modules["llm_providers"] = _fl
+        _got = detect_promise(_text, _vc)
+        check("S137: with vllm_url the ENDPOINT decides and is labelled as such",
+              _got and _got["by"] == "vllm:qwen3.8-27b-fp8" and _got["escalated"] is False)
+        check("S137: ...and ollama is NOT called when vLLM answered",
+              [p for p, _ in _fl.seen] == ["vllm"])
+        _fl = _fake_llm(_yes, None, "qwen3.8:27b", vllm_raw=None)
+        sys.modules["llm_providers"] = _fl
+        _got = detect_promise(_text, _vc)
+        check("S137: a vLLM failure falls through to ollama -- NOT to the paid model",
+              _got and _got["by"] == "ollama:qwen3.8:27b" and _got["escalated"] is False
+              and [p for p, _ in _fl.seen] == ["vllm", "ollama"])
+        _fl = _fake_llm(_yes, None, "qwen3.8:27b", vllm_raw="not json at all")
+        sys.modules["llm_providers"] = _fl
+        _got = detect_promise(_text, _vc)
+        check("S137: an UNPARSEABLE vLLM reply also falls through to ollama",
+              _got and _got["by"] == "ollama:qwen3.8:27b"
+              and [p for p, _ in _fl.seen] == ["vllm", "ollama"])
+        _fl = _fake_llm(_yes, None, "qwen3.8:27b", vllm_raw=_yes)
+        sys.modules["llm_providers"] = _fl
+        _got = detect_promise(_text, {})
+        check("S137: with NO vllm_url the endpoint is never called (byte-for-byte old path)",
+              _got and _got["by"] == "ollama:qwen3.8:27b"
+              and [p for p, _ in _fl.seen] == ["ollama"])
+        # The budget: local calls must get room for the model to THINK before the
+        # JSON; the paid escalation keeps 300 (a non-thinking model, ample).
+        _fl = _fake_llm("junk", _yes, "qwen3.8:27b", vllm_raw="junk")
+        sys.modules["llm_providers"] = _fl
+        detect_promise(_text, _vc)
+        _mt = dict(_fl.seen)
+        check("S137: local calls (vllm, ollama) get >= 2000 tokens -- 300 was truncating "
+              "thinking models mid-JSON (measured 2026-09-08)",
+              (_mt.get("vllm") or 0) >= 2000 and (_mt.get("ollama") or 0) >= 2000)
+        check("S137: the paid escalation keeps its 300-token budget",
+              _mt.get("escalate") == 300)
 
         # record() is what writes the ledger, and record() has no path
         # argument -- so it is driven with open_promise STUBBED rather than
