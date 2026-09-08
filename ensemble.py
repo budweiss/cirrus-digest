@@ -7,7 +7,11 @@ so the same shared code A/Bs ensemble-vs-baseline by flipping one credential.
 
 Pipeline (only in council mode)
 -------------------------------
-  1. DRAFT (optional)  — a cheap local qwen first pass, for the judge's context.
+  1. DRAFT (optional)  — a cheap local first pass, for the judge's context: the
+                         TP=2 vLLM endpoint when this box has `vllm_url` (S131,
+                         so cumulus1 never loads a second ollama model beside
+                         the 27B fallback), else the ollama model in `local`.
+                         Best-effort either way; falls through on any miss.
   2. CROSS-CHECK       — llm_providers.escalate(mode="council"): every keyed
                          provider answers the SAME prompt independently. This is
                          where one model's hallucinated ENSO figure gets caught.
@@ -36,7 +40,8 @@ Public API
     best_answer(system, user, creds, *, max_tokens=8000, task="",
                 local=None, session_id=None, app_dir=None, mode=None)
         -> (meta: dict, text: str)
-      meta = {"mode","members","judge","degraded","reason","est_cost_usd"}
+      meta = {"mode","members","judge","degraded","reason","est_cost_usd",
+              "draft_by"}   # "vllm" | "ollama" | "" — which engine drafted (S131)
 """
 
 import json
@@ -60,6 +65,14 @@ _MODEL_FIELD = {
     "deepseek":  ("deepseek_model",),
 }
 _JUDGE_ORDER = ["anthropic", "openai", "gemini", "grok", "deepseek"]
+
+# S131: answer budget for the vLLM draft. The endpoint runs with thinking ON at
+# reasoning_effort=medium, and reasoning tokens count against max_tokens (S125
+# measured 291-2,688 per block at medium), so this must leave room for the
+# answer after the thinking. _judge_prompt() truncates the draft to 6,000 CHARS
+# anyway, so a longer draft is never seen by the judge. Bounded above by the
+# provider's own 900 s `vllm_timeout`.
+DRAFT_MAX_TOKENS = 6000
 
 
 # ── local draft (optional, best-effort) ────────────────────────────────────────
@@ -186,7 +199,7 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     mode = (mode or pol.get("mode", "single")).lower()
     ens = creds.get("ensemble", {}) or {}
     meta = {"mode": mode, "members": [], "judge": None, "degraded": False,
-            "reason": "", "est_cost_usd": None}
+            "reason": "", "est_cost_usd": None, "draft_by": ""}
 
     def _baseline(reason):
         meta["degraded"] = (mode == "council")
@@ -224,8 +237,29 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         except Exception as e:
             return _baseline(f"budget uncomputable ({e}) — using baseline")
 
-    # 1) optional local draft (best-effort)
-    draft = _local_draft(system, user, local) if local else ""
+    # 1) optional local draft (best-effort). S131: the TP=2 endpoint FIRST when
+    # this box has one (cumulus1 since S127), then the ollama draft exactly as
+    # before. Why: Bill's Monday run was the one job that loaded a SECOND ollama
+    # model (qwen3-coder:30b, 18 GB) beside the 27B fallback, and that 18 GB is
+    # what pinned the endpoint at 0.35 utilisation and blocked a larger model --
+    # LOCAL-MODEL-PLAN.md section 2. The judge writes the answer; the draft is
+    # context, so nothing Bill sees changes. `draft_by` is recorded because the
+    # gate is "the draft came from vLLM and ollama stayed idle", and a counter
+    # that is not printed is not measured (S103). An EMPTY vLLM reply is a miss,
+    # not a draft -- call() returns "" after its retry rather than raising.
+    draft = ""
+    if creds.get("vllm_url"):
+        try:
+            draft = (L.call("vllm", system, user, creds,
+                            max_tokens=DRAFT_MAX_TOKENS) or "").strip()
+        except Exception:
+            draft = ""
+        if draft:
+            meta["draft_by"] = "vllm"
+    if not draft and local:
+        draft = _local_draft(system, user, local)
+        if draft:
+            meta["draft_by"] = "ollama"
 
     # 2) council: every keyed provider answers independently
     try:
@@ -299,7 +333,7 @@ def selftest():
     llm_providers so it runs fully offline (no network, no live keys, no ledger
     writes). Returns True on success, False on failure. Never raises — every
     assertion is recorded via check() and the aggregate result is returned."""
-    global B
+    global B, _local_draft
     B = None    # isolate: force unmetered in the offline selftest (no ledger writes)
     ok = True
 
@@ -351,6 +385,68 @@ def selftest():
     check("council -> members recorded", set(m["members"]) == {"anthropic", "gemini", "openai"})
     check("council -> judge is anthropic", m["judge"] == "anthropic")
     check("council -> not degraded", m["degraded"] is False)
+
+    # S131: the vLLM-first draft. Three shapes, mirroring the halftime jobs'
+    # Phase B tests: (i) vLLM answers -> it drafts and ollama is NOT touched;
+    # (ii) vLLM raises, and (iii) vLLM returns EMPTY -> both fall through to the
+    # ollama draft; (iv) no vllm_url -> vLLM is never called, byte-for-byte the
+    # old path. Asserted on BEHAVIOUR the judge can see -- the draft text must
+    # actually appear in the judge's prompt -- not only on the meta flag (S84:
+    # a flag that is set is not proof the thing happened).
+    _saved_call, _saved_draft = L.call, _local_draft
+    _seen = {"provs": [], "judge_u": "", "vllm_max": None}
+    _vllm = {"reply": "VDRAFT", "raise": False}
+    def _fake_call(prov, s, u, c, max_tokens=0, retries=1):
+        _seen["provs"].append(prov)
+        if prov == "vllm":
+            _seen["vllm_max"] = max_tokens   # what the draft call actually asked for
+            if _vllm["raise"]:
+                raise L.ProviderError("endpoint down")
+            return _vllm["reply"]
+        _seen["judge_u"] = u          # the judge's prompt carries the draft
+        return '{"answer": 1, "note": "reconciled"}'
+    def _fake_draft(s, u, local, timeout=60):
+        _seen["provs"].append("ollama-draft")
+        return "ODRAFT"
+    L.call, _local_draft = _fake_call, _fake_draft
+    _vc = dict(base_creds, dev_escalation={"mode": "council"},
+               vllm_url="http://v", vllm_model="m")
+    _loc = {"host": "http://o", "model": "qwen3-coder:30b"}
+    try:
+        # (i) vLLM answers
+        _seen.update(provs=[], judge_u="")
+        m, _ = best_answer("sys", "usr", _vc, local=_loc)
+        check("vllm draft: draft_by == vllm", m["draft_by"] == "vllm")
+        check("vllm draft: ollama draft NOT called", "ollama-draft" not in _seen["provs"])
+        check("vllm draft: the vLLM text reached the judge",
+              "VDRAFT" in _seen["judge_u"] and "ODRAFT" not in _seen["judge_u"])
+        check("vllm draft: capped at DRAFT_MAX_TOKENS, not the council's 8000",
+              _seen["vllm_max"] == DRAFT_MAX_TOKENS)
+        # (ii) vLLM raises -> ollama draft
+        _seen.update(provs=[], judge_u="")
+        _vllm["raise"] = True
+        m, _ = best_answer("sys", "usr", _vc, local=_loc)
+        check("vllm down: falls through to ollama draft", m["draft_by"] == "ollama")
+        check("vllm down: vLLM was tried first", _seen["provs"][0] == "vllm")
+        check("vllm down: the ollama text reached the judge", "ODRAFT" in _seen["judge_u"])
+        # (iii) vLLM returns EMPTY -> a miss, not a draft
+        _seen.update(provs=[], judge_u=""); _vllm.update(reply="   ", **{"raise": False})
+        m, _ = best_answer("sys", "usr", _vc, local=_loc)
+        check("vllm empty: treated as a miss, ollama drafts", m["draft_by"] == "ollama")
+        check("vllm empty: blank text never reached the judge as the draft",
+              "ODRAFT" in _seen["judge_u"])
+        # (iv) no vllm_url -> the old path, vLLM never called
+        _seen.update(provs=[], judge_u="")
+        m, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}),
+                           local=_loc)
+        check("no vllm_url: vLLM never called", "vllm" not in _seen["provs"])
+        check("no vllm_url: ollama draft as before", m["draft_by"] == "ollama")
+        _seen.update(provs=[], judge_u="")
+        m, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
+        check("no vllm_url, no local: no draft at all", m["draft_by"] == ""
+              and "vllm" not in _seen["provs"] and "ollama-draft" not in _seen["provs"])
+    finally:
+        L.call, _local_draft = _saved_call, _saved_draft
 
     # kill switch forces baseline
     m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"},

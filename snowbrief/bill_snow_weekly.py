@@ -218,7 +218,11 @@ def decide():
         meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=8000,
                                           task="billsnow", local=_local_hint(),
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
+        # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
+        # | none) -- the journal is the witness that the endpoint drafted and
+        # ollama stayed idle on Monday's run. LOCAL-MODEL-PLAN.md Phase 1 step 3.
         print(f"[llm] mode={meta['mode']} members={meta['members']} judge={meta['judge']} "
+              f"draft={meta.get('draft_by') or 'none'} "
               f"degraded={meta['degraded']} est=${meta.get('est_cost_usd')} "
               f"({meta['reason']}); {len(text)} chars")
     except Exception as e:
