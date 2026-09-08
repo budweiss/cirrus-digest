@@ -248,7 +248,13 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     # that is not printed is not measured (S103). An EMPTY vLLM reply is a miss,
     # not a draft -- call() returns "" after its retry rather than raising.
     draft = ""
-    if creds.get("vllm_url"):
+    if local and creds.get("vllm_url"):
+        # `local and` is the scope guard: vLLM REPLACES the engine for a caller
+        # that already asked for a draft (bill_snow_weekly passes _local_hint()).
+        # It does NOT add a draft to callers that never had one -- task_solver
+        # (the client-reply path), alopecia_brief, research_task, self_review all
+        # call best_answer() with local=None and stay byte-for-byte unchanged.
+        # Only Bill's job was approved (rule 3). Caught by the caller audit S131.
         try:
             draft = (L.call("vllm", system, user, creds,
                             max_tokens=DRAFT_MAX_TOKENS) or "").strip()
@@ -445,6 +451,13 @@ def selftest():
         m, _ = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
         check("no vllm_url, no local: no draft at all", m["draft_by"] == ""
               and "vllm" not in _seen["provs"] and "ollama-draft" not in _seen["provs"])
+        # (vi) the SCOPE guard: vllm_url present but the caller asked for no draft
+        # -> vLLM is not called. Protects task_solver / alopecia_brief /
+        # research_task / self_review, which pass local=None on cumulus1 too.
+        _seen.update(provs=[], judge_u="")
+        m, _ = best_answer("sys", "usr", _vc)
+        check("vllm_url but local=None: vLLM NOT called (other callers unchanged)",
+              "vllm" not in _seen["provs"] and m["draft_by"] == "")
     finally:
         L.call, _local_draft = _saved_call, _saved_draft
 
