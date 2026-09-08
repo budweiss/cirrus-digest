@@ -310,6 +310,55 @@ def _ver_tuple(v):
     return tuple(out + [0, 0, 0])[:3]
 
 
+# S137. A cold load of a 17 GB model on the Mac takes longer than llm_providers'
+# 120 s; this probe has its own budget so a slow load is not misread as broken.
+LOCAL_LOAD_TIMEOUT = 180
+
+
+def check_local_model_loads(creds):
+    """(line, should_notify). Does the CONFIGURED local model actually LOAD and
+    answer? One tiny completion against ollama_url with ollama_model, judged on
+    the HTTP STATUS: a 200 means the runtime loaded the weights and generated;
+    the text is irrelevant (so a thinking model's reasoning budget cannot make a
+    healthy box read as broken). A 500 or a timeout means every local call on
+    this box is going to the PAID model.
+
+    Why this exists (S137, 2026-09-08): CIRRUS ran ollama 0.24.0 while
+    qwen3.8:27b requires 0.32.12 ("unknown model architecture: qwen35"). The
+    05:30 health run said "runtime: 0.24.0 is BEHIND", "models: 5 current" and
+    five healthy cloud providers -- and every local call had returned HTTP 500
+    since 2026-09-05, three days, unseen. /api/tags says a model EXISTS; the
+    version check says the runtime is OLD; only a completion says it LOADS.
+    Found because a promise-detection probe escalated to Haiku where ollama was
+    expected. Notifies EVERY run it fails, unlike the once-per-release drift
+    rule: drift is a decision, a model that will not load is an outage.
+    Never raises."""
+    url = (creds or {}).get("ollama_url")
+    model = (creds or {}).get("ollama_model")
+    if not url or not model:
+        return ("local model: not configured on this box (no ollama_url / ollama_model)", False)
+    body = json.dumps({"model": model, "max_tokens": 32,
+                       "messages": [{"role": "user", "content": "Reply with the single word OK."}]}).encode()
+    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=body,
+                                 headers={"Content-Type": "application/json"})
+    t0 = datetime.now()
+    try:
+        with urllib.request.urlopen(req, timeout=LOCAL_LOAD_TIMEOUT) as r:
+            r.read()
+        secs = (datetime.now() - t0).total_seconds()
+        return (f"local model {model} LOADS and answers ({secs:.0f} s)", False)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode(errors="replace")[:160]
+        except Exception:
+            detail = ""
+        return (f"local model {model} FAILS TO LOAD: HTTP {e.code} {detail} "
+                f"-- every local call on this box is going to the PAID model", True)
+    except Exception as e:  # noqa: BLE001 -- timeout, refused, DNS: all mean "not serving"
+        return (f"local model {model} FAILS TO LOAD: {type(e).__name__}: {str(e)[:120]} "
+                f"-- every local call on this box is going to the PAID model", True)
+
+
 def check_local_runtime():
     """(line, should_notify). Never raises — a drift check must not break the
     health run it rides along with."""
@@ -632,9 +681,11 @@ def main():
     runtime_line, runtime_notify = check_local_runtime()
     models_line, models_notify = check_model_drift()
     cloud_line, cloud_notify = check_cloud_model_releases(creds)
+    local_line, local_notify = check_local_model_loads(creds)     # S137
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
+    print(f"  local:   {local_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {cloud_line}")
@@ -645,8 +696,16 @@ def main():
             print(f"  {label}: {it}")
 
     # Notify only when something needs attention or changed.
-    if healed or broken or errored or needs_funding or runtime_notify or models_notify or cloud_notify:
+    if (healed or broken or errored or needs_funding or runtime_notify or models_notify
+            or cloud_notify or local_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
+        if local_notify:
+            # First, because it is the one that costs money every hour it stands.
+            lines += ["*LOCAL MODEL CANNOT LOAD — every local call is going to the paid model:*",
+                      f"• {local_line}",
+                      "_Told EVERY run until it loads: this is an outage, not drift. "
+                      "On CIRRUS the fix was the runner's cirrus-ollama-upgrade "
+                      "(args.mode=apply); on CUMULUS check `ollama ps` / the unit._"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
         if needs_funding:
@@ -679,14 +738,15 @@ def main():
         import job_status
         note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
                 f"{len(needs_funding)} needs-funding, {len(errored)} err; "
-                f"{runtime_line}; {models_line}; {cloud_line}")
+                f"{local_line}; {runtime_line}; {models_line}; {cloud_line}")
         job_status.record("modelhealth",
-                          ok=(not broken and not errored and not needs_funding),
+                          ok=(not broken and not errored and not needs_funding
+                              and not local_notify),
                           note=note)
     except Exception:
         pass
 
-    sys.exit(1 if (broken or errored or needs_funding) else 0)
+    sys.exit(1 if (broken or errored or needs_funding or local_notify) else 0)
 
 
 def _selftest_runtime(ck):
@@ -744,6 +804,57 @@ def _selftest_runtime(ck):
             globals()["_installed_ollama"] = _saved_installed
 
 
+def _selftest_local_load(ck):
+    """S137 — the load probe. urllib is swapped for a fake the same way the S94
+    drift test does it, EXCEPT `error` stays the real urllib.error so the
+    function's `except urllib.error.HTTPError` still matches the class the fake
+    raises. Each outcome is paired with its inverse: a probe that always says
+    LOADS, or always FAILS, cannot pass all four."""
+    import io as _io
+    import types as _types
+    _real_urllib = globals()["urllib"]
+
+    class _Resp:
+        def read(self): return b'{"choices":[{"message":{"content":"OK"}}]}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake(urlopen):
+        return _types.SimpleNamespace(
+            request=_types.SimpleNamespace(urlopen=urlopen, Request=lambda *a, **k: None),
+            error=_real_urllib.error)
+
+    _creds = {"ollama_url": "http://o:11434", "ollama_model": "qwen3.8:27b"}
+    try:
+        globals()["urllib"] = _fake(lambda *a, **k: _Resp())
+        line, notify = check_local_model_loads(_creds)
+        ck("a 200 from the configured model reads LOADS and does not notify",
+           "LOADS" in line and "qwen3.8:27b" in line and not notify)
+
+        def _500(*a, **k):
+            raise _real_urllib.error.HTTPError(
+                "http://o", 500, "Internal Server Error", {},
+                _io.BytesIO(b'{"error":{"message":"unable to load model: /blobs/sha256-f5f1"}}'))
+        globals()["urllib"] = _fake(_500)
+        line, notify = check_local_model_loads(_creds)
+        ck("an HTTP 500 reads FAILS TO LOAD, quotes the server's reason, and NOTIFIES "
+           "(the CIRRUS 2026-09-05..08 case)",
+           "FAILS TO LOAD" in line and "500" in line and "unable to load model" in line and notify)
+
+        def _timeout(*a, **k):
+            raise TimeoutError("timed out")
+        globals()["urllib"] = _fake(_timeout)
+        line, notify = check_local_model_loads(_creds)
+        ck("a timeout reads FAILS TO LOAD and notifies (not serving is not serving)",
+           "FAILS TO LOAD" in line and "TimeoutError" in line and notify)
+
+        line, notify = check_local_model_loads({})
+        ck("a box with no ollama_url is 'not configured' -- reported, not alarmed",
+           "not configured" in line and not notify)
+    finally:
+        globals()["urllib"] = _real_urllib
+
+
 def selftest():
     """Offline: verify error classification routes correctly."""
     cases = [
@@ -776,6 +887,7 @@ def selftest():
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
     _selftest_runtime(ck)
+    _selftest_local_load(ck)     # S137: does the configured local model LOAD?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
     _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
