@@ -32,7 +32,7 @@ import tempfile
 import urllib.request
 import urllib.error
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -504,6 +504,25 @@ def check_local_fallback_rate(creds=None, ledger=None, now=None):
     return fallback_verdict(_ledger_rows(path, now=now))
 
 
+# S141. How long a STANDING version-drift condition stays quiet between
+# reminders. Not daily (that is nagging, and it gets the channel muted) and not
+# never (that is amnesia, which is how CIRRUS sat three days on a model that
+# would not load).
+RUNTIME_NAG_DAYS = 7
+
+
+def _days_since(stamp):
+    """Whole days since a 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' stamp, or None."""
+    if not stamp:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return (datetime.now() - datetime.strptime(stamp, fmt)).days
+        except Exception:
+            continue
+    return None
+
+
 def check_local_runtime():
     """(line, should_notify). Never raises — a drift check must not break the
     health run it rides along with."""
@@ -521,21 +540,49 @@ def check_local_runtime():
             return (f"ollama {cur} — current (latest {latest})", False)
 
         line = f"ollama {cur} is BEHIND latest {latest}"
-        # Notify once per NEW upstream release, not once per day. A finding that
-        # repeats every morning while nobody acts is how an alert channel gets
-        # muted -- and this one would repeat for weeks by design, since the fix
-        # is a deliberate upgrade rather than a self-heal.
+        # ── S141, watcher audit item 3: once-only vs. nagging ───────────────
+        # The original rule notified once per NEW upstream release and then
+        # went quiet, for a good reason that is written above this line in
+        # every previous version: a finding repeated every morning while nobody
+        # acts is how an alert channel gets muted (T9), and this one repeats for
+        # weeks by design because the fix is a deliberate upgrade.
+        #
+        # T78 says the opposite and is also right: a STANDING CONDITION that
+        # stops being mentioned has been silently accepted. CIRRUS sat on
+        # ollama 0.24.0 while its configured model could not load, and the
+        # drift line had long since gone quiet.
+        #
+        # Both are right in different regimes, so the answer is neither side --
+        # it is a CADENCE. Speak on the day a new release lands, then hold for
+        # a week, then speak again while it is still true, saying how long it
+        # has been. Daily is nagging; never is amnesia; weekly-with-an-age is
+        # a reminder.
+        #
+        # Note this is only correct for a standing CONDITION. The sibling
+        # checks -- a new cloud model, a changed registry digest -- are EVENTS,
+        # true once, and they correctly stay once-only.
         prev = {}
         try:
             prev = json.loads(RUNTIME_STATE.read_text())
         except Exception:
             pass
-        notify = prev.get("notified_latest") != latest
+        new_release = prev.get("notified_latest") != latest
+        since = _days_since(prev.get("at"))
+        due = (since is not None and since >= RUNTIME_NAG_DAYS)
+        notify = new_release or due
+        first_seen = prev.get("first_seen") or datetime.now().strftime("%Y-%m-%d")
+        if new_release:
+            first_seen = datetime.now().strftime("%Y-%m-%d")
+        else:
+            age = _days_since(first_seen)
+            if age:
+                line += f" — still behind after {age}d"
         if notify:
             try:
                 RUNTIME_STATE.parent.mkdir(parents=True, exist_ok=True)
                 RUNTIME_STATE.write_text(json.dumps(
                     {"notified_latest": latest, "installed": cur,
+                     "first_seen": first_seen,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
             except Exception:
                 pass
@@ -1080,6 +1127,52 @@ def _selftest_truncation(ck):
        n is False)
 
 
+def _selftest_nag(ck):
+    """S141 — a standing drift condition speaks, holds, then speaks again."""
+    import tempfile, json as _j
+    from pathlib import Path as _P
+    _g = globals()
+    sv_state, sv_inst, sv_latest = (_g["RUNTIME_STATE"], _g["_installed_ollama"],
+                                    _g["_latest_ollama"])
+    d = _P(tempfile.mkdtemp())
+    try:
+        _g["RUNTIME_STATE"] = d / "runtime-drift.json"       # T32: never live
+        _g["_installed_ollama"] = lambda: "0.24.0"
+        _g["_latest_ollama"] = lambda: "0.33.3"
+
+        line, n = check_local_runtime()
+        ck("nag: a newly-seen release notifies", n is True and "BEHIND" in line)
+        line, n = check_local_runtime()
+        ck("nag: the very next run is QUIET -- daily repetition is what mutes "
+           "a channel", n is False)
+
+        # ...but a week later it is still true, and silence would be amnesia.
+        st = _j.loads((d / "runtime-drift.json").read_text())
+        old = (datetime.now() - timedelta(days=RUNTIME_NAG_DAYS + 1))
+        st["at"] = old.strftime("%Y-%m-%d %H:%M")
+        st["first_seen"] = old.strftime("%Y-%m-%d")
+        (d / "runtime-drift.json").write_text(_j.dumps(st))
+        line, n = check_local_runtime()
+        ck("nag: after the hold it speaks again", n is True)
+        ck("nag: ...and says HOW LONG it has been standing",
+           "still behind after" in line)
+
+        # A box that is current says nothing at all.
+        _g["_installed_ollama"] = lambda: "0.33.3"
+        line, n = check_local_runtime()
+        ck("nag: an up-to-date box is silent", n is False and "current" in line)
+
+        # An unreachable release API is a MISSING measurement, not 'current'.
+        _g["_installed_ollama"] = lambda: "0.24.0"
+        _g["_latest_ollama"] = lambda: None
+        line, n = check_local_runtime()
+        ck("nag: an unreachable release API says UNKNOWN, never 'up to date'",
+           "UNKNOWN" in line)
+    finally:
+        _g["RUNTIME_STATE"], _g["_installed_ollama"], _g["_latest_ollama"] = (
+            sv_state, sv_inst, sv_latest)
+
+
 def selftest():
     """Offline: verify error classification routes correctly."""
     cases = [
@@ -1115,6 +1208,7 @@ def selftest():
     _selftest_local_load(ck)     # S137: does the configured local model LOAD?
     _selftest_fallback(ck)       # S141: is the WORK actually going there?
     _selftest_truncation(ck)     # S141: did WE cut the local model off?
+    _selftest_nag(ck)            # S141: does a standing condition keep speaking?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
     _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
