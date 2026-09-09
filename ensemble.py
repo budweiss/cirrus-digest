@@ -290,8 +290,12 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         else:
             _o = getattr(_DRAFT, "error", "") or "ollama draft unavailable"
             _draft_err = f"{_draft_err}; {_o}" if _draft_err else _o
-    elif not draft and not local:
-        _draft_err = _draft_err or "no local draft was requested by this caller"
+    # A caller that passed local=None never wanted a draft -- task_solver,
+    # alopecia_brief, research_task, self_review all do. Nothing is wrong, so
+    # nothing is reported: an "error" on the happy path of four other callers
+    # is the kind of noise that gets a field ignored (T9). A caller that DID
+    # want one and could not build a hint knows that itself; saying it here
+    # would blame ensemble for the caller's own missing config.
     meta["draft_error"] = _draft_err
 
     # 2) council: every keyed provider answers independently
@@ -511,6 +515,8 @@ def selftest():
         m, _ = best_answer("sys", "usr", _vc)
         check("vllm_url but local=None: vLLM NOT called (other callers unchanged)",
               "vllm" not in _seen["provs"] and m["draft_by"] == "")
+        check("...and local=None reports NO draft error -- nothing is wrong",
+              m.get("draft_error") == "")
 
         # ── S141: the three-step degradation must SAY it happened ────────────
         # vllm -> ollama -> nothing was silent end to end. `draft_by` named the

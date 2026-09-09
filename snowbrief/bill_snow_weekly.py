@@ -215,8 +215,11 @@ def decide():
         # --council forces ensemble mode for A/B dry-runs without editing stored
         # creds (Phase A). Scheduled/live runs use the box's dev_escalation.mode.
         mode_override = "council" if "--council" in sys.argv else None
+        # S141: keep the hint, so a hint we could not BUILD is reported as our
+        # own missing config rather than as "this caller wanted no draft".
+        _hint = _local_hint()
         meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=8000,
-                                          task="billsnow", local=_local_hint(),
+                                          task="billsnow", local=_hint,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
         # | none) -- the journal is the witness that the endpoint drafted and
@@ -233,6 +236,12 @@ def decide():
         # rather than an exception.
         _draft_state["by"] = meta.get("draft_by") or ""
         _draft_state["error"] = meta.get("draft_error") or ""
+        if not _hint and not _draft_state["error"]:
+            # This job always wants a draft. No hint means node_profiles.json
+            # has no digest_model for TARGET_ENV -- ours to fix, and invisible
+            # until now because ensemble simply skipped the draft.
+            _draft_state["error"] = ("no local hint: node_profiles.json has no "
+                                     "digest_model for this box")
         if meta.get("draft_error"):
             print(f"[llm] DRAFT DEGRADED: {meta['draft_error']}")
     except Exception as e:
@@ -415,6 +424,13 @@ def selftest() -> int:
            "URLError" in _with_draft("sent material update"))
 
         # A caller that never wanted a draft must not manufacture an alarm (T9).
+        # This job ALWAYS asks for a draft, so "no hint" is our own missing
+        # config, not "the caller wanted none". The message must say which.
+        _draft_state.update(by="", error="no local hint: node_profiles.json has no digest_model for this box")
+        ck("a hint we could not BUILD is blamed on our config, not the caller",
+           "node_profiles.json" in _draft_note()
+           and "requested by this caller" not in _draft_note())
+
         _draft_state.update(by="", error="")
         ck("a run with no draft state says nothing at all", _draft_note() == "")
         ck("...and leaves the note byte-identical",
