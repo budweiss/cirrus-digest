@@ -419,10 +419,40 @@ def _selftest_record(ck):
            "intake" in _j.loads(g["STATUS_PATH"].read_text()))
 
         # 3. No file at all is legitimately empty -- that must still work.
+        for c in d.glob("jobs-status.json.corrupt-*"):
+            c.unlink()
         g["STATUS_PATH"].unlink()
         record("first", True, "")
         ck("record: a missing file is created, not treated as corruption",
            list(_j.loads(g["STATUS_PATH"].read_text())) == ["first"])
+        ck("record: ...and a MISSING file leaves no .corrupt copy, unlike a "
+           "damaged one — the two must not be conflated",
+           not list(d.glob("jobs-status.json.corrupt-*")))
+
+        # 3b. A TRANSIENT failure that recovers on retry must NOT be treated as
+        #     corruption. This is the entire point of the retry loop, and until
+        #     S141's mutation probe nothing tested it: mutating the retry gate
+        #     away left every check passing, which means the suite could not
+        #     tell a working retry from a missing one.
+        g["STATUS_PATH"].write_text(_j.dumps(three))
+        real_read = g["_read_status"]
+        calls = {"n": 0}
+
+        def _flaky():
+            calls["n"] += 1
+            return (None, "transient") if calls["n"] == 1 else real_read()
+
+        g["_read_status"] = _flaky
+        try:
+            record("after_blip", True, "")
+        finally:
+            g["_read_status"] = real_read
+        got = _j.loads(g["STATUS_PATH"].read_text())
+        ck("record: a transient read failure RECOVERS on retry",
+           calls["n"] > 1 and "after_blip" in got)
+        ck("record: ...and recovering keeps the other rows, with no .corrupt copy",
+           set(got) >= set(three)
+           and not list(d.glob("jobs-status.json.corrupt-*")))
 
         # 4. Concurrency: two writers must not lose each other. This is the
         #    quieter half of the same bug -- a row going stale while its job
