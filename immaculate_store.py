@@ -172,9 +172,20 @@ def selftest() -> int:
         ck("re-seeding the SAME answers changes nothing (idempotent)",
            c2 == 0 and ch2 == 0)
 
-        # the point of using a CRM: a changed answer leaves a trail
+        # The point of using a CRM: a changed answer leaves a trail.
+        #
+        # The fixture is derived, NOT hard-coded. The first version wrote
+        # `fields={"answer": "PIT"}` against q14 because q14's answer happened
+        # to be BAL at the time -- so when Buddy legitimately changed q14 TO
+        # PIT, the "change" became a no-op and both checks failed. The test
+        # broke because the DATA moved, which is a test coupled to live values
+        # and the same family as T32. Flip to a sentinel that cannot collide
+        # with any real answer.
+        before = (entity_kb.get_entity(PROJECT, "q14", db_path=tmp)
+                  or {}).get("state", {}).get("answer")
         entity_kb.upsert_entity(PROJECT, "q14", "Q14: Who wins",
-                                fields={"answer": "PIT"}, db_path=tmp)
+                                fields={"answer": "__test_sentinel__"},
+                                db_path=tmp)
         evs = entity_kb.get_events(PROJECT, slug="q14", db_path=tmp)
         ck("changing an answer ledgers a field_change event",
            any((e.get("event_type") or "") == "field_change" for e in evs))
@@ -183,8 +194,12 @@ def selftest() -> int:
             try: return json.loads(x)
             except Exception: return x
         ck("...and the event records BOTH the old and the new value",
-           any(_v(e.get("old_value")) == "BAL" and _v(e.get("new_value")) == "PIT"
+           any(_v(e.get("old_value")) == before
+               and _v(e.get("new_value")) == "__test_sentinel__"
                for e in evs))
+        ck("...and the fixture is derived from the data, so a future answer "
+           "change cannot break this test",
+           before is not None and before != "__test_sentinel__")
 
         got = answers(db_path=tmp)
         ck("answers() returns all 24 in question order",
