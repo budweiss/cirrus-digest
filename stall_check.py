@@ -165,6 +165,12 @@ def _kb_dbs():
     return sorted(glob.glob(os.path.join(REPO, "data", "entity_kb", "*.db")))
 
 
+# S141. How far back an "has the client asked lately?" question looks. Wider
+# than the 7-day outcome window on purpose: it answers a different question --
+# not "is the signal fresh" but "has anyone given it the chance to be".
+_ATTEMPT_WINDOW_DAYS = 30
+
+
 def _question_attempts(project, root=None):
     """How many client questions actually reached this KB? -> dict or None.
 
@@ -174,7 +180,8 @@ def _question_attempts(project, root=None):
     path = os.path.join(root or REPO, "logs", "kb_question_attempts.jsonl")
     if not os.path.exists(path):
         return None
-    out = {"attempts": 0, "no_match": 0, "ambiguous": 0, "recorded": 0}
+    out = {"attempts": 0, "no_match": 0, "ambiguous": 0, "recorded": 0,
+           "recent": 0}      # S141: attempts inside the staleness window
     try:
         with open(path) as f:
             for line in f:
@@ -192,6 +199,12 @@ def _question_attempts(project, root=None):
                     out["ambiguous"] += 1
                 if d.get("outcome_recorded"):
                     out["recorded"] += 1
+                try:
+                    at = datetime.strptime(d.get("at", ""), "%Y-%m-%d %H:%M:%S")
+                    if (datetime.now() - at).days <= _ATTEMPT_WINDOW_DAYS:
+                        out["recent"] += 1
+                except Exception:
+                    pass
     except Exception:
         return None
     return out
@@ -311,8 +324,23 @@ def kb_outcome_verdict(rec, box, days=7):
                     f"broken, not merely quiet")
     age = _age_days(newest) if newest else None
     if age is not None and age > days:
-        return _res(STALL, label,
-                    f"{n} total but none in {age}d — the feedback signal stopped")
+        # S141. "No outcome in N days" is only a FAULT if the client has been
+        # asking. This signal fires when Bill emails a question the KB can
+        # answer; he has sent nothing in 30 days, and the KB itself is healthy
+        # (23 new events this week). Reporting that as a stall would nag
+        # forever about something nobody can fix, which is how a panel stops
+        # being read (T9) -- and it would undo the exact distinction S75 built
+        # this tri-state for: "nobody asked" is not "asking is broken".
+        recent = (att or {}).get("recent")
+        if recent:
+            return _res(STALL, label,
+                        f"{n} total but none in {age}d, despite {recent} client "
+                        f"question(s) in the last {_ATTEMPT_WINDOW_DAYS}d — "
+                        f"asking stopped producing outcomes")
+        return _res(UNKNOWN, label,
+                    f"{n} recorded, newest {age}d ago, and NO client question in "
+                    f"the last {_ATTEMPT_WINDOW_DAYS}d — quiet client, not a "
+                    f"broken signal; nothing to fix here")
     return _res(OK, label, f"{n} recorded, newest {age}d ago")
 
 
@@ -713,14 +741,25 @@ def selftest():
            r["state"] == SKIP and "stub" in r["msg"])
         ck("kb: ...and it is NOT reported as ok", r["state"] != OK)
 
+        # A stale outcome IS a stall -- but only if the client has been asking.
+        asked_lately = {"attempts": 4, "no_match": 0, "ambiguous": 0, "recent": 4}
         real = {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
                 "newest": "2026-08-25 15:44:27", "has_column": True,
-                "error": "", "attempts": None}
+                "error": "", "attempts": asked_lately}
         r = kb_outcome_verdict(real, "CUMULUS")
-        ck("kb: the REAL kb, 1 outcome and nothing for weeks, is a STALL",
-           r["state"] == STALL and "the feedback signal stopped" in r["msg"])
+        ck("kb: stale outcomes WITH recent questions is a real STALL",
+           r["state"] == STALL and "asking stopped producing outcomes" in r["msg"])
         ck("kb: the verdict names the box it is about",
            "@CUMULUS" in r["name"])
+        # The live case on 2026-09-09: Bill sent nothing for 30 days and the KB
+        # is healthy (23 new events that week). Nagging about that forever is
+        # how a panel stops being read (T9).
+        quiet = dict(real, attempts={"attempts": 3, "no_match": 0,
+                                     "ambiguous": 2, "recent": 0})
+        r = kb_outcome_verdict(quiet, "CUMULUS")
+        ck("kb: stale outcomes with NO recent questions is a quiet client, not a fault",
+           r["state"] == UNKNOWN and "quiet client" in r["msg"])
+        ck("kb: ...and it is not reported as a STALL", r["state"] != STALL)
 
         fresh = dict(real, newest=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         r = kb_outcome_verdict(fresh, "CUMULUS")
@@ -756,10 +795,13 @@ def selftest():
             names = [r["name"] for r in check_kb_outcomes()]
             ck("kb: an unreachable CUMULUS is REPORTED, not silently fine",
                any("CUMULUS" in n for n in names))
+            # recent questions, so this IS a genuine stall -- the point of
+            # this check is that a stall found on the OTHER box surfaces here.
             _g["_remote_kb_stats"] = lambda: [
                 {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
                  "newest": "2026-08-25 15:44:27", "has_column": True,
-                 "error": "", "attempts": None}]
+                 "error": "", "attempts": {"attempts": 4, "no_match": 0,
+                                           "ambiguous": 0, "recent": 4}}]
             res = check_kb_outcomes()
             ck("kb: CUMULUS's real stall is seen from CIRRUS",
                any(r["state"] == STALL and "@CUMULUS" in r["name"] for r in res))
