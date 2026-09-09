@@ -156,23 +156,121 @@ REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (C
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 
 
-def record(name, ok, note=""):
-    """Append/update this job's last-run status. Best-effort; never raises."""
+# ── S141: record() used to destroy this file ─────────────────────────────────
+# Every job on a box writes its row into ONE shared file, and record() was a
+# plain read-modify-write:
+#
+#     try:    data = json.loads(STATUS_PATH.read_text())
+#     except: data = {}                    # <-- a failed read became "empty"
+#     data[name] = {...}
+#     STATUS_PATH.write_text(...)          # <-- then wrote THAT
+#
+# `write_text` truncates before it writes. Any job reading inside that window
+# got an empty file, `except` turned that into `{}`, and the next write
+# contained ONE row -- silently deleting every other job's status. Measured:
+# one simulated torn read took a 3-job file down to 1.
+#
+# What it cost: jobs whose rows had been wiped looked to Skywarden's
+# completeness check like jobs that had not run. `accesscheck` was reported
+# missing for 28 hours while its journal shows 120 start/finish lines in that
+# window -- it never missed a run. Skywarden then spent $0.45 per heartbeat
+# reasoning about the phantom: $11.64 of September's $16.38, 71% of its budget,
+# on stalls that never happened. The JSONDecodeError it logged at 05:27 today
+# is a reader catching the same truncation window from the outside.
+#
+# Two independent fixes, because either alone leaves a hole:
+#   * WRITE atomically (tmp file + os.replace). A reader now sees the old
+#     complete file or the new complete file, never a half-written one. This
+#     removes the window that creates the torn read in the first place.
+#   * NEVER let a failed read mean "empty". A file that exists and does not
+#     parse is CORRUPTION, and overwriting it takes every other job's history
+#     with it. Retry first (an atomic writer's window is microseconds, so a
+#     retry lands on a complete file), and if it still will not parse, keep a
+#     copy before starting fresh.
+#
+# And take a lock across the read-modify-write, or two jobs whose timers
+# coincide still lose one another's update -- a quieter version of the same
+# bug, and the reason a row can go stale while the job runs fine.
+_LOCK_SUFFIX = ".lock"
+
+
+def _read_status():
+    """(data, problem). data is None when the file exists but cannot be trusted.
+
+    The distinction is the whole point: "no file yet" is legitimately {}, while
+    "a file that will not parse" must never be silently treated as {}.
+    """
     try:
-        data = json.loads(STATUS_PATH.read_text()) if STATUS_PATH.exists() else {}
-    except Exception:
-        data = {}
-    data[name] = {
-        "last_run": datetime.now().isoformat(timespec="seconds"),
-        "epoch": int(time.time()),
-        "ok": bool(ok),
-        "note": (note or "")[:200],
-    }
+        if not STATUS_PATH.exists():
+            return {}, ""
+        raw = STATUS_PATH.read_text()
+    except Exception as e:  # noqa: BLE001
+        return None, f"unreadable ({type(e).__name__})"
+    if not raw.strip():
+        return None, "empty — a truncated write, not an empty ledger"
+    try:
+        data = json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        return None, f"unparseable ({type(e).__name__})"
+    return (data, "") if isinstance(data, dict) else (None, "not a JSON object")
+
+
+def _write_status_atomic(data):
+    """Replace the file in one step. Never raises. -> True on success."""
     try:
         STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATUS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+        tmp = STATUS_PATH.with_name(f"{STATUS_PATH.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, STATUS_PATH)      # atomic on POSIX (both boxes)
+        return True
     except Exception:
-        pass
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+
+def record(name, ok, note=""):
+    """Append/update this job's last-run status. Best-effort; never raises."""
+    lock = None
+    try:
+        import fcntl
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(str(STATUS_PATH) + _LOCK_SUFFIX, "w")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    except Exception:
+        lock = None                        # no lock is worse, but not fatal
+    try:
+        data, problem = _read_status()
+        if data is None:
+            for _ in range(3):             # the truncation window is tiny
+                time.sleep(0.05)
+                data, problem = _read_status()
+                if data is not None:
+                    break
+        if data is None:
+            # Still unreadable. Keep it: an overwrite here is exactly the bug.
+            try:
+                import shutil
+                shutil.copy2(STATUS_PATH,
+                             f"{STATUS_PATH}.corrupt-{int(time.time())}")
+            except Exception:
+                pass
+            data = {}
+        data[name] = {
+            "last_run": datetime.now().isoformat(timespec="seconds"),
+            "epoch": int(time.time()),
+            "ok": bool(ok),
+            "note": (note or "")[:200],
+        }
+        _write_status_atomic(data)
+    finally:
+        if lock is not None:
+            try:
+                lock.close()
+            except Exception:
+                pass
 
 
 def _here():
@@ -269,6 +367,122 @@ def summarize(_local=None, _node=None, _fetch=None):
             all_ok = False
         lines.append(line)
     return lines, all_ok
+
+
+def _selftest_record(ck):
+    """S141 — record() must never destroy the rows it did not write.
+
+    Every case below is the real incident: a shared file, one truncating
+    writer, and rows that vanished while their jobs kept running.
+    """
+    import tempfile, json as _j, threading
+    from pathlib import Path as _P
+    g = globals()
+    saved = g["STATUS_PATH"]
+    d = _P(tempfile.mkdtemp())
+    try:
+        g["STATUS_PATH"] = d / "jobs-status.json"     # T32: never the live file
+        three = {j: {"last_run": "x", "epoch": 1, "ok": True, "note": ""}
+                 for j in ("accesscheck", "alopeciacollect", "hoaleads")}
+
+        # 1. THE BUG, stated honestly. Rows already gone from the disk cannot
+        #    be brought back -- once a truncated file is all that exists, the
+        #    history is lost. What is fixable is the two things that CAUSED it:
+        #    creating the window (check 5), and treating a file we could not
+        #    read as one that was legitimately empty. So an empty file must be
+        #    handled as CORRUPTION -- kept, and visibly so -- and never
+        #    confused with the missing file in check 3, which really is {}.
+        g["STATUS_PATH"].write_text(_j.dumps(three))
+        g["STATUS_PATH"].write_text("")               # a truncated file
+        record("intake", True, "a normal run")
+        ck("record: an EMPTY file is corruption, not an empty ledger — kept, "
+           "not silently accepted",
+           len(list(d.glob("jobs-status.json.corrupt-*"))) == 1
+           and "intake" in _j.loads(g["STATUS_PATH"].read_text()))
+        for c in d.glob("jobs-status.json.corrupt-*"):
+            c.unlink()
+
+        # 2. Corruption is preserved, never silently replaced.
+        g["STATUS_PATH"].write_text("{not json at all")
+        record("intake", True, "x")
+        ck("record: an unparseable file is COPIED ASIDE before starting fresh",
+           len(list(d.glob("jobs-status.json.corrupt-*"))) == 1)
+        ck("record: ...and the run is still recorded",
+           "intake" in _j.loads(g["STATUS_PATH"].read_text()))
+
+        # 3. No file at all is legitimately empty -- that must still work.
+        g["STATUS_PATH"].unlink()
+        record("first", True, "")
+        ck("record: a missing file is created, not treated as corruption",
+           list(_j.loads(g["STATUS_PATH"].read_text())) == ["first"])
+
+        # 4. Concurrency: two writers must not lose each other. This is the
+        #    quieter half of the same bug -- a row going stale while its job
+        #    runs fine.
+        g["STATUS_PATH"].write_text(_j.dumps(three))
+        names = [f"j{i}" for i in range(12)]
+        ts = [threading.Thread(target=record, args=(n, True, "")) for n in names]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        got = _j.loads(g["STATUS_PATH"].read_text())
+        ck("record: 12 concurrent writers all survive, and so do the originals",
+           set(got) >= set(names) | set(three))
+
+        # 5. A reader must NEVER catch a half-written file -- that window is
+        #    what created the torn read in the first place.
+        #
+        #    The payload is deliberately LARGE. The first version of this check
+        #    used a handful of tiny rows and PASSED against a mutant with the
+        #    atomic write removed: a small write_text() finishes too fast for a
+        #    python reader to land inside it, so the check could not fail and
+        #    was therefore not a check. ~300 padded rows widen the window until
+        #    a non-atomic write is caught every time.
+        big = {f"pad{i}": {"last_run": "x", "epoch": 1, "ok": True,
+                           "note": "y" * 180} for i in range(300)}
+        g["STATUS_PATH"].write_text(_j.dumps(big, indent=2))
+        bad = []
+        stop = threading.Event()
+
+        def _reader():
+            while not stop.is_set():
+                try:
+                    raw = g["STATUS_PATH"].read_text()
+                    if raw.strip() and not raw.rstrip().endswith("}"):
+                        bad.append(raw[-40:])
+                except Exception:
+                    pass
+
+        r = threading.Thread(target=_reader)
+        r.start()
+        try:
+            for i in range(30):
+                record(f"w{i}", True, "z" * 180)
+        finally:
+            stop.set()
+            r.join()
+        ck("record: a concurrent reader never sees a partial file", not bad)
+
+        #    ...and the check above cannot PROVE atomicity: in one process the
+        #    GIL means the reader is never scheduled inside a C-level write, so
+        #    it passes against a non-atomic mutant too. A check that cannot
+        #    fail is not a check (T78), so pin the property that actually
+        #    distinguishes the two, deterministically: os.replace swaps in a
+        #    NEW file, while write_text truncates the existing one in place.
+        #    Different inode == the reader could only ever have had the old
+        #    complete file or the new complete one.
+        ino_before = g["STATUS_PATH"].stat().st_ino
+        record("inode-probe", True, "")
+        ck("record: the write REPLACES the file (new inode), never truncates "
+           "it in place — this is what removes the torn-read window",
+           g["STATUS_PATH"].stat().st_ino != ino_before)
+
+        # 6. No temp files left behind.
+        ck("record: no .tmp- droppings left in the log dir",
+           not list(d.glob("*.tmp-*")))
+    finally:
+        g["STATUS_PATH"] = saved
 
 
 def selftest():
@@ -471,6 +685,7 @@ def selftest():
     ck("a FAILED ssh is not trusted even when its stdout parses as JSON",
        _fetch_remote(_run=lambda a: _R(255, '{"j": {"ok": true}}')) is None)
 
+    _selftest_record(ck)
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 
