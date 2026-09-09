@@ -74,11 +74,26 @@ def _module_level_file_consts(tree) -> dict:
     return consts
 
 
+def _is_path_name(name: str) -> bool:
+    """Is this parameter name a PATH, by name alone?
+
+    Token-wise, not substring. The first version asked `hint in name`, and
+    "out" is a substring of **timeout** -- so `_openai_compatible(..., timeout=)`
+    read as a path-taking function and the lint flagged llm_providers' own
+    truncation ledger, hours after it was written, wrongly. That is the exact
+    failure this file's docstring warns about: a lint that cries wolf gets
+    muted, and this one nearly earned it on its first day.
+    """
+    toks = name.lower().split("_")
+    return any(t in PATH_PARAM_HINTS or t.endswith(("path", "dir", "file"))
+               for t in toks)
+
+
 def _path_params(fn) -> list:
     args = fn.args
     names = [a.arg for a in list(args.args) + list(args.kwonlyargs)
              + list(getattr(args, "posonlyargs", []))]
-    return [n for n in names if any(h in n.lower() for h in PATH_PARAM_HINTS)]
+    return [n for n in names if _is_path_name(n)]
 
 
 def _has_injectable_param(fn) -> bool:
