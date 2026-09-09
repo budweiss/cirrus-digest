@@ -33,6 +33,13 @@ CADENCE_H = {
                                 # three boxes at BOTH layers and is the only thing
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
+    # S141. Added the session Project Immaculate was created, for the reason
+    # written at the top of this table. It guards a HARD DEADLINE -- the
+    # contest entry locks Sun 2026-09-13 13:00 ET and cannot be entered late --
+    # so a silent stop between now and then is the one failure that cannot be
+    # recovered from afterwards. Daily 07:15, run by a scheduled task that
+    # ssh's to cumulus1; 26h leaves the usual 2h of grace.
+    "immaculatecheck": 26,
     "cumulusstatepull": 26,     # daily 01:45 (CIRRUS pulls cumulus1 non-git
                                 # state so the backup chain does not start on
                                 # Buddy's laptop; must beat Time Machine ~02:30)
@@ -144,6 +151,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "cumulusdailybrief", "entitykbdigest",
                  "alopeciacollect",                       # S82, runs on CUMULUS
                  "alopeciabrief",                         # S95, runs on CUMULUS
+                 "immaculatecheck",                       # S141, runs on CUMULUS
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
                  # "no run recorded yet" every time -- neutrally, so it never
