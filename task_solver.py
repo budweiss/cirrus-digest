@@ -238,12 +238,31 @@ def wants_fresh_research(text: str) -> bool:
 _ASK_LEDGER = Path(__file__).parent / "logs" / "kb_question_attempts.jsonl"
 
 
+def _attempt_ledger_path(db_path: str = None) -> Path:
+    """Where this run's attempt ledger goes.
+
+    S141 (T32, again). `db_path` is passed by selftest() and by NOTHING else --
+    so a run with an injected DB is by definition a test run, and it must not
+    write to the live ledger. It used to: task_solver's selftest appended 8
+    synthetic questions to logs/kb_question_attempts.jsonl, and stall_check
+    then read them as real client questions and reported
+    `STALL outcomes[hoa_leads_bill] -- matching is broken` forever, against a
+    KB with zero events. A false alarm in a detector is worse than no detector:
+    it is the one that gets ignored.
+
+    Deriving the ledger from db_path rather than adding a second injectable
+    makes the invariant total -- there is no call site that can pass a temp DB
+    and still reach the live file."""
+    return Path(str(db_path) + ".attempts.jsonl") if db_path else _ASK_LEDGER
+
+
 def _record_question_attempt(kb_project: str, n_matches: int, recorded: bool,
-                             question: str = "") -> None:
+                             question: str = "", db_path: str = None) -> None:
     """NEVER raises — instrumentation on the path that answers a client email."""
     try:
-        _ASK_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-        with open(_ASK_LEDGER, "a") as f:
+        ledger = _attempt_ledger_path(db_path)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with open(ledger, "a") as f:
             f.write(json.dumps({
                 "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "project": kb_project,
@@ -385,7 +404,8 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
         if len(matches) > 1:
             decisive = decisive_match(matches, question)
             if decisive is None:
-                _record_question_attempt(kb_project, len(matches), False, question)
+                _record_question_attempt(kb_project, len(matches), False, question,
+                                          db_path=db_path)
                 names = "; ".join(disambiguation_label(m) for m in matches)
                 return (f"I found a few possible matches in our records — could you "
                          f"let me know which one you mean? {names}")
@@ -393,7 +413,7 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
         if not matches:
             # No match is an ATTEMPT too — and a run of these is the shape of a
             # broken search, which is exactly what must not stay invisible.
-            _record_question_attempt(kb_project, 0, False, question)
+            _record_question_attempt(kb_project, 0, False, question, db_path=db_path)
             continue
         if len(matches) == 1:
             entity = matches[0]
@@ -415,7 +435,7 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
                     note=(question or "")[:200], db_path=db_path))
             except Exception:
                 pass
-            _record_question_attempt(kb_project, 1, recorded, question)
+            _record_question_attempt(kb_project, 1, recorded, question, db_path=db_path)
             if creds and wants_fresh_research(question):
                 try:
                     ctx = KB_RESEARCH_CONTEXT.get(kb_project, {})
@@ -752,6 +772,8 @@ def selftest() -> int:
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     os.unlink(db_path)
+    live_ledger_size_at_start = (_ASK_LEDGER.stat().st_size
+                                 if _ASK_LEDGER.exists() else -1)
     kb_project = "hoa_leads_bill"  # matches PROJECT_TO_KB's real mapping
     try:
         entity_kb.upsert_entity(
@@ -918,9 +940,26 @@ def selftest() -> int:
         check("refresh phrasing with creds=None returns the plain recap, no live search",
               answer is not None and "RE/MAX Associates" in answer
               and "fresh search" not in answer)
+
+        # T32, S141. Every check above ran a client question through the KB
+        # path. Not one of them may have touched the LIVE attempt ledger --
+        # that file is stall_check's only evidence for whether Bill has ever
+        # asked us anything, and the old selftest wrote 8 fake questions into
+        # it, which stall_check then reported as "matching is broken" on a KB
+        # with zero events. Measured, not asserted by inspection: the live
+        # file's size before this suite vs. after.
+        check("the selftest never appends to the LIVE attempt ledger (T32)",
+              (_ASK_LEDGER.stat().st_size if _ASK_LEDGER.exists() else -1)
+              == live_ledger_size_at_start)
+        check("the selftest's own attempts went to the temp ledger instead",
+              _attempt_ledger_path(db_path).exists()
+              and _attempt_ledger_path(db_path).stat().st_size > 0)
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
+        tmp_ledger = _attempt_ledger_path(db_path)
+        if tmp_ledger.exists():
+            tmp_ledger.unlink()
 
     print(f"\n{'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
