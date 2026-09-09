@@ -359,6 +359,117 @@ def check_local_model_loads(creds):
                 f"-- every local call on this box is going to the PAID model", True)
 
 
+# ── Local → paid fallback rate (S141, watcher audit item 1) ───────────────────
+# THE CLASS THIS GUARDS: a job that still runs, still reports success, and has
+# quietly stopped using the free local model -- every call going to a paid one.
+# S137 is the case: CIRRUS's local model returned HTTP 500 for three days and
+# every "local" call there was billed, behind three green checks.
+#
+# check_local_model_loads() (S137) answers "can the model load AT ALL". This
+# answers the question it cannot: "is the WORK actually going there?" A model
+# that loads but is bypassed -- wrong config, a fallback chain that never
+# recovers, a timeout too tight -- looks identical to a healthy box until the
+# bill arrives.
+#
+# Providers that are FREE and ours. Everything else is billed.
+LOCAL_PROVIDERS = {"vllm", "ollama"}
+
+# Tasks with a local-first path, and the most paid share each may show over 24h.
+#
+# ⚠ THESE THRESHOLDS ARE PROVISIONAL AND DELIBERATELY LOOSE (S141). Measured
+# 2026-09-09 over 7 days: catalogue 3 paid / 49 = 6.1%, routing 11 / 52 = 21.2%.
+# The values the S140 handoff proposed (10% and 25%) sit just ABOVE those, which
+# means they would have stayed silent through the very defect found the same
+# morning -- the halftime jobs escalating because a 4,000-token budget truncated
+# the local model's reply (fixed, 44b31fe). A threshold set at the level the
+# system is already running at blesses the status quo; it is a check that can
+# only ever fire for a catastrophe.
+#
+# They are kept loose FOR NOW so this alert does not cry wolf in its first days
+# (T9), and the real work is the ZERO_LOCAL rule below, which needs no tuning.
+# RE-TIGHTEN from post-fix data once three clean runs exist -- worklisted.
+LOCAL_FIRST_TASKS = {
+    "halftime_catalogue":    0.10,
+    "halftime_routing":      0.25,
+    "intake:promise_detect": 0.10,
+    "billsnow:draft":        0.0,
+}
+
+# Below this many calls in the window, a share is noise: 1 paid row out of 3 is
+# 33% and means nothing. The ZERO_LOCAL rule still applies at any sample size,
+# because "this task ran and NOTHING went local" is not a sampling artefact.
+FALLBACK_MIN_ROWS = 8
+
+
+def _ledger_rows(path, hours=24, now=None):
+    """Rows from the spend ledger inside the window. Never raises."""
+    from datetime import timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    cut = now - timedelta(hours=hours)
+    out = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    ts = datetime.fromisoformat(d.get("ts", ""))
+                except Exception:
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cut:
+                    out.append(d)
+    except Exception:
+        return []
+    return out
+
+
+def fallback_verdict(rows, tasks=None, min_rows=FALLBACK_MIN_ROWS):
+    """(line, should_notify) from ledger rows. PURE -- no I/O, so it is testable.
+
+    Two rules, deliberately different in nature:
+      * ZERO_LOCAL -- the task ran and not ONE call went to a local provider.
+        That is the S137 shape and it fires at ANY sample size, because it is
+        not a rate, it is an absence.
+      * OVER -- the paid share exceeded this task's threshold, on a sample big
+        enough to mean something.
+    A task with no rows at all is silent: it did not run in the window, which is
+    a scheduling question, not a fallback question, and other checks own it.
+    """
+    tasks = LOCAL_FIRST_TASKS if tasks is None else tasks
+    seen, alarms = [], []
+    for task, thr in sorted(tasks.items()):
+        local = sum(1 for r in rows if r.get("task") == task
+                    and r.get("provider") in LOCAL_PROVIDERS)
+        paid = sum(1 for r in rows if r.get("task") == task
+                   and r.get("provider") not in LOCAL_PROVIDERS)
+        total = local + paid
+        if not total:
+            continue
+        share = paid / total
+        seen.append(f"{task} {paid}/{total} paid ({share:.0%})")
+        if local == 0 and paid >= 1:
+            alarms.append(f"{task}: ALL {paid} call(s) went PAID, none local "
+                          f"-- the local path is not being used at all")
+        elif share > thr and total >= min_rows:
+            alarms.append(f"{task}: {share:.0%} paid ({paid}/{total}) "
+                          f"over its {thr:.0%} threshold")
+    if not seen:
+        return ("local fallback: no local-first task ran in the last 24h", False)
+    if alarms:
+        return ("local fallback: " + "; ".join(alarms), True)
+    return ("local fallback: " + ", ".join(seen), False)
+
+
+def check_local_fallback_rate(creds=None, ledger=None, now=None):
+    """(line, should_notify). Reads THIS box's spend ledger. Never raises."""
+    path = ledger or (HERE / "out" / "llm-spend-ledger.jsonl")
+    return fallback_verdict(_ledger_rows(path, now=now))
+
+
 def check_local_runtime():
     """(line, should_notify). Never raises — a drift check must not break the
     health run it rides along with."""
@@ -682,10 +793,12 @@ def main():
     models_line, models_notify = check_model_drift()
     cloud_line, cloud_notify = check_cloud_model_releases(creds)
     local_line, local_notify = check_local_model_loads(creds)     # S137
+    fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     print(f"  local:   {local_line}")
+    print(f"  spend:   {fb_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {cloud_line}")
@@ -697,7 +810,7 @@ def main():
 
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
-            or cloud_notify or local_notify):
+            or cloud_notify or local_notify or fb_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -706,6 +819,16 @@ def main():
                       "_Told EVERY run until it loads: this is an outage, not drift. "
                       "On CIRRUS the fix was the runner's cirrus-ollama-upgrade "
                       "(args.mode=apply); on CUMULUS check `ollama ps` / the unit._"]
+        if fb_notify:
+            # S141. The model may LOAD perfectly and still not be getting the
+            # work -- a fallback chain that never recovers, a budget that
+            # truncates its reply, a config pointing elsewhere. That is
+            # invisible to every other check here and shows up only as spend.
+            lines += ["*WORK IS GOING TO A PAID MODEL that should be local:*",
+                      f"• {fb_line}",
+                      "_Read `runner llm-spend-report` for the per-task rows. "
+                      "'ALL n call(s) went PAID' means the local path is not "
+                      "being used at all -- the S137 shape._"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
         if needs_funding:
@@ -855,6 +978,48 @@ def _selftest_local_load(ck):
         globals()["urllib"] = _real_urllib
 
 
+def _selftest_fallback(ck):
+    """S141 — the local->paid fallback alert (watcher audit item 1).
+
+    Every shape is exercised, including the S137 outage replayed: a task whose
+    calls ALL went to a paid provider. That one fires at any sample size on
+    purpose -- it is an absence, not a rate, and waiting for a quorum is how
+    three days went by.
+    """
+    def rows(task, local=0, paid=0, lp="vllm", pp="anthropic"):
+        return ([{"task": task, "provider": lp}] * local
+                + [{"task": task, "provider": pp}] * paid)
+
+    def verdict(rws):
+        return fallback_verdict(rws)
+
+    _, n = verdict(rows("intake:promise_detect", local=0, paid=12))
+    ck("fallback: S137 replayed (every call billed, none local) ALERTS", n is True)
+    line, n = verdict(rows("intake:promise_detect", local=0, paid=1))
+    ck("fallback: ...and it alerts on a ONE-row sample too, being an absence",
+       n is True and "ALL 1 call(s) went PAID" in line)
+    _, n = verdict(rows("halftime_catalogue", local=49, paid=0))
+    ck("fallback: an all-local day is quiet", n is False)
+    line, n = verdict(rows("halftime_catalogue", local=30, paid=20))
+    ck("fallback: a graded breach on a real sample alerts",
+       n is True and "over its 10% threshold" in line)
+    _, n = verdict(rows("halftime_catalogue", local=2, paid=1))
+    ck("fallback: 1-of-3 paid is noise, not an alarm (T9)", n is False)
+    _, n = verdict([])
+    ck("fallback: a task that did not run is silent, not a failure", n is False)
+    _, n = verdict(rows("business-idea-gate:council", local=0, paid=58))
+    ck("fallback: a council task is cloud BY DESIGN and is never flagged",
+       n is False)
+    line, n = verdict(rows("halftime_routing", local=20, paid=0, lp="ollama"))
+    ck("fallback: ollama counts as LOCAL, not paid",
+       n is False and "0/20 paid" in line)
+    # The quiet line must still carry the NUMBER -- a check whose healthy output
+    # says nothing gives you no baseline to tighten against later.
+    line, _ = verdict(rows("halftime_catalogue", local=45, paid=4))
+    ck("fallback: the quiet line still reports the observed rate",
+       "4/49 paid" in line and "8%" in line)
+
+
 def selftest():
     """Offline: verify error classification routes correctly."""
     cases = [
@@ -888,6 +1053,7 @@ def selftest():
         fails += 0 if cond else 1
     _selftest_runtime(ck)
     _selftest_local_load(ck)     # S137: does the configured local model LOAD?
+    _selftest_fallback(ck)       # S141: is the WORK actually going there?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
     _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
