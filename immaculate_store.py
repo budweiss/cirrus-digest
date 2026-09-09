@@ -79,7 +79,14 @@ QUESTIONS = [
  (22, "season", "Steelers field goals", "0-20 / 21-25 / 26-30 / 31-35 / 36+",
       "26-30", 0.35, "8-year mode; 17-game era is a 3-way split", False),
  (23, "season", "Regular-season wins", "0-17 (pick a number)",
-      "8", 0.17, "win total 8.5, under -140; sd 2.3 wins caps this at ~17%", True),
+      # BUDDY'S CALL, 2026-09-09. Was 8 (the market's implied mean is ~8.2 with
+      # the under at -140). Changed to 9 on his judgement, backed by 4 of the 5
+      # polled models also saying 9. The two are within noise of each other --
+      # at a 2.3-win standard deviation, P(8) and P(9) are both ~16-17% -- so
+      # this is not a worse answer, it is a differently-argued one, and it is
+      # the question where a feel for the team is worth as much as the model.
+      "9", 0.17, "Buddy's call; 4 of 5 models agree; P(8) and P(9) are within "
+                 "noise at a 2.3-win sd", True),
  (24, "season", "AFC North winner", "Bengals / Browns / Ravens / Steelers",
       "Ravens", 0.50, "BAL +102 favourite vs PIT +500", True),
 ]
