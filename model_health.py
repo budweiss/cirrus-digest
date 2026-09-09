@@ -504,6 +504,27 @@ def check_local_fallback_rate(creds=None, ledger=None, now=None):
     return fallback_verdict(_ledger_rows(path, now=now))
 
 
+def check_detached_jobs(creds=None):
+    """(line, should_notify). S141, watcher audit item 5.
+
+    A job a session launched and stopped watching can die -- OOM, a reboot, a
+    dropped ssh -- and leave behind exactly what a SLOW job leaves behind,
+    which is nothing. detached.py has such jobs write a marker on start and
+    update it on exit; this is the thing that reads them, so a marker nobody
+    looks at is still looked at. Never raises."""
+    try:
+        sys.path.insert(0, str(HERE))
+        import detached
+        problems, ok = detached.sweep_verdict(detached.load_markers())
+    except Exception as e:  # noqa: BLE001
+        return (f"detached jobs: sweep failed ({type(e).__name__}: {e})", False)
+    if problems:
+        return ("detached jobs: " + "; ".join(problems[:3])
+                + (f" (+{len(problems)-3} more)" if len(problems) > 3 else ""),
+                True)
+    return (f"detached jobs: {ok} marker(s), none unaccounted for", False)
+
+
 # ── Endpoint config vs REALITY (S141, watcher audit item 4) ──────────────────
 # `serve-tp2.sh` says what we ASK the engine for. It does not say what the
 # engine DID. vLLM resolves several of those flags against what the hardware
@@ -978,6 +999,7 @@ def main():
     fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
     tr_line, tr_notify = check_local_truncation(creds)            # S141
     ep_line, ep_notify = check_endpoint_config(creds)             # S141
+    dj_line, dj_notify = check_detached_jobs(creds)               # S141
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
@@ -985,6 +1007,7 @@ def main():
     print(f"  spend:   {fb_line}")
     print(f"  cutoff:  {tr_line}")
     print(f"  engine:  {ep_line}")
+    print(f"  detach:  {dj_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {cloud_line}")
@@ -997,7 +1020,7 @@ def main():
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify
-            or ep_notify):
+            or ep_notify or dj_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -1030,6 +1053,13 @@ def main():
                       "catches this. Compare `~/tp2fp8/serve-tp2.sh` with the "
                       "boot log: `journalctl --user -u vllm-tp2 --since \"$(systemctl "
                       "--user show vllm-tp2 -p ActiveEnterTimestamp --value)\"`._"]
+        if dj_notify:
+            lines += ["*A DETACHED JOB IS UNACCOUNTED FOR:*",
+                      f"• {dj_line}",
+                      "_'NEVER FINISHED' means the process is gone and no exit "
+                      "code was written — the S140 shape, where a dropped ssh "
+                      "left a 0-byte summary and nothing said so. Logs are "
+                      "beside the marker in ~/.cowork-detached/._"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
         if needs_funding:
