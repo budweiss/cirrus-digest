@@ -132,6 +132,34 @@ def _record(provider, system, user, reply, creds, task):
 _LAST = threading.local()
 
 
+# S141 — truncation ledger. Same idea as _record_usage below: a thing we can
+# only act on if it is written down at the moment it is true.
+_TRUNC_LEDGER = Path(__file__).resolve().parent / "logs" / "llm_truncations.jsonl"
+
+
+def _note_finish(reason, model):
+    """Record a cut-off reply. NEVER raises -- instrumentation on a hot path."""
+    _LAST.finish_reason = reason
+    if reason != "length":
+        return
+    try:
+        _TRUNC_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(_TRUNC_LEDGER, "a") as f:
+            f.write(json.dumps({
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "provider": getattr(_LAST, "provider", "") or "",
+                "model": model,
+                "task": getattr(_LAST, "task", "") or "",
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def last_finish_reason():
+    """finish_reason of the most recent call ON THIS THREAD, or None."""
+    return getattr(_LAST, "finish_reason", None)
+
+
 def last_model():
     """Model used by the most recent call() ON THIS THREAD, or None.
 
@@ -207,6 +235,15 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
         body,
         timeout=timeout,
     )
+    # S141. finish_reason was read off the wire and dropped on the floor. It is
+    # the single most useful field on this response: "length" means the model
+    # was still talking when we cut it off. On a LOCAL model that is not a
+    # quality problem, it is a BILL -- the halftime jobs treat an unparseable
+    # local reply as "the local model could not do it" and escalate to a paid
+    # one, so every truncation we cause buys a cloud call. That happened all
+    # day on 2026-09-09 (reasoning tokens ate a 4,000 budget) and nothing
+    # anywhere recorded it; it had to be reproduced by hand to be seen at all.
+    _note_finish(resp["choices"][0].get("finish_reason"), model)
     return resp["choices"][0]["message"]["content"]
 
 
@@ -495,6 +532,9 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     and judge rows) -- without it those calls would be counted twice.
     """
     _LAST.model = None            # never let a stale model answer for this call
+    _LAST.finish_reason = None
+    _LAST.provider = provider     # S141: so a truncation record can name it
+    _LAST.task = task or ""
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
     reply = ""

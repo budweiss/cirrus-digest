@@ -415,7 +415,8 @@ def _ledger_rows(path, hours=24, now=None):
                     continue
                 try:
                     d = json.loads(line)
-                    ts = datetime.fromisoformat(d.get("ts", ""))
+                    # spend ledger says "ts", truncation ledger says "at"
+                    ts = datetime.fromisoformat(d.get("ts") or d.get("at") or "")
                 except Exception:
                     continue
                 if ts.tzinfo is None:
@@ -462,6 +463,39 @@ def fallback_verdict(rows, tasks=None, min_rows=FALLBACK_MIN_ROWS):
     if alarms:
         return ("local fallback: " + "; ".join(alarms), True)
     return ("local fallback: " + ", ".join(seen), False)
+
+
+def truncation_verdict(rows):
+    """(line, should_notify) for cut-off LOCAL replies. PURE, so it is testable.
+
+    S141. `finish_reason == "length"` means the model was still talking when we
+    stopped it. On a PAID model that is a quality call to make. On a LOCAL one
+    it is a bill: the halftime jobs read an unparseable local reply as "the
+    local model could not do this" and escalate to a cloud provider, so every
+    reply WE truncate buys a paid call. On 2026-09-09 that ran all day -- the
+    reasoning tokens of a thinking model ate a 4,000-token budget before the
+    JSON began -- and nothing recorded it. It had to be reproduced by hand.
+
+    Any local truncation at all notifies. There is no sensible non-zero
+    allowance: it is never right for us to cut our own free model off and then
+    pay someone else the same question.
+    """
+    local = [r for r in rows if (r.get("provider") or "") in LOCAL_PROVIDERS]
+    if not local:
+        return ("truncation: no local reply was cut off in the last 24h", False)
+    by_task = {}
+    for r in local:
+        by_task[r.get("task") or "(untagged)"] = by_task.get(
+            r.get("task") or "(untagged)", 0) + 1
+    detail = ", ".join(f"{t} x{n}" for t, n in sorted(by_task.items()))
+    return (f"truncation: {len(local)} LOCAL repl(ies) cut off at max_tokens "
+            f"({detail}) -- each one likely bought a PAID call", True)
+
+
+def check_local_truncation(creds=None, ledger=None, now=None):
+    """(line, should_notify). Reads this box's truncation ledger. Never raises."""
+    path = ledger or (HERE / "logs" / "llm_truncations.jsonl")
+    return truncation_verdict(_ledger_rows(path, now=now))
 
 
 def check_local_fallback_rate(creds=None, ledger=None, now=None):
@@ -794,11 +828,13 @@ def main():
     cloud_line, cloud_notify = check_cloud_model_releases(creds)
     local_line, local_notify = check_local_model_loads(creds)     # S137
     fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
+    tr_line, tr_notify = check_local_truncation(creds)            # S141
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     print(f"  local:   {local_line}")
     print(f"  spend:   {fb_line}")
+    print(f"  cutoff:  {tr_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {cloud_line}")
@@ -810,7 +846,7 @@ def main():
 
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
-            or cloud_notify or local_notify or fb_notify):
+            or cloud_notify or local_notify or fb_notify or tr_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -829,6 +865,13 @@ def main():
                       "_Read `runner llm-spend-report` for the per-task rows. "
                       "'ALL n call(s) went PAID' means the local path is not "
                       "being used at all -- the S137 shape._"]
+        if tr_notify:
+            lines += ["*WE CUT OUR OWN LOCAL MODEL OFF mid-reply:*",
+                      f"• {tr_line}",
+                      "_A truncated local reply is unparseable, so the job "
+                      "escalates and PAYS for the same question. Raise that "
+                      "call's max_tokens -- a reasoning model spends its budget "
+                      "thinking before it writes anything (S141, 44b31fe)._"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
         if needs_funding:
@@ -1020,6 +1063,23 @@ def _selftest_fallback(ck):
        "4/49 paid" in line and "8%" in line)
 
 
+def _selftest_truncation(ck):
+    """S141 — the cut-off-local-reply alert."""
+    def r(prov, task="halftime_catalogue"):
+        return {"provider": prov, "task": task, "at": "x"}
+    line, n = truncation_verdict([])
+    ck("truncation: a day with no cut-off replies is quiet", n is False)
+    line, n = truncation_verdict([r("vllm"), r("vllm"), r("ollama")])
+    ck("truncation: ANY local cut-off alerts -- there is no safe allowance",
+       n is True and "3 LOCAL" in line)
+    line, n = truncation_verdict([r("vllm")])
+    ck("truncation: even ONE alerts, and names the task",
+       n is True and "halftime_catalogue" in line)
+    line, n = truncation_verdict([r("anthropic"), r("openai")])
+    ck("truncation: a PAID model hitting its cap is NOT this alert's business",
+       n is False)
+
+
 def selftest():
     """Offline: verify error classification routes correctly."""
     cases = [
@@ -1054,6 +1114,7 @@ def selftest():
     _selftest_runtime(ck)
     _selftest_local_load(ck)     # S137: does the configured local model LOAD?
     _selftest_fallback(ck)       # S141: is the WORK actually going there?
+    _selftest_truncation(ck)     # S141: did WE cut the local model off?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
     _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
