@@ -57,7 +57,12 @@ Return ONLY a JSON array, no prose. Each element:
 {"artist": "the performing act's name",
  "date": "YYYY-MM-DD, the date of the show",
  "venue": "venue name if stated, else ''",
- "city": "city, state if stated, else ''"}
+ "city": "city, state if stated, else ''",
+ "style": "the kind of music, from: hip hop / rap, rock, classic rock, country,
+           pop, r&b / soul, gospel, latin, metal, jazz, classical / orchestral,
+           marching / military, other. Use '' if the listing does not make it
+           clear -- a GUESSED style is worse than none, because this is the
+           field a booker filters on."}
 
 Rules:
 - Only shows with a REAL, STATED date. If a listing gives no date, or gives a
@@ -68,6 +73,9 @@ Rules:
   named act, and "tickets on sale" pages with no show date.
 - Use the four-digit year that the source states. Do not assume the current
   year.
+- STYLE comes from the listing itself -- a genre tag, a descriptor, a support
+  billing, the venue's own categorisation. If the listing does not say, leave
+  it empty. Do not infer a style from the act's name.
 - If nothing qualifies, return []."""
 
 
@@ -239,10 +247,53 @@ def parse_events(raw: str) -> Optional[List[Dict]]:
         date = str(item.get("date") or "").strip()
         if not artist or not _DATE_RX.match(date):
             continue          # a show with no real date cannot be matched
+        # S141: style is carried through because it is Justin's scoring
+        # criterion #3 ("style-of-music fit for a family/TV stadium crowd") and
+        # the touring column had it on 0 of 71 acts while the for-hire column
+        # had it on 29 of 33. Without it the 1 November card read as noise: a
+        # booker cannot tell that "Forbidden" and "With A Vengeance" are thrash
+        # and metalcore without leaving the page, on the one date whose whole
+        # brief is a military/patriotic tie for a 45+ daytime crowd.
+        # Normalised to the SAME vocabulary the catalogue uses, so the two
+        # pools can be read side by side; anything unrecognised is dropped
+        # rather than shown, because a wrong style is worse than none.
         out.append({"artist": artist[:120], "date": date,
                     "venue": str(item.get("venue") or "").strip()[:120],
-                    "city": str(item.get("city") or "").strip()[:80]})
+                    "city": str(item.get("city") or "").strip()[:80],
+                    "style": normalise_style(item.get("style"))})
     return out
+
+
+# S141 — the style vocabulary, shared with halftime_catalogue's _MUSIC_SYSTEM
+# so the two columns of the dashboard can be compared. A model that answers
+# with something outside it is answering a different question, and the honest
+# render is a blank rather than a guess.
+STYLE_VOCAB = {
+    "hip hop / rap", "rock", "classic rock", "country", "pop", "r&b / soul",
+    "gospel", "latin", "metal", "jazz", "classical / orchestral",
+    "marching / military", "other",
+}
+_STYLE_ALIASES = {
+    "hip hop": "hip hop / rap", "rap": "hip hop / rap",
+    "hip-hop": "hip hop / rap", "hip hop/rap": "hip hop / rap",
+    "r&b": "r&b / soul", "soul": "r&b / soul", "rnb": "r&b / soul",
+    "classical": "classical / orchestral", "orchestral": "classical / orchestral",
+    "symphonic": "classical / orchestral", "opera": "classical / orchestral",
+    "metalcore": "metal", "heavy metal": "metal", "thrash": "metal",
+    "punk": "rock", "indie": "rock", "alternative": "rock",
+    "americana": "country", "folk": "country",
+    "military": "marching / military", "marching": "marching / military",
+}
+
+
+def normalise_style(raw) -> str:
+    """A style from the shared vocabulary, or "" — never a guess."""
+    v = str(raw or "").strip().lower()
+    if not v:
+        return ""
+    if v in STYLE_VOCAB:
+        return v
+    return _STYLE_ALIASES.get(v, "")
 
 
 def near_game(event_date: str, game_date: str, window: int = WINDOW_DAYS) -> bool:
@@ -726,7 +777,30 @@ def _selftest_body(_real_log_path) -> int:
 
     check("a clean array parses",
           parse_events('[{"artist":"A","date":"2026-11-01"}]')
-          == [{"artist": "A", "date": "2026-11-01", "venue": "", "city": ""}])
+          == [{"artist": "A", "date": "2026-11-01", "venue": "", "city": "",
+               "style": ""}])
+
+    # ── S141: style, Justin's scoring criterion #3 ──────────────────────────
+    # The touring column carried it on 0 of 71 acts while the for-hire column
+    # carried it on 29 of 33, so the 1 November card -- a military/patriotic
+    # brief for a 45+ daytime crowd -- led with thrash and metalcore and said
+    # nothing about it. A wrong style is worse than none here, so anything
+    # outside the shared vocabulary is dropped rather than shown.
+    check("style: a listing that states one carries it through",
+          parse_events('[{"artist":"A","date":"2026-11-01","style":"country"}]'
+                       )[0]["style"] == "country")
+    check("style: a listing that states none leaves it EMPTY, never guessed",
+          parse_events('[{"artist":"A","date":"2026-11-01"}]')[0]["style"] == "")
+    check("style: common wordings map onto the catalogue's vocabulary, so the "
+          "two columns read side by side",
+          normalise_style("Hip-Hop") == "hip hop / rap"
+          and normalise_style("metalcore") == "metal"
+          and normalise_style("Symphonic") == "classical / orchestral")
+    check("style: something outside the vocabulary is DROPPED, not shown",
+          normalise_style("vaporwave") == "" and normalise_style("???") == "")
+    check("style: the vocabulary matches the one the catalogue prompt offers",
+          {"hip hop / rap", "classic rock", "country", "marching / military"}
+          <= STYLE_VOCAB)
     check("JSON wrapped in prose still parses",
           parse_events('here you go [{"artist":"A","date":"2026-11-01"}] ok')
           is not None)

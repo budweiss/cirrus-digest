@@ -705,7 +705,11 @@ def _as_candidates(events: List[Dict],
         cand = {"name": ev.get("artist"),
                 "fields": {"clients": "", "category": "touring",
                            "home_base": ev.get("city", ""),
-                           "style": "",
+                           # S141: was hard-coded "" — so even after the sweep
+                           # started extracting a style, the page would have
+                           # thrown it away. Both halves had to change: the
+                           # routing prompt did not ask, and this did not read.
+                           "style": ev.get("style") or "",
                            "routing": "{} — {}, {}".format(
                                ev.get("date"), where, when)},
                 "also_known_as": []}
@@ -784,7 +788,17 @@ def _act_card(act: Dict) -> str:
             bits.append("<span class='badge b-{}' title='{}'>{}</span>".format(
                 _e(b["kind"]), _e(b["why"]), _e(b["label"])))
         bits.append("</div>")
-    for label, key in (("Playing", "routing"), ("Fee", "fee_note"),
+    # S141: STYLE leads the rows. It is Justin's scoring criterion #3 -- "style
+    # of music fit for a family/TV stadium crowd" -- and it was on the page
+    # NOWHERE, for either pool: the snapshot carried 29 styles across 9
+    # categories and the renderer had no row for them. The cost is worst on the
+    # date he cares most about: the 1 November card, whose brief is a
+    # military/patriotic tie for a 45+ daytime crowd, led with "Forbidden",
+    # "With A Vengeance" and "The Amity Affliction" -- thrash and metalcore --
+    # with nothing on the page to say so. First, because it is the field a
+    # booker rejects on before reading anything else.
+    for label, key in (("Style", "style"),
+                       ("Playing", "routing"), ("Fee", "fee_note"),
                        ("Base", "home_base"),
                        ("Credits", "clients"),
                        ("Booking", "booking_contact")):
@@ -1336,6 +1350,34 @@ def selftest() -> int:
             {"name": "Eminem (featuring Jack White)",
              "fields": {"style": "hip hop / rap", "clients": "Lions",
                         "home_base": "Detroit"}}])
+        # ── S141: style must actually REACH the page ────────────────────────
+        # It was absent for both pools and for three separate reasons, each of
+        # which alone was enough to hide it: the routing sweep never asked for
+        # it, this file hard-coded "" when building a touring candidate, and
+        # _act_card had no row for it at all. The snapshot carried 29 styles
+        # across 9 categories and the rendered page showed none of them.
+        _styled = _act_card({"name": "X", "fields": {"style": "classic rock",
+                                                     "home_base": "Pittsburgh"}})
+        check("style: a card RENDERS the style row (it had none, for either pool)",
+              "classic rock" in _styled and ">Style<" in _styled)
+        check("style: ...and it leads, because it is what a booker rejects on "
+              "before reading anything else",
+              _styled.index("Style") < _styled.index("Base"))
+        check("style: an act with no style shows no empty row",
+              "Style" not in _act_card({"name": "X",
+                                        "fields": {"home_base": "Pittsburgh"}}))
+        # ...and the same, one layer down, on the path that actually BUILDS a
+        # touring candidate. The card check above passes even when this layer
+        # throws the style away -- which is precisely the bug that was here, so
+        # a check that cannot see it is not the check this needs.
+        _ev = {"artist": "A", "date": "2026-11-01", "venue": "V",
+               "city": "Pittsburgh, PA", "miles": 10, "style": "country"}
+        _tc = _as_candidates([_ev], set())
+        check("style: a TOURING candidate carries the sweep's style through",
+              _tc and (_tc[0]["fields"] or {}).get("style") == "country")
+        check("style: ...and reaches the rendered card",
+              _tc and "country" in _act_card(_tc[0]))
+
         check("a duplicate collapses to one entry",
               len(dd) == 1)
         check("...keeping the richer record",
