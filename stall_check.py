@@ -57,12 +57,18 @@ REPO = os.path.dirname(os.path.abspath(__file__))
 # restating them here -- a second copy of "which box am I" is how the two
 # drift apart, and this check is worthless if it asks the wrong box.
 try:
-    from job_status import _here, REMOTE_HOST
+    from job_status import _here, REMOTE_HOST, REMOTE_STATUS
 except Exception:                                  # pragma: no cover
     def _here(): return "CIRRUS"
     REMOTE_HOST = "buddy@192.168.0.204"
+    REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"
 
 OK, STALL, UNKNOWN = "ok", "stall", "unknown"
+# S141. A signal that does not APPLY on this box is its own state. It is not
+# `ok` (nothing was verified) and not UNKNOWN (nothing is missing or
+# unreachable) -- CIRRUS simply is not where Bill's CRM lives. Counting a stub
+# as `ok` is the false comfort this whole check just got fixed for.
+SKIP = "n/a"
 # S75. A finding that is REAL, KNOWN and DELIBERATELY NOT BEING FIXED needs its
 # own state. Reporting it as STALLED every morning is how the whole panel stops
 # being read (T9) — but silencing it entirely loses the finding. ACCEPTED keeps
@@ -159,13 +165,13 @@ def _kb_dbs():
     return sorted(glob.glob(os.path.join(REPO, "data", "entity_kb", "*.db")))
 
 
-def _question_attempts(project):
+def _question_attempts(project, root=None):
     """How many client questions actually reached this KB? -> dict or None.
 
     None means the ledger does not exist, which is NOT the same as zero
     attempts and must not be reported as if it were.
     """
-    path = os.path.join(REPO, "logs", "kb_question_attempts.jsonl")
+    path = os.path.join(root or REPO, "logs", "kb_question_attempts.jsonl")
     if not os.path.exists(path):
         return None
     out = {"attempts": 0, "no_match": 0, "ambiguous": 0, "recorded": 0}
@@ -191,58 +197,132 @@ def _question_attempts(project):
     return out
 
 
-def check_kb_outcomes(days=7):
-    dbs = _kb_dbs()
-    if not dbs:
-        return [_res(UNKNOWN, "kb outcomes", "no entity_kb databases found")]
+# ── S141: this check used to read only the box it ran on ─────────────────────
+# `stall-check` runs on CIRRUS. CIRRUS's data/entity_kb/hoa_leads_bill.db has
+# **0 entities and 0 events** -- it is an empty stub left from a migration.
+# Bill's real CRM lives on CUMULUS: 2,477 entities, 13,304 events, and one
+# recorded outcome from 2026-08-25. So every verdict this check ever printed
+# about hoa_leads was a confident statement about an empty file, and the ONE
+# real signal -- and the fact that it then stopped for two weeks -- was
+# invisible from the box we ask.
+#
+# Run on CUMULUS, the same code says
+# `STALL outcomes[hoa_leads_bill]: 1 total but none in 14d`. That is a genuine
+# stall nobody had seen. It also sees halftime_acts, a KB CIRRUS does not have
+# at all. Each box carries live DBs for its own projects and empty stubs for
+# the other's, so asking one box was always going to answer for half the fleet
+# and lie about the other half.
+#
+# Two fixes, and the first matters more than the second:
+#   1. An EMPTY KB is "this project does not live here", not "this project has
+#      no outcomes". Skipping stubs stops the false comfort even if the remote
+#      leg never runs.
+#   2. Ask CUMULUS too, the same way check_stuck_jobs does -- by running THIS
+#      FILE there with --kb-stats, so there is one implementation of the rule
+#      and not a second copy to drift.
+def _kb_stats(root=None):
+    """Per-project KB counts for THIS box. Serialisable, so the remote leg is
+    this same function invoked over ssh rather than a reimplementation."""
+    root = root or REPO
     out = []
-    for db in dbs:
+    for db in sorted(glob.glob(os.path.join(root, "data", "entity_kb", "*.db"))):
         proj = os.path.basename(db)[:-3]
+        rec = {"project": proj, "entities": 0, "outcomes": 0,
+               "newest": None, "has_column": False, "error": ""}
         try:
             c = sqlite3.connect(db)
+            rec["entities"] = c.execute(
+                "SELECT COUNT(*) FROM entities").fetchone()[0]
             cols = {r[1] for r in c.execute("PRAGMA table_info(entity_events)")}
-            if "outcome" not in cols:
-                out.append(_res(UNKNOWN, f"outcomes[{proj}]",
-                                "no outcome column — migration has not run here"))
-                continue
-            row = c.execute("SELECT MAX(outcome_at) FROM entity_events "
-                            "WHERE outcome IS NOT NULL").fetchone()
-            n = c.execute("SELECT COUNT(*) FROM entity_events "
-                          "WHERE outcome IS NOT NULL").fetchone()[0]
+            rec["has_column"] = "outcome" in cols
+            if rec["has_column"]:
+                rec["outcomes"] = c.execute(
+                    "SELECT COUNT(*) FROM entity_events "
+                    "WHERE outcome IS NOT NULL").fetchone()[0]
+                rec["newest"] = c.execute(
+                    "SELECT MAX(outcome_at) FROM entity_events "
+                    "WHERE outcome IS NOT NULL").fetchone()[0]
         except Exception as e:
-            out.append(_res(UNKNOWN, f"outcomes[{proj}]", f"unreadable ({e})"))
-            continue
-        if not n:
-            # S75: zero outcomes has TWO very different causes, and calling both
-            # a stall every morning is how a check gets ignored (T9). The
-            # outcome only fires when exactly one entity matches a client's
-            # question, so distinguish "nobody has asked yet" (no fault, and
-            # nothing to fix) from "they asked and matching never worked"
-            # (a real fault, and invisible until now).
-            att = _question_attempts(proj)
-            if att is None:
-                out.append(_res(UNKNOWN, f"outcomes[{proj}]",
-                                "zero outcomes, and no attempt ledger to say "
-                                "whether the signal has had any opportunity"))
-            elif att["attempts"] == 0:
-                out.append(_res(UNKNOWN, f"outcomes[{proj}]",
-                                "zero outcomes, but the client has asked about "
-                                "0 entities — the signal has had NO opportunity "
-                                "yet, so this is waiting, not stalled"))
-            else:
-                out.append(_res(STALL, f"outcomes[{proj}]",
-                                f"{att['attempts']} client question(s) reached the "
-                                f"KB and NONE produced an outcome "
-                                f"({att['no_match']} matched nothing, "
-                                f"{att['ambiguous']} were ambiguous) — matching "
-                                f"is broken, not merely quiet"))
-            continue
-        age = _age_days(row[0]) if row and row[0] else None
-        if age is not None and age > days:
-            out.append(_res(STALL, f"outcomes[{proj}]",
-                            f"{n} total but none in {age}d — the feedback signal stopped"))
-        else:
-            out.append(_res(OK, f"outcomes[{proj}]", f"{n} recorded, newest {age}d ago"))
+            rec["error"] = f"{type(e).__name__}: {str(e)[:60]}"
+        rec["attempts"] = _question_attempts(proj, root=root)
+        out.append(rec)
+    return out
+
+
+def _remote_kb_stats():
+    """CUMULUS's KB stats, or None if it could not be asked.
+
+    None is NOT an empty list: "we could not reach the box that holds Bill's
+    CRM" must never render as "Bill's CRM is fine" (T76)."""
+    if _here() != "CIRRUS":
+        return None
+    remote_repo = os.path.dirname(REMOTE_STATUS) or "cirrus-digest"
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", REMOTE_HOST,
+             f"cd ~/{remote_repo} && python3 stall_check.py --kb-stats"],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        return None
+
+
+def kb_outcome_verdict(rec, box, days=7):
+    """(status, label, message) for ONE project's stats. PURE -- testable."""
+    proj = rec.get("project", "?")
+    label = f"outcomes[{proj}@{box}]"
+    if rec.get("error"):
+        return _res(UNKNOWN, label, f"unreadable ({rec['error']})")
+    # THE FIX. An empty KB is not a quiet project, it is the wrong box. Saying
+    # "no outcomes yet" about a file with nothing in it is a check passing for
+    # the wrong reason -- which is the whole class this audit is about.
+    if not rec.get("entities"):
+        return _res(SKIP, label,
+                    "no entities on this box — a stub, not this project's home; "
+                    "not judged here")
+    if not rec.get("has_column"):
+        return _res(UNKNOWN, label,
+                    "no outcome column — migration has not run here")
+    n, newest = rec.get("outcomes", 0), rec.get("newest")
+    att = rec.get("attempts")
+    if not n:
+        if att is None:
+            return _res(UNKNOWN, label,
+                        "zero outcomes, and no attempt ledger to say whether "
+                        "the signal has had any opportunity")
+        if att.get("attempts", 0) == 0:
+            return _res(UNKNOWN, label,
+                        "zero outcomes, but the client has asked about 0 "
+                        "entities — the signal has had NO opportunity yet, so "
+                        "this is waiting, not stalled")
+        return _res(STALL, label,
+                    f"{att['attempts']} client question(s) reached the KB and "
+                    f"NONE produced an outcome ({att['no_match']} matched "
+                    f"nothing, {att['ambiguous']} were ambiguous) — matching is "
+                    f"broken, not merely quiet")
+    age = _age_days(newest) if newest else None
+    if age is not None and age > days:
+        return _res(STALL, label,
+                    f"{n} total but none in {age}d — the feedback signal stopped")
+    return _res(OK, label, f"{n} recorded, newest {age}d ago")
+
+
+def check_kb_outcomes(days=7):
+    here = _here()
+    local = _kb_stats()
+    out = [kb_outcome_verdict(r, here, days) for r in local]
+    remote = _remote_kb_stats()
+    if remote is None:
+        if here == "CIRRUS":
+            out.append(_res(UNKNOWN, "outcomes[CUMULUS]",
+                            "could not reach CUMULUS — this is NOT 'the KBs "
+                            "there are fine'. Bill's real CRM lives there."))
+    else:
+        out += [kb_outcome_verdict(r, "CUMULUS", days) for r in remote]
+    if not out:
+        return [_res(UNKNOWN, "kb outcomes", "no entity_kb databases found")]
     return out
 
 
@@ -610,6 +690,76 @@ def selftest():
     import types
     ok = fail = 0
 
+    def _kbck(ck):
+        """S141 — the KB checks must not answer for a box they cannot see.
+
+        The case that prompted this: CIRRUS's hoa_leads_bill.db has 0 entities
+        (a migration stub), Bill's real 2,477-entity CRM is on CUMULUS, and the
+        old code read the stub and printed a confident 'waiting, not stalled'.
+        Run on CUMULUS the same code says 'STALL: 1 total but none in 14d' -- a
+        real stall nobody had seen.
+        """
+        stub = {"project": "hoa_leads_bill", "entities": 0, "outcomes": 0,
+                "newest": None, "has_column": True, "error": "", "attempts": None}
+        r = kb_outcome_verdict(stub, "CIRRUS")
+        ck("kb: an EMPTY kb is 'not this box', never a verdict about the project",
+           r["state"] == SKIP and "stub" in r["msg"])
+        ck("kb: ...and it is NOT reported as ok", r["state"] != OK)
+
+        real = {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
+                "newest": "2026-08-25 15:44:27", "has_column": True,
+                "error": "", "attempts": None}
+        r = kb_outcome_verdict(real, "CUMULUS")
+        ck("kb: the REAL kb, 1 outcome and nothing for weeks, is a STALL",
+           r["state"] == STALL and "the feedback signal stopped" in r["msg"])
+        ck("kb: the verdict names the box it is about",
+           "@CUMULUS" in r["name"])
+
+        fresh = dict(real, newest=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        r = kb_outcome_verdict(fresh, "CUMULUS")
+        ck("kb: a recent outcome is ok", r["state"] == OK)
+
+        waiting = {"project": "p", "entities": 5, "outcomes": 0, "newest": None,
+                   "has_column": True, "error": "",
+                   "attempts": {"attempts": 0, "no_match": 0, "ambiguous": 0}}
+        r = kb_outcome_verdict(waiting, "CUMULUS")
+        ck("kb: a real kb nobody has asked about is waiting, not stalled",
+           r["state"] == UNKNOWN and "NO opportunity" in r["msg"])
+
+        asked = {"project": "p", "entities": 5, "outcomes": 0, "newest": None,
+                 "has_column": True, "error": "",
+                 "attempts": {"attempts": 8, "no_match": 3, "ambiguous": 1}}
+        r = kb_outcome_verdict(asked, "CUMULUS")
+        ck("kb: asked 8 times with no outcome IS a stall", r["state"] == STALL)
+
+        r = kb_outcome_verdict({"project": "p", "error": "boom"}, "CIRRUS")
+        ck("kb: an unreadable db is UNKNOWN, never ok", r["state"] == UNKNOWN)
+
+        # T76: an unreachable CUMULUS is a MISSING measurement, not a clean
+        # one. Bill's whole CRM lives there; silence about it must never read
+        # as health. Pinned because a mutant that dropped this branch was
+        # otherwise invisible to every check above.
+        _g = globals()
+        _sv_remote, _sv_here, _sv_stats = (_g["_remote_kb_stats"], _g["_here"],
+                                           _g["_kb_stats"])
+        try:
+            _g["_here"] = lambda: "CIRRUS"
+            _g["_kb_stats"] = lambda root=None: []
+            _g["_remote_kb_stats"] = lambda: None
+            names = [r["name"] for r in check_kb_outcomes()]
+            ck("kb: an unreachable CUMULUS is REPORTED, not silently fine",
+               any("CUMULUS" in n for n in names))
+            _g["_remote_kb_stats"] = lambda: [
+                {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
+                 "newest": "2026-08-25 15:44:27", "has_column": True,
+                 "error": "", "attempts": None}]
+            res = check_kb_outcomes()
+            ck("kb: CUMULUS's real stall is seen from CIRRUS",
+               any(r["state"] == STALL and "@CUMULUS" in r["name"] for r in res))
+        finally:
+            _g["_remote_kb_stats"], _g["_here"], _g["_kb_stats"] = (
+                _sv_remote, _sv_here, _sv_stats)
+
     def ck(name, cond):
         nonlocal ok, fail
         if cond:
@@ -737,6 +887,8 @@ def selftest():
            check_prompt_cache(_path=os.path.join(_td, "nope.jsonl"))["state"]
            == UNKNOWN)
 
+    _kbck(ck)
+
     print(f"\n{ok} passed, {fail} failed")
     return 1 if fail else 0
 
@@ -747,9 +899,16 @@ def main():
     # T57: the subcommand is argv[0], never `"--selftest" in sys.argv` -- a
     # wrapper's flag namespace is not its payload's.
     ap.add_argument("--selftest", action="store_true")
+    # S141: how the CUMULUS leg is fetched. The remote runs this same file, so
+    # the counting rule has exactly one implementation and cannot drift from
+    # the one that judges it.
+    ap.add_argument("--kb-stats", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.kb_stats:
+        print(json.dumps(_kb_stats()))
+        return 0
     res = run_all()
     stalls = [r for r in res if r["state"] == STALL]
     unknown = [r for r in res if r["state"] == UNKNOWN]
@@ -766,13 +925,15 @@ def main():
     print("== stall check ==\n")
     for r in res:
         mark = {OK: "  ok     ", STALL: "  STALL  ", UNKNOWN: "  unknown",
-                ACCEPTED: "  accept "}[r["state"]]
+                ACCEPTED: "  accept ", SKIP: "  n/a    "}[r["state"]]
         print(f"{mark} {r['name']:22} {r['msg']}")
     accepted = [r for r in res if r["state"] == ACCEPTED]
+    skipped = [r for r in res if r["state"] == SKIP]
     print(f"\n  {len(res)} signal(s): "
-          f"{len(res)-len(stalls)-len(unknown)-len(accepted)} ok, "
+          f"{len(res)-len(stalls)-len(unknown)-len(accepted)-len(skipped)} ok, "
           f"{len(stalls)} stalled, {len(unknown)} UNCHECKED, "
-          f"{len(accepted)} accepted")
+          f"{len(accepted)} accepted"
+          + (f", {len(skipped)} not on this box" if skipped else ""))
     if unknown:
         print("\n  UNCHECKED is not OK. Each one is a signal we cannot see, which is")
         print("  the exact condition that let six problems survive for weeks.")
