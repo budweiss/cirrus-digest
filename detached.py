@@ -106,11 +106,34 @@ def finish(name, exit_code):
 
 
 def _alive(pid):
+    """Is this pid a process that is actually RUNNING?
+
+    Not `os.kill(pid, 0)`. A killed child whose parent has not reaped it is a
+    ZOMBIE: it still has a pid, the signal probe still succeeds, and the sweep
+    would report "still running -- slow, or wedged" about a process that is
+    dead. That is a different wrong answer from the one this check exists to
+    prevent, but it is still wrong, and it sends someone to look at a pid that
+    is not there. Found by killing a real job on cumulus1 and watching the
+    reaper get it wrong (S141).
+
+    `ps -o state=` is the portable way to ask -- it works on CIRRUS (macOS) and
+    CUMULUS (Linux), and returns nothing at all for a pid that has gone. An
+    empty answer means dead; a state beginning with Z means a zombie, which is
+    also dead.
+    """
     try:
-        os.kill(int(pid), 0)
-        return True
+        r = subprocess.run(["ps", "-o", "state=", "-p", str(int(pid))],
+                           capture_output=True, text=True, timeout=10)
+        st = (r.stdout or "").strip()
+        return bool(st) and not st.upper().startswith("Z")
     except Exception:
-        return False
+        # Cannot tell. Fall back to the weaker probe rather than claiming dead:
+        # a false "NEVER FINISHED" on a healthy job is its own kind of wolf.
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except Exception:
+            return False
 
 
 def load_markers(d=None):
@@ -246,6 +269,15 @@ def selftest():
     probs, _ = sweep_verdict([m()], now=now, alive=lambda p: True)
     ck("detached: still-running past its estimate is 'slow or wedged', not lost",
        len(probs) == 1 and "still running" in probs[0])
+
+    # A ZOMBIE is dead, whatever os.kill says about it.
+    import subprocess as _sp
+    z = _sp.Popen(["/bin/sh", "-c", "exit 7"])
+    z.wait() if False else None      # deliberately NOT reaped
+    time.sleep(0.2)
+    ck("detached: a zombie pid counts as DEAD, not 'still running'",
+       _alive(z.pid) is False)
+    z.wait()
 
     probs, _ = sweep_verdict([{"name": "x", "unreadable": True}], now=now)
     ck("detached: an unreadable marker ALERTS, never counts as fine (T76)",
