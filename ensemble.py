@@ -41,7 +41,8 @@ Public API
                 local=None, session_id=None, app_dir=None, mode=None)
         -> (meta: dict, text: str)
       meta = {"mode","members","judge","degraded","reason","est_cost_usd",
-              "draft_by"}   # "vllm" | "ollama" | "" — which engine drafted (S131)
+              "draft_by",   # "vllm" | "ollama" | "" — which engine drafted (S131)
+              "draft_error"}  # WHY there is no draft, or why it downgraded (S141)
 """
 
 import json
@@ -50,7 +51,16 @@ import time
 import urllib.request
 from pathlib import Path
 
+import threading
+
 import llm_providers as L
+
+# S141 — why the local draft is missing, not merely THAT it is.
+# `_local_draft` swallows every exception by design ("never blocks the client
+# path"), which is right for Bill's email and wrong for anyone trying to find
+# out later why the judge got no draft. Thread-local for the same reason
+# llm_providers' _LAST is: two in-flight calls must not overwrite each other.
+_DRAFT = threading.local()
 
 try:
     import llm_budget as B
@@ -79,11 +89,14 @@ DRAFT_MAX_TOKENS = 6000
 def _local_draft(system, user, local, timeout=60):
     """A cheap local-model first pass for the judge's context. local = {"host","model"}.
     Best-effort: returns "" on any failure so it never blocks the client path."""
+    _DRAFT.error = ""
     if not local:
+        _DRAFT.error = "no local model configured on this box"
         return ""
     host = (local.get("host") or "http://localhost:11434").rstrip("/")
     model = local.get("model")
     if not model:
+        _DRAFT.error = "local hint carried no model name"
         return ""
     timeout = int(local.get("timeout", timeout))
     try:
@@ -96,8 +109,12 @@ def _local_draft(system, user, local, timeout=60):
         req = urllib.request.Request(f"{host}/api/generate", data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return (json.loads(r.read().decode()).get("response") or "").strip()
-    except Exception:
+            out = (json.loads(r.read().decode()).get("response") or "").strip()
+        if not out:
+            _DRAFT.error = f"ollama {model} returned an empty draft"
+        return out
+    except Exception as e:
+        _DRAFT.error = f"ollama {model}: {type(e).__name__}: {str(e)[:100]}"
         return ""
 
 
@@ -185,7 +202,8 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     mode = (mode or pol.get("mode", "single")).lower()
     ens = creds.get("ensemble", {}) or {}
     meta = {"mode": mode, "members": [], "judge": None, "degraded": False,
-            "reason": "", "est_cost_usd": None, "draft_by": ""}
+            "reason": "", "est_cost_usd": None, "draft_by": "",
+            "draft_error": ""}
 
     def _baseline(reason):
         meta["degraded"] = (mode == "council")
@@ -237,6 +255,10 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
     # that is not printed is not measured (S103). An EMPTY vLLM reply is a miss,
     # not a draft -- call() returns "" after its retry rather than raising.
     draft = ""
+    # S141: WHY there is no draft, not merely that there is none. Every branch
+    # below writes it, so `draft_error` is empty only when a draft was actually
+    # produced or none was ever wanted.
+    _draft_err = ""
     if local and creds.get("vllm_url"):
         # `local and` is the scope guard: vLLM REPLACES the engine for a caller
         # that already asked for a draft (bill_snow_weekly passes _local_hint()).
@@ -248,14 +270,29 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
             draft = (L.call("vllm", system, user, creds,
                             max_tokens=DRAFT_MAX_TOKENS,
                             task=f"{task}:draft") or "").strip()
-        except Exception:
+            if not draft:
+                _draft_err = "vllm endpoint returned an empty draft"
+        except Exception as e:
             draft = ""
+            _draft_err = f"vllm: {type(e).__name__}: {str(e)[:100]}"
         if draft:
             meta["draft_by"] = "vllm"
     if not draft and local:
+        _DRAFT.error = ""
         draft = _local_draft(system, user, local)
         if draft:
             meta["draft_by"] = "ollama"
+            # A downgrade is not a failure, but it is not nothing either: the
+            # endpoint was configured and did not answer, and only this line
+            # says so.
+            if _draft_err:
+                _draft_err = f"downgraded to ollama after {_draft_err}"
+        else:
+            _o = getattr(_DRAFT, "error", "") or "ollama draft unavailable"
+            _draft_err = f"{_draft_err}; {_o}" if _draft_err else _o
+    elif not draft and not local:
+        _draft_err = _draft_err or "no local draft was requested by this caller"
+    meta["draft_error"] = _draft_err
 
     # 2) council: every keyed provider answers independently
     try:
@@ -474,6 +511,39 @@ def selftest():
         m, _ = best_answer("sys", "usr", _vc)
         check("vllm_url but local=None: vLLM NOT called (other callers unchanged)",
               "vllm" not in _seen["provs"] and m["draft_by"] == "")
+
+        # ── S141: the three-step degradation must SAY it happened ────────────
+        # vllm -> ollama -> nothing was silent end to end. `draft_by` named the
+        # winner; nothing named the loser, so "the endpoint is down and we have
+        # been drafting on ollama for a month" looked exactly like a healthy
+        # run. Bill's email is unaffected either way, which is precisely why
+        # this needed a witness rather than an exception.
+        _seen.update(provs=[], judge_u=""); _vllm.update(reply="VDRAFT", **{"raise": False})
+        m, _ = best_answer("sys", "usr", _vc, local=_loc)
+        check("draft_error: a clean vllm draft leaves NO error",
+              m.get("draft_error") == "")
+        _seen.update(provs=[], judge_u=""); _vllm["raise"] = True
+        m, _ = best_answer("sys", "usr", _vc, local=_loc)
+        check("draft_error: a silent DOWNGRADE to ollama is named",
+              m["draft_by"] == "ollama"
+              and "downgraded to ollama" in m.get("draft_error", "")
+              and "ProviderError" in m.get("draft_error", ""))
+        # both engines gone -> the judge gets no draft at all
+        def _dead_draft(sy, u, loc, timeout=60):
+            _DRAFT.error = "ollama qwen3-coder:30b: URLError: refused"
+            return ""
+        _keep = _local_draft
+        try:
+            globals()["_local_draft"] = _dead_draft
+            _seen.update(provs=[], judge_u="")
+            m, _ = best_answer("sys", "usr", _vc, local=_loc)
+            check("draft_error: BOTH engines gone is reported, not silent",
+                  m["draft_by"] == ""
+                  and "vllm" in m.get("draft_error", "")
+                  and "URLError" in m.get("draft_error", ""))
+        finally:
+            globals()["_local_draft"] = _keep
+        _vllm.update(reply="VDRAFT", **{"raise": False})
     finally:
         L.call, _local_draft = _saved_call, _saved_draft
 

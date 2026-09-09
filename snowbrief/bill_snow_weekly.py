@@ -225,6 +225,16 @@ def decide():
               f"draft={meta.get('draft_by') or 'none'} "
               f"degraded={meta['degraded']} est=${meta.get('est_cost_usd')} "
               f"({meta['reason']}); {len(text)} chars")
+        # S141: the journal has said `draft=` since S131, and nothing read it.
+        # Carry it out so the STATUS NOTE carries it too -- that note is printed
+        # verbatim by cumulus_daily_brief (20:00, emailed), so a downgrade or a
+        # missing draft reaches Buddy without anyone running a session. Bill's
+        # email is unchanged either way; that is exactly why it needed a witness
+        # rather than an exception.
+        _draft_state["by"] = meta.get("draft_by") or ""
+        _draft_state["error"] = meta.get("draft_error") or ""
+        if meta.get("draft_error"):
+            print(f"[llm] DRAFT DEGRADED: {meta['draft_error']}")
     except Exception as e:
         return {"material_change": False, "error": True,
                 "reason": f"LLM call failed: {e}"}, urls
@@ -242,6 +252,34 @@ def decide():
     # contain a word like "failed"/"parse". error stays falsy on this path.
     data["urls"] = urls
     return data, urls
+
+
+# S141 — what the local draft did on this run, for the status note. A plain
+# module dict, not a return value: decide() already returns (data, urls) and
+# threading a third element through every call site would be a wider change
+# than the problem warrants (rule 3). This job is single-threaded and runs once.
+_draft_state = {"by": "", "error": ""}
+
+
+def _draft_note():
+    """The draft clause for the status note, or "" when there is nothing to say.
+
+    Shapes: `draft=vllm` (all well, still recorded so a change is visible week
+    to week), `draft=ollama DEGRADED: ...`, `draft=NONE: ...`.
+    """
+    by, err = _draft_state.get("by", ""), _draft_state.get("error", "")
+    if not by and not err:
+        return ""
+    if not by:
+        return f"draft=NONE ({err[:70]})" if err else "draft=NONE"
+    if err:
+        return f"draft={by} DEGRADED ({err[:70]})"
+    return f"draft={by}"
+
+
+def _with_draft(note):
+    d = _draft_note()
+    return f"{note}; {d}" if d else note
 
 
 def _rec(dry, ok, note=""):
@@ -310,7 +348,8 @@ def main():
     if not material:
         reason = data.get("reason", "")
         print(f"no material change this week — {reason}. Nothing sent.")
-        _rec(dry, not _run_failed(data), reason[:120] or "no material change")
+        _rec(dry, not _run_failed(data),
+             _with_draft(reason[:120] or "no material change"))
         return
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
@@ -333,8 +372,67 @@ def main():
         import send_guard
         if not send_guard.mark_sent("billsnow", data.get("email_subject") or ""):
             print("WARNING: send stamp not written — a restart could re-send.")
-    _rec(dry, r.returncode == 0, "sent material update" if r.returncode == 0 else "send failed")
+    _rec(dry, r.returncode == 0,
+         _with_draft("sent material update" if r.returncode == 0 else "send failed"))
+
+
+def selftest() -> int:
+    """Offline. Touches no network, no creds, no file -- and no live state:
+    it only exercises the pure note builders (T32).
+
+    This file had NO selftest until S141, which is why `dev_findings`'
+    blind_gate rule exists: dev_agent's gate 2 runs "the changed module's own
+    selftest" and was reporting `selftest` for this module while inspecting
+    nothing at all.
+    """
+    fails = 0
+
+    def ck(name, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        fails += 0 if cond else 1
+
+    saved = dict(_draft_state)
+    try:
+        # A run whose draft came off the endpoint: recorded, no alarm. It is
+        # still SAID, so a change from vllm to ollama is visible week to week
+        # in the daily brief rather than only in the journal.
+        _draft_state.update(by="vllm", error="")
+        ck("a clean vllm draft is named in the note", _draft_note() == "draft=vllm")
+        ck("...and is appended to the run's own reason",
+           _with_draft("no material change") == "no material change; draft=vllm")
+
+        # The silent downgrade: the endpoint was configured and did not answer.
+        _draft_state.update(by="ollama", error="downgraded to ollama after vllm: ProviderError: endpoint down")
+        ck("a downgrade to ollama is marked DEGRADED, not passed off as normal",
+           _draft_note().startswith("draft=ollama DEGRADED"))
+        ck("...and names the cause", "ProviderError" in _draft_note())
+
+        # Both engines gone: the judge got no draft at all.
+        _draft_state.update(by="", error="vllm: URLError: refused; ollama qwen3: URLError: refused")
+        ck("no draft at all reads NONE, never blank", _draft_note().startswith("draft=NONE"))
+        ck("...and carries the reason into the note",
+           "URLError" in _with_draft("sent material update"))
+
+        # A caller that never wanted a draft must not manufacture an alarm (T9).
+        _draft_state.update(by="", error="")
+        ck("a run with no draft state says nothing at all", _draft_note() == "")
+        ck("...and leaves the note byte-identical",
+           _with_draft("sent material update") == "sent material update")
+
+        # The note is a status field read by the daily brief; it must stay short.
+        _draft_state.update(by="ollama", error="x" * 400)
+        ck("a huge error is truncated, so the status row stays a row",
+           len(_draft_note()) < 100)
+    finally:
+        _draft_state.clear()
+        _draft_state.update(saved)
+
+    print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURE(S)'}")
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":
+    if "selftest" in sys.argv or "--selftest" in sys.argv:
+        sys.exit(selftest())
     main()
