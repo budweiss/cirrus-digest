@@ -256,7 +256,14 @@ def _remote_kb_stats():
     CRM" must never render as "Bill's CRM is fine" (T76)."""
     if _here() != "CIRRUS":
         return None
-    remote_repo = os.path.dirname(REMOTE_STATUS) or "cirrus-digest"
+    # The REPO ROOT, not the directory the status file sits in. REMOTE_STATUS
+    # is "cirrus-digest/logs/jobs-status.json", so os.path.dirname() gives
+    # "cirrus-digest/logs" and the cd lands one level too deep, where
+    # stall_check.py does not exist. The first draft did exactly that and the
+    # check honestly reported "could not reach CUMULUS" -- correct behaviour
+    # (T76), and it would have shipped a remote leg that never once ran if the
+    # real runner command had not been executed before calling it done.
+    remote_repo = REMOTE_STATUS.split("/")[0] or "cirrus-digest"
     try:
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", REMOTE_HOST,
@@ -756,6 +763,8 @@ def selftest():
             res = check_kb_outcomes()
             ck("kb: CUMULUS's real stall is seen from CIRRUS",
                any(r["state"] == STALL and "@CUMULUS" in r["name"] for r in res))
+            ck("kb: the remote repo path is the repo ROOT, not the logs dir",
+               REMOTE_STATUS.split("/")[0] == "cirrus-digest")
         finally:
             _g["_remote_kb_stats"], _g["_here"], _g["_kb_stats"] = (
                 _sv_remote, _sv_here, _sv_stats)
