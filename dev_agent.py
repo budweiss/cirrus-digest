@@ -2390,6 +2390,26 @@ def _log_job(name, ok, note=""):
         _log(f"job_status.record failed: {e}")
 
 
+def _sweep_verdict(done, todo):
+    """(ok, note) for one nightly sweep. PURE -- no I/O, so it can be tested.
+
+    `done` holds one record per build ATTEMPTED; a failure is appended exactly
+    like a success, which is what made the old one-liner lie. Split out here so
+    the rule has somewhere to be checked from.
+    """
+    built = sum(1 for r in done if r.get("status") == "awaiting-confirm")
+    failed = [r for r in done if r.get("status") != "awaiting-confirm"]
+    ok = not (done and built == 0)
+    note = (f"{len(done)} attempted, {built} built (awaiting confirm), "
+            f"{len(todo)} queued")
+    if failed:
+        note += "; failed: " + "; ".join(
+            f"{r.get('id')}={r.get('status')}"
+            + (f" ({str(r.get('error'))[:60]})" if r.get("error") else "")
+            for r in failed[:3])
+    return ok, note
+
+
 # ── Nightly sweep ─────────────────────────────────────────────────────────────
 # ── Repair tickets -> build queue (S91) ───────────────────────────────────────
 # Buddy, 2026-09-01: "we spent 25% of our allotted time working on fixing
@@ -2600,8 +2620,22 @@ def run_nightly():
     _notify("\n".join(lines))
     _log("nightly sweep done")
     built = sum(1 for r in done if r.get("status") == "awaiting-confirm")
-    _log_job("devloop", True,
-             f"{len(done)} built, {built} awaiting confirm, {len(todo)} queued")
+    # S141. This used to read `f"{len(done)} built, ..."` with ok hard-coded
+    # True. len(done) is how many builds were ATTEMPTED -- a failed one is
+    # appended to `done` exactly like a successful one -- so four consecutive
+    # nights (2026-09-05 .. 09-08) on which BOTH model-patch attempts died on
+    # stop_reason=max_tokens and nothing was produced all recorded
+    # `ok=true, "1 built, 0 awaiting confirm, 1 queued"`. The nightly Telegram
+    # did carry a ❌, but jobs-status is what a morning review reads, and it
+    # said green for four days. Same shape as the S137 outage: the job degraded
+    # to producing nothing while every status line stayed healthy.
+    #
+    # So: say ATTEMPTED, name the failures, and let a night where every attempt
+    # failed record ok=False. A night with nothing queued stays healthy and
+    # quiet -- the job fired and correctly found nothing, and a check that
+    # cries wolf on an idle night is one that gets ignored (T9).
+    ok, note = _sweep_verdict(done, todo)
+    _log_job("devloop", ok, note)
 
 
 # ── Self-test (offline: no creds, no network, no git remotes) ─────────────────
@@ -2635,6 +2669,31 @@ def _selftest():
     # restarted" while the box kept running the code that had just failed
     # verify. Source-level, because exercising it for real means restarting a
     # live service mid-selftest.
+    # S141: the nightly status line must not report a night that built
+    # NOTHING as healthy. Four consecutive nights (2026-09-05 .. 09-08) of
+    # `stop_reason=max_tokens` on both patch attempts recorded ok=true and the
+    # word "built" for zero builds, because the old line printed len(done) --
+    # which counts ATTEMPTS -- and hard-coded ok=True.
+    _AC = {"status": "awaiting-confirm", "id": "p1"}
+    _ERR = {"status": "build-error", "id": "p2", "error": "no text in model reply"}
+    _ok_none, _note_none = _sweep_verdict([], [])
+    check("an idle night (nothing queued) is healthy and quiet",
+          _ok_none is True and "0 attempted" in _note_none
+          and "failed:" not in _note_none)
+    _ok_good, _note_good = _sweep_verdict([_AC], [_AC])
+    check("a night that built something is healthy",
+          _ok_good is True and "1 built" in _note_good)
+    _ok_bad, _note_bad = _sweep_verdict([_ERR], [_ERR])
+    check("a night where EVERY attempt failed is NOT healthy",
+          _ok_bad is False)
+    check("...and the note says attempted, not built, and names the failure",
+          "1 attempted" in _note_bad and "0 built" in _note_bad
+          and "p2=build-error" in _note_bad
+          and "no text in model reply" in _note_bad)
+    _ok_mix, _ = _sweep_verdict([_AC, _ERR], [_AC, _ERR])
+    check("one success among failures still counts as a healthy night",
+          _ok_mix is True)
+
     dep = _source_between("def ship(n: int)", "\ndef discard(n: int)")
     check("deploy() captures the restart return code (not discarded)",
           re.search(r"rc,\s*out\s*=\s*_run\(kickstart_cmd", dep or "") is not None)
