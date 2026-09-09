@@ -594,6 +594,35 @@ def _tag(provider: str) -> str:
     return f"{provider}:{model}" if model else provider
 
 
+# ── Extraction token budget (S141) ───────────────────────────────────────────
+# The local model is a REASONING model: its thinking is charged against
+# max_tokens before a single character of JSON is emitted. Measured on the
+# 2026-09-09 06:30 run's own sources: reasoning 2,500-2,700 tokens, the JSON
+# answer ~600 more -- 3,256 of a 4,000 budget, 744 tokens of headroom. When the
+# sources come back a little messier the reasoning runs longer, the JSON array
+# is cut off mid-element, `parse_acts` finds no closing bracket and returns
+# None, and the chain escalates to a PAID model. Reproduced exactly: at
+# max_tokens=3000 the same block returns finish_reason=length and parse_acts
+# None; at 4000 it returns 4 acts.
+#
+# That is not the escalation this pipeline is for. Escalation is meant to mean
+# "the local model could not produce usable JSON" -- a judgement about the
+# MODEL -- not "we clipped its answer off". The tight budget was costing real
+# money: every truncation bought a Haiku call, and on 09-09 two of them
+# returned 0 acts each.
+#
+# It also explains S140's low-vs-medium result. Low effort was not answering
+# BETTER; its reasoning is ~700-1,200 tokens instead of ~2,500, so it left room
+# for the answer. 8/8 local on all three low runs, 7/8 at medium.
+#
+# The endpoint is local and free, and vllm_timeout is 900s against ~60 tok/s
+# (8,000 tokens ≈ 133s worst case), so headroom here costs nothing. The PAID
+# tier deliberately keeps the smaller budget: it has no hidden reasoning spend
+# on this prompt, and a bigger number there would be billed.
+LOCAL_EXTRACT_MAX_TOKENS = 8000
+PAID_EXTRACT_MAX_TOKENS = 4000
+
+
 def extract_acts(source_block: str, creds: dict,
                  pool: str = "variety", stats: dict = None) -> tuple:
     """(acts, model, escalated). LOCAL FIRST — requirement 4, literally.
@@ -620,7 +649,7 @@ def extract_acts(source_block: str, creds: dict,
     if creds.get("vllm_url"):
         try:
             raw = llm_providers.call("vllm", system, user, creds,
-                                     max_tokens=4000, retries=0)
+                                     max_tokens=LOCAL_EXTRACT_MAX_TOKENS, retries=0)
             acts = parse_acts(raw, pool)
             if acts is not None:
                 return acts, _tag("vllm"), False
@@ -631,7 +660,7 @@ def extract_acts(source_block: str, creds: dict,
 
     try:
         raw = llm_providers.call("ollama", system, user, creds,
-                                 max_tokens=4000, retries=0)
+                                 max_tokens=LOCAL_EXTRACT_MAX_TOKENS, retries=0)
         acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, _tag("ollama"), False
@@ -640,7 +669,7 @@ def extract_acts(source_block: str, creds: dict,
 
     try:
         provider, raw = llm_providers.escalate(
-            system, user, creds, max_tokens=4000, mode="single")
+            system, user, creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
         acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, _tag(provider), True
@@ -1061,6 +1090,24 @@ def report(db_path: str = None) -> int:
     return 0
 
 
+def _extract_src() -> str:
+    """The module's CALL-SITE source, for the S141 budget checks below.
+
+    Everything from `def selftest` onward is cut, and comment lines are
+    dropped. Without both, the check counts its OWN text -- it names the
+    constants it is looking for, and the constants' explanatory comment names
+    the numbers. That is the third time a source-level check in this repo has
+    matched its own explanation (S103); it is cheaper to cut the haystack than
+    to remember."""
+    try:
+        src = Path(__file__).read_text()
+    except Exception:
+        return ""
+    src = src.split("def selftest", 1)[0]
+    return "\n".join(l for l in src.splitlines()
+                      if not l.lstrip().startswith("#"))
+
+
 def selftest() -> int:
     """Offline. No network, no model, no writes outside a temp DB."""
     import tempfile
@@ -1071,6 +1118,22 @@ def selftest() -> int:
         print(f"  {'PASS' if ok else 'FAIL'}  {label}")
         if not ok:
             bad += 1
+
+    # S141: the LOCAL model's thinking is billed against max_tokens before any
+    # JSON is emitted, so the local tiers need more room than the paid one --
+    # if they are ever re-unified, a truncated local reply silently becomes a
+    # PAID call again. Measured: reasoning 2,500-2,700 tokens on the 09-09
+    # sources, and max_tokens=3000 reproduced finish_reason=length +
+    # parse_acts None on that exact block.
+    check("the LOCAL extract budget is bigger than the PAID one",
+          LOCAL_EXTRACT_MAX_TOKENS > PAID_EXTRACT_MAX_TOKENS)
+    check("...with room for ~2,700 reasoning tokens AND the answer",
+          LOCAL_EXTRACT_MAX_TOKENS >= 6000)
+    _src = _extract_src()
+    check("both local tiers use the local budget, the paid tier does not",
+          _src.count("max_tokens=LOCAL_EXTRACT_MAX_TOKENS") == 2
+          and _src.count("max_tokens=PAID_EXTRACT_MAX_TOKENS") == 1
+          and "max_tokens=4000" not in _src)
 
     # --- the exclusion Buddy asked for by name -------------------------
     check("a marching band is rejected", looks_like_band("Ohio State Marching Band"))
