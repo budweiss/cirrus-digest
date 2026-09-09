@@ -58,7 +58,14 @@ QUESTIONS = [
  (13, "Wk14 @ JAC",  "Total points odd or even", "Odd / Even",
       "Odd", 0.57, "MEASURED: 57% odd across two long samples", False),
  (14, "Wk15 vs BAL", "Who wins", "PIT / BAL / Tie",
-      "BAL", 0.549, "modelled; BAL 3 wins better beats 2.36pt home field", True),
+      # BUDDY'S CALL, 2026-09-09. The MODEL still says BAL at 54.9% -- Baltimore
+      # is three wins better on the season line and that beats a measured
+      # 2.36-point home field. Entering PIT is a deliberate override, and the
+      # confidence below is the honest other side of that same number: 45.1%,
+      # not 54.9%. This was flagged from the start as the cheap one to flip if
+      # the entry should feel like a Steelers fan's entry; Q17 and Q24 are the
+      # expensive ones and stay as modelled.
+      "PIT", 0.451, "Buddy's override; model says BAL 54.9%, so PIT is 45.1%", True),
  (15, "Wk16 vs CAR", "More total yards of offense", "PIT / CAR / Tie",
       "PIT", 0.60, "home vs a weak opponent; yards are less noisy than points", True),
  (16, "Wk17 @ TEN",  "The last score of the game", "TD / FG / Safety / None",
