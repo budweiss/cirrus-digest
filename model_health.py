@@ -504,6 +504,107 @@ def check_local_fallback_rate(creds=None, ledger=None, now=None):
     return fallback_verdict(_ledger_rows(path, now=now))
 
 
+# ── Endpoint config vs REALITY (S141, watcher audit item 4) ──────────────────
+# `serve-tp2.sh` says what we ASK the engine for. It does not say what the
+# engine DID. vLLM resolves several of those flags against what the hardware
+# and the installed wheels actually support, and when the answer is "no" it
+# picks something else and logs one INFO line:
+#
+#   Using FLASHINFER attention backend out of potential backends:
+#     ['FLASHINFER', 'TRITON_ATTN']
+#
+# The list is the point. A box that quietly resolved to TRITON_ATTN would serve
+# every request, pass the watchdog's completion probe, pass access_check, and
+# be slower and differently-numeric than the one we benchmarked -- with nothing
+# anywhere saying so. That is the same silhouette as the S139 crash-loop (nvcc
+# missing from the Ray workers' PATH), minus the crash that made it visible.
+#
+# So this reads the ENGINE's own boot lines, not the launch script and not the
+# unit file, and compares them against what we believe we are running.
+ENDPOINT_UNIT = "vllm-tp2"
+ENDPOINT_EXPECT = {
+    # what we benchmarked and what the plan's numbers assume (S139, S141)
+    "backend": "FLASHINFER",
+    "kv_cache_dtype": "float8",
+}
+
+
+def parse_endpoint_boot(text):
+    """Boot log -> {backend, kv_cache_dtype, kv_tokens, alternatives}. PURE.
+
+    Reads the LAST occurrence of each fact, which is the most recent boot.
+    Missing keys stay None: an absent line is an unknown, never a pass (T76).
+    """
+    out = {"backend": None, "kv_cache_dtype": None, "kv_tokens": None,
+           "alternatives": []}
+    for line in (text or "").splitlines():
+        m = re.search(r"Using (\w+) attention backend out of potential "
+                      r"backends: \[([^\]]*)\]", line)
+        if m:
+            out["backend"] = m.group(1)
+            out["alternatives"] = [x.strip().strip("'\"")
+                                   for x in m.group(2).split(",") if x.strip()]
+        m = re.search(r"kv_cache_dtype=torch\.(\w+)", line)
+        if m:
+            out["kv_cache_dtype"] = m.group(1)
+        m = re.search(r"GPU KV cache size: ([\d,]+) tokens", line)
+        if m:
+            out["kv_tokens"] = int(m.group(1).replace(",", ""))
+    return out
+
+
+def endpoint_config_verdict(facts, expect=None):
+    """(line, should_notify) comparing resolved facts to what we expect. PURE."""
+    expect = ENDPOINT_EXPECT if expect is None else expect
+    if facts is None:
+        return ("endpoint config: no TP=2 endpoint on this box", False)
+    if not any(facts.get(k) for k in ("backend", "kv_cache_dtype", "kv_tokens")):
+        return ("endpoint config: UNREADABLE — the boot log gave no engine "
+                "facts, so nothing was verified (not 'fine')", True)
+    bad = []
+    got_backend = facts.get("backend")
+    if got_backend and got_backend.upper() != expect["backend"].upper():
+        alts = ", ".join(facts.get("alternatives") or []) or "?"
+        bad.append(f"attention backend resolved to {got_backend}, not "
+                   f"{expect['backend']} (candidates were: {alts}) — every "
+                   f"request still succeeds, and the benchmarks no longer apply")
+    got_kv = (facts.get("kv_cache_dtype") or "")
+    if got_kv and expect["kv_cache_dtype"] not in got_kv:
+        bad.append(f"kv cache dtype is {got_kv}, not {expect['kv_cache_dtype']} "
+                   f"— the fp8 KV pool (1.46x) is not in effect")
+    detail = (f"backend={got_backend or '?'}, kv={got_kv or '?'}, "
+              f"pool={facts.get('kv_tokens') or '?'} tokens")
+    if bad:
+        return ("endpoint config DRIFTED: " + "; ".join(bad) + f" [{detail}]", True)
+    return (f"endpoint config: as configured ({detail})", False)
+
+
+def _endpoint_boot_log():
+    """The current boot's log for the endpoint unit, or None if not this box."""
+    import subprocess
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", ENDPOINT_UNIT,
+                            "-p", "ActiveEnterTimestamp", "--value"],
+                           capture_output=True, text=True, timeout=20)
+        since = (r.stdout or "").strip()
+        if r.returncode != 0 or not since:
+            return None
+        j = subprocess.run(["journalctl", "--user", "-u", ENDPOINT_UNIT,
+                            "--since", since, "--no-pager"],
+                           capture_output=True, text=True, timeout=60)
+        return j.stdout if j.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def check_endpoint_config(creds=None):
+    """(line, should_notify). Never raises."""
+    log = _endpoint_boot_log()
+    if log is None:
+        return endpoint_config_verdict(None)
+    return endpoint_config_verdict(parse_endpoint_boot(log))
+
+
 # S141. How long a STANDING version-drift condition stays quiet between
 # reminders. Not daily (that is nagging, and it gets the channel muted) and not
 # never (that is amnesia, which is how CIRRUS sat three days on a model that
@@ -876,12 +977,14 @@ def main():
     local_line, local_notify = check_local_model_loads(creds)     # S137
     fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
     tr_line, tr_notify = check_local_truncation(creds)            # S141
+    ep_line, ep_notify = check_endpoint_config(creds)             # S141
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
     print(f"  local:   {local_line}")
     print(f"  spend:   {fb_line}")
     print(f"  cutoff:  {tr_line}")
+    print(f"  engine:  {ep_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {cloud_line}")
@@ -893,7 +996,8 @@ def main():
 
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
-            or cloud_notify or local_notify or fb_notify or tr_notify):
+            or cloud_notify or local_notify or fb_notify or tr_notify
+            or ep_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -919,6 +1023,13 @@ def main():
                       "escalates and PAYS for the same question. Raise that "
                       "call's max_tokens -- a reasoning model spends its budget "
                       "thinking before it writes anything (S141, 44b31fe)._"]
+        if ep_notify:
+            lines += ["*THE ENGINE IS NOT RUNNING WHAT WE ASKED FOR:*",
+                      f"• {ep_line}",
+                      "_Every request still succeeds, which is why nothing else "
+                      "catches this. Compare `~/tp2fp8/serve-tp2.sh` with the "
+                      "boot log: `journalctl --user -u vllm-tp2 --since \"$(systemctl "
+                      "--user show vllm-tp2 -p ActiveEnterTimestamp --value)\"`._"]
         if healed:
             lines += ["*auto-healed:*"] + [f"• {h}" for h in healed]
         if needs_funding:
@@ -1173,6 +1284,48 @@ def _selftest_nag(ck):
             sv_state, sv_inst, sv_latest)
 
 
+def _selftest_endpoint_config(ck):
+    """S141 — the endpoint must be judged on what the ENGINE resolved."""
+    REAL = ("INFO [cuda.py:486] Using FLASHINFER attention backend out of "
+            "potential backends: ['FLASHINFER', 'TRITON_ATTN']\n"
+            "INFO [flashinfer.py:907] FlashInfer resolved query dtypes: "
+            "prefill=torch.bfloat16, decode=torch.bfloat16, decode_backend=xqa, "
+            "kv_cache_dtype=torch.float8_e4m3fn, arch=sm121\n"
+            "INFO [kv_cache_utils.py:1869] GPU KV cache size: 588,913 tokens, "
+            "Maximum concurrency for 32,768 tokens per request: 17.97x\n")
+    f = parse_endpoint_boot(REAL)
+    ck("endpoint: the real 2026-09-08 boot log parses",
+       f["backend"] == "FLASHINFER" and "float8" in f["kv_cache_dtype"]
+       and f["kv_tokens"] == 588913)
+    ck("endpoint: ...and the alternatives it could have picked are captured",
+       "TRITON_ATTN" in f["alternatives"])
+    line, n = endpoint_config_verdict(f)
+    ck("endpoint: a correctly-resolved engine is quiet", n is False
+       and "as configured" in line)
+
+    # The silent fallback this check exists for: everything still serves.
+    drift = REAL.replace("Using FLASHINFER attention", "Using TRITON_ATTN attention")
+    line, n = endpoint_config_verdict(parse_endpoint_boot(drift))
+    ck("endpoint: a silent backend fallback is CAUGHT", n is True
+       and "TRITON_ATTN" in line)
+    ck("endpoint: ...and says the benchmarks no longer apply",
+       "benchmarks no longer apply" in line)
+
+    # KVDTYPE quietly back to auto -- the S138 rollback lever, applied by accident.
+    drift2 = REAL.replace("kv_cache_dtype=torch.float8_e4m3fn",
+                          "kv_cache_dtype=torch.bfloat16")
+    line, n = endpoint_config_verdict(parse_endpoint_boot(drift2))
+    ck("endpoint: a KV cache silently back on bf16 is CAUGHT",
+       n is True and "not float8" in line)
+
+    # T76: nothing parsed is a MISSING measurement, not a clean bill.
+    line, n = endpoint_config_verdict(parse_endpoint_boot("nothing useful here"))
+    ck("endpoint: an unreadable boot log ALERTS, never reads as fine",
+       n is True and "UNREADABLE" in line)
+    line, n = endpoint_config_verdict(None)
+    ck("endpoint: a box with no endpoint is silent, not a failure", n is False)
+
+
 def selftest():
     """Offline: verify error classification routes correctly."""
     cases = [
@@ -1209,6 +1362,7 @@ def selftest():
     _selftest_fallback(ck)       # S141: is the WORK actually going there?
     _selftest_truncation(ck)     # S141: did WE cut the local model off?
     _selftest_nag(ck)            # S141: does a standing condition keep speaking?
+    _selftest_endpoint_config(ck)  # S141: did the engine resolve what we asked?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
     _MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash",
