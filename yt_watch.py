@@ -620,6 +620,12 @@ def selftest():
                  out_dir=Path(td) / "o")
         ck("run: one dead feed does not stop the others", r5["processed"] == 2)
         ck("run: the dead feed is reported as an error", len(r5["errors"]) == 1)
+        # S141: the error must NAME the channel and the failure. Two runs
+        # (2026-09-05, 2026-09-09) recorded "4 error(s)" and nothing else, and
+        # by the time anyone looked the feeds were fetching fine again. A count
+        # is not a diagnosis.
+        ck("run: the error names the channel AND the exception, not just a count",
+           r5["errors"][0] == "Bad: OSError")
 
     # --dry-run writes NOTHING
     with tempfile.TemporaryDirectory() as td:
@@ -670,6 +676,15 @@ def main():
         % (stats["processed"], stats["claims"], stats["no_transcript"],
            stats["extract_errors"],
            (", %d error(s)" % len(stats["errors"])) if stats["errors"] else ""))
+    # S141. The count alone is not a diagnosis. On 2026-09-05 and again on
+    # 2026-09-09 this job recorded "processed 0 ... 4 error(s)" and ok=false,
+    # and the log said nothing about WHAT failed -- every feed, a DNS blip, a
+    # 429? The strings were already sitting in stats["errors"] ("<channel>:
+    # <ExceptionType>"); they were just never written down, so diagnosing it
+    # meant re-running the fetch by hand the next morning and hoping the
+    # failure was still there. It was not.
+    for e in stats["errors"]:
+        log("  ERROR %s" % e)
     if "--dry-run" not in args:
         try:
             import job_status
@@ -698,6 +713,12 @@ def main():
                 note += ", %d UNREADABLE" % stats["no_transcript"]
             if stats["extract_errors"]:
                 note += ", %d extract-failed" % stats["extract_errors"]
+            # Same reasoning one layer up: jobs-status is what a review reads
+            # first, and "0 video(s), 0 claim(s)" with ok=false gives it nothing
+            # to act on. Name the failures, capped so the row stays a row.
+            if stats["errors"]:
+                note += ", %d error(s): %s" % (
+                    len(stats["errors"]), "; ".join(stats["errors"][:3]))
             job_status.record("ytwatch", healthy, note)
         except Exception as e:
             print("job_status.record failed: %s" % e)
