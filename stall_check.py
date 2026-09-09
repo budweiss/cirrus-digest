@@ -181,7 +181,10 @@ def _question_attempts(project, root=None):
     if not os.path.exists(path):
         return None
     out = {"attempts": 0, "no_match": 0, "ambiguous": 0, "recorded": 0,
-           "recent": 0}      # S141: attempts inside the staleness window
+           # S141: attempts inside the staleness window, and how many of THOSE
+           # actually landed an outcome. The pair is the point -- recent asks
+           # that all recorded means the signal is working, not stalled.
+           "recent": 0, "recent_recorded": 0}
     try:
         with open(path) as f:
             for line in f:
@@ -203,6 +206,8 @@ def _question_attempts(project, root=None):
                     at = datetime.strptime(d.get("at", ""), "%Y-%m-%d %H:%M:%S")
                     if (datetime.now() - at).days <= _ATTEMPT_WINDOW_DAYS:
                         out["recent"] += 1
+                        if d.get("outcome_recorded"):
+                            out["recent_recorded"] += 1
                 except Exception:
                     pass
     except Exception:
@@ -331,12 +336,27 @@ def kb_outcome_verdict(rec, box, days=7):
         # forever about something nobody can fix, which is how a panel stops
         # being read (T9) -- and it would undo the exact distinction S75 built
         # this tri-state for: "nobody asked" is not "asking is broken".
-        recent = (att or {}).get("recent")
-        if recent:
+        recent = (att or {}).get("recent") or 0
+        landed = (att or {}).get("recent_recorded") or 0
+        # A stall means asking STOPPED WORKING: questions came in and none of
+        # them produced an outcome. Questions that did land -- or none at all --
+        # are not a fault, and nagging about either is how a panel stops being
+        # read (T9).
+        #
+        # The live case, 2026-09-09: 3 questions on 2026-08-24/25, of which two
+        # were AMBIGUOUS (we correctly asked Bill which community he meant, so
+        # no outcome is the right answer) and the third matched one entity and
+        # recorded the outcome. Every question that could land, landed. Nothing
+        # since. That is a quiet client and a working signal.
+        if recent and not landed:
             return _res(STALL, label,
-                        f"{n} total but none in {age}d, despite {recent} client "
-                        f"question(s) in the last {_ATTEMPT_WINDOW_DAYS}d — "
-                        f"asking stopped producing outcomes")
+                        f"{n} total but none in {age}d, and {recent} client "
+                        f"question(s) in the last {_ATTEMPT_WINDOW_DAYS}d "
+                        f"produced NONE — asking stopped landing outcomes")
+        if landed:
+            return _res(OK, label,
+                        f"{n} recorded, newest {age}d ago; {landed} of {recent} "
+                        f"recent question(s) landed an outcome — signal working")
         return _res(UNKNOWN, label,
                     f"{n} recorded, newest {age}d ago, and NO client question in "
                     f"the last {_ATTEMPT_WINDOW_DAYS}d — quiet client, not a "
@@ -742,20 +762,30 @@ def selftest():
         ck("kb: ...and it is NOT reported as ok", r["state"] != OK)
 
         # A stale outcome IS a stall -- but only if the client has been asking.
-        asked_lately = {"attempts": 4, "no_match": 0, "ambiguous": 0, "recent": 4}
+        asked_lately = {"attempts": 4, "no_match": 0, "ambiguous": 0,
+                        "recent": 4, "recent_recorded": 0}
         real = {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
                 "newest": "2026-08-25 15:44:27", "has_column": True,
                 "error": "", "attempts": asked_lately}
         r = kb_outcome_verdict(real, "CUMULUS")
-        ck("kb: stale outcomes WITH recent questions is a real STALL",
-           r["state"] == STALL and "asking stopped producing outcomes" in r["msg"])
+        ck("kb: recent questions that landed NOTHING is a real STALL",
+           r["state"] == STALL and "stopped landing outcomes" in r["msg"])
         ck("kb: the verdict names the box it is about",
            "@CUMULUS" in r["name"])
         # The live case on 2026-09-09: Bill sent nothing for 30 days and the KB
         # is healthy (23 new events that week). Nagging about that forever is
         # how a panel stops being read (T9).
+        # The LIVE case: 3 questions 15 days ago, two ambiguous (answered with a
+        # clarifying question, correctly) and one that landed the outcome.
+        working = dict(real, attempts={"attempts": 3, "no_match": 0,
+                                       "ambiguous": 2, "recent": 3,
+                                       "recent_recorded": 1})
+        r = kb_outcome_verdict(working, "CUMULUS")
+        ck("kb: recent questions that DID land an outcome is working, not stalled",
+           r["state"] == OK and "signal working" in r["msg"])
         quiet = dict(real, attempts={"attempts": 3, "no_match": 0,
-                                     "ambiguous": 2, "recent": 0})
+                                     "ambiguous": 2, "recent": 0,
+                                     "recent_recorded": 0})
         r = kb_outcome_verdict(quiet, "CUMULUS")
         ck("kb: stale outcomes with NO recent questions is a quiet client, not a fault",
            r["state"] == UNKNOWN and "quiet client" in r["msg"])
@@ -801,7 +831,8 @@ def selftest():
                 {"project": "hoa_leads_bill", "entities": 2477, "outcomes": 1,
                  "newest": "2026-08-25 15:44:27", "has_column": True,
                  "error": "", "attempts": {"attempts": 4, "no_match": 0,
-                                           "ambiguous": 0, "recent": 4}}]
+                                           "ambiguous": 0, "recent": 4,
+                                           "recent_recorded": 0}}]
             res = check_kb_outcomes()
             ck("kb: CUMULUS's real stall is seen from CIRRUS",
                any(r["state"] == STALL and "@CUMULUS" in r["name"] for r in res))
