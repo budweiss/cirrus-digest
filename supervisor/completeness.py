@@ -46,6 +46,7 @@ ADDING A JOB: put it in RULES. A job with no rule is NOT silently ignored —
 import json
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -411,7 +412,11 @@ def unmonitored_jobs(status=None):
 
 
 FEED_CMD = ["sudo", "-n", "-u", "buddy", "/usr/local/sbin/cumulus_job_status.py"]
+
+# (fetched_at, value). S142: this used to be a bare value with no expiry, which
+# in a long-lived daemon meant "cache" spelled "freeze" -- see supervisor_feed.
 _FEED_CACHE = None
+FEED_TTL_SEC = 60          # one heartbeat tick; the cache's whole purpose
 
 
 def supervisor_feed(force=False):
@@ -428,13 +433,40 @@ def supervisor_feed(force=False):
     Returns {"jobs": {...}, "cadence_h": {...}} or None. None means BLIND and
     callers must say so — it is NOT "nothing is wrong".
 
-    Cached per process. The supervisor is a long-lived daemon calling this on a
-    60s tick, so `force=True` is what a live check uses; the cache exists so one
-    heartbeat pass does not shell out several times.
+    Cached for FEED_TTL_SEC (one heartbeat tick), so a single pass does not
+    shell out several times.
+
+    S142, 2026-09-10. THE CACHE USED TO HAVE NO EXPIRY, AND THAT IS A FREEZE.
+    The old docstring said "cached per process ... `force=True` is what a live
+    check uses." Only half of that was true. `force=True` had exactly four
+    callers and all four were in selftest() -- NEITHER production reader
+    (`_feed_jobs`, `_cadence_table`) ever forced. So in the daemon the first
+    call populated the global and every completeness check afterwards judged
+    the ledger AS IT STOOD AT PROCESS START, for as long as the service stayed
+    up.
+
+    What that looked like on 2026-09-10: the service had been up 26h 0m, and
+    heartbeat reported nine jobs overdue -- including accesscheck and intake,
+    both 2-hourly, both "last recorded run 26.0h ago". That number was not a
+    measurement of either job. It was the daemon's uptime, read back. Every one
+    of the nine had in fact run on schedule; accesscheck had run seven minutes
+    earlier. The alarm also *healed itself* on every restart, which is what kept
+    it looking intermittent instead of monotonic (S141 chased it as a lost-record
+    problem and could not reconstruct it -- this is why).
+
+    The tests never caught it because the tests were the only thing passing
+    force=True: the selftest exercised a path production does not use, and went
+    green for the wrong reason (rule 1).
+
+    A TTL rather than removing the cache: the stated purpose -- one pass, one
+    shell-out -- is real and still served at 60s. What is not defensible is a
+    cache that outlives the thing it is caching by a day.
     """
     global _FEED_CACHE
     if _FEED_CACHE is not None and not force:
-        return _FEED_CACHE
+        fetched_at, value = _FEED_CACHE
+        if time.monotonic() - fetched_at < FEED_TTL_SEC:
+            return value
     import subprocess
     try:
         r = subprocess.run(FEED_CMD, capture_output=True, text=True, timeout=30)
@@ -446,7 +478,7 @@ def supervisor_feed(force=False):
     if not isinstance(d, dict) or not d.get("ok"):
         return None
     out = {"jobs": d.get("jobs") or {}, "cadence_h": d.get("cadence_h") or {}}
-    _FEED_CACHE = out
+    _FEED_CACHE = (time.monotonic(), out)
     return out
 
 
@@ -1036,6 +1068,58 @@ def selftest() -> bool:
         f = supervisor_feed(force=True)
         ck("a working feed returns jobs and cadence",
            f is not None and "pedagogy" in f["jobs"] and f["cadence_h"]["pedagogy"] == 26)
+
+        # ── S142. THE CACHE MUST NOT OUTLIVE THE LEDGER ─────────────────────
+        # These four tests exist because the ones above them passed while
+        # production was broken for 26 hours. Every test here forced a refresh,
+        # so none of them ever exercised the path the daemon actually takes.
+        # The rule these encode: assert through the PRODUCTION reader
+        # (_feed_jobs), never through force=True.
+        _real_mono = time.monotonic
+
+        # 1. Inside the TTL the cache is served -- the cache still has a job.
+        _reset(); _sp.run = _feed(json.dumps(
+            {"ok": True, "jobs": {"pedagogy": {"epoch": 111, "ok": True}},
+             "cadence_h": {"pedagogy": 26}}))
+        first = _feed_jobs()
+        _sp.run = _feed(json.dumps(
+            {"ok": True, "jobs": {"pedagogy": {"epoch": 222, "ok": True}},
+             "cadence_h": {"pedagogy": 26}}))
+        ck("inside the TTL the feed is not re-shelled",
+           _feed_jobs()["pedagogy"]["epoch"] == 111)
+
+        # 2. THE CENTRAL ONE. Past the TTL the production reader must see the
+        #    NEW ledger. If this ever fails, the daemon is judging jobs by a
+        #    snapshot taken at process start and reporting its own uptime as
+        #    their age -- which is exactly what it did on 2026-09-10.
+        # 120s is written as a NUMBER, not as FEED_TTL_SEC + 1. A test phrased
+        # in terms of the constant it is testing moves with it and cannot fail:
+        # set FEED_TTL_SEC to infinity -- i.e. restore the exact bug -- and the
+        # self-referential version still goes green. Verified 2026-09-10.
+        try:
+            time.monotonic = lambda: _real_mono() + 120
+            ck("two minutes on, _feed_jobs re-reads the ledger",
+               _feed_jobs()["pedagogy"]["epoch"] == 222)
+            ck("...and _cadence_table refreshes on the same clock",
+               _cadence_table().get("pedagogy") == 26)
+        finally:
+            time.monotonic = _real_mono
+
+        # 3. A daemon that has been up for a day is the real failure mode, so
+        #    state it in those terms rather than as an abstract TTL.
+        _reset(); _sp.run = _feed(json.dumps(
+            {"ok": True, "jobs": {"accesscheck": {"epoch": 111, "ok": True}},
+             "cadence_h": {"accesscheck": 2}}))
+        _feed_jobs()
+        _sp.run = _feed(json.dumps(
+            {"ok": True, "jobs": {"accesscheck": {"epoch": 999, "ok": True}},
+             "cadence_h": {"accesscheck": 2}}))
+        try:
+            time.monotonic = lambda: _real_mono() + 26 * 3600
+            ck("a 26h-old daemon does not report its own uptime as job age",
+               _feed_jobs()["accesscheck"]["epoch"] == 999)
+        finally:
+            time.monotonic = _real_mono
 
         # sudo denied / script missing => None => the caller must report BLIND.
         _reset(); _sp.run = _feed("", rc=1)
