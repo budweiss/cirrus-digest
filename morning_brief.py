@@ -332,6 +332,48 @@ def gather_stalls():
         return [f"- ⚠️ stall check could not run ({e})"], False
 
 
+# ── the two decisions this brief actually makes (S141) ───────────────────────
+# Both were buried inside compose(), which calls six gather_*() functions that
+# each hit disk or the network -- so neither could be tested, and the mutation
+# probe found 73 surviving mutations in this file: every branch here could be
+# inverted and the suite stayed green.
+#
+# They are pulled out as PURE functions for that reason alone. compose() is
+# unchanged in behaviour; it now delegates the two judgements that matter.
+
+def health_verdict(dated_today, attention, awaiting, tm_ok):
+    """(healthy, verdict line). PURE.
+
+    A box with no backup coverage is NOT healthy, however green everything else
+    looks -- the fact that was missing entirely until S73. All four conditions
+    are required, and each one alone can sink the verdict.
+    """
+    healthy = bool(dated_today) and not attention and not awaiting and bool(tm_ok)
+    return healthy, ("✅ CIRRUS healthy" if healthy else "⚠️ Needs a look")
+
+
+def next_action(dated_today, tm_ok, awaiting, pending, attention):
+    """The single suggested next action. PURE.
+
+    THE ORDER IS THE POINT, and it has been wrong once. S73: `not tm_ok` sat
+    BELOW `pending`, so a locked backup volume rendered as "Review the 1
+    pending /accept item(s)" -- the most important fact on the page demoted
+    below a one-tap chore. Caught then by running the failing case; pinned now
+    so it cannot silently reorder again.
+    """
+    if not dated_today:
+        return "Investigate the 7am digest — today's file is missing or misdated."
+    if not tm_ok:
+        return "Time Machine is not protecting this box — see Backup above."
+    if awaiting:
+        return f"Ship or discard {len(awaiting)} built Dev-Loop item(s) — reply /builds."
+    if pending:
+        return f"Review the {len(pending)} pending /accept item(s)."
+    if attention:
+        return "Check the attention flag(s) above."
+    return "Nothing needs you this morning."
+
+
 def compose():
     dig = gather_digest()
     act = gather_actions()
@@ -340,10 +382,7 @@ def compose():
     att = gather_attention()
     tm_line, tm_ok = gather_timemachine()
 
-    # A box with no backup coverage is NOT healthy, however green everything
-    # else looks. This is the fact that was missing entirely until S73.
-    healthy = dig["dated_today"] and not att and not awaiting and tm_ok
-    verdict = "✅ CIRRUS healthy" if healthy else "⚠️ Needs a look"
+    healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 
     lines = [f"# ☀️ CIRRUS Morning Brief — {DAY_NAME}", "", f"**{verdict}**", "",
              dig["line"]]
@@ -398,25 +437,7 @@ def compose():
         lines += jlines
         lines.append("")
 
-    # one suggested next action
-    # S73 ordering: losing backup coverage outranks an approval tap. The first
-    # version put `not tm_ok` after `pend`, so a locked backup volume rendered
-    # as "Review the 1 pending /accept item(s)" — the single most important
-    # fact on the page, demoted below a one-tap chore. Caught by running the
-    # FAILING case, not the passing one.
-    if not dig["dated_today"]:
-        nxt = "Investigate the 7am digest — today's file is missing or misdated."
-    elif not tm_ok:
-        nxt = "Time Machine is not protecting this box — see Backup above."
-    elif awaiting:
-        nxt = f"Ship or discard {len(awaiting)} built Dev-Loop item(s) — reply /builds."
-    elif pend:
-        nxt = f"Review the {len(pend)} pending /accept item(s)."
-    elif att:
-        nxt = "Check the attention flag(s) above."
-    else:
-        nxt = "Nothing needs you this morning."
-    lines.append(f"**Next:** {nxt}")
+    lines.append(f"**Next:** {next_action(dig['dated_today'], tm_ok, awaiting, pend, att)}")
     lines.append("")
     lines.append("*Composed by CIRRUS on-box (morning_brief.py) — no MacBook required.*")
 
@@ -493,6 +514,50 @@ def selftest():
         else:
             fail += 1
             print(f"  FAIL {name}")
+
+    # ── S141: the two judgements this brief makes ───────────────────────────
+    # The mutation probe found 73 survivors in this file -- every branch below
+    # could be inverted with the suite still green. These are the ones whose
+    # breakage costs something: the verdict Buddy reads, and the one action the
+    # brief tells him to take.
+    def _verdict_checks(ck):
+        h, v = health_verdict(True, [], [], True)
+        ck("health: all four conditions good -> healthy", h is True and "✅" in v)
+        # each condition ALONE must be able to sink it
+        for label, args in (
+                ("a missing/misdated digest",  (False, [], [], True)),
+                ("an attention flag",          (True, ["x"], [], True)),
+                ("an unshipped build",         (True, [], ["b"], True)),
+                ("NO BACKUP COVERAGE",         (True, [], [], False))):
+            h, v = health_verdict(*args)
+            ck(f"health: {label} alone makes it NOT healthy",
+               h is False and "⚠️" in v)
+
+    def _next_checks(ck):
+        # the ladder, top to bottom
+        ck("next: a missing digest outranks everything",
+           next_action(False, False, ["b"], ["p"], ["a"]).startswith("Investigate"))
+        ck("next: backup outranks builds, approvals and flags",
+           "Time Machine" in next_action(True, False, ["b"], ["p"], ["a"]))
+        ck("next: builds outrank approvals",
+           "Ship or discard" in next_action(True, True, ["b"], ["p"], ["a"]))
+        ck("next: approvals outrank attention flags",
+           "pending /accept" in next_action(True, True, [], ["p"], ["a"]))
+        ck("next: attention flags are last before all-clear",
+           "attention flag" in next_action(True, True, [], [], ["a"]))
+        ck("next: nothing wrong -> nothing needed",
+           next_action(True, True, [], [], []) == "Nothing needs you this morning.")
+        # THE S73 REGRESSION, pinned. A locked backup volume must never render
+        # as an approval chore just because an approval also happens to be
+        # waiting. This is the exact bug that shipped once.
+        ck("next: S73 — a locked backup beats a waiting approval, not the other "
+           "way round",
+           "Time Machine" in next_action(True, False, [], ["p"], []))
+        ck("next: ...and the counts it quotes are the real ones",
+           next_action(True, True, [], ["a", "b", "c"], []).startswith("Review the 3"))
+
+    _verdict_checks(ck)
+    _next_checks(ck)
 
     class R:
         def __init__(self, stdout="", stderr="", rc=0):
