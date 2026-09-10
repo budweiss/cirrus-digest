@@ -654,7 +654,15 @@ def request_guidance(issue: str, question: str) -> str:
     reply (within 2 hours) is read back to you at the START of your NEXT
     invocation, before you begin your checks. This pass itself still
     finishes without an answer — note in your summary that you've escalated
-    and will act on Buddy's direction next time you're woken."""
+    and will act on Buddy's direction next time you're woken.
+
+    S142: THE BAR IS HIGH. Escalate only when the decision is genuinely
+    Buddy's: it commits over $25, it is irreversible/destructive or changes
+    where data goes, or it is client-facing. Otherwise handle it or report it
+    via send_telegram. Your own cross-check contradicting an alert is an
+    ANSWER, not a question. A defect you have no tool to reach is a
+    file_repair_ticket, not this. An unanswered request re-fires on every wake
+    and costs a reasoning pass each time -- see CLAUDE.md section 2."""
     import opus_approval
     text = opus_approval.create_guidance_request(issue, question)
     result = send_telegram(text)
