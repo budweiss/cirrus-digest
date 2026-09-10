@@ -106,6 +106,36 @@ def compose(new):
     ])
 
 
+def _swept():
+    """The sweep evidence that turns "no new leads" from unreadable into proof.
+
+    S142, 2026-09-10. On a quiet week this job recorded exactly "no new leads"
+    and nothing else. That note cannot distinguish the two cases that matter:
+    the PLUS/parcel sweep ran and Delaware genuinely permitted no new 50+ unit
+    residential development that week, versus the sweep returned an empty set
+    because a source changed shape and answered 200 with nothing. Bill's feed
+    has already been silently wrong once this exact way -- S78, when the source
+    started spelling "Sussex_County" with an underscore and an exact-string test
+    dropped the 41 newest rows without a word.
+
+    So the note now carries what was swept. The completeness rule deliberately
+    does NOT add these to its arithmetic (see halftimecatalogue: summing them
+    would make 0-found-of-546-swept read as productive, which is the precise
+    failure worth catching). They are there to be read by whoever gets the
+    alert, as the first question: did the sweep see anything at all?
+
+    Fails to "swept unknown" rather than to silence -- a missing artifact is
+    itself worth seeing in the note, not a reason to drop the evidence.
+    """
+    try:
+        d = json.loads((OUT / "plus_leads.json").read_text())
+        return (f"swept {len(d.get('plus_projects') or [])} plus, "
+                f"{len(d.get('dev_applications') or [])} dev-app, "
+                f"{len(d.get('building_permits') or [])} permit")
+    except Exception:
+        return "swept unknown (plus_leads.json unreadable)"
+
+
 def _rec(dry, ok, note=""):
     if dry:
         return
@@ -142,9 +172,16 @@ def main():
     new = json.loads(NEW_FILE.read_text()) if NEW_FILE.exists() else []
     print(f"NEW leads this run: {len(new)}")
 
+    # S142: show the quiet-week note the LIVE path would record, even on a week
+    # that has leads. Without this the note format is only ever exercised on a
+    # quiet week -- i.e. it is proved against a fixture and never against the
+    # real plus_leads.json, which is the S81 mistake exactly.
+    if dry:
+        print(f'quiet-week note would be: "no new leads ({_swept()})"')
+
     if not new and not dry:
         print("No new leads this week — no email sent.")
-        _rec(dry, True, "no new leads")
+        _rec(dry, True, f"no new leads ({_swept()})")
         return
 
     # Build the attachment (needed whenever we would send, and useful to verify in dry-run)

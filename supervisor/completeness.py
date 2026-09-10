@@ -307,12 +307,34 @@ RULES = {
         why="Bill's snow outlook has sent nothing for two weeks — confirm the "
             "weather research still returns data before assuming a quiet season.",
     ),
+    # S142, 2026-09-10. max_zero_runs was 2 and it fired on the ordinary case.
+    # Measured that day: the PLUS layer carries 9 qualifying (>=50u, Kent+Sussex)
+    # project areas for all of 2026 through 10 September — roughly one a month
+    # against a WEEKLY job. Two consecutive empty weeks is therefore the modal
+    # outcome, not a signal, and a rule that fires more often than not is one
+    # you teach yourself to ignore (the same cost S81 recorded for the three
+    # permanently-"unreadable" jobs).
+    #
+    # Widening it is only safe because the note now proves the sweep happened:
+    # bill_newdev_weekly._swept() appends "swept N plus, N dev-app, N permit" to
+    # the quiet-week note, so a source that has gone silent is visible on the
+    # FIRST quiet run and does not have to wait for any threshold at all. The
+    # threshold now only has to catch a slow drought, which is what six weeks is.
+    #
+    # Those counts are kept OUT of produced_patterns for the halftimecatalogue
+    # reason, which applies here exactly: Rule.productivity SUMS its matches, so
+    # 0 new + 546 swept = 546 = "productive" would make this rule unfireable and
+    # silently delete the check.
     "billnewdev": Rule(
-        "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=2,
+        "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=6,
         zero_phrases=("no new leads", "nothing new"),
         produced_phrases=("sent",),          # S81: the real note is just "sent"
-        why="Bill's new-dev lead check found nothing for two weeks — confirm "
-            "the DE PLUS/parcel sources still respond.",
+        why="Bill's new-dev lead check has found nothing for six weeks. Read "
+            "the `swept` counts in the note FIRST: if they are still in the "
+            "hundreds the DE PLUS/parcel sources are answering and Delaware is "
+            "genuinely quiet; if they are 0, or the note says 'swept unknown', "
+            "the sweep itself is broken and Bill's feed is silently wrong — "
+            "which is how S78 went unnoticed.",
     ),
     # S81: the real note is "sent: 2 art, 0 pod, 0 topic" -- none of the old
     # patterns matched it, so Alyssa's digest read as unreadable every day.
@@ -787,6 +809,30 @@ def selftest() -> bool:
        RULES["billsnow"].productivity("no material change") == (0, True))
     ck("an EMPTY pedagogy digest still reads as zero",
        RULES["pedagogy"].productivity("sent: 0 art, 0 pod, 0 topic") == (0, True))
+
+    # ---- S142. billnewdev's quiet-week note now carries the sweep counts.
+    # Changing a note format without a test that reads the NEW shape is exactly
+    # how S81 happened: three working jobs read "unreadable" forever because the
+    # note stopped matching and nothing asserted otherwise. The counts must not
+    # leak into the arithmetic -- 546 swept is evidence for a human, not
+    # production -- or the rule becomes unfireable and the check silently dies.
+    _bnd = "no new leads (swept 546 plus, 131 dev-app, 87 permit)"
+    ck("billnewdev's new quiet note still reads as ZERO, not productive",
+       RULES["billnewdev"].productivity(_bnd) == (0, True))
+    ck("...and the swept counts do NOT count as production",
+       RULES["billnewdev"].productivity(_bnd)[0] == 0)
+    ck("an unreadable sweep still reads as zero, not as unreadable",
+       RULES["billnewdev"].productivity(
+           "no new leads (swept unknown (plus_leads.json unreadable))") == (0, True))
+    ck("a real billnewdev send is still productive alongside the new format",
+       RULES["billnewdev"].productivity("sent")[0] > 0)
+    # Six quiet weeks is the alarm; five is not. Pinned as NUMBERS so a later
+    # edit to max_zero_runs has to come here and state its case.
+    _q = {"ok": True, "epoch": _NOW_E + 1, "note": _bnd}
+    ck("five quiet weeks does not fire (one lead a month is normal)",
+       check({"billnewdev": _q}, {"billnewdev": {"zero_runs": 4}})["ok"] is True)
+    ck("six quiet weeks DOES fire",
+       check({"billnewdev": _q}, {"billnewdev": {"zero_runs": 5}})["ok"] is False)
     ck("a zero phrase beats a produced phrase in the same note",
        RULES["billsnow"].productivity("nothing to send, so nothing sent")
        == (0, True))
