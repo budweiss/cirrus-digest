@@ -9,12 +9,13 @@ target counties, and writes out/plus_<counties>.json for the xlsx builder.
 Runs on the MacBook via the runner (stdlib only — urllib). NOT from the Cowork
 sandbox (which shouldn't fetch GIS directly). Mirrors the kent_hoa.py pattern.
 """
-import json, urllib.request, urllib.parse, time
+import json, sys, urllib.request, urllib.parse, time
 from pathlib import Path
 from datetime import datetime, timezone
 
 SVC = ("https://enterprise.firstmap.delaware.gov/arcgis/rest/services/"
        "PlanningCadastre/DE_Planning_Development/FeatureServer")
+PEEK = "--peek" in sys.argv     # S142: read-only diff; never advances the baseline
 MIN_UNITS = 50
 COUNTIES = {"Kent County", "Sussex County"}   # Kent + Sussex per Buddy (S47)
 OUT = Path(__file__).resolve().parent / "out"
@@ -173,8 +174,31 @@ def main():
               f"just re-run and hope.")
         new = []
 
-    seen_file.write_text(json.dumps(sorted(str(i) for i in cur_ids if i)))
-    (OUT / "plus_new.json").write_text(json.dumps(new, indent=1))
+    # S142, 2026-09-10. --peek: COMPUTE the diff, do NOT absorb it.
+    #
+    # This line used to run unconditionally, and plus_pull had no idea whether
+    # its caller was doing a dry-run. So a dry-run of bill_newdev_weekly --
+    # something a session runs casually, to CHECK on the job -- silently moved
+    # the baseline forward and consumed that week's news. It happened for real
+    # the day this was written: a 12:30 dry-run reported "NEW leads this run: 1"
+    # (North of Milton-Ellendale Hwy, 1387 units, Tier A, Sussex), and the 12:34
+    # dry-run four minutes later reported 0, because the first one had already
+    # marked it seen. Monday's LIVE run would have emailed Bill nothing about a
+    # 1387-unit development.
+    #
+    # A diagnostic that destroys the thing it is diagnosing is worse than no
+    # diagnostic. Under --peek the baseline and plus_new.json are both left
+    # exactly as they were.
+    if PEEK:
+        # The diff still has to go SOMEWHERE the caller can read, or the dry-run
+        # is reduced to scraping this stdout. It goes to a peek-only file, so the
+        # live plus_new.json keeps whatever the last REAL run put there.
+        (OUT / "plus_new_peek.json").write_text(json.dumps(new, indent=1))
+        print(f"--peek: baseline NOT advanced, plus_new.json untouched "
+              f"({len(new)} would be new -> out/plus_new_peek.json)")
+    else:
+        seen_file.write_text(json.dumps(sorted(str(i) for i in cur_ids if i)))
+        (OUT / "plus_new.json").write_text(json.dumps(new, indent=1))
     print(f"NEW since last run: {len(new)}"
           + (" (baseline established)" if prev is None else "")
           + (" (SOURCE RESET SUPPRESSED — see above)" if reset else ""))

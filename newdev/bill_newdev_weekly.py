@@ -38,6 +38,7 @@ import node_info                                   # S56: sign as the running no
 NODE = node_info.node_name()                       # CIRRUS (dev) / CUMULUS (beta)
 OUT        = HERE / "out"
 NEW_FILE   = OUT / "plus_new.json"
+PEEK_FILE  = OUT / "plus_new_peek.json"   # S142: dry-run diff; never the live one
 LEADS_FILE = OUT / "plus_leads.json"
 XLSX       = HERE / "DE-New-Developments.xlsx"
 
@@ -164,12 +165,19 @@ def main():
             _rec(dry, True, "already sent today — duplicate send suppressed")
             return
 
-    if not _run("plus_pull.py"):
+    # S142: a dry-run must not advance the seen-baseline. Without --peek, running
+    # this to LOOK at the job consumed the week's new leads and Monday's live run
+    # emailed Bill nothing about them. See plus_pull.py's --peek block.
+    if not _run("plus_pull.py", *(["--peek"] if dry else [])):
         print("plus_pull failed — aborting, nothing sent.")
         _rec(dry, False, "plus_pull failed")
         return
 
-    new = json.loads(NEW_FILE.read_text()) if NEW_FILE.exists() else []
+    # Under --peek plus_new.json is deliberately NOT rewritten -- it still holds
+    # the last LIVE run's diff -- so a dry-run reading it would show last week's
+    # leads as this week's. Read the peek file instead.
+    src = PEEK_FILE if dry else NEW_FILE
+    new = json.loads(src.read_text()) if src.exists() else []
     print(f"NEW leads this run: {len(new)}")
 
     # S142: show the quiet-week note the LIVE path would record, even on a week
