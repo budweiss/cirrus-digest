@@ -189,16 +189,7 @@ def main():
     # A diagnostic that destroys the thing it is diagnosing is worse than no
     # diagnostic. Under --peek the baseline and plus_new.json are both left
     # exactly as they were.
-    if PEEK:
-        # The diff still has to go SOMEWHERE the caller can read, or the dry-run
-        # is reduced to scraping this stdout. It goes to a peek-only file, so the
-        # live plus_new.json keeps whatever the last REAL run put there.
-        (OUT / "plus_new_peek.json").write_text(json.dumps(new, indent=1))
-        print(f"--peek: baseline NOT advanced, plus_new.json untouched "
-              f"({len(new)} would be new -> out/plus_new_peek.json)")
-    else:
-        seen_file.write_text(json.dumps(sorted(str(i) for i in cur_ids if i)))
-        (OUT / "plus_new.json").write_text(json.dumps(new, indent=1))
+    print(persist(OUT, seen_file, cur_ids, new, PEEK))
     print(f"NEW since last run: {len(new)}"
           + (" (baseline established)" if prev is None else "")
           + (" (SOURCE RESET SUPPRESSED — see above)" if reset else ""))
@@ -215,6 +206,28 @@ def main():
               f"{a.get('RECTYPE',''):18} | {(a.get('NOTES') or '').replace(chr(10),' / ')[:45]}")
     print(f"\nPLUS Project Areas (historical >= {MIN_UNITS}u, {CLABEL}): {len(plus)}")
     print("  by year:", dict(sorted(Counter((a.get('PLUS_YEAR') or '?') for a in plus).items(), reverse=True)))
+
+
+def persist(out_dir, seen_file, cur_ids, new, peek):
+    """Write (or deliberately do not write) this run's diff. Returns a log line.
+
+    S142. Pulled out of main() so it can be tested WITHOUT network or a live
+    out/ directory -- because the rule it encodes decides whether a client sees
+    a lead, and it got that wrong for as long as the flag existed. Under `peek`
+    the baseline must not move and plus_new.json must not be rewritten; the diff
+    goes to a peek-only file so a dry-run still has something to read instead of
+    scraping stdout.
+
+    Every path is out_dir-relative and injected, never module state -- a selftest
+    that reaches the real out/ through the code under test is T32/T80.
+    """
+    if peek:
+        (out_dir / "plus_new_peek.json").write_text(json.dumps(new, indent=1))
+        return (f"--peek: baseline NOT advanced, plus_new.json untouched "
+                f"({len(new)} would be new -> out/plus_new_peek.json)")
+    seen_file.write_text(json.dumps(sorted(str(i) for i in cur_ids if i)))
+    (out_dir / "plus_new.json").write_text(json.dumps(new, indent=1))
+    return f"baseline advanced to {len(cur_ids)} ids; {len(new)} new"
 
 
 def selftest() -> int:
@@ -253,6 +266,41 @@ def selftest() -> int:
     check("the reset ceiling is below the 504 that actually shipped",
           MAX_PLAUSIBLE_NEW < 504)
     check("...and above a plausible busy week", MAX_PLAUSIBLE_NEW > 20)
+
+    # ---- S142: --peek must not consume the leads it is inspecting.
+    # This is the rule that was missing entirely, and its absence cost a real
+    # 1387-unit lead out of Bill's Monday email on 2026-09-10. A dry-run that
+    # advances the baseline destroys the news silently -- nothing errors, and
+    # the loss only surfaces days later in an email missing something.
+    # tempfile, not out/: a selftest must never reach the live state through
+    # the code under test (T32/T80).
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        seen = d / "plus_seen.json"
+        seen.write_text(json.dumps(["old-1", "old-2"]))
+        before = seen.read_text()
+
+        msg = persist(d, seen, {"old-1", "old-2", "brand-new"},
+                      [{"id": "brand-new"}], peek=True)
+        check("--peek leaves the baseline EXACTLY as it found it",
+              seen.read_text() == before)
+        check("--peek does not write plus_new.json",
+              not (d / "plus_new.json").exists())
+        check("--peek still records the diff somewhere readable",
+              json.loads((d / "plus_new_peek.json").read_text())[0]["id"] == "brand-new")
+        check("--peek says so out loud", "not advanced" in msg.lower())
+
+        # ...and the live path must still do its job, or the fix above would
+        # have bought a permanently frozen baseline instead of a safe dry-run.
+        msg = persist(d, seen, {"old-1", "old-2", "brand-new"},
+                      [{"id": "brand-new"}], peek=False)
+        check("a LIVE run does advance the baseline",
+              sorted(json.loads(seen.read_text())) == ["brand-new", "old-1", "old-2"])
+        check("a LIVE run writes plus_new.json",
+              json.loads((d / "plus_new.json").read_text())[0]["id"] == "brand-new")
+        check("a live run does not claim it skipped", "not advanced" not in msg.lower())
+
     return 1 if bad else 0
 
 
