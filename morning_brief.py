@@ -596,9 +596,70 @@ def selftest():
         ck("tm: several problems are ALL reported, not just the first",
            "NOT MOUNTED" in line and "FAILED" in line and "no completed" in line)
 
+    def _attention_checks(ck):
+        """gather_attention decides what gets FLAGGED, and its output feeds
+        health_verdict -- so if it silently returns [] when something is wrong,
+        the brief says healthy. That is the exact failure class this whole file
+        exists to avoid, and none of it was tested."""
+        ck("paywall: a well-formed 3-line entry parses",
+           _parse_paywall_entries(
+               f"[{TODAY} 07:00:00] PAYWALL | URL: https://www.ft.com/x\n"
+               "          Sender: a@b\n"
+               "          Subject: A Headline")
+           == [{"date": TODAY, "url": "https://www.ft.com/x",
+                "subject": "A Headline"}])
+        ck("paywall: a '[ref] ' prefix is stripped from the subject",
+           _parse_paywall_entries(
+               f"[{TODAY} 07:00:00] PAYWALL | URL: https://x.com/a\n"
+               "          Sender: a@b\n"
+               "          Subject: [ref] Real Title")[0]["subject"] == "Real Title")
+        ck("paywall: unrelated log noise yields NOTHING, not a phantom entry",
+           _parse_paywall_entries("just some line\nand another") == [])
+        ck("domain: www. is stripped so counts do not split in two",
+           _domain("https://www.ft.com/a") == "ft.com"
+           and _domain("https://ft.com/b") == "ft.com")
+
+        g = globals()
+        saved = g["_read"]
+        try:
+            # bot.log: only TODAY's errors, and never the benign long-poll
+            g["_read"] = lambda p: (f"[{TODAY} 08:00] ERROR boom" if "bot" in str(p) else "")
+            ck("attention: an error logged TODAY is flagged",
+               any("bot.log" in f for f in gather_attention()))
+            g["_read"] = lambda p: ("[2020-01-01 08:00] ERROR ancient" if "bot" in str(p) else "")
+            ck("attention: a STALE error does not keep the verdict red forever",
+               gather_attention() == [])
+            g["_read"] = lambda p: (f"[{TODAY} 08:00] error getUpdates timed out" if "bot" in str(p) else "")
+            ck("attention: a benign getUpdates timeout is NOT an error",
+               gather_attention() == [])
+            g["_read"] = lambda p: ""
+            ck("attention: empty logs flag nothing", gather_attention() == [])
+
+            # paywalls: today flags; the recurrence count is ALL-TIME
+            pw = (f"[2020-01-01 07:00:00] PAYWALL | URL: https://www.ft.com/old\n"
+                  "          Sender: a@b\n"
+                  "          Subject: Old One\n"
+                  f"[{TODAY} 07:00:00] PAYWALL | URL: https://www.ft.com/new\n"
+                  "          Sender: a@b\n"
+                  "          Subject: New One")
+            g["_read"] = lambda p: (pw if "paywall" in str(p) else "")
+            fl = gather_attention()
+            ck("attention: a paywall hit TODAY is flagged with its source",
+               len(fl) == 1 and "ft.com" in fl[0] and "New One" in fl[0])
+            ck("attention: ...and the recurrence count is ALL-TIME, not today "
+               "(2x), which is the number that decides a subscription",
+               "blocked 2x all-time" in fl[0])
+            g["_read"] = lambda p: (pw.split("\n")[0:3] and
+                                    "\n".join(pw.split("\n")[0:3]) if "paywall" in str(p) else "")
+            ck("attention: an OLD paywall hit alone flags nothing today",
+               gather_attention() == [])
+        finally:
+            g["_read"] = saved
+
     _verdict_checks(ck)
     _next_checks(ck)
     _tm_checks(ck)
+    _attention_checks(ck)
 
     class R:
         def __init__(self, stdout="", stderr="", rc=0):
