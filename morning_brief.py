@@ -225,6 +225,30 @@ def gather_attention():
     return flags
 
 # ── Compose ────────────────────────────────────────────────────────────────────
+def timemachine_verdict(name, mounted, result, age_days, last_txt):
+    """(line, ok) from the four facts. PURE, so it can be tested (S141).
+
+    Each of the four can be wrong while the others look fine, which is the
+    whole reason this reports three separate facts rather than one. The case
+    that matters most is S72's: a RECENT backup and a FAILING attempt means it
+    just started failing, and freshness alone called that healthy.
+    """
+    problems = []
+    if not mounted:
+        problems.append(f"destination '{name}' NOT MOUNTED")
+    if result not in (0, None):
+        problems.append(f"last attempt FAILED (RESULT={result})")
+    if age_days is None:
+        problems.append("no completed backup recorded")
+    elif age_days >= 2:
+        problems.append(f"last backup was {age_days} days ago")
+
+    if problems:
+        return ("- ❌ Time Machine: " + "; ".join(problems)
+                + f" (last completed: {last_txt})"), False
+    return f"- ✅ Time Machine: last backup {last_txt}, destination mounted", True
+
+
 def gather_timemachine():
     """Is CIRRUS actually being backed up? -> (line, ok)
 
@@ -276,20 +300,7 @@ def gather_timemachine():
             age_days = (datetime.now(timezone.utc) - dt).days
             last_txt = dt.astimezone().strftime("%a %d %b %H:%M")
 
-    problems = []
-    if not mounted:
-        problems.append(f"destination '{name}' NOT MOUNTED")
-    if result not in (0, None):
-        problems.append(f"last attempt FAILED (RESULT={result})")
-    if age_days is None:
-        problems.append("no completed backup recorded")
-    elif age_days >= 2:
-        problems.append(f"last backup was {age_days} days ago")
-
-    if problems:
-        return ("- ❌ Time Machine: " + "; ".join(problems)
-                + f" (last completed: {last_txt})"), False
-    return f"- ✅ Time Machine: last backup {last_txt}, destination mounted", True
+    return timemachine_verdict(name, mounted, result, age_days, last_txt)
 
 
 def gather_stalls():
@@ -556,8 +567,38 @@ def selftest():
         ck("next: ...and the counts it quotes are the real ones",
            next_action(True, True, [], ["a", "b", "c"], []).startswith("Review the 3"))
 
+    def _tm_checks(ck):
+        FRESH = ("Vol", True, 0, 0, "Wed 09 Sep 03:00")
+        line, ok = timemachine_verdict(*FRESH)
+        ck("tm: mounted, recent, last attempt clean -> OK", ok is True and "✅" in line)
+        # each fact ALONE must sink it -- they can each be wrong while the
+        # others look fine, which is why three are reported and not one.
+        line, ok = timemachine_verdict("Vol", False, 0, 0, "x")
+        ck("tm: an UNMOUNTED destination alone fails (the S73 case: a "
+           "FileVault-locked volume simply vanishes)",
+           ok is False and "NOT MOUNTED" in line)
+        line, ok = timemachine_verdict("Vol", True, 0, None, "never")
+        ck("tm: no completed backup at all fails",
+           ok is False and "no completed backup" in line)
+        line, ok = timemachine_verdict("Vol", True, 0, 2, "x")
+        ck("tm: a backup 2 days old fails", ok is False and "2 days ago" in line)
+        line, ok = timemachine_verdict("Vol", True, 0, 1, "x")
+        ck("tm: ...but 1 day old is still fine — the threshold is not off by one",
+           ok is True)
+        # THE S72 REGRESSION, pinned by name.
+        line, ok = timemachine_verdict("Vol", True, 1, 0, "x")
+        ck("tm: S72 — a FRESH backup with a FAILING last attempt is NOT ok; "
+           "freshness alone once called this healthy",
+           ok is False and "FAILED" in line)
+        line, ok = timemachine_verdict("Vol", True, None, 0, "x")
+        ck("tm: RESULT=None means 'no attempt recorded', not a failure", ok is True)
+        line, ok = timemachine_verdict("Vol", False, 1, None, "never")
+        ck("tm: several problems are ALL reported, not just the first",
+           "NOT MOUNTED" in line and "FAILED" in line and "no completed" in line)
+
     _verdict_checks(ck)
     _next_checks(ck)
+    _tm_checks(ck)
 
     class R:
         def __init__(self, stdout="", stderr="", rc=0):
