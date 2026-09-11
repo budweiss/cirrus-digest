@@ -1,6 +1,6 @@
 {
   "_comment": "LLM API pricing + spend caps for the budget guard (llm_budget.py). Rates in USD per 1,000,000 tokens. Confirm against https://docs.claude.com pricing at wire time. Discount multipliers: batch=0.5, cache_read=0.1 (cached input only), cache_write=1.25.",
-  "_updated": "2026-09-11 (S159: kimi-k3)",
+  "_updated": "2026-09-11 (S159: kimi-k3, + the 7 models the ledger was costing at the unknown ceiling)",
   "models": {
     "claude-opus-5": {
       "in": 5.0,
@@ -34,17 +34,45 @@
       "in": 0.1,
       "out": 0.4
     },
+    "gemini-3.1-pro-preview": {
+      "in": 2.0,
+      "out": 12.0
+    },
     "grok-3-mini": {
       "in": 0.3,
       "out": 0.5
+    },
+    "grok-4.20-0309-non-reasoning": {
+      "in": 1.25,
+      "out": 2.5
+    },
+    "grok-4.20-0309-reasoning": {
+      "in": 1.25,
+      "out": 2.5
+    },
+    "grok-4.5": {
+      "in": 2.0,
+      "out": 6.0
     },
     "gpt-4o-mini": {
       "in": 0.15,
       "out": 0.6
     },
+    "gpt-4.1": {
+      "in": 2.0,
+      "out": 8.0
+    },
     "deepseek-chat": {
       "in": 0.27,
       "out": 1.1
+    },
+    "deepseek-flash": {
+      "in": 0.3,
+      "out": 1.2
+    },
+    "deepseek-v4-pro": {
+      "in": 1.32,
+      "out": 3.96
     },
     "kimi-k3": {
       "in": 3.0,
@@ -101,5 +129,6 @@
     "claude": 10.0,
     "gemini": 0.0,
     "ddg": 0.0
-  }
+  },
+  "_comment_tiers": "S159: rates verified against each vendor's pricing page on 2026-09-11. Two shapes this flat table cannot express, resolved CONSERVATIVELY so the ledger can overstate but never understate. (1) PROMPT-SIZE TIERS -- gemini-3.1-pro-preview, the grok-4.20 family and grok-4.5 all double above 200k prompt tokens; the rate here is the <=200k tier, which is where every call we make sits (the largest real prompt measured is far under it). A >200k call would be costed at half its true price -- if we ever start sending them, this table needs a tier-aware cost_usd, not a bigger number. (2) DEEPSEEK OFF-PEAK -- deepseek-flash and deepseek-v4-pro bill at HALF these rates outside 01:00-04:00 and 06:00-10:00 UTC Mon-Fri. The PEAK rate is recorded, so DeepSeek lines read as a ceiling. Deliberately still unpriced: deepseek-v4-flash (delisted -- no vendor page left to verify, and the real fix is to stop calling it, see the worklist), and the probe stubs '?', 'srv', 'm', 'gpt-x', 'gemini-9', which are not models."
 }
