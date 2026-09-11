@@ -89,6 +89,31 @@ def summarize(new):
     return "\n".join(lines)
 
 
+def quiet_note(swept, sent=True, suppressed=""):
+    """The ledger note a quiet week records. ONE definition, three callers.
+
+    S146. It used to be written inline as "quiet week sent (...)" while the
+    dry-run printed "no new leads (...)" and completeness.py's selftest asserted
+    against a third, hand-typed copy. All three drifted apart the moment the live
+    one changed, and the drift was invisible: the rule scored the LIVE note
+    (1, True) -- PRODUCTIVE, because produced_phrases contains "sent" -- so a
+    quiet week counted as a productive week, zero_runs reset every Monday, and
+    max_zero_runs=6 could never be reached. The check S142 retuned was dead on
+    arrival and its selftest passed, because the selftest tested the string the
+    DRY-RUN prints.
+
+    So: the note must never contain the word "sent", and every caller must come
+    through here. runner/trap_lint.sh T91 asserts completeness.py's billnewdev
+    rule scores this function's real output as zero.
+    """
+    n = f"no new leads ({swept})"
+    if suppressed:
+        n += f" - note suppressed: {suppressed}"
+    elif not sent:
+        n += " - SEND FAILED"
+    return n
+
+
 def compose_quiet(swept):
     c = _swept_counts()
     if c:
@@ -275,7 +300,7 @@ def main():
     # quiet week -- i.e. it is proved against a fixture and never against the
     # real plus_leads.json, which is the S81 mistake exactly.
     if dry:
-        print(f'quiet-week note would be: "no new leads ({_swept()})"')
+        print(f'quiet-week note would be: "{quiet_note(_swept())}"')
 
     if not new and not dry:
         # S144 (Buddy, 2026-09-10). This used to return silently, and the cost of
@@ -293,8 +318,7 @@ def main():
         swept = _swept()
         print(f"No new leads this week — sending the quiet-week note ({swept}).")
         ok = _send(compose_quiet(swept), attach=False)
-        _rec(dry, ok, (f"quiet week sent ({swept})" if ok
-                       else f"quiet week SEND FAILED ({swept})"))
+        _rec(dry, ok, quiet_note(swept, sent=ok))
         return
 
     # Build the attachment (needed whenever we would send, and useful to verify in dry-run)

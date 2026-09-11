@@ -816,6 +816,14 @@ def selftest() -> bool:
     # note stopped matching and nothing asserted otherwise. The counts must not
     # leak into the arithmetic -- 546 swept is evidence for a human, not
     # production -- or the rule becomes unfireable and the check silently dies.
+    # NOTE (S146): this is a hand-typed copy of what bill_newdev_weekly.quiet_note()
+    # builds, and a hand-typed copy is exactly how the rule went dead on
+    # 2026-09-10 -- the live path wrote "quiet week sent (...)" for a day while
+    # this fixture kept asserting the older string and passing. The two files sit
+    # in different trees on CUMULUS and cannot import each other at runtime, so
+    # the real guarantee is runner/quiet_note_lint.py (T91), which imports the
+    # live function on the Mac and feeds its OUTPUT to this rule. If you change
+    # the note, that lint is what will tell you; this line will not.
     _bnd = "no new leads (swept 546 plus, 131 dev-app, 87 permit)"
     ck("billnewdev's new quiet note still reads as ZERO, not productive",
        RULES["billnewdev"].productivity(_bnd) == (0, True))
