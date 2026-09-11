@@ -68,20 +68,31 @@ def main():
 
         from datetime import datetime, timedelta
         since = (datetime.now() - timedelta(days=DAYS)).strftime("%d-%b-%Y")
-        for name, addr in recipients:
-            st, data = M.search(None, f'SINCE {since} TO "{addr}"')
-            ids = data[0].split() if data and data[0] else []
-            for i in ids:
-                st, d = M.fetch(i, "(BODY.PEEK[HEADER.FIELDS (DATE SUBJECT)])")
-                if not d or not d[0]:
+
+        # ONE search for the window, then match recipients locally. The first
+        # version issued a separate IMAP SEARCH per recipient, which is a
+        # round-trip each and took long enough that the runner timed out before
+        # the command returned.
+        st, data = M.search(None, f"SINCE {since}")
+        ids = data[0].split() if data and data[0] else []
+        by_addr = {a.lower(): n for n, a in recipients}
+        if ids:
+            st, chunk = M.fetch(",".join(i.decode() for i in ids),
+                                "(BODY.PEEK[HEADER.FIELDS (DATE SUBJECT TO CC)])")
+            for part in chunk or []:
+                if not isinstance(part, tuple):
                     continue
-                msg = email.message_from_bytes(d[0][1])
+                msg = email.message_from_bytes(part[1])
+                dests = ((msg.get("To") or "") + "," + (msg.get("Cc") or "")).lower()
+                hit = next((a for a in by_addr if a and a in dests), None)
+                if not hit:
+                    continue
                 try:
                     subj = str(make_header(decode_header(msg.get("Subject") or "")))
                 except Exception:
                     subj = (msg.get("Subject") or "")[:120]
                 out["sends"].append({
-                    "client": name, "to": addr,
+                    "client": by_addr[hit], "to": hit,
                     "date": (msg.get("Date") or "").strip(),
                     "subject": subj[:120],
                 })
