@@ -181,10 +181,22 @@ def main():
         # is overdue is the finding it is meant to produce, not a fault in it.
         _rec(True, note)
         if bits:
-            _tg("*A client has not heard from us:*\n"
+            # S152: the heading must match the finding. It said "has not heard
+            # from us" for every case, including a client who has stopped USING
+            # their tool -- the opposite statement. A misleading alert header is
+            # the same defect as hoaleads' `why` pointing at a healthy source:
+            # it sends the reader somewhere the problem is not.
+            heads = []
+            if silent or quiet:
+                heads.append("has not heard from us")
+            if v.get("stale_use"):
+                heads.append("has stopped using their tool")
+            _tg(f"*A client {' / '.join(heads)}:*\n"
                 + "\n".join(f"• {b}" for b in bits)
-                + "\n\n_Both mailboxes checked (cirrustask + cumulus). Exempt: "
-                  "Justin — the halftime dashboard is his channel._")
+                + "\n\n_Both mailboxes checked (cirrustask + cumulus), and "
+                  "self-serve tool use alongside them. Justin is exempt from the "
+                  "CONTACT check only — his dashboard is the channel — but his "
+                  "use of it is watched._")
         return 0
 
 
