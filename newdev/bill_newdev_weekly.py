@@ -126,6 +126,35 @@ def quiet_note(swept, sent=True, suppressed=""):
     return n
 
 
+def note_samples():
+    """Every note shape this job can write, and how its rule must read each.
+
+    S150. Built by CALLING quiet_note(), not by retyping its output -- a retyped
+    sample agrees with whatever the author believed, which is exactly how the
+    S146 bug shipped: the selftest asserted a hand-typed copy of the DRY-RUN's
+    string while the live path wrote a different one containing "sent", so every
+    quiet week scored PRODUCTIVE and the stall threshold could never fire.
+
+    The last two are rare paths. Neither appears in the ledger on an ordinary
+    week, and both are when the rule matters: a send that failed, and a sweep
+    that could not read what it swept.
+
+    Self-contained apart from quiet_note, which the lint execs alongside it.
+    Returns (label, note, expect) where expect is "productive"|"zero"|"blind".
+    """
+    swept = "swept 546 plus, 249 dev-app, 33 permit"
+    return [
+        ("a normal quiet week", quiet_note(swept), "zero"),
+        ("a quiet week whose send failed", quiet_note(swept, sent=False), "zero"),
+        ("a duplicate note suppressed",
+         quiet_note(swept, suppressed="last note 2d ago"), "zero"),
+        ("a sweep that read nothing", quiet_note("swept 0 plus, 0 dev-app, 0 permit"),
+         "blind"),
+        ("an unreadable sweep artifact",
+         quiet_note("swept unknown (plus_leads.json unreadable)"), "blind"),
+    ]
+
+
 def compose_quiet(swept):
     c = _swept_counts()
     if c:

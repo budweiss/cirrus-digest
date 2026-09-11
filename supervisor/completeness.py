@@ -409,6 +409,10 @@ RULES = {
         # alarm -- see Rule.fail_phrases. "swept 0 plus" catches a collapsed
         # sweep; "swept unknown" catches an unreadable artifact.
         fail_phrases=("swept 0 plus", "swept unknown"),
+        # The sweep counts. Only ever written on a QUIET week, so the live
+        # ledger never showed them -- the rare-path hook is what surfaced that
+        # they had never been classified.
+        evidence=("plus", "dev-app", "permit"),
         why="Bill's new-dev lead check has found nothing for six weeks. Read "
             "the `swept` counts in the note FIRST: if they are still in the "
             "hundreds the DE PLUS/parcel sources are answering and Delaware is "

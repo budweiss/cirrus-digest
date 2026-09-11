@@ -314,6 +314,76 @@ def run(chunk_size: int = DEFAULT_CHUNK_SIZE, dry_run: bool = False, db_path: st
             "discovery": discovery, "refresh": refresh}
 
 
+def build_note(outcome):
+    """The ledger note for one run. SELF-CONTAINED on purpose.
+
+    S150. This was an inline f-string inside job_status.record(), so the only
+    note anyone could inspect was whichever one the job happened to write last.
+    Its rare paths -- a failed county directory above all -- were unreachable
+    from any test, and a failure path is exactly where a rule most needs to be
+    right: DIRECTORY FAILED is the one line meaning the source is genuinely down.
+
+    Takes no imports and no module state, so runner/rule_note_lint.py can
+    extract and exec this one function WITHOUT importing the module (which pulls
+    in deep_research, entity_kb and the council). Same trick quiet_note_lint uses.
+    """
+    d = outcome.get("discovery", {}) or {}
+    rf = outcome.get("refresh", {}) or {}
+    dirinfo = outcome.get("directory", {}) or {}
+    note = (f"{len(d.get('new_entities', []))} new, "
+            f"{len(d.get('updated_entities', []))} updated, "
+            f"{rf.get('refreshed', 0)} refreshed, "
+            f"{rf.get('found_new_info', 0)} found_new_info")
+    # Sweep evidence, so "0 new" is READABLE -- it separates "discovery found
+    # nothing" from "discovery found 58 fresh and the council kept none".
+    # Deliberately NOT in the rule's produced_patterns: the Rule SUMS its
+    # matches, so counting candidates would make "0 kept of 58 swept" read as
+    # productive and delete the check (the halftimecatalogue lesson).
+    note += (f", swept {d.get('fresh_candidates', 0)} fresh of "
+             f"{d.get('candidates', 0)} candidates, council kept "
+             f"{d.get('council_kept', 0)}")
+    # A failed directory step must not hide inside an otherwise green line -- it
+    # is the only part that reaches the client with a NAME on it.
+    if dirinfo.get("ok"):
+        note += f", directory {dirinfo.get('rows', 0)} rows"
+    else:
+        note += f", DIRECTORY FAILED: {str(dirinfo.get('reason', '?'))[:60]}"
+    return note
+
+
+def note_samples():
+    """Every note shape this job can write, and how its rule must read each.
+
+    S150. The T93 lint only ever sees the note a job wrote TODAY, so a shape
+    that appears on a rare path goes unchecked until that path runs -- and the
+    failure path is when the rule matters most. These are built by CALLING
+    build_note() with real outcome dicts, not by retyping strings: a retyped
+    sample agrees with whatever its author believed, which is the mistake S81
+    recorded and the one this work keeps re-learning.
+
+    Self-contained, like build_note. Returns (label, note, expect) where expect
+    is "productive" | "zero" | "blind".
+    """
+    healthy = {"directory": {"ok": True, "rows": 224},
+               "discovery": {"candidates": 65, "fresh_candidates": 58,
+                             "council_kept": 0, "new_entities": [],
+                             "updated_entities": []},
+               "refresh": {"refreshed": 5, "found_new_info": 1}}
+    quiet = {**healthy, "refresh": {"refreshed": 5, "found_new_info": 0}}
+    found = {**healthy,
+             "discovery": {**healthy["discovery"], "new_entities": ["a", "b"]}}
+    broken = {**quiet,
+              "directory": {"ok": False, "reason": "HTTPError: 403 Forbidden"}}
+    return [
+        ("a refresh that found new info", build_note(healthy), "productive"),
+        ("newly discovered entities", build_note(found), "productive"),
+        ("a genuinely quiet night", build_note(quiet), "zero"),
+        # THE RARE PATH: never in the ledger on a healthy week, and the only
+        # shape that means the county source is actually down.
+        ("the county directory failed", build_note(broken), "blind"),
+    ]
+
+
 def selftest() -> bool:
     """Offline-testable part only: pick_refresh_chunk's rotation logic. The
     discover/refresh live pipelines need network + API keys, same reasoning
@@ -404,35 +474,8 @@ if __name__ == "__main__":
     if not args.dry_run:
         try:
             import job_status
-            d, rf = outcome.get("discovery", {}), outcome.get("refresh", {})
-            job_status.record(
-                "hoaleads", bool(outcome.get("ok")),
-                f"{len(d.get('new_entities', []))} new, "
-                f"{len(d.get('updated_entities', []))} updated, "
-                f"{rf.get('refreshed', 0)} refreshed, "
-                f"{rf.get('found_new_info', 0)} found_new_info"
-                # S150. The sweep evidence, so "0 new" is READABLE. Without it
-                # the note cannot distinguish "discovery found nothing" from
-                # "discovery found 58 fresh candidates and the council kept
-                # none" -- and on 2026-09-11 that ambiguity sent the completeness
-                # alert's `why` at the county source, which had answered
-                # perfectly every night for eight nights. Same fix as
-                # billnewdev's `swept` counts, for the same reason.
-                #
-                # Deliberately NOT added to the rule's produced_patterns: the
-                # Rule SUMS its matches, so counting candidates would make
-                # "0 kept of 58 swept" read as productive and delete the check
-                # (the halftimecatalogue lesson).
-                + f", swept {d.get('fresh_candidates', 0)} fresh of "
-                  f"{d.get('candidates', 0)} candidates, council kept "
-                  f"{d.get('council_kept', 0)}"
-                # A failed directory step must not hide inside an otherwise
-                # green line -- it is the only part that reaches the client
-                # with a NAME on it.
-                + (f", directory {outcome.get('directory', {}).get('rows', 0)} rows"
-                   if outcome.get("directory", {}).get("ok")
-                   else f", DIRECTORY FAILED: "
-                        f"{outcome.get('directory', {}).get('reason', '?')[:60]}"))
+            job_status.record("hoaleads", bool(outcome.get("ok")),
+                              build_note(outcome))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     sys.exit(0 if outcome.get("ok") else 1)
