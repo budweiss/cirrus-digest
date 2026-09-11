@@ -30,6 +30,12 @@ ALLOWED = {
     "x_bearer_token", "x_api_key", "x_api_secret",
     # S59: Apify token for the DE HOA CRM Nextdoor (public-only) feed.
     "apify_token",
+    # S159: Moonshot/Kimi. THE SECOND ALLOWLIST -- T91. runner/set-llm-key.sh
+    # has its own case-statement allowlist on the Mac, and a field must be in
+    # BOTH: the local one to be typed, this one to be written. S159 added only
+    # the first, so the hidden prompt accepted the key, shipped it over ssh,
+    # and the box refused it -- after the secret was already in flight.
+    "kimi_api_key", "kimi_model",
 }
 
 CREDS = "config/credentials.json"
