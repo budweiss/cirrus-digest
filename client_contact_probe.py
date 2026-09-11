@@ -27,8 +27,55 @@ from email.utils import getaddresses
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DAYS = int(sys.argv[1]) if len(sys.argv) > 1 else 45
+def _days_arg(argv, default=45):
+    """First numeric argument, or the default. S148: this was
+    `int(sys.argv[1])` at module level, so ANY non-numeric argument crashed the
+    module on import -- `--selftest` included, which is how it was found. A
+    probe that dies before it can report is worse than one that reports a bad
+    window."""
+    for a in argv[1:]:
+        if a.isdigit():
+            return int(a)
+    return default
+
+
+DAYS = _days_arg(sys.argv)
 SENT_BOXES = ('"[Gmail]/Sent Mail"', '"Sent Items"', "Sent")
+
+
+def recipients_of(msg, by_addr):
+    """Which known clients is this message addressed to? Sorted, possibly empty.
+
+    Pulled out of the IMAP loop in S148 so it can be tested at all. The logic it
+    holds got the answer WRONG twice in one evening, both times in the direction
+    that makes a client look ignored:
+
+      * It was `next(a for a in by_addr if a in dests)` -- the FIRST match in
+        dict order, over a raw header substring. Buddy is cc'd on every client
+        email, so if his key happened to precede a client's in
+        intake_senders.json, every one of that client's emails was attributed to
+        him and the client read as having heard nothing. That is this command
+        emitting the exact false "abandoned" signal it exists to prevent.
+      * Substring matching also let `bill@x.com` match `notbill@x.com`.
+
+    So: parse the addresses rather than searching the header text, take EVERY
+    match rather than the first, and never let "buddy" win when a real client is
+    also on the message -- he is never the reason an email exists.
+    """
+    dests = [a.lower() for _, a in
+             getaddresses([msg.get("To") or "", msg.get("Cc") or ""])]
+    hits = [a for a in by_addr if a in dests]
+    clients = [a for a in hits if by_addr[a] != "buddy"]
+    return sorted(clients or hits)
+
+
+def subject_of(msg):
+    """The decoded Subject, truncated. Never raises -- a malformed encoded-word
+    in one message must not abort a whole box's sweep."""
+    try:
+        return str(make_header(decode_header(msg.get("Subject") or "")))[:120]
+    except Exception:
+        return (msg.get("Subject") or "")[:120]
 
 
 def _identity():
@@ -110,23 +157,15 @@ def main():
                 # client read as having heard nothing. That is this command
                 # reporting the exact false "abandoned" signal it was built to
                 # prevent. Substring also let bill@x.com match notbill@x.com.
-                dests = [a.lower() for _, a in
-                         getaddresses([msg.get("To") or "", msg.get("Cc") or ""])]
-                hits = [a for a in by_addr if a in dests]
-                # Buddy is on everything; he is never the reason an email exists.
-                clients = [a for a in hits if by_addr[a] != "buddy"]
-                hits = clients or hits
+                hits = recipients_of(msg, by_addr)
                 if not hits:
                     continue
-                try:
-                    subj = str(make_header(decode_header(msg.get("Subject") or "")))
-                except Exception:
-                    subj = (msg.get("Subject") or "")[:120]
+                subj = subject_of(msg)
                 for hit in hits:
                     out["sends"].append({
                         "client": by_addr[hit], "to": hit,
                         "date": (msg.get("Date") or "").strip(),
-                        "subject": subj[:120],
+                        "subject": subj,
                     })
         M.logout()
         out["ok"] = True
@@ -138,5 +177,68 @@ def main():
     return 0 if out["ok"] else 1
 
 
+def selftest() -> int:
+    """Offline: no IMAP, no credentials, no network.
+
+    Every case is built from REAL message bytes and parsed the way the live
+    sweep parses them, rather than from a dict of pretend headers -- feeding a
+    check a reconstruction of the artifact instead of the artifact is what let
+    three separate bugs ship on 2026-09-10.
+    """
+    bad = 0
+
+    def ck(name, cond):
+        nonlocal bad
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+        bad += 0 if cond else 1
+
+    def msg(to, cc="", subject="s"):
+        raw = f"To: {to}\r\nCc: {cc}\r\nSubject: {subject}\r\n\r\nbody"
+        return email.message_from_bytes(raw.encode())
+
+    BILL, BUDDY, ALYSSA = "bill@knight.com", "buddy.weiss@outlook.com", "alyssa@school.org"
+
+    # buddy FIRST on purpose: dicts keep insertion order, and the old code took
+    # the first match, so this ordering is what made a client look abandoned.
+    by_addr = {BUDDY: "buddy", BILL: "bill", ALYSSA: "alyssa"}
+
+    ck("a client email cc'd to Buddy is attributed to the CLIENT",
+       recipients_of(msg(BILL, BUDDY), by_addr) == [BILL])
+    ck("...even though 'buddy' is first in the address map",
+       list(by_addr)[0] == BUDDY)
+    ck("a message to Buddy ALONE is still his, not dropped",
+       recipients_of(msg(BUDDY), by_addr) == [BUDDY])
+    ck("two clients on one message yield BOTH, not the first",
+       recipients_of(msg(f"{BILL}, {ALYSSA}", BUDDY), by_addr) == sorted([BILL, ALYSSA]))
+    ck("display-name form is matched on the address, not the text",
+       recipients_of(msg(f'"Bill Hutchins" <{BILL}>', BUDDY), by_addr) == [BILL])
+    ck("bill@ does NOT match notbill@ (the substring bug)",
+       recipients_of(msg("notbill@knight.com", BUDDY), by_addr) == [BUDDY])
+    ck("...nor does a longer local part containing ours",
+       recipients_of(msg("xbill@knight.comx"), by_addr) == [])
+    ck("case in the header does not matter",
+       recipients_of(msg(BILL.upper()), by_addr) == [BILL])
+    ck("an unknown recipient matches nobody",
+       recipients_of(msg("stranger@example.com"), by_addr) == [])
+    ck("a message with no To/Cc at all is empty, not a crash",
+       recipients_of(email.message_from_bytes(b"Subject: x\r\n\r\nb"), by_addr) == [])
+    ck("a client in Cc only still counts",
+       recipients_of(msg(BUDDY, BILL), by_addr) == [BILL])
+
+    ck("an encoded subject is decoded",
+       subject_of(msg(BILL, subject="=?utf-8?q?Caf=C3=A9_update?=")) == "Caf\u00e9 update")
+    ck("a plain subject survives", subject_of(msg(BILL, subject="Hello")) == "Hello")
+    ck("a malformed encoded-word does not raise",
+       isinstance(subject_of(msg(BILL, subject="=?bogus?x?zz?=")), str))
+    ck("a missing subject is empty, not None",
+       subject_of(email.message_from_bytes(b"To: x\r\n\r\nb")) == "")
+
+    print()
+    print("all client_contact_probe selftests passed" if not bad else f"{bad} FAILED")
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     sys.exit(main())
