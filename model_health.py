@@ -866,6 +866,65 @@ _KEY_FIELD_CLOUD = {
 }
 
 
+def check_configured_model_delisted(creds):
+    """(line, should_notify) — is a model we RUN no longer offered by its provider?
+
+    S146, 2026-09-10, and it was live the day it was written. Buddy forwarded a
+    DeepSeek notice: v4.1 is out, v4 unsupported after the 14th. We run
+    `deepseek-v4-flash`. The provider's own /v1/models offered this key exactly
+    `deepseek-flash` and `deepseek-v4-pro` -- ours was already gone from the
+    list, four days ahead of the cutoff.
+
+    Nothing here would have said so. There were two checks and neither asks this
+    question:
+
+      * check_cloud_model_releases() reports ids that are NEW. Additions, not
+        removals. It ran that same evening and said "NEW: openai gpt-live-1".
+      * test_model() makes a tiny live call, and a deprecated-but-not-yet-retired
+        model ANSWERS. modelhealth printed "healthy: deepseek=deepseek-v4-flash"
+        while the model was already delisted.
+
+    So the working check and the release check agreed, and both were looking past
+    the thing that will break on the 15th. T78 in one line: installed != fresh !=
+    current-version != WORKS. "Works today" is not "supported tomorrow", and the
+    provider says which is which by listing it or not.
+
+    None from _list_cloud_models means UNREACHABLE and is reported as unchecked,
+    never as delisted -- accusing a provider of retiring a model because the
+    network blinked would get this muted in a week.
+    """
+    try:
+        delisted, unchecked, checked = [], [], 0
+        for prov in sorted(_KEY_FIELD_CLOUD):
+            if not creds.get(_KEY_FIELD_CLOUD[prov]):
+                continue
+            cur = (creds.get(MODEL_FIELD.get(prov, "")) or "").strip()
+            if not cur:
+                continue
+            ids = _list_cloud_models(prov, creds)
+            if ids is None:
+                unchecked.append(prov)
+                continue
+            checked += 1
+            if cur not in ids:
+                offered = ", ".join(sorted(ids)[:6]) or "(nothing)"
+                delisted.append(f"{prov}={cur} NOT offered (this key sees: {offered})")
+
+        parts = []
+        if delisted:
+            parts.append("DELISTED — a model we RUN is no longer offered: "
+                         + "; ".join(delisted)
+                         + ". It may still answer until the provider retires it; "
+                           "re-pin before it stops.")
+        if unchecked:
+            parts.append("unchecked (unreachable): " + ", ".join(unchecked))
+        if not parts:
+            parts.append(f"all {checked} configured cloud model(s) still offered")
+        return ("delist: " + " · ".join(parts), bool(delisted))
+    except Exception as e:
+        return ("delist: check failed: %s" % type(e).__name__, False)
+
+
 def check_cloud_model_releases(creds):
     """(line, should_notify) — has a provider shipped a model we have not seen?
 
@@ -995,6 +1054,7 @@ def main():
     runtime_line, runtime_notify = check_local_runtime()
     models_line, models_notify = check_model_drift()
     cloud_line, cloud_notify = check_cloud_model_releases(creds)
+    dl_line, dl_notify = check_configured_model_delisted(creds)   # S146
     local_line, local_notify = check_local_model_loads(creds)     # S137
     fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
     tr_line, tr_notify = check_local_truncation(creds)            # S141
@@ -1010,6 +1070,7 @@ def main():
     print(f"  detach:  {dj_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
+    print(f"  {dl_line}")
     print(f"  {cloud_line}")
     for label, items in (("healthy", healthy), ("healed", healed),
                          ("broken", broken), ("needs_funding", needs_funding),
@@ -1020,7 +1081,7 @@ def main():
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify
-            or ep_notify or dj_notify):
+            or ep_notify or dj_notify or dl_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -1072,6 +1133,12 @@ def main():
             lines += ["*BROKEN (needs you):*"] + [f"• {b}" for b in broken]
         if errored:
             lines += ["*errors (no change):*"] + [f"• {e}" for e in errored]
+        if dl_notify:
+            lines += ["*a model we RUN is no longer offered by its provider:*",
+                      f"• {dl_line}",
+                      "_It may still answer right up until the provider pulls it — "
+                      "that is why 'healthy' does not cover this. Re-pin before the "
+                      "cutoff, not after._"]
         if cloud_notify:
             lines += ["*a provider shipped a model we have not seen:*", f"• {cloud_line}",
                       "_Reported as a FACT, not a recommendation — whether it beats "
