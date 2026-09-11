@@ -147,5 +147,45 @@ def main():
         return 0
 
 
+def selftest() -> int:
+    """Offline: no probes, no ssh, no mailboxes.
+
+    S150. PASS 6 flagged this file as having no selftest at all, and it was
+    right: the dev-loop's gate 2 runs `<module> --selftest`, so without one a
+    broken build_note here is caught only when trap-lint next runs.
+    """
+    bad = 0
+
+    def ck(name, cond):
+        nonlocal bad
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+        bad += 0 if cond else 1
+
+    ck("a clean sweep names the send count",
+       build_note({"findings": [], "n_sends": 139}) == "all clients current (139 sends)")
+    ck("a finding is reported verbatim",
+       "aggie" in build_note({"findings": ["aggie — nothing at all in 45d"]}))
+    ck("several findings are joined, not truncated to the first",
+       build_note({"findings": ["a — x", "b — y"]}) == "a — x; b — y")
+    # THE one that matters: a sweep that could not read both mailboxes must
+    # never be mistaken for "nobody has gone quiet".
+    n = build_note({"refusal": "only cirrustask@gmail.com answered"})
+    ck("an unverifiable sweep says UNVERIFIABLE", n.startswith("UNVERIFIABLE:"))
+    ck("...and a refusal beats any findings passed alongside it",
+       build_note({"refusal": "one mailbox", "findings": ["a — x"]})
+       .startswith("UNVERIFIABLE:"))
+
+    shapes = note_samples()
+    ck("every declared sample builds", len(shapes) == 3 and all(s[1] for s in shapes))
+    ck("...and one of them is the UNVERIFIABLE path",
+       any(e == "blind" for _l, _n, e in shapes))
+
+    print()
+    print("all client_contact_daily selftests passed" if not bad else f"{bad} FAILED")
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     sys.exit(main())
