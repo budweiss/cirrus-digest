@@ -205,6 +205,11 @@ REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
 # coincide still lose one another's update -- a quieter version of the same
 # bug, and the reason a row can go stale while the job runs fine.
 _LOCK_SUFFIX = ".lock"
+# S150. When a declared job was FIRST SEEN with no run on record. Separate from
+# jobs-status.json on purpose: that file is written by the jobs themselves, and
+# a watcher stamping rows into it would be indistinguishable from a job claiming
+# to have run.
+DECLARED_PATH = STATUS_PATH.parent / "jobs-declared.json"
 
 
 def _read_status():
@@ -325,9 +330,30 @@ def _fetch_remote(_run=None):
     return None
 
 
-def _row(name, cad_h, rec, now, tag=""):
+def _row(name, cad_h, rec, now, tag="", declared_since=None):
     """Pure evaluation of one job's record -> (line, good). Testable offline."""
     if not rec:
+        # S150. "No run recorded yet" used to be NEUTRAL forever, which made a
+        # job that NEVER STARTS indistinguishable from one that is merely new.
+        # That is the worst moment to be blind: a scheduled job's first run is
+        # exactly when it is most likely to be misconfigured, and the failure
+        # leaves no trace to notice.
+        #
+        # Found on 2026-09-11 with clientcontact -- a monitor whose entire
+        # purpose is noticing silence, which would itself have failed silently
+        # if its launchd agent had not loaded. `overdue_jobs` has the same hole
+        # and for the same stated reason: from the LEDGER alone, "never ran" and
+        # "does not run on this box" look identical.
+        #
+        # The stamp is what separates them. Once a job has been DECLARED here
+        # for longer than its own cadence and still has no row, it is not new
+        # any more -- it is not running.
+        if declared_since and (now - declared_since) > cad_h * 3600:
+            hrs = (now - declared_since) / 3600.0
+            return (f"⚠️ {name}{tag}: DECLARED BUT NEVER RAN — no run in the "
+                    f"{hrs:.0f}h since it was added, cadence {cad_h}h. Its "
+                    f"schedule never fired, or it fires and never reaches "
+                    f"record()."), False
         return f"• {name}{tag}: no run recorded yet", None
     age_h = (now - rec.get("epoch", 0)) / 3600.0
     overdue = age_h > cad_h
@@ -346,7 +372,42 @@ def _row(name, cad_h, rec, now, tag=""):
     return f"{mark} {name}{tag}: {rec.get('last_run', '?')[:16]}{state}{note}", good
 
 
-def summarize(_local=None, _node=None, _fetch=None):
+def _declared(now, names, path=None, write=True):
+    """First time each declared job was seen with no run on record.
+
+    S150. Returns {name: epoch}. Stamps any name not already present; drops
+    names no longer declared so a removed job does not haunt the file. Best
+    effort in both directions -- an unreadable or unwritable stamp file must
+    degrade to "everything looks new" (neutral), never to a false accusation
+    that a job has stopped.
+    """
+    path = path or DECLARED_PATH
+    try:
+        data = json.loads(Path(path).read_text())
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    data = {k: v for k, v in data.items() if k in names and isinstance(v, int)}
+    added = False
+    for n in names:
+        if n not in data:
+            data[n] = now
+            added = True
+    if write and added:
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(path) + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=1)
+                f.flush(); os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            pass
+    return data
+
+
+def summarize(_local=None, _node=None, _fetch=None, _declared_path=None):
     """Return (lines, all_ok).
 
     S111: the three underscore parameters are TEST SEAMS and default to the
@@ -368,6 +429,12 @@ def summarize(_local=None, _node=None, _fetch=None):
     remote = (_fetch or _fetch_remote)() if use_remote else None
     now = int(time.time())
     lines, all_ok = [], True
+    # S150: only jobs with NO row are stamped -- a job that has ever run needs no
+    # first-sighting, and stamping it would keep the file growing for nothing.
+    missing = [n for n, _ in CADENCE_H.items()
+               if not ((remote if (use_remote and n in REMOTE_JOBS) else local)
+                       or {}).get(n)]
+    seen_first = _declared(now, missing, path=_declared_path)
     for name, cad_h in CADENCE_H.items():
         is_remote = use_remote and name in REMOTE_JOBS
         if is_remote and remote is None:
@@ -375,7 +442,8 @@ def summarize(_local=None, _node=None, _fetch=None):
             continue
         src = remote if is_remote else local
         line, good = _row(name, cad_h, (src or {}).get(name), now,
-                          tag=" (CUMULUS)" if is_remote else "")
+                          tag=" (CUMULUS)" if is_remote else "",
+                          declared_since=seen_first.get(name))
         if good is False:
             all_ok = False
         lines.append(line)
@@ -558,6 +626,41 @@ def selftest():
     ck("recent but failed -> not good", g is False)
     line, g = _row("j", 26, None, now)
     ck("no record -> neutral (None)", g is None and "no run recorded" in line)
+
+    # ---- S150: "never ran" must stop being neutral FOREVER ------------------
+    # Found with clientcontact on 2026-09-11: a monitor whose entire purpose is
+    # noticing silence would itself have failed silently if its launchd agent
+    # had not loaded. A job's FIRST run is when it is most likely to be
+    # misconfigured, and that failure leaves no row to notice.
+    line, g = _row("j", 26, None, now, declared_since=now - 2 * hr)
+    ck("declared 2h ago, cadence 26h -> still NEUTRAL, not an accusation",
+       g is None)
+    line, g = _row("j", 26, None, now, declared_since=now - 30 * hr)
+    ck("declared 30h ago with cadence 26h -> FAILS, it is not new any more",
+       g is False and "NEVER RAN" in line)
+    ck("...and the line says how long, so it is actionable", "30h" in line)
+    line, g = _row("j", 168, None, now, declared_since=now - 30 * hr)
+    ck("a WEEKLY job declared 30h ago is still new -- cadence is per job",
+       g is None)
+    # A job that HAS run is untouched by any of this.
+    line, g = _row("j", 26, {"epoch": now - hr, "ok": True, "last_run": "x"},
+                   now, declared_since=now - 999 * hr)
+    ck("a job that has run ignores the stamp entirely", g is True)
+
+    # the stamp store itself
+    import tempfile as _tf
+    _d = Path(_tf.mkdtemp()) / "declared.json"
+    st = _declared(now, ["a", "b"], path=_d)
+    ck("first sighting stamps every declared name", st == {"a": now, "b": now})
+    st2 = _declared(now + 500, ["a", "b"], path=_d)
+    ck("a second sighting does NOT move the stamp (or it could never age out)",
+       st2 == {"a": now, "b": now})
+    st3 = _declared(now + 500, ["a"], path=_d)
+    ck("a name no longer declared is dropped, not left to haunt the file",
+       st3 == {"a": now})
+    _d.write_text("{ not json")
+    ck("an unreadable stamp file degrades to 'all new', never to an accusation",
+       _declared(now, ["a"], path=_d, write=False) == {"a": now})
 
     # S83: a healthy row must still carry what the job reported about itself.
     line_ok, g_ok = _row("x", 26, {"epoch": now - hr, "ok": True,
