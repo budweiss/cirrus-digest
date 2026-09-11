@@ -23,6 +23,7 @@ import email
 import json
 import sys
 from email.header import decode_header, make_header
+from email.utils import getaddresses
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -85,6 +86,13 @@ def main():
         st, data = M.search(None, f"SINCE {since}")
         ids = data[0].split() if data and data[0] else []
         by_addr = {a.lower(): n for n, a in recipients}
+
+        # S146. Every client name we KNOW about travels with the result, not just
+        # the ones that happen to have mail in the window. The report needs the
+        # difference to say "no send in window" -- which is the one finding this
+        # whole command exists to surface, and the first version could not make
+        # it: a client with zero sends simply did not appear.
+        out["recipients"] = sorted({n for n, _ in recipients})
         if ids:
             st, chunk = M.fetch(",".join(i.decode() for i in ids),
                                 "(BODY.PEEK[HEADER.FIELDS (DATE SUBJECT TO CC)])")
@@ -92,19 +100,34 @@ def main():
                 if not isinstance(part, tuple):
                     continue
                 msg = email.message_from_bytes(part[1])
-                dests = ((msg.get("To") or "") + "," + (msg.get("Cc") or "")).lower()
-                hit = next((a for a in by_addr if a and a in dests), None)
-                if not hit:
+                # S146. Match on parsed ADDRESSES, and take EVERY match.
+                #
+                # The first version did `next(a for a in by_addr if a in dests)`
+                # over a raw header substring. Two bugs in one line: it stopped at
+                # the first match in dict order, and Buddy is cc'd on every client
+                # email -- so if his key preceded a client's in intake_senders.json,
+                # every one of that client's emails was attributed to Buddy and the
+                # client read as having heard nothing. That is this command
+                # reporting the exact false "abandoned" signal it was built to
+                # prevent. Substring also let bill@x.com match notbill@x.com.
+                dests = [a.lower() for _, a in
+                         getaddresses([msg.get("To") or "", msg.get("Cc") or ""])]
+                hits = [a for a in by_addr if a in dests]
+                # Buddy is on everything; he is never the reason an email exists.
+                clients = [a for a in hits if by_addr[a] != "buddy"]
+                hits = clients or hits
+                if not hits:
                     continue
                 try:
                     subj = str(make_header(decode_header(msg.get("Subject") or "")))
                 except Exception:
                     subj = (msg.get("Subject") or "")[:120]
-                out["sends"].append({
-                    "client": by_addr[hit], "to": hit,
-                    "date": (msg.get("Date") or "").strip(),
-                    "subject": subj[:120],
-                })
+                for hit in hits:
+                    out["sends"].append({
+                        "client": by_addr[hit], "to": hit,
+                        "date": (msg.get("Date") or "").strip(),
+                        "subject": subj[:120],
+                    })
         M.logout()
         out["ok"] = True
     except Exception as exc:
