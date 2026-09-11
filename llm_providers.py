@@ -695,6 +695,30 @@ def selftest():
             _unknown_raised = True
         check("call: unknown provider raises", _unknown_raised)
 
+        # ── S159: the kimi provider, and the GATE that keeps it out of routing.
+        #    The gate is the part worth testing: kimi is dormant-until-keyed like
+        #    every cloud provider, but it is ALSO absent from DEFAULT_ORDER, so a
+        #    key landing must not silently add a council voice and a bill line.
+        #    Without this, "kimi in DEFAULT_ORDER" is a one-word edit nothing
+        #    would catch until the next invoice.
+        check("kimi: registered with a key field",
+              "kimi" in _PROVIDERS and _KEY_FIELD.get("kimi") == "kimi_api_key")
+        check("kimi: ABSENT from DEFAULT_ORDER (the S73/S92 routing gate)",
+              "kimi" not in DEFAULT_ORDER)
+        _kimi_keyed = {_KEY_FIELD["kimi"]: "not-a-real-key"}
+        check("kimi: available() ignores it EVEN WHEN KEYED -- the gate, not the key",
+              available(_kimi_keyed) == available({}))
+        for _c, _want, _label in (
+                ({}, "no kimi_api_key", "unkeyed"),
+                (_kimi_keyed, "no kimi_model", "keyed but no model")):
+            try:
+                call("kimi", "s", "u", _c)
+                _raised = ""
+            except ProviderError as _e:
+                _raised = str(_e)
+            check(f"kimi: {_label} raises before any network call",
+                  _want in _raised)
+
         # ── escalate(): the fallback path every lane uses. Ported from
         #    prop-2026-08-27-649612, which found it wholly untested.
         try:
