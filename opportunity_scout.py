@@ -288,6 +288,26 @@ def run(dry_run: bool = False, n_angles: int = None) -> dict:
             "report": str(path)}
 
 
+def build_note(outcome):
+    """The ledger note for one run. Self-contained (S150)."""
+    if not outcome.get("ok"):
+        return f"FAILED: {str(outcome.get('reason', '?'))[:60]}"
+    return (f"{outcome.get('answered', 0)} model answer(s), "
+            f"{outcome.get('rate_cards', 0)} rate card(s)")
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("models answered",
+         build_note({"ok": True, "answered": 4, "rate_cards": 7}), "productive"),
+        ("ran but no model answered",
+         build_note({"ok": True, "answered": 0, "rate_cards": 0}), "zero"),
+        ("the run failed",
+         build_note({"ok": False, "reason": "all providers rate-limited"}), "blind"),
+    ]
+
+
 def selftest() -> int:
     failures = 0
 
@@ -339,10 +359,7 @@ if __name__ == "__main__":
         try:
             import job_status
             job_status.record("opportunityscout", bool(outcome.get("ok")),
-                              f"{outcome.get('answered', 0)} model answer(s), "
-                              f"{outcome.get('rate_cards', 0)} rate card(s)"
-                              if outcome.get("ok")
-                              else f"FAILED: {outcome.get('reason', '?')[:60]}")
+                              build_note(outcome))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     sys.exit(0 if outcome.get("ok") else 1)

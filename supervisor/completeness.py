@@ -191,6 +191,10 @@ RULES = {
             "against the recorded controls above _CRITIQUE_SYSTEM before "
             "assuming the pipeline is fine.",
         evidence=("generated", "rejected"),   # inputs and discards; `kept` is the output
+        # S150: the job writes "FAILED: <reason>" when it crashes. Without
+        # this the rule scores a crash UNREADABLE -- "the note format changed"
+        # -- which is a different and much less useful statement.
+        fail_phrases=("failed:",),
     ),
     "businessideascan": Rule(
         "businessideascan",
@@ -199,6 +203,10 @@ RULES = {
         why="Intake admitted nothing for five runs — check the local prefilter "
             "is not over-rejecting and that the email/RSS sources still fetch.",
         evidence=("rejected", "email", "emails"),  # swept volume and discards, not output
+        # S150: the job writes "FAILED: <reason>" when it crashes. Without
+        # this the rule scores a crash UNREADABLE -- "the note format changed"
+        # -- which is a different and much less useful statement.
+        fail_phrases=("failed:",),
     ),
     # ALOPECIA daily collector (S96). RCW's research monitor, daily 05:45 on
     # CUMULUS. Four sources: PubMed, ClinicalTrials.gov, NAAF, medRxiv.
@@ -301,6 +309,10 @@ RULES = {
             "quiet too the county sources are the cause; if hoaleads is "
             "healthy, the digest's own change-detection has stopped seeing "
             "diffs it should see.",
+        # S150: the job writes "FAILED: <reason>" when it crashes. Without
+        # this the rule scores a crash UNREADABLE -- "the note format changed"
+        # -- which is a different and much less useful statement.
+        fail_phrases=("failed:",),
     ),
     # Halftime act catalogue (S78) — nightly 06:30, national non-band acts.
     #
@@ -458,6 +470,10 @@ RULES = {
         why="The scout ran but no model answered twice running — check "
             "provider reachability (llm-ping) and the rate-card fetches before "
             "assuming the prompts went stale.",
+        # S150: the job writes "FAILED: <reason>" when it crashes. Without
+        # this the rule scores a crash UNREADABLE -- "the note format changed"
+        # -- which is a different and much less useful statement.
+        fail_phrases=("failed:",),
     ),
     # S150, found by runner/rule_note_lint.py the hour it was written: this
     # counted `open` -- the STANDING BACKLOG -- as production. The live note

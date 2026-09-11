@@ -1321,6 +1321,28 @@ def _watchdog_fire(minutes, recorder=None, exiter=None, printer=None):
     (exiter or os._exit)(75)
 
 
+def build_note(outcome):
+    """The ledger note for one run. Self-contained (S150). See the twin in
+    business_idea_ideate.py for why a crash gets a FAILED: prefix rather than a
+    bare exception string."""
+    if outcome.get("error"):
+        return f"FAILED: {str(outcome['error'])[:160]}"
+    return (f"{len(outcome.get('admitted', []))} new, "
+            f"{outcome.get('scored_low', 0)} rejected, "
+            f"{outcome.get('emails', 0)} emails")
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("ideas admitted",
+         build_note({"admitted": ["a", "b"], "scored_low": 3, "emails": 27}), "productive"),
+        ("swept but nothing admitted",
+         build_note({"admitted": [], "scored_low": 3, "emails": 27}), "zero"),
+        ("the run crashed", build_note({"error": "TimeoutError"}), "blind"),
+    ]
+
+
 def arm_watchdog(minutes: int = _WATCHDOG_MIN) -> None:
     def _run():
         time.sleep(minutes * 60)
@@ -1347,15 +1369,13 @@ if __name__ == "__main__":
         print(outcome)
         if not dry:
             import job_status
-            job_status.record("businessideascan", True,
-                              f"{len(outcome.get('admitted', []))} new, "
-                              f"{outcome.get('scored_low', 0)} rejected, "
-                              f"{outcome.get('emails', 0)} emails")
+            job_status.record("businessideascan", True, build_note(outcome))
     except Exception as exc:
         if not dry:
             try:
                 import job_status
-                job_status.record("businessideascan", False, str(exc)[:180])
+                job_status.record("businessideascan", False,
+                                  build_note({"error": str(exc)}))
             except Exception:
                 pass
         raise

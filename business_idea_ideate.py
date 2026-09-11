@@ -430,6 +430,36 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
     return result
 
 
+def build_note(outcome):
+    """The ledger note for one run. Self-contained (S150) so rule_note_lint can
+    exec it without importing this module.
+
+    The failure branch used to record a bare `str(exc)[:180]`. A raw exception
+    string carries no counters, so the rule scored it UNREADABLE -- "the note
+    format changed" -- when what actually happened is that the job crashed. The
+    FAILED: prefix (opportunity_scout's existing convention) makes a crash say
+    so, and the rule reads it as a fail phrase on the first run.
+    """
+    if outcome.get("error"):
+        return f"FAILED: {str(outcome['error'])[:160]}"
+    return (f"{outcome.get('generated', 0)} generated, "
+            f"{len(outcome.get('admitted', []))} kept, "
+            f"{len(outcome.get('rejected', []))} rejected")
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("ideas kept", build_note({"generated": 4, "admitted": ["a"],
+                                   "rejected": ["b", "c", "d"]}), "productive"),
+        ("generated but none kept",
+         build_note({"generated": 4, "admitted": [], "rejected": ["b"]}), "zero"),
+        ("nothing generated at all",
+         build_note({"generated": 0, "admitted": [], "rejected": []}), "zero"),
+        ("the run crashed", build_note({"error": "KeyError: 'lens'"}), "blind"),
+    ]
+
+
 def selftest() -> bool:
     """Offline: JSON parsing tolerance and idea flattening. The live
     generate/score pass needs network + API keys -- verified live after
@@ -539,15 +569,13 @@ if __name__ == "__main__":
         print(json.dumps(outcome, indent=2))
         if not args.dry_run:
             import job_status
-            job_status.record("businessideaideate", True,
-                              f"{outcome.get('generated', 0)} generated, "
-                              f"{len(outcome.get('admitted', []))} kept, "
-                              f"{len(outcome.get('rejected', []))} rejected")
+            job_status.record("businessideaideate", True, build_note(outcome))
     except Exception as exc:
         if not args.dry_run:
             try:
                 import job_status
-                job_status.record("businessideaideate", False, str(exc)[:180])
+                job_status.record("businessideaideate", False,
+                                  build_note({"error": str(exc)}))
             except Exception:
                 pass
         raise

@@ -415,6 +415,30 @@ def run(client: str, dry_run: bool = False, db_path: str = None,
             "attached": bool(attachments), "attach_note": attach_note}
 
 
+def build_note(outcome):
+    """The ledger note for one run. Self-contained (S150).
+
+    S67's lesson is baked in here: "sent" and "ran fine, produced nothing" must
+    not look alike, which is why the no-send branch carries its REASON.
+    """
+    if outcome.get("error"):
+        return f"FAILED: {str(outcome['error'])[:160]}"
+    if outcome.get("sent"):
+        return "sent"
+    return (str(outcome.get("reason") or "no send"))[:120]
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("the digest went out", build_note({"sent": True}), "productive"),
+        ("nothing to report this week",
+         build_note({"sent": False, "reason": "nothing to report"}), "zero"),
+        ("no send, no reason given", build_note({"sent": False}), "zero"),
+        ("the run crashed", build_note({"error": "sqlite3.OperationalError"}), "blind"),
+    ]
+
+
 def selftest() -> bool:
     import os
     import tempfile
@@ -669,10 +693,7 @@ if __name__ == "__main__":
     if not args.dry_run:
         try:
             import job_status
-            job_status.record(
-                "entitykbdigest", good,
-                "sent" if outcome.get("sent")
-                else (outcome.get("reason") or "no send")[:120])
+            job_status.record("entitykbdigest", good, build_note(outcome))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     sys.exit(0 if good else 1)
