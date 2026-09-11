@@ -291,6 +291,47 @@ def _with_draft(note):
     return f"{note}; {d}" if d else note
 
 
+def build_note(info):
+    """The ledger note for one run. Self-contained (S150).
+
+    Wraps the three literal shapes the call sites use, so they stop being
+    literals scattered across main() and become something a lint can enumerate.
+    The draft clause is appended exactly as _with_draft does it.
+    """
+    if info.get("suppressed"):
+        return "already sent today — duplicate send suppressed"
+    if info.get("sent") is False:
+        base = "send failed"
+    elif info.get("sent"):
+        base = "sent material update"
+    else:
+        base = str(info.get("reason") or "no material change")[:120]
+    d = info.get("draft") or ""
+    return f"{base}; {d}" if d else base
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150).
+
+    Bill's weekly snow brief. The quiet shape ("no material change") is the
+    normal winter-shoulder outcome and must read ZERO; the send-failed and
+    degraded-draft shapes never appear in the ledger on a good week.
+    """
+    return [
+        ("a material update went out", build_note({"sent": True}), "productive"),
+        ("no material change this week",
+         build_note({"reason": "no material change"}), "zero"),
+        ("quiet, with a degraded local draft",
+         build_note({"reason": "no material change",
+                     "draft": "draft=ollama DEGRADED (vllm down)"}), "zero"),
+        # Productive, not zero: the week's brief DID go out, this run just
+        # refused to send it twice. Same call already asserted for billnewdev.
+        ("a duplicate run was suppressed",
+         build_note({"suppressed": True}), "productive"),
+        ("the send failed", build_note({"sent": False}), "blind"),
+    ]
+
+
 def _rec(dry, ok, note=""):
     if dry:
         return
@@ -330,7 +371,7 @@ def main():
             print(send_guard.blocked_message("billsnow", stamp))
             # Recorded as a healthy run, because it IS one: the week's send
             # happened. Staying silent here would read as a job that never ran.
-            _rec(dry, True, "already sent today — duplicate send suppressed")
+            _rec(dry, True, build_note({"suppressed": True}))
             return
 
     data, urls = decide()
@@ -358,7 +399,8 @@ def main():
         reason = data.get("reason", "")
         print(f"no material change this week — {reason}. Nothing sent.")
         _rec(dry, not _run_failed(data),
-             _with_draft(reason[:120] or "no material change"))
+             build_note({"reason": reason[:120] or "no material change",
+                         "draft": _draft_note()}))
         return
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
@@ -382,7 +424,7 @@ def main():
         if not send_guard.mark_sent("billsnow", data.get("email_subject") or ""):
             print("WARNING: send stamp not written — a restart could re-send.")
     _rec(dry, r.returncode == 0,
-         _with_draft("sent material update" if r.returncode == 0 else "send failed"))
+         build_note({"sent": r.returncode == 0, "draft": _draft_note()}))
 
 
 def selftest() -> int:

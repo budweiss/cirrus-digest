@@ -245,7 +245,11 @@ RULES = {
             "day's 101 items, so it alone going empty looks like total "
             "failure), then PubMed E-utilities. RCW's research monitor is "
             "blind until this is fixed.",
-        evidence=("new",),    # `found` is the signal; `new` is a subset of it and would double-count
+        # `found` is the signal; `new` is a subset of it and would double-count.
+        # `source`/`error` is the S83 degraded-run counter -- a number a human
+        # reads to see that a run succeeded WHILE a source was refusing, which
+        # only appears on a rare path and so was never classified until S150.
+        evidence=("new", "source", "sources", "error", "errors"),
     ),
     # ALOPECIA weekly brief (S96). WEEKLY, Fri 07:00 — so the threshold is in
     # RUNS and 2 means a FORTNIGHT of briefs carrying nothing. The billsnow
@@ -376,6 +380,11 @@ RULES = {
         "billsnow", [r"(\d+)\s+sent"], max_zero_runs=2,
         zero_phrases=("no material change", "nothing to send", "no change"),
         produced_phrases=("sent",),          # S81: the real note is "sent material update"
+        # S150, found by the rare-path lint: the job records a bare "send
+        # failed" when SMTP refuses, and the rule scored that UNREADABLE --
+        # "the note format changed" rather than "Bill did not get his brief".
+        # Never in the ledger on a working week, which is why nothing caught it.
+        fail_phrases=("send failed",),
         why="Bill's snow outlook has sent nothing for two weeks — confirm the "
             "weather research still returns data before assuming a quiet season.",
     ),
@@ -443,6 +452,10 @@ RULES = {
         zero_phrases=("quiet day", "nothing to send"),
         why="Alyssa's pedagogy digest has been quiet for five runs — check the "
             "literacy feeds and podcast transcription still produce.",
+        # S150: build_note writes "FAILED: send failed: ..." when the send
+        # raises. Without this the rule reads a failed send to Alyssa as an
+        # unparseable note.
+        fail_phrases=("failed:",),
     ),
     # modelhealth reports "N ok, ... needs-funding". Zero providers OK is a
     # real emergency (every paid model unreachable), so the threshold is 1.

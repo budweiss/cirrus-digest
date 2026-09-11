@@ -76,6 +76,33 @@ def _tg(msg):
         print("telegram failed:", type(e).__name__, e)
 
 
+def build_note(info):
+    """The ledger note for one run. Self-contained (S150)."""
+    if info.get("refusal"):
+        return f"UNVERIFIABLE: {info['refusal']}"
+    bits = info.get("findings") or []
+    if bits:
+        return "; ".join(bits)
+    return f"all clients current ({info.get('n_sends', 0)} sends)"
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150).
+
+    The UNVERIFIABLE shape is the whole reason this job exists and the one the
+    ledger will almost never contain: it means the sweep could not read both
+    mailboxes, which must never be mistaken for "nobody has gone quiet".
+    """
+    return [
+        ("all clients current",
+         build_note({"findings": [], "n_sends": 139}), "productive"),
+        ("a client has gone quiet",
+         build_note({"findings": ["aggie — nothing at all in 45d"]}), "productive"),
+        ("the sweep could not read both mailboxes",
+         build_note({"refusal": "only cirrustask@gmail.com answered"}), "blind"),
+    ]
+
+
 def main():
     print(f"[{datetime.now():%Y-%m-%d %H:%M}] client-contact daily "
           f"({'dry-run' if DRY else 'live'})")
@@ -88,7 +115,7 @@ def main():
             # UNVERIFIABLE is a finding, not a quiet success. Recorded ok=False so
             # the completeness check sees it; a sweep that could not look must
             # never read the same as a sweep that looked and found nothing.
-            note = f"UNVERIFIABLE: {v.get('refusal')}"
+            note = build_note({"refusal": v.get("refusal")})
             print(note, f"(probe rc: cirrus={rc_l} cumulus={rc_c})")
             _rec(False, note)
             _tg(f"client-contact could not verify today: {v.get('refusal')}\n"
@@ -108,8 +135,7 @@ def main():
         bits = ([f"{c} — nothing at all in {DAYS}d" for c in silent]
                 + [f"{q['client']} — {q['days']}d quiet, expected within "
                    f"{q['limit']}d" for q in quiet])
-        note = ("; ".join(bits) if bits
-                else f"all clients current ({v['n_sends']} sends)")
+        note = build_note({"findings": bits, "n_sends": v["n_sends"]})
         # ok=True even when a client is quiet: the JOB worked. Whether a client
         # is overdue is the finding it is meant to produce, not a fault in it.
         _rec(True, note)

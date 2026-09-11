@@ -925,6 +925,35 @@ def check_configured_model_delisted(creds):
         return ("delist: check failed: %s" % type(e).__name__, False)
 
 
+def build_note(info):
+    """The ledger note for one run. Self-contained (S150).
+
+    `ok` is the only production signal -- healed/broken/needs-funding/err are
+    status counters a human reads. Zero providers OK is a real emergency (every
+    paid model unreachable), which is why the rule's threshold is 1.
+    """
+    note = (f"{info.get('ok', 0)} ok, {info.get('healed', 0)} healed, "
+            f"{info.get('broken', 0)} broken, "
+            f"{info.get('needs_funding', 0)} needs-funding, "
+            f"{info.get('err', 0)} err")
+    lines = [l for l in (info.get("lines") or []) if l]
+    return note + ("; " + "; ".join(lines) if lines else "")
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    base = {"ok": 5, "lines": ["local model qwen3.8:27b LOADS and answers (8 s)"]}
+    return [
+        ("all providers healthy", build_note(base), "productive"),
+        ("some healed, some broken",
+         build_note({**base, "healed": 1, "broken": 1}), "productive"),
+        # THE emergency: no provider answered at all. Never in the ledger on a
+        # working day, and the reason this rule's threshold is 1.
+        ("no provider is OK at all",
+         build_note({"ok": 0, "broken": 5, "lines": []}), "zero"),
+    ]
+
+
 def selftest_delist() -> int:
     """S146. check_configured_model_delisted must FIRE, and must not fire on a
     provider it merely could not reach -- accusing a provider of retiring a model
@@ -1204,9 +1233,10 @@ def main():
     # Run-status ledger (best-effort).
     try:
         import job_status
-        note = (f"{len(healthy)} ok, {len(healed)} healed, {len(broken)} broken, "
-                f"{len(needs_funding)} needs-funding, {len(errored)} err; "
-                f"{local_line}; {runtime_line}; {models_line}; {cloud_line}")
+        note = build_note({"ok": len(healthy), "healed": len(healed),
+                           "broken": len(broken), "needs_funding": len(needs_funding),
+                           "err": len(errored),
+                           "lines": [local_line, runtime_line, models_line, cloud_line]})
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding
                               and not local_notify),

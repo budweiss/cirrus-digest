@@ -416,6 +416,37 @@ def _write_outputs(today, md, meta, number):
     log("wrote alopecia/briefs/alopecia-brief-%s.md" % today)
 
 
+def build_note(info):
+    """The ledger note for one run. Self-contained (S150).
+
+    The DEGRADED clause is the reason this is worth extracting: a brief that
+    went out with half the council down still says "sent", and the only place
+    that fact appears is here.
+    """
+    note = "brief #%d sent, %d item(s), council %s" % (
+        info.get("count", 0), info.get("items", 0),
+        ",".join(info.get("members") or []) or "none")
+    if info.get("degraded"):
+        note += " [DEGRADED: %s]" % info.get("reason")
+    return note
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    full = {"count": 3, "items": 13, "members": ["anthropic", "gemini"]}
+    return [
+        ("a normal brief", build_note(full), "productive"),
+        ("a brief with an empty council",
+         build_note({**full, "members": []}), "productive"),
+        # The live ledger has never shown this one.
+        ("a DEGRADED council",
+         build_note({**full, "degraded": True, "reason": "grok timeout"}),
+         "productive"),
+        ("a brief with no items at all",
+         build_note({**full, "items": 0}), "zero"),
+    ]
+
+
 def main(argv):
     args = set(argv[1:])
     if "--selftest" in args or "selftest" in args:
@@ -459,10 +490,10 @@ def main(argv):
     # belongs -- as a banner in the brief itself, and in this note -- rather
     # than as a red job for a brief that was delivered. A check that cries wolf
     # stops being read.
-    _record("brief #%d sent, %d item(s), council %s%s" % (
-        state_update["count"], len(items),
-        ",".join(meta.get("members") or []) or "none",
-        " [DEGRADED: %s]" % meta.get("reason") if meta.get("degraded") else ""))
+    _record(build_note({"count": state_update["count"], "items": len(items),
+                        "members": meta.get("members"),
+                        "degraded": meta.get("degraded"),
+                        "reason": meta.get("reason")}))
     return 0
 
 

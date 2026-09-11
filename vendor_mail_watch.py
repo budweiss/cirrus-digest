@@ -571,8 +571,8 @@ def run(dry_run: bool = False) -> dict:
         save_ledger(ledger)
 
     n_open = len(open_items(ledger))
-    note = (f"{len(new_entries)} new, {len(stale)} re-surfaced, "
-            f"{n_open} open, {noise} noise")
+    note = build_note({"new": len(new_entries), "resurfaced": len(stale),
+                       "open": n_open, "noise": noise})
 
     # A partial scan is NOT a success. On the first live run Yahoo timed out and
     # this recorded ok=True with "1 new" -- which reads identically to a quiet
@@ -623,6 +623,33 @@ def resolve(message_id: str, note: str = "") -> None:
 
 
 # ── Selftest ─────────────────────────────────────────────────────────────────
+def build_note(counts):
+    """The ledger note for one run. Self-contained (S150).
+
+    `open` is the STANDING BACKLOG -- evidence, not output. Counting it is what
+    made this job's completeness rule unfireable until S150: with anything at
+    all open it could never record a zero run.
+    """
+    return (f"{counts.get('new', 0)} new, {counts.get('resurfaced', 0)} re-surfaced, "
+            f"{counts.get('open', 0)} open, {counts.get('noise', 0)} noise")
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("new vendor mail",
+         build_note({"new": 2, "resurfaced": 0, "open": 13, "noise": 4}), "productive"),
+        ("nothing new, but items re-surfaced",
+         build_note({"new": 0, "resurfaced": 12, "open": 13, "noise": 4}), "productive"),
+        # THE case the rule exists for, and the one it could not reach before
+        # S150: a quiet scan with a non-empty backlog must read ZERO.
+        ("a quiet scan with a standing backlog",
+         build_note({"new": 0, "resurfaced": 0, "open": 13, "noise": 4}), "zero"),
+        ("quiet with nothing open at all",
+         build_note({"new": 0, "resurfaced": 0, "open": 0, "noise": 0}), "zero"),
+    ]
+
+
 def selftest() -> bool:
     checks = []
 

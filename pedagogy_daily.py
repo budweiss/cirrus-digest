@@ -892,6 +892,36 @@ def telegram(text, creds):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def build_note(info):
+    """The ledger note for one run. Self-contained (S150).
+
+    Four shapes, and only the first is ever in the ledger on a good week. The
+    S81 fix lives here: the note counts the PIECES ("0 art, 1 pod, 0 topic"),
+    so a genuinely empty digest still reads as zero rather than as a send.
+    """
+    if info.get("error"):
+        return f"FAILED: send failed: {str(info['error'])[:140]}"
+    if info.get("sent"):
+        return (f"sent: {info.get('art', 0)} art, {info.get('pod', 0)} pod, "
+                f"{info.get('topic', 0)} topic")
+    return str(info.get("reason") or "nothing to send")[:140]
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("a normal digest",
+         build_note({"sent": True, "art": 2, "pod": 0, "topic": 0}), "productive"),
+        # S81: an EMPTY digest that still "sent" must read as zero, or a dead
+        # feed hides behind the word.
+        ("an empty digest that was still sent",
+         build_note({"sent": True, "art": 0, "pod": 0, "topic": 0}), "zero"),
+        ("no new content", build_note({"reason": "no new content — nothing to send"}),
+         "zero"),
+        ("the send failed", build_note({"error": "SMTPAuthenticationError"}), "blind"),
+    ]
+
+
 def main(dry_run=False, force=False):
     cfg = load_config()
     creds = load_json(CREDS_PATH, {})
@@ -941,7 +971,7 @@ def main(dry_run=False, force=False):
         log("nothing new + no active topics + not Friday — skipping send")
         if not dry_run:
             STATE_PATH.write_text(json.dumps(state, indent=2))
-        _jrec(True, "no new content — nothing to send", dry_run)
+        _jrec(True, build_note({"reason": "no new content — nothing to send"}), dry_run)
         return 0
 
     summaries = []
@@ -978,7 +1008,7 @@ def main(dry_run=False, force=False):
                      "(Ollama?) — skipped the send so no empty email goes to "
                      "Alyssa. Sources were dry; the model-fallback task covers "
                      "generating content on days like this.", creds)
-        _jrec(True, "empty digest — skipped (no content/spotlight)", dry_run)
+        _jrec(True, build_note({"reason": "empty digest — skipped (no content/spotlight)"}), dry_run)
         return 0
 
     announce = ANNOUNCE_TEXT if state.get("announce_id") != ANNOUNCE_ID else None
@@ -1001,7 +1031,7 @@ def main(dry_run=False, force=False):
     try:
         send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds)
     except Exception as e:
-        _jrec(False, f"send failed: {e}", dry_run)
+        _jrec(False, build_note({"error": str(e)}), dry_run)
         raise
     if announce:                       # one-time note delivered — retire it
         state["announce_id"] = ANNOUNCE_ID
@@ -1011,7 +1041,8 @@ def main(dry_run=False, force=False):
              f"{len(topics)} topic(s)"
              + (", +model brief" if mbrief[0] else "")
              + (f", spotlight: {spotlight[0]}" if spotlight[0] else ""), creds)
-    _jrec(True, f"sent: {len(summaries)} art, {len(pod_summaries)} pod, {len(topics)} topic", dry_run)
+    _jrec(True, build_note({"sent": True, "art": len(summaries),
+                            "pod": len(pod_summaries), "topic": len(topics)}), dry_run)
     return 0
 
 

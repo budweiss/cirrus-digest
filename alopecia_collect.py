@@ -425,6 +425,31 @@ def report(out_dir=OUT_DIR):
 
 # ── selftest ─────────────────────────────────────────────────────────────────
 
+def build_note(stats):
+    """The ledger note for one run. Self-contained (S150)."""
+    note = "%d found, %d new" % (stats.get("found", 0), stats.get("new", 0))
+    if stats.get("errors"):
+        note += ", %d source error(s)" % len(stats["errors"])
+    return note
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150).
+
+    The degraded shape matters most: S83 found this job recording
+    "100 found, 0 new, 1 source error(s)" while a bare tick was printed beside
+    it, because medRxiv had refused the connection and the report could not say so.
+    """
+    return [
+        ("a normal collection", build_note({"found": 96, "new": 1}), "productive"),
+        ("nothing found at all", build_note({"found": 0, "new": 0}), "zero"),
+        ("found things, but a source errored",
+         build_note({"found": 100, "new": 0, "errors": ["medRxiv"]}), "productive"),
+        ("found nothing AND a source errored",
+         build_note({"found": 0, "new": 0, "errors": ["medRxiv", "pubmed"]}), "zero"),
+    ]
+
+
 def selftest():
     """Offline: no network, no live seen-ledger, no live output dir (T32)."""
     import tempfile
@@ -653,12 +678,9 @@ def main():
     if not dry:
         try:
             import job_status
-            note = "%d found, %d new" % (stats["found"], stats["new"])
-            if stats["errors"]:
-                note += ", %d source error(s)" % len(stats["errors"])
             # A run where EVERY source failed is not a healthy run.
             healthy = len(stats["errors"]) < len(COLLECTORS)
-            job_status.record("alopeciacollect", healthy, note)
+            job_status.record("alopeciacollect", healthy, build_note(stats))
         except Exception as e:
             print("job_status.record failed: %s" % e)
     return 0
