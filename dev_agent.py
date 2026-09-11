@@ -71,7 +71,10 @@ MAX_FILES_PER_PATCH = 4
 MAX_FILE_CONTEXT    = 45_000     # WHOLE-FILE rewrite ceiling. NOT an input limit —
                                  # Sonnet takes far more. It tracks the OUTPUT budget:
                                  # a whole-file rewrite must be returned COMPLETE and
-                                 # max_tokens=16384 is ~65k chars. Files above this are
+                                 # 45k chars is ~11-15k tokens, which the 32768
+                                 # max_tokens covers WITH thinking headroom (S161 —
+                                 # was calibrated to 16384 before the builder model
+                                 # started thinking). Files above this are
                                  # not refused any more — they go to EDIT mode (S71).
 MAX_EDIT_FILE       = 200_000    # a file we will SHOW for edit mode. Input-only: edits
                                  # emit just the changed hunks, so the output budget
@@ -385,11 +388,20 @@ def call_claude_build(system: str, user: str):
     if not key:
         raise RuntimeError("no anthropic_api_key in credentials.json")
     model = _builder_model(creds)
+    # S161: 16384 -> 32768. Six consecutive nights (2026-09-05 .. 09-10) every
+    # build died here with "no text in model reply (stop_reason=max_tokens)":
+    # claude-sonnet-5 now thinks before it writes, and thinking is billed
+    # against max_tokens BEFORE any answer text — the S91 gemini trap, the
+    # S74/S75 deepseek one, and S141's local-model fix, now on the builder
+    # itself. A build prompt is hard enough that thinking alone can exceed
+    # 16k tokens, leaving zero for the patch. 32768 covers a 45k-char
+    # whole-file rewrite (~11-15k tokens, the MAX_FILE_CONTEXT ceiling)
+    # plus thinking headroom; edit-mode patches need far less.
     resp = requests.post(
         CLAUDE_API_URL,
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                  "content-type": "application/json"},
-        json={"model": model, "max_tokens": 16384, "system": system,
+        json={"model": model, "max_tokens": 32768, "system": system,
               "messages": [{"role": "user", "content": user}]},
         timeout=300)
     resp.raise_for_status()
