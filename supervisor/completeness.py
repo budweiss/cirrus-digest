@@ -529,7 +529,11 @@ def supervisor_feed(force=False):
         return None
     if not isinstance(d, dict) or not d.get("ok"):
         return None
-    out = {"jobs": d.get("jobs") or {}, "cadence_h": d.get("cadence_h") or {}}
+    out = {"jobs": d.get("jobs") or {}, "cadence_h": d.get("cadence_h") or {},
+           # S150: job names this box is actually SCHEDULED to run, from the
+           # box's own systemctl. None means the feed could not read it -- which
+           # must NOT be confused with "this box runs nothing".
+           "scheduled": d.get("scheduled")}
     _FEED_CACHE = (time.monotonic(), out)
     return out
 
@@ -540,6 +544,34 @@ def _feed_jobs():
     if f is not None:
         return f["jobs"]
     return _load(STATUS_PATH, {})
+
+
+def _scheduled_here():
+    """Jobs this box is scheduled to run, or None if the feed could not say."""
+    f = supervisor_feed()
+    return f.get("scheduled") if f is not None else None
+
+
+def _first_seen(names, now, state=None, save=True):
+    """When each never-recorded job was FIRST seen declared-and-scheduled here.
+
+    S150. Kept in completeness-state.json beside the zero-run counters. Same
+    reasoning as job_status' jobs-declared.json: the stamp cannot live in the
+    ledger, because the ledger is written by the jobs and a watcher stamping
+    rows into it would be indistinguishable from a job claiming to have run.
+    """
+    state = _load(STATE_PATH, {}) if state is None else state
+    seen = state.get("_first_seen") or {}
+    seen = {k: v for k, v in seen.items() if k in names and isinstance(v, (int, float))}
+    changed = False
+    for n in names:
+        if n not in seen:
+            seen[n] = now
+            changed = True
+    if changed and save:
+        state["_first_seen"] = seen
+        _save_state(state)
+    return seen
 
 
 def _cadence_table():
@@ -565,7 +597,7 @@ def _cadence_table():
     return None
 
 
-def overdue_jobs(status=None, now=None):
+def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
     """Which jobs have not recorded a NEW run inside their expected window?
 
     S96, 2026-09-02. Buddy: "any reason it wasn't caught by skywarden?"
@@ -615,6 +647,7 @@ def overdue_jobs(status=None, now=None):
     Returns [] when everything is inside its window. Never raises.
     """
     now = now or datetime.now()
+    injected = status is not None
     status = status if status is not None else _feed_jobs()
     CADENCE_H = _cadence_table()
     if CADENCE_H is None:
@@ -645,6 +678,58 @@ def overdue_jobs(status=None, now=None):
                         f"every {cad}h — the job is not running, or it starts and "
                         f"never finishes (a hung job never reaches record())"),
             })
+
+    # ── S150. A job that has NEVER recorded a run ───────────────────────────
+    #
+    # The loop above only judges jobs with a ledger entry, and the docstring
+    # gives the reason: from the LEDGER ALONE, "never ran" is indistinguishable
+    # from "does not run on this box" -- CADENCE_H is shared, so CIRRUS-only
+    # jobs legitimately never appear here.
+    #
+    # That was true, and it left the worst case invisible. A job's FIRST run is
+    # when it is most likely to be misconfigured, and that failure leaves no row
+    # to notice. Found 2026-09-11 with clientcontact, a monitor whose entire
+    # purpose is noticing silence and which would itself have failed silently.
+    #
+    # The SCHEDULE breaks the tie, read from the box's own systemctl via the
+    # feed. Scheduled here + declared in CADENCE_H + no row, for longer than its
+    # own cadence, is not "new" -- it is not running.
+    # Only the LIVE path does placement. A caller that injected `status` is
+    # unit-testing the stale-detection above with a fixture ledger; asking the
+    # box what it is scheduled to run is not part of that question, and adding a
+    # BLIND row to every such call would make this check cry wolf on nineteen
+    # existing tests -- which is how a lint gets muted (rule 3b). Tests that DO
+    # want this path pass `scheduled` explicitly.
+    if scheduled is None and injected:
+        return out
+    sched = scheduled if scheduled is not None else _scheduled_here()
+    if sched is None:
+        # Say so. An unreadable schedule means this check did not run; silently
+        # skipping it is the T8 shape ("a missing file reading as clean") that
+        # this module exists to stop.
+        out.append({"job": "(schedule)", "hours": 0, "age_h": 0,
+                    "why": "could not read this box's timer list, so the "
+                           "never-ran check is BLIND — a job that is scheduled "
+                           "here and has never run would not be reported"})
+    else:
+        sched = set(sched)
+        never = sorted(j for j in CADENCE_H
+                       if j in sched and j not in (status or {}))
+        seen = _first_seen(never, int(now.timestamp()), state=state, save=save)
+        for job in never:
+            since = seen.get(job)
+            cad = float(CADENCE_H.get(job) or 0)
+            if not since or not cad:
+                continue
+            age_h = (now.timestamp() - since) / 3600.0
+            if age_h > cad:
+                out.append({
+                    "job": job, "hours": cad, "age_h": round(age_h, 1),
+                    "why": (f"DECLARED AND SCHEDULED on this box but has NEVER "
+                            f"recorded a run — {round(age_h, 1)}h since it was "
+                            f"first seen, cadence {cad}h. Its timer never fired, "
+                            f"or it fires and never reaches record()."),
+                })
     return out
 
 
@@ -1288,9 +1373,63 @@ def selftest() -> bool:
         _sp.run = _real_run
         _reset()
 
+    # ---- S150: a job that has NEVER recorded a run ------------------------
+    # The hole: overdue_jobs only judged jobs WITH a ledger row, so a scheduled
+    # job that never starts was invisible -- the worst case, since a first run
+    # is when a job is most likely to be misconfigured. The SCHEDULE breaks the
+    # tie that the ledger alone cannot.
+    # NOTE the clock. This suite has TWO: _NOW_E is the real wall clock, _now is
+    # frozen at 2026-09-02. Stamping from _NOW_E put the first-sighting nine days
+    # AFTER _now, so every age came out negative and the check silently never
+    # fired -- a test that could not fail, which is the thing this file keeps
+    # being about. Stamps here must come off _now.
+    _E = int(_now.timestamp())
+    _st = {"_first_seen": {}}
+
+    ck("first sighting of a never-run job does NOT accuse it",
+       overdue_jobs({}, _now, scheduled=["clientcontact"], state=_st, save=False) == [])
+    _st2 = {"_first_seen": {"clientcontact": _E - 40 * 3600}}
+    r = overdue_jobs({}, _now, scheduled=["clientcontact"], state=_st2, save=False)
+    ck("40h after first sighting, cadence 26h -> REPORTED",
+       len(r) == 1 and r[0]["job"] == "clientcontact" and "NEVER" in r[0]["why"])
+
+    # THE FALSE-POSITIVE THAT WOULD MUTE THIS. CADENCE_H is shared between both
+    # boxes. A job declared but NOT scheduled here runs elsewhere and must never
+    # be accused, however long its stamp has sat.
+    ck("a declared job NOT scheduled on this box is never accused",
+       overdue_jobs({}, _now, scheduled=[], state=_st2, save=False) == [])
+
+    # ...and one that HAS run is judged by its ledger row, not by the stamp.
+    ck("a job with a fresh row is untouched by the never-ran check",
+       overdue_jobs({"clientcontact": {"epoch": _E - 60, "ok": True}}, _now,
+                scheduled=["clientcontact"], state=_st2, save=False) == [])
+
+    # An unreadable timer list must say so, not silently skip -- a missing
+    # schedule reading as "nothing scheduled here" is the T8 shape again.
+    # BLIND is a LIVE-path finding. An injected `status` deliberately skips
+    # placement (see the guard in overdue_jobs), so this must go through the feed
+    # or it tests nothing -- the first version asserted against a path it had
+    # already opted out of.
+    _sv_sched = globals()["_scheduled_here"]
+    _sv_feed = globals()["_feed_jobs"]
+    _sv_cad = globals()["_cadence_table"]
+    try:
+        globals()["_scheduled_here"] = lambda: None
+        globals()["_feed_jobs"] = lambda: {}
+        globals()["_cadence_table"] = lambda: {"clientcontact": 26}
+        r = overdue_jobs(None, _now, state=_st2, save=False)
+        ck("an unreadable timer list reports BLIND, not silence",
+           any(x["job"] == "(schedule)" for x in r))
+    finally:
+        globals()["_scheduled_here"] = _sv_sched
+        globals()["_feed_jobs"] = _sv_feed
+        globals()["_cadence_table"] = _sv_cad
+
     for name, ok in checks:
         print(("  ok   " if ok else "  FAIL ") + name)
         bad += 0 if ok else 1
+
+
     print()
     print("all completeness selftests passed" if not bad else f"{bad} FAILED")
     return bad == 0

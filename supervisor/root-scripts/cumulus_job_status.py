@@ -54,6 +54,7 @@ Output: one JSON object on stdout. Exit 0 with ok=true, or non-zero with
 ok=false and a reason. Never prints a credential or a client's prose.
 """
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,7 @@ from pathlib import Path
 APP = Path("/home/buddy/cirrus-digest")
 LEDGER = APP / "logs/jobs-status.json"
 JOB_STATUS = APP / "job_status.py"
+PLACEMENT = APP / "placement.py"
 
 # Only these keys leave the app tree. A whitelist, not a filter: if job_status
 # ever starts recording something richer, it does not silently become readable
@@ -71,6 +73,61 @@ FIELDS = ("last_run", "epoch", "ok", "note")
 def _fail(msg, code=1):
     print(json.dumps({"ok": False, "error": msg}))
     sys.exit(code)
+
+
+def _scheduled_here():
+    """Job names this box is actually SCHEDULED to run, or None if unknown.
+
+    S150. The supervisor's overdue check ignores a job with no ledger row,
+    because from the LEDGER ALONE "never ran" and "does not run on this box"
+    are the same observation -- CADENCE_H is shared between both boxes, so
+    CIRRUS-only jobs legitimately never appear here. That ambiguity is what kept
+    a job that never starts invisible, which is the worst moment to be blind:
+    a first run is when a job is most likely to be misconfigured, and it leaves
+    no row behind to notice.
+
+    The SCHEDULE resolves it, and the box is the one place it cannot be stale --
+    better than any declaration, which is a promise about reality rather than
+    reality. systemctl is read here rather than in completeness.py because the
+    supervisor account cannot traverse /home/buddy (the whole reason this feed
+    exists) and therefore cannot reach placement.py's normalizer either.
+
+    Returns None, never an empty set, if systemctl cannot be read -- an empty
+    set would say "this box runs nothing", and every job would read as
+    correctly-absent. That is the T8 shape this file was written to stop.
+    """
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["systemctl", "list-timers", "--all", "--no-legend", "--no-pager"],
+            capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return None
+        units = re.findall(r"(\S+\.timer)", r.stdout)
+        if not units:
+            return None
+    except Exception:
+        return None
+
+    # One normalizer, from its one home. placement.normalize() already turns
+    # cirrus-billsnow.timer / com.cirrus.billsnow / cirrus-billsnow.service into
+    # "billsnow", and watch_keys() knows the dash/no-dash spellings a ledger
+    # uses. A second copy here would drift, and the first symptom of the drift
+    # would be this check quietly accusing a healthy job.
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_pl", PLACEMENT)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        norm, keys = m.normalize, m.watch_keys
+    except Exception:
+        return None
+
+    out = set()
+    for u in units:
+        for k in keys(norm(u)):
+            out.add(k)
+    return sorted(out)
 
 
 def main():
@@ -114,8 +171,10 @@ def main():
                           "cadence_error": f"{type(e).__name__}: {e}"}))
         return 0
 
+    sched = _scheduled_here()
     print(json.dumps({"ok": True, "generated_at": int(time.time()),
-                      "jobs": jobs, "cadence_h": cadence}))
+                      "jobs": jobs, "cadence_h": cadence,
+                      "scheduled": sched}))
     return 0
 
 
