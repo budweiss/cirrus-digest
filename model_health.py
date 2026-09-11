@@ -925,6 +925,53 @@ def check_configured_model_delisted(creds):
         return ("delist: check failed: %s" % type(e).__name__, False)
 
 
+def selftest_delist() -> int:
+    """S146. check_configured_model_delisted must FIRE, and must not fire on a
+    provider it merely could not reach -- accusing a provider of retiring a model
+    because the network blinked is how a check gets muted.
+
+    The live run is not a test: it happened to have two delisted models that
+    night. A green run against a healthy fleet proves nothing at all.
+    """
+    bad = 0
+
+    def ck(name, cond):
+        nonlocal bad
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+        bad += 0 if cond else 1
+
+    real = globals()["_list_cloud_models"]
+    creds = {"deepseek_api_key": "x", "deepseek_model": "deepseek-v4-flash"}
+    try:
+        globals()["_list_cloud_models"] = lambda p, c: {"deepseek-flash", "deepseek-v4-pro"}
+        line, notify = check_configured_model_delisted(creds)
+        ck("a delisted model FIRES", notify is True)
+        ck("...and names it", "deepseek-v4-flash" in line)
+        ck("...and shows what the key is offered instead", "deepseek-flash" in line)
+
+        globals()["_list_cloud_models"] = lambda p, c: {"deepseek-v4-flash", "deepseek-flash"}
+        line, notify = check_configured_model_delisted(creds)
+        ck("a model still offered does NOT fire", notify is False)
+
+        globals()["_list_cloud_models"] = lambda p, c: None
+        line, notify = check_configured_model_delisted(creds)
+        ck("an UNREACHABLE provider does not fire", notify is False)
+        ck("...and says it was unchecked, not that it is fine",
+           "unchecked" in line.lower())
+
+        def boom(p, c):
+            raise RuntimeError("x")
+        globals()["_list_cloud_models"] = boom
+        line, notify = check_configured_model_delisted(creds)
+        ck("it never raises", isinstance(line, str) and notify is False)
+    finally:
+        globals()["_list_cloud_models"] = real
+
+    print()
+    print("all delist selftests passed" if not bad else f"{bad} FAILED")
+    return 1 if bad else 0
+
+
 def check_cloud_model_releases(creds):
     """(line, should_notify) — has a provider shipped a model we have not seen?
 
@@ -1581,6 +1628,11 @@ def selftest():
                "unchecked" in line and "nothing new" not in line and not notify)
         finally:
             CLOUD_MODELS_STATE, globals()["_list_cloud_models"] = _sv3
+
+    # S146: chained in so `model_health.py --selftest` covers it too. A test
+    # nothing invokes is not a test -- the dev-loop's gate 2 runs exactly this
+    # entry point.
+    fails += selftest_delist()
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
