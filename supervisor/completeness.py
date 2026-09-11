@@ -415,8 +415,17 @@ RULES = {
     "clientcontact": Rule(
         "clientcontact", [r"(\d+)\s+sends"], max_zero_runs=999,
         zero_phrases=(),
-        produced_phrases=("all clients current", "quiet", "nothing at all"),
+        # S152: the job now also reports SELF-SERVE TOOL USE, which is a
+        # different question from contact and produces a note shape this rule
+        # could not read at all -- caught by T93's rare-path samples the moment
+        # the shape was added, before it ever reached a ledger.
+        produced_phrases=("all clients current", "quiet", "nothing at all",
+                          "tool unused", "never used"),
         fail_phrases=("unverifiable",),
+        # A finding's own numbers -- the age and the limit -- are the report,
+        # not production. Counting them would make any finding read as
+        # productive regardless of what it said.
+        evidence=("d", "sends", "expected"),
         why="clientcontact could not read BOTH mailboxes. It refuses to report "
             "on one, because a half-answer looks exactly like a whole one -- "
             "that is the error it exists to prevent (T90). Check the CIRRUS->"

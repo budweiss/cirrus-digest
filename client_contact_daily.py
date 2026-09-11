@@ -43,6 +43,30 @@ def _probe_local(out):
     return r.returncode
 
 
+def _probe_usage(out, host=None, dirn=None, py=None, tag="CIRRUS"):
+    """S152. The self-serve half: when did each client last USE their tool?
+    Written into the SAME per-box json the contact probe produced, so assess()
+    sees both without a second merge path."""
+    if host:
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host,
+               f"cd {dirn} && {py} client_usage_probe.py"]
+    else:
+        cmd = [sys.executable, str(HERE / "client_usage_probe.py")]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                           cwd=None if host else str(HERE))
+        u = json.loads(r.stdout).get("usage") or {}
+    except Exception:
+        return            # unknown, never "unused" -- assess() reports the gap
+    f = out / f"{tag}.json"
+    try:
+        d = json.loads(f.read_text())
+        d["usage"] = u
+        f.write_text(json.dumps(d))
+    except Exception:
+        pass
+
+
 def _probe_cumulus(out):
     r = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", CUMULUS,
@@ -98,6 +122,11 @@ def note_samples():
          build_note({"findings": [], "n_sends": 139}), "productive"),
         ("a client has gone quiet",
          build_note({"findings": ["aggie — nothing at all in 45d"]}), "productive"),
+        # S152: the self-serve shape. Never in the ledger until a tool goes
+        # unused, which is exactly when it must not be mistaken for healthy.
+        ("a client has stopped USING their tool",
+         build_note({"findings": ["aggie — tool unused 63d, expected within 30d"]}),
+         "productive"),
         ("the sweep could not read both mailboxes",
          build_note({"refusal": "only cirrustask@gmail.com answered"}), "blind"),
     ]
@@ -109,6 +138,8 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)
         rc_l, rc_c = _probe_local(out), _probe_cumulus(out)
+        _probe_usage(out, tag="CIRRUS")
+        _probe_usage(out, CUMULUS, CUMULUS_DIR, CUMULUS_PY, tag="CUMULUS")
         v = R.assess(out)
 
         if not v.get("ok"):
@@ -128,13 +159,23 @@ def main():
             print(f"  {c}: NO SEND IN WINDOW")
         for q in quiet:
             print(f"  {q['client']}: {q['days']}d quiet (limit {q['limit']}d)")
-        if not quiet and not silent:
+        for u in v.get("stale_use", []):
+            print(f"  {u['client']}: tool unused "
+                  f"{'ever' if u['never'] else str(round(u['days']))+'d'} "
+                  f"(limit {u['limit']}d) — {u['what']}")
+        for c in v.get("unknown_use", []):
+            print(f"  {c}: tool usage UNKNOWN (not the same as unused)")
+        if not quiet and not silent and not v.get("stale_use"):
             print(f"  all clients heard from inside their window "
                   f"({v['n_sends']} sends across both mailboxes)")
 
         bits = ([f"{c} — nothing at all in {DAYS}d" for c in silent]
                 + [f"{q['client']} — {q['days']}d quiet, expected within "
-                   f"{q['limit']}d" for q in quiet])
+                   f"{q['limit']}d" for q in quiet]
+                + [(f"{u['client']} — has NEVER used their tool" if u["never"]
+                    else f"{u['client']} — tool unused {u['days']:.0f}d, "
+                         f"expected within {u['limit']}d")
+                   for u in v.get("stale_use", [])])
         note = build_note({"findings": bits, "n_sends": v["n_sends"]})
         # ok=True even when a client is quiet: the JOB worked. Whether a client
         # is overdue is the finding it is meant to produce, not a fault in it.
@@ -176,7 +217,9 @@ def selftest() -> int:
        .startswith("UNVERIFIABLE:"))
 
     shapes = note_samples()
-    ck("every declared sample builds", len(shapes) == 3 and all(s[1] for s in shapes))
+    # NOT a hardcoded count: pinning it to 3 broke the moment a fourth shape was
+    # added, which is a test failing for bookkeeping rather than for a defect.
+    ck("every declared sample builds", len(shapes) >= 3 and all(s[1] for s in shapes))
     ck("...and one of them is the UNVERIFIABLE path",
        any(e == "blind" for _l, _n, e in shapes))
 

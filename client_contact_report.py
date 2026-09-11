@@ -94,9 +94,33 @@ def assess(d):
         if age_d > limit:
             quiet.append({"client": client, "days": round(age_d, 1), "limit": limit})
     silent = sorted(n for n in known if n not in seen and n not in EXEMPT)
+
+    # S152: the self-serve half. UNKNOWN (no probe could see the tool) is
+    # reported separately from STALE -- a tool we cannot read must never be
+    # counted as one the client has abandoned.
+    usage = merge_usage(usage_boxes)
+    stale_use, unknown_use = [], []
+    for client, limit in sorted(USAGE_DAYS.items()):
+        rec = usage.get(client)
+        if rec is None:
+            unknown_use.append(client)
+            continue
+        e = rec.get("epoch")
+        what = rec.get("what", "their tool")
+        if not e:
+            stale_use.append({"client": client, "days": None, "limit": limit,
+                              "what": what, "never": True})
+            continue
+        age_d = (now.timestamp() - e) / 86400.0
+        if age_d > limit:
+            stale_use.append({"client": client, "days": round(age_d, 1),
+                              "limit": limit, "what": what, "never": False})
+
     return {"ok": True, "refusal": None, "boxes": boxes, "seen": seen,
             "quiet": sorted(quiet, key=lambda q: -q["days"]), "silent": silent,
-            "known": sorted(known), "n_sends": len(sends)}
+            "known": sorted(known), "n_sends": len(sends), "usage": usage,
+            "stale_use": sorted(stale_use, key=lambda u: u["client"]),
+            "unknown_use": sorted(unknown_use)}
 
 
 def main(d):
@@ -171,6 +195,20 @@ def main(d):
     # exists for, and the first version dropped it silently: by_client was built
     # only from sends that existed, so "nothing at all" printed nothing at all.
     silent = sorted(n for n in known if n not in by_client and n not in EXEMPT)
+    v = assess(d)
+    if v.get("ok"):
+        for u in v.get("stale_use", []):
+            if u["never"]:
+                print(f"{u['client']}: HAS NEVER USED {u['what']}")
+            else:
+                print(f"{u['client']}: last used {u['what']} {u['days']:.0f}d ago "
+                      f"(expected within {u['limit']}d)")
+        for c in v.get("unknown_use", []):
+            print(f"{c}: tool usage UNKNOWN — no probe could read it "
+                  f"(not the same as unused)")
+        if v.get("stale_use") or v.get("unknown_use"):
+            print()
+
     for name in silent:
         print(f"{name}: NO SEND IN WINDOW  <-- nothing at all, in either mailbox")
     if silent:
