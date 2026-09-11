@@ -88,6 +88,48 @@ def already_sent_today(job: str, now=None, root=None):
     return data
 
 
+def days_since_last_send(job: str, now=None, root=None):
+    """Days since `job` last sent successfully, or None if it never has.
+
+    S146. already_sent_today() answers a DAILY question, which is the right one
+    for a job that could legitimately fire twice in a day. billnewdev is WEEKLY,
+    and on 2026-09-10 it gained a quiet-week email that goes out even when there
+    is nothing to report. Those two facts combine badly: the unit is a oneshot on
+    Skywarden's restart allowlist, so a restart on any day but the scheduled one
+    passes the daily guard and mails the client a second "nothing new this week".
+
+    Read-only; never raises. None means "no successful send on record", which
+    callers must treat as "go ahead" -- the same fail-open posture as the rest of
+    this module, because refusing to send on a missing stamp would let one
+    unreadable file silence a client feed indefinitely.
+    """
+    root = Path(root) if root else STAMP_DIR
+    safe = "".join(c for c in job if c.isalnum() or c in "-_")
+    if safe != job:
+        return None
+    newest = None
+    try:
+        for f in root.glob(f"{safe}-*.json"):
+            try:
+                data = json.loads(f.read_text())
+            except Exception:
+                continue                  # corrupt stamp is not a send
+            if not isinstance(data, dict) or not data.get("sent_ok"):
+                continue
+            try:
+                when = datetime.strptime(f.stem[len(safe) + 1:], "%Y-%m-%d")
+            except ValueError:
+                continue
+            if newest is None or when > newest:
+                newest = when
+    except Exception:
+        return None
+    if newest is None:
+        return None
+    ref = now or datetime.now()
+    return (ref.replace(hour=0, minute=0, second=0, microsecond=0) - newest).days
+
+
 def mark_sent(job: str, detail: str = "", now=None, root=None) -> bool:
     """Record that `job` sent successfully today. Best-effort; never raises.
 
@@ -198,6 +240,27 @@ def selftest() -> bool:
     # No half-written stamp is ever visible (atomic replace).
     ck("the stamp write is atomic (tmp + os.replace)",
        "os.replace" in Path(__file__).read_text())
+
+    # ── S146: days_since_last_send — the WEEKLY question, not the daily one.
+    root2 = Path(tempfile.mkdtemp())
+    ck("no stamps at all reads as None (never sent), not as 0",
+       days_since_last_send("billnewdev", now=d8, root=root2) is None)
+    mark_sent("billnewdev", "quiet note", now=d1, root=root2)
+    ck("a send on the 31st is 7 days before the 7th",
+       days_since_last_send("billnewdev", now=d8, root=root2) == 7)
+    ck("...and 0 days on the day itself",
+       days_since_last_send("billnewdev", now=d1_later, root=root2) == 0)
+    mark_sent("billnewdev", "later note", now=d8, root=root2)
+    ck("the NEWEST successful stamp wins, not the first one found",
+       days_since_last_send("billnewdev", now=d8, root=root2) == 0)
+    (root2 / "billnewdev-2026-09-09.json").write_text("{ not json")
+    ck("a corrupt stamp is ignored, not counted as a send",
+       days_since_last_send("billnewdev", now=d8, root=root2) == 0)
+    (root2 / "billnewdev-2026-09-09.json").write_text('{"sent_ok": false}')
+    ck("a FAILED send is not a send",
+       days_since_last_send("billnewdev", now=d8, root=root2) == 0)
+    ck("another job's stamps are not counted",
+       days_since_last_send("billsnow", now=d8, root=root2) is None)
 
     bad_n = 0
     for name, ok in checks:

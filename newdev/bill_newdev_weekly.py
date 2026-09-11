@@ -45,6 +45,18 @@ XLSX       = HERE / "DE-New-Developments.xlsx"
 TO      = "whutchins@knightpropertysvs.com"
 CC      = "Buddy.Weiss@outlook.com"
 SUBJECT = "New Delaware development leads this week"
+QUIET_MIN_DAYS = 6      # S146: a weekly note, guarded weekly -- see the quiet branch
+
+
+def QUIET_SUBJECT():
+    """S146. The quiet note used to go out under SUBJECT -- "New Delaware
+    development leads this week" over a body saying there are none, which reads
+    as a broken email rather than a reassuring one. It also threaded every
+    quiet week into the same Gmail conversation as the real lead emails, so a
+    genuine lead would arrive collapsed under a pile of "nothing new".
+    Dated, because that is what makes it scannable in a thread list."""
+    from datetime import datetime
+    return f"Delaware development leads - nothing new this week ({datetime.now():%b %d})"
 
 # Verbatim working-rates note (matches the retired Cowork task). If Bill sends
 # real rates, drop this and switch to his numbers.
@@ -219,7 +231,7 @@ def _swept_counts():
         return None
 
 
-def _send(body, attach=True):
+def _send(body, subject=None, attach=True):
     """Send one email to Bill. Returns True on a confirmed send.
 
     S144: extracted so the quiet-week note and the leads email go out the SAME
@@ -234,8 +246,9 @@ def _send(body, attach=True):
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
         tf.write(body)
         bodyfile = tf.name
+    subject = subject or SUBJECT
     args = [sys.executable, str(DIGEST_DIR / "send_bid_email.py"),
-            TO, SUBJECT, bodyfile]
+            TO, subject, bodyfile]
     if attach:
         args.append(str(XLSX))
     env = dict(os.environ, CC_EMAIL=CC)
@@ -247,7 +260,7 @@ def _send(body, attach=True):
     if r.returncode == 0:
         # Stamp FIRST, then record -- see billsnow for why the order matters.
         import send_guard
-        if not send_guard.mark_sent("billnewdev", SUBJECT):
+        if not send_guard.mark_sent("billnewdev", subject):
             print("WARNING: send stamp not written — a restart could re-send.")
     return r.returncode == 0
 
@@ -316,8 +329,27 @@ def main():
         # Same principle as the completeness note: 0 found out of 546 swept is a
         # different statement from 0 found.
         swept = _swept()
+
+        # S146. The duplicate guard above is PER DAY, which is right for the
+        # leads email -- a lead is news whenever it arrives. It is wrong for
+        # this one. cirrus-billnewdev is a oneshot on Skywarden's restart
+        # allowlist, so any restart on a day other than Monday clears the daily
+        # guard and mails Bill a second "nothing new this week". A weekly
+        # product may say "nothing new" once a week, not once a day.
+        #
+        # Fails OPEN, like the rest of send_guard: None (no stamp on record)
+        # sends. A feed silenced indefinitely by one unreadable file is a worse
+        # failure than one duplicate note.
+        import send_guard
+        since = send_guard.days_since_last_send("billnewdev")
+        if since is not None and since < QUIET_MIN_DAYS:
+            reason = f"last note {since}d ago, minimum {QUIET_MIN_DAYS}d"
+            print(f"Quiet week, but NOT sending: {reason}.")
+            _rec(dry, True, quiet_note(swept, suppressed=reason))
+            return
+
         print(f"No new leads this week — sending the quiet-week note ({swept}).")
-        ok = _send(compose_quiet(swept), attach=False)
+        ok = _send(compose_quiet(swept), subject=QUIET_SUBJECT(), attach=False)
         _rec(dry, ok, quiet_note(swept, sent=ok))
         return
 
