@@ -1,6 +1,6 @@
 {
   "_comment": "LLM API pricing + spend caps for the budget guard (llm_budget.py). Rates in USD per 1,000,000 tokens. Confirm against https://docs.claude.com pricing at wire time. Discount multipliers: batch=0.5, cache_read=0.1 (cached input only), cache_write=1.25.",
-  "_updated": "2026-09-08 (S136: search_per_1k)",
+  "_updated": "2026-09-11 (S159: kimi-k3)",
   "models": {
     "claude-opus-5": {
       "in": 5.0,
@@ -45,6 +45,10 @@
     "deepseek-chat": {
       "in": 0.27,
       "out": 1.1
+    },
+    "kimi-k3": {
+      "in": 3.0,
+      "out": 15.0
     },
     "qwen3.8:27b": {
       "in": 0.0,

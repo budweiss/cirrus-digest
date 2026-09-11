@@ -12,6 +12,8 @@ Design principles
   already used by cirrus_bot.call_gemini/call_grok/call_claude and the template:
   anthropic_api_key/claude_dev_model(or claude_model), gemini_api_key/gemini_model,
   grok_api_key/grok_model, openai_api_key/openai_model, deepseek_api_key/deepseek_model.
+  S159 adds kimi_api_key/kimi_model (Moonshot, model id `kimi-k3`), gated like
+  ollama/vllm: callable but NOT in DEFAULT_ORDER, so keying it re-routes nothing.
 * BACKWARD COMPATIBLE with dev_agent's Claude call (same api.anthropic.com/v1/messages
   request shape). STDLIB ONLY (urllib) — no new dependencies.
 
@@ -190,6 +192,10 @@ _KEY_FIELD = {
     "grok":      "grok_api_key",
     "openai":    "openai_api_key",
     "deepseek":  "deepseek_api_key",
+    # S159: Moonshot's Kimi. Same two gates as ollama/vllm -- absent from
+    # DEFAULT_ORDER, so keying it does NOT add a voice to the council or a
+    # hop to the failover chain. Only an explicit call("kimi", ...).
+    "kimi":      "kimi_api_key",
 }
 
 
@@ -392,6 +398,47 @@ def _deepseek(creds, system, user, max_tokens):
                               key, model, system, user, max_tokens)
 
 
+def _kimi(creds, system, user, max_tokens):
+    """Moonshot AI's Kimi (K3), via its OpenAI-compatible endpoint. S159.
+
+    Buddy asked for Kimi "as an option alongside Opus 5 and Fable 5.1." TWO
+    different things wear that name and only the first one lives in this file:
+
+      * KIMI AS A PROVIDER (this). A backend the boxes' jobs can call the same
+        way they call openai/grok/deepseek -- council, cumulus-ask-provider,
+        bench. Chat Completions shape, $3/$15 per Mtok, 1M context.
+      * KIMI AS THE MODEL OF A CLAUDE CODE SESSION. Not a provider at all:
+        that is ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic on a
+        separate `claude` process, and NOTHING in this file affects it.
+        docs/KIMI-K3-ACCESS.md carries that recipe and its stray-
+        ANTHROPIC_API_KEY trap.
+
+    ABSENT FROM DEFAULT_ORDER on purpose -- the S73/S92 gate. Every other cloud
+    provider here is dormant-until-keyed AND in DEFAULT_ORDER, so the moment a
+    key lands it becomes a fifth council voice and a new line on the bill,
+    everywhere, with no decision made. Kimi is keyed and then *measured*;
+    promoting it is one line in DEFAULT_ORDER and should follow a bench rather
+    than precede one. available() will not list it until then -- that is the
+    design, not a bug, and it is the same thing creds-llm-check reports for
+    ollama.
+
+    Always-on reasoning ("thinking mode"): its thinking tokens are drawn from
+    max_tokens before any answer text, which is the S91 gemini trap and the
+    S74/S75 deepseek one. Budget accordingly -- a small max_tokens here buys an
+    empty `content`, not a short answer. call()'s finish_reason=="length" note
+    is what surfaces it.
+    """
+    key = creds.get("kimi_api_key")
+    if not key:
+        raise ProviderError("no kimi_api_key")
+    model = creds.get("kimi_model")
+    if not model:
+        raise ProviderError("no kimi_model set in credentials.json "
+                            "(the API id is `kimi-k3`)")
+    return _openai_compatible("https://api.moonshot.ai/v1/chat/completions",
+                              key, model, system, user, max_tokens)
+
+
 def _ollama(creds, system, user, max_tokens):
     """The LOCAL model, via Ollama's OpenAI-compatible endpoint.
 
@@ -506,6 +553,7 @@ _PROVIDERS = {
     "grok":      _grok,
     "openai":    _openai,
     "deepseek":  _deepseek,
+    "kimi":      _kimi,
 }
 
 
