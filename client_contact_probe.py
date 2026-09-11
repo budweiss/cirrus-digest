@@ -30,17 +30,26 @@ DAYS = int(sys.argv[1]) if len(sys.argv) > 1 else 45
 SENT_BOXES = ('"[Gmail]/Sent Mail"', '"Sent Items"', "Sent")
 
 
-def _node():
-    try:
-        sys.path.insert(0, str(HERE))
-        import node_info
-        return node_info.node_name()
-    except Exception:
-        return "UNKNOWN"
+def _identity():
+    """Who is this box, derived from the box -- not from ambient config.
+
+    S145. The first version used node_info.node_name(), which reads TARGET_ENV
+    and defaults to "dev" -> "CIRRUS". Services set that variable; an ssh
+    invocation does not. So the CUMULUS probe cheerfully reported "CIRRUS", the
+    aggregator printed "boxes answered: CIRRUS, CIRRUS", and every CUMULUS-sent
+    email was labelled as coming from CIRRUS.
+
+    That is the same mistake as the incident this command exists for: trusting a
+    label instead of the thing it names. hostname is a property of the machine,
+    and the MAILBOX is what actually matters -- the bug was never "which host",
+    it was "which mailbox did you look in".
+    """
+    import socket
+    return socket.gethostname()
 
 
 def main():
-    out = {"box": _node(), "ok": False, "error": None, "sends": []}
+    out = {"box": _identity(), "ok": False, "error": None, "sends": []}
     try:
         creds = json.loads((HERE / "config/credentials.json").read_text())
         user, pw = creds["outlook_email"], creds["outlook_password"]
