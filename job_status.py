@@ -556,15 +556,42 @@ def _selftest_record(ck):
         bad = []
         stop = threading.Event()
 
+        reads = []
+
+        def _torn(raw):
+            """True if this text is a HALF-written ledger."""
+            return bool(raw.strip()) and not raw.rstrip().endswith("}")
+
+        seen_one = threading.Event()
+
         def _reader():
             while not stop.is_set():
                 try:
                     raw = g["STATUS_PATH"].read_text()
-                    if raw.strip() and not raw.rstrip().endswith("}"):
+                    reads.append(1)
+                    if _torn(raw):
                         bad.append(raw[-40:])
+                    seen_one.set()
                 except Exception:
                     pass
 
+        # S156 POSITIVE CONTROL, and it runs FIRST. Leave a deliberately
+        # half-written file sitting still and let the SAME reader loop run at
+        # it. If the torn-file branch is dead the concurrent phase below cannot
+        # tell -- a correct writer never hands it a torn read to miss, so the
+        # branch could be deleted and every assertion would stay green.
+        g["STATUS_PATH"].write_text('{"a": 1')
+        r0 = threading.Thread(target=_reader)
+        r0.start()
+        seen_one.wait(2.0)          # bounded, and branch-free: a polling loop
+        stop.set()                  # here would itself become a mutant nobody
+        r0.join()                   # can kill (S156)
+        ck("record: the reader's torn-file branch FIRES on a genuinely torn "
+           "file — without this, 'never saw a partial file' could be a branch "
+           "that never runs", bool(bad))
+        bad.clear(); reads.clear(); stop.clear()
+
+        g["STATUS_PATH"].write_text(_j.dumps(big, indent=2))
         r = threading.Thread(target=_reader)
         r.start()
         try:
@@ -574,6 +601,15 @@ def _selftest_record(ck):
             stop.set()
             r.join()
         ck("record: a concurrent reader never sees a partial file", not bad)
+        # S156: the line above passes just as happily if the reader never ran
+        # or could not recognise a torn file -- a mutation probe found exactly
+        # that, twice. Pin both halves, so "saw nothing wrong" cannot be the
+        # same as "looked at nothing".
+        ck("...and that reader ACTUALLY READ — otherwise the line above is a "
+           "check that cannot fail", len(reads) > 0)
+        ck("...and its torn-file test can tell a half-written file from a "
+           "whole one, in both directions",
+           _torn('{"a": 1') and not _torn('{"a": 1}\n'))
 
         #    ...and the check above cannot PROVE atomicity: in one process the
         #    GIL means the reader is never scheduled inside a C-level write, so
@@ -594,6 +630,104 @@ def _selftest_record(ck):
            not list(d.glob("*.tmp-*")))
     finally:
         g["STATUS_PATH"] = saved
+
+
+def _selftest_sources(ck):
+    """S156 — _read_status(), _declared(), and record()'s retry loop.
+
+    Every branch below survived the mutation probe, all for one reason: the
+    suite reached these only THROUGH record() and summarize(), where a wrong
+    answer is absorbed and the end state looks identical either way. A missing
+    file mis-read as "unreadable" still ends up as {}; a retry loop that spins
+    three times instead of stopping at one still writes the same row. An
+    outcome-only test cannot see any of that, so these call the functions.
+    """
+    import tempfile as _tf, json as _j, shutil as _sh
+    from pathlib import Path as _P
+    g = globals()
+    saved_path, saved_read = g["STATUS_PATH"], g["_read_status"]
+    d = _P(_tf.mkdtemp())
+    try:
+        sp = d / "jobs-status.json"
+        g["STATUS_PATH"] = sp                      # T32: never the live file
+
+        # _read_status: four inputs, four DIFFERENT answers. "No file yet" and
+        # "a file I cannot trust" are opposite claims and record() branches on
+        # which one it got, so it is not enough that both return something falsy.
+        ck("_read_status: a MISSING file is an empty ledger, not a problem",
+           _read_status() == ({}, ""))
+
+        sp.write_text("   \n")
+        _dd, _pp = _read_status()
+        ck("_read_status: an EMPTY file is untrusted", _dd is None)
+        ck("...and is named EMPTY, not unparseable — a truncated write and a "
+           "corrupted one are different incidents", "empty" in _pp)
+
+        sp.write_text("{not json")
+        _dd, _pp = _read_status()
+        ck("_read_status: unparseable is untrusted, and named so",
+           _dd is None and "unparseable" in _pp)
+
+        sp.write_text('{"j": {"ok": true}}')
+        ck("_read_status: a good file parses, with no problem reported",
+           _read_status() == ({"j": {"ok": True}}, ""))
+
+        # record()'s retry loop leaves no trace in the result -- the row written
+        # is the same however many times it read -- so count the READS.
+        sp.write_text('{"old": {"ok": true}}')
+        _n = []
+
+        def _counting():
+            _n.append(1)
+            return saved_read()
+
+        g["_read_status"] = _counting
+        record("j", True, "")
+        ck("record: a healthy read is NOT retried — one read, no sleep loop",
+           len(_n) == 1)
+
+        # A failure that only clears on the SECOND retry must still recover:
+        # giving up early abandons a file that was about to be fine.
+        _seq = [(None, "boom"), (None, "boom"), ({"old": {}}, "")]
+        _n.clear()
+
+        def _flaky():
+            _n.append(1)
+            return _seq[min(len(_n) - 1, len(_seq) - 1)]
+
+        g["_read_status"] = _flaky
+        record("k", True, "")
+        ck("record: a read that needs TWO retries still recovers — exactly "
+           "three reads, no more and no fewer", len(_n) == 3)
+        ck("...and leaves no .corrupt copy, because it never actually gave up",
+           not list(d.glob("*.corrupt-*")))
+    finally:
+        g["STATUS_PATH"], g["_read_status"] = saved_path, saved_read
+        _sh.rmtree(d, ignore_errors=True)
+
+    # _declared: the stamp file behind S150's "never ran" verdict.
+    d2 = _P(_tf.mkdtemp())
+    try:
+        dp = d2 / "declared.json"
+
+        dp.write_text('["not", "a", "dict"]')
+        ck("_declared: a non-dict stamp file degrades to fresh stamps rather "
+           "than raising — a bad stamp file must never accuse a job",
+           _declared(500, ["a"], path=dp) == {"a": 500})
+
+        # Nothing new => nothing written. The marker is dropped by the filter,
+        # so it can only still be on disk if no rewrite happened.
+        dp.write_text(_j.dumps({"a": 500, "ZZdropme": 9}))
+        _declared(600, ["a"], path=dp)
+        ck("_declared: writes NOTHING when no name is new",
+           "ZZdropme" in dp.read_text())
+
+        _declared(600, ["a", "b"], path=dp)
+        _disk = _j.loads(dp.read_text())
+        ck("...and DOES write as soon as a new name appears",
+           _disk.get("b") == 600 and "ZZdropme" not in _disk)
+    finally:
+        _sh.rmtree(d2, ignore_errors=True)
 
 
 def selftest():
@@ -843,6 +977,7 @@ def selftest():
        _fetch_remote(_run=lambda a: _R(255, '{"j": {"ok": true}}')) is None)
 
     _selftest_record(ck)
+    _selftest_sources(ck)
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 
