@@ -87,7 +87,30 @@ def fetch_layer(layer, where, order):
         req = urllib.request.Request(url, headers={"User-Agent": "cowork-plus-pull/1.0"})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read().decode("utf-8"))
-        feats = data.get("features", [])
+
+        # S146. ArcGIS answers a REJECTED query with HTTP 200 and a body of
+        # {"error": {...}} -- no "features" key at all. `data.get("features", [])`
+        # turned that into an empty layer and returned cleanly, so a dead or
+        # changed source was indistinguishable from "Delaware built nothing".
+        #
+        # That mattered more from 2026-09-10, when this feed started emailing the
+        # client on quiet weeks: the chain ran empty layers -> a SHRUNKEN baseline
+        # written by persist() -> Bill told "We checked 0 built communities, 0
+        # development applications and 0 building permits" -> and when the source
+        # came back, the dropped ids returned as NEW, to be mailed to him as this
+        # week's news. Raise instead; main() records "plus_pull failed" and
+        # nothing is sent.
+        if isinstance(data.get("error"), dict):
+            err = data["error"]
+            raise RuntimeError(
+                f"layer {layer} returned an ArcGIS error (HTTP 200): "
+                f"code={err.get('code')} {str(err.get('message'))[:120]}")
+        if "features" not in data:
+            raise RuntimeError(
+                f"layer {layer} response has no 'features' key -- keys: "
+                f"{sorted(data)[:6]}. Treating this as an empty layer is how a "
+                f"dead source reaches the client as a real zero.")
+        feats = data.get("features") or []
         rows += [f["attributes"] for f in feats]
         if data.get("exceededTransferLimit") and feats:
             offset += len(feats); time.sleep(0.3); continue
@@ -208,6 +231,9 @@ def main():
     print("  by year:", dict(sorted(Counter((a.get('PLUS_YEAR') or '?') for a in plus).items(), reverse=True)))
 
 
+MIN_BASELINE_RATIO = 0.5   # S146: a sweep that lost half its ids is broken, not quiet
+
+
 def persist(out_dir, seen_file, cur_ids, new, peek):
     """Write (or deliberately do not write) this run's diff. Returns a log line.
 
@@ -221,6 +247,32 @@ def persist(out_dir, seen_file, cur_ids, new, peek):
     Every path is out_dir-relative and injected, never module state -- a selftest
     that reaches the real out/ through the code under test is T32/T80.
     """
+    # S146. MAX_PLAUSIBLE_NEW already guards "too many rows appeared". This is
+    # its mirror, and it was missing: too many rows VANISHED. A query that starts
+    # returning nothing (a renamed field, a changed endpoint, an ArcGIS error now
+    # caught upstream in fetch_layer) shrinks cur_ids, persist writes the smaller
+    # set as the new baseline, and the dropped ids are then "new" the moment the
+    # source recovers -- to be emailed to Bill as this week's leads.
+    #
+    # Refusing is safe in a way that advancing is not: a baseline left where it
+    # is costs one skipped run, and the next healthy run picks up anything real.
+    prev_n = 0
+    try:
+        if seen_file.exists():
+            prev_n = len(json.loads(seen_file.read_text()))
+    except Exception:
+        prev_n = 0
+    if not cur_ids:
+        raise RuntimeError(
+            "the sweep produced ZERO trackable ids. Refusing to advance the "
+            "baseline -- writing it would make every existing lead look new on "
+            "the next healthy run.")
+    if prev_n and len(cur_ids) < prev_n * MIN_BASELINE_RATIO:
+        raise RuntimeError(
+            f"the sweep returned {len(cur_ids)} ids against a baseline of "
+            f"{prev_n} (under {MIN_BASELINE_RATIO:.0%}). That is a broken query, "
+            f"not attrition -- refusing to advance the baseline.")
+
     if peek:
         (out_dir / "plus_new_peek.json").write_text(json.dumps(new, indent=1))
         return (f"--peek: baseline NOT advanced, plus_new.json untouched "
@@ -300,6 +352,35 @@ def selftest() -> int:
         check("a LIVE run writes plus_new.json",
               json.loads((d / "plus_new.json").read_text())[0]["id"] == "brand-new")
         check("a live run does not claim it skipped", "not advanced" not in msg.lower())
+
+    # ---- S146: the baseline must not follow a collapsed sweep downward.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        seen = d / "plus_seen.json"
+        seen.write_text(json.dumps([f"id-{i}" for i in range(800)]))
+        before = seen.read_text()
+
+        def refuses(ids, label):
+            try:
+                persist(d, seen, set(ids), [], peek=False)
+                check(label, False)
+            except RuntimeError:
+                check(label, True)
+            check(f"...and {label} left the baseline untouched",
+                  seen.read_text() == before)
+
+        refuses([], "a sweep with ZERO ids is refused")
+        refuses([f"id-{i}" for i in range(300)],
+                "a sweep that lost 62% of the baseline is refused")
+        # ...but ordinary movement still writes, or the guard would freeze the feed.
+        persist(d, seen, {f"id-{i}" for i in range(780)}, [], peek=False)
+        check("a normal sweep (780 of 800) still advances",
+              len(json.loads(seen.read_text())) == 780)
+        # and a FIRST run, with no baseline to compare against, must not be blocked
+        fresh = d / "fresh.json"
+        persist(d, fresh, {"a", "b"}, [], peek=False)
+        check("a first run with no prior baseline is allowed",
+              sorted(json.loads(fresh.read_text())) == ["a", "b"])
 
     return 1 if bad else 0
 

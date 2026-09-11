@@ -66,7 +66,7 @@ class Rule:
     """
 
     def __init__(self, name, produced_patterns, max_zero_runs, why,
-                 zero_phrases=(), produced_phrases=()):
+                 zero_phrases=(), produced_phrases=(), fail_phrases=()):
         self.name = name
         self.produced_patterns = [re.compile(p, re.I) for p in produced_patterns]
         # S81, the mirror image of zero_phrases and found the same way -- by
@@ -85,12 +85,22 @@ class Rule:
         # "unreadable" forever and the alert never fires. (Found on the very
         # first live run against CUMULUS's ledger, S67.)
         self.zero_phrases = tuple(z.lower() for z in zero_phrases)
+        # S146. Phrases meaning "the job ran, and what it produced proves it did
+        # not actually look". Checked BEFORE zero_phrases, because such a note
+        # usually contains a zero phrase too: "no new leads (swept 0 plus, ...)"
+        # is literally true and completely misleading -- nothing was searched.
+        # A quiet week and a blind week read the same in the count; only the
+        # evidence distinguishes them, which is why the evidence is in the note.
+        self.fail_phrases = tuple(f.lower() for f in fail_phrases)
         self.max_zero_runs = max_zero_runs
         self.why = why
 
     def productivity(self, note: str):
         """(produced_total, matched_any). matched_any=False means unreadable."""
         n = (note or "").lower()
+        for phrase in self.fail_phrases:
+            if phrase in n:
+                return -1, True          # -1: ran, but proved it saw nothing
         # zero_phrases win over produced_phrases: "no material change" and
         # "nothing to send" are the explicit statements of a quiet run, and a
         # note can contain both ("nothing to send, so nothing sent").
@@ -329,6 +339,10 @@ RULES = {
         "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=6,
         zero_phrases=("no new leads", "nothing new"),
         produced_phrases=("sent",),          # S81: the real note is just "sent"
+        # S146: the swept counts are evidence, and zero evidence is its own
+        # alarm -- see Rule.fail_phrases. "swept 0 plus" catches a collapsed
+        # sweep; "swept unknown" catches an unreadable artifact.
+        fail_phrases=("swept 0 plus", "swept unknown"),
         why="Bill's new-dev lead check has found nothing for six weeks. Read "
             "the `swept` counts in the note FIRST: if they are still in the "
             "hundreds the DE PLUS/parcel sources are answering and Delaware is "
@@ -630,7 +644,7 @@ def check(status=None, state=None, now=None):
     status = status if status is not None else _feed_jobs()
     state = state if state is not None else _load(STATE_PATH, {})
 
-    stalled, unreadable = [], []
+    stalled, unreadable, blind = [], [], []
 
     # S96. AN EMPTY LEDGER IS NOT A CLEAN BILL OF HEALTH.
     #
@@ -669,7 +683,16 @@ def check(status=None, state=None, now=None):
             continue                       # already counted this run
 
         produced, matched = rule.productivity(entry.get("note", ""))
-        if not matched:
+        if produced < 0:
+            # S146. The job ran and its own note says it searched nothing --
+            # "swept 0 plus, 0 dev-app, 0 permit", or "swept unknown". That is
+            # not a quiet week and waiting for a threshold would be wrong: a
+            # blind sweep is wrong on the FIRST run, and on 2026-09-10 this feed
+            # started emailing the client on quiet weeks, so a blind one reaches
+            # him as "We checked 0 built communities". Report immediately.
+            blind.append(f"{job} ({entry.get('note','')[:70]!r})")
+            js["zero_runs"] = 0
+        elif not matched:
             # Note format changed -- we genuinely cannot tell. Surface it as a
             # separate state rather than silently treating it as productive.
             unreadable.append(f"{job} (note not parseable: {entry.get('note','')[:60]!r})")
@@ -703,6 +726,9 @@ def check(status=None, state=None, now=None):
                      f"{s['zero_runs']}x (threshold {s['threshold']}) — {s['why']}")
     if unreadable:
         parts.append("unreadable status notes: " + ", ".join(unreadable))
+    if blind:
+        parts.append("ran but SEARCHED NOTHING (a blind sweep, not a quiet run): "
+                     + ", ".join(blind))
     if unmon:
         parts.append("no completeness rule for: " + ", ".join(unmon))
 
@@ -713,9 +739,10 @@ def check(status=None, state=None, now=None):
         # S96: `overdue` DOES flip it. A job that has not run is a harder
         # failure than one that ran and produced nothing, and it is the case
         # that went unseen for three hours on 2026-09-02.
-        "ok": not stalled and not unreadable and not overdue,
+        "ok": not stalled and not unreadable and not overdue and not blind,
         "stalled": stalled,
         "unreadable": unreadable,
+        "blind": blind,
         "unmonitored": unmon,
         "overdue": overdue,
         "detail": "; ".join(parts) if parts else "all jobs producing",
@@ -829,9 +856,31 @@ def selftest() -> bool:
        RULES["billnewdev"].productivity(_bnd) == (0, True))
     ck("...and the swept counts do NOT count as production",
        RULES["billnewdev"].productivity(_bnd)[0] == 0)
-    ck("an unreadable sweep still reads as zero, not as unreadable",
+    # S146 REVERSED THIS, deliberately. S142 asserted that an unreadable sweep
+    # "still reads as zero, not as unreadable" -- i.e. an ordinary quiet week.
+    # That was wrong, and it stopped being merely wrong once this feed began
+    # emailing the client on quiet weeks: a note saying the sweep saw nothing
+    # would have been scored a normal quiet run while Bill was told "We checked
+    # 0 built communities". A blind sweep is wrong on the FIRST run; it must not
+    # wait on a threshold. -1 is the blind signal; check() reports it and flips
+    # ok=False immediately.
+    ck("an unreadable sweep is BLIND, not a quiet week",
        RULES["billnewdev"].productivity(
-           "no new leads (swept unknown (plus_leads.json unreadable))") == (0, True))
+           "no new leads (swept unknown (plus_leads.json unreadable))") == (-1, True))
+    ck("a collapsed sweep is BLIND too",
+       RULES["billnewdev"].productivity(
+           "no new leads (swept 0 plus, 0 dev-app, 0 permit)") == (-1, True))
+    ck("...and a blind sweep flips ok=False on the FIRST run, no threshold",
+       check({"billnewdev": {"ok": True, "epoch": _NOW_E + 1,
+                             "note": "no new leads (swept 0 plus, 0 dev-app, 0 permit)"}},
+             {})["ok"] is False)
+    ck("...and it is reported as blind, not as stalled or unreadable",
+       check({"billnewdev": {"ok": True, "epoch": _NOW_E + 1,
+                             "note": "no new leads (swept 0 plus, 0 dev-app, 0 permit)"}},
+             {})["blind"] != [])
+    ck("a HEALTHY sweep with zero leads is still an ordinary quiet week",
+       RULES["billnewdev"].productivity(
+           "no new leads (swept 546 plus, 249 dev-app, 33 permit)") == (0, True))
     ck("a real billnewdev send is still productive alongside the new format",
        RULES["billnewdev"].productivity("sent")[0] > 0)
     # Six quiet weeks is the alarm; five is not. Pinned as NUMBERS so a later
