@@ -1108,6 +1108,44 @@ def _extract_src() -> str:
                       if not l.lstrip().startswith("#"))
 
 
+def build_note(st):
+    """The ledger note for one run. Self-contained (S150).
+
+    Extracted from inside job_status.record(), where the only shape anyone could
+    inspect was whichever one the job last wrote. `sources` is in here as
+    EVIDENCE, never as production -- the rule must not count it, or "0 found of
+    40 sources swept" reads as productive and the check is deleted. That warning
+    is already in the rule; this keeps the note honest at the other end.
+    """
+    esc = st.get("escalated", 0)
+    tot = esc + st.get("local", 0)
+    rate = f"{100.0 * esc / tot:.0f}%" if tot else "n/a"
+    note = (f"{st.get('found', 0)} found, {st.get('new', 0)} new, "
+            f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources, "
+            f"escalated {esc}/{tot} ({rate})")
+    if st.get("vllm_fallback"):
+        note += f", vllm fell back {st['vllm_fallback']}x"
+    return note
+
+
+def note_samples():
+    """Every note shape this job writes. Built by CALLING build_note (S150)."""
+    return [
+        ("a normal night", build_note({"found": 9, "new": 3, "updated": 2,
+                                       "sources": 40, "escalated": 0, "local": 8}),
+         "productive"),
+        # THE case the rule exists for: the sweep ran across every source and
+        # found nothing. Must read as ZERO -- if `sources` ever counted, this
+        # would read productive and the rule could never fire.
+        ("swept every source, found nothing",
+         build_note({"found": 0, "new": 0, "updated": 0, "sources": 40,
+                     "escalated": 0, "local": 8}), "zero"),
+        ("with a local-model fallback",
+         build_note({"found": 3, "new": 1, "updated": 0, "sources": 40,
+                     "escalated": 2, "local": 6, "vllm_fallback": 4}), "productive"),
+    ]
+
+
 def selftest() -> int:
     """Offline. No network, no model, no writes outside a temp DB."""
     import tempfile
@@ -1702,17 +1740,7 @@ def main() -> int:
             # ⚠️ n is ~8 blocks per run, so a SINGLE run swings 0-50% and proves
             # nothing. Read the trend across several runs, which is exactly why
             # it belongs in a ledger rather than in one night's log line.
-            _esc = st.get("escalated", 0)
-            _loc = st.get("local", 0)
-            _tot = _esc + _loc
-            _rate = f"{100.0 * _esc / _tot:.0f}%" if _tot else "n/a"
-            job_status.record(
-                "halftimecatalogue", True,
-                f"{st.get('found', 0)} found, {st.get('new', 0)} new, "
-                f"{st.get('updated', 0)} updated, {st.get('sources', 0)} sources, "
-                f"escalated {_esc}/{_tot} ({_rate})"
-                + (f", vllm fell back {st['vllm_fallback']}x"
-                   if st.get("vllm_fallback") else ""))
+            job_status.record("halftimecatalogue", True, build_note(st))
         except Exception as e:
             print(f"job_status.record failed: {e}")
     return 0

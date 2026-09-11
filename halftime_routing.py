@@ -1225,6 +1225,31 @@ def _selftest_body(_real_log_path) -> int:
     return 0
 
 
+def note_samples():
+    """Every note shape this job writes. Built by CALLING note_for (S150).
+
+    note_for already existed and is already the one definition -- S103 made it a
+    function precisely so the selftest could not assert against its own copy.
+    This adds the shapes the LIVE LEDGER never shows: a quiet announcement week,
+    and a sweep with no games at all.
+    """
+    return [
+        ("a busy announcement week",
+         note_for({"events": 82, "games_swept": 7, "escalated": 6, "local": 41,
+                   "unusable": 2, "vllm_fallback": 8}), "productive"),
+        # Documented in completeness' selftest as PRODUCTIVE on purpose: sweeping
+        # 7 games and finding no announcements IS the work.
+        ("a quiet announcement week",
+         note_for({"events": 0, "games_swept": 7, "escalated": 0, "local": 7}),
+         "productive"),
+        # ...and this is the zero case: no games to sweep at all, which means
+        # HOME_GAMES is empty -- a config fault, not a quiet week.
+        ("no games swept at all",
+         note_for({"events": 0, "games_swept": 0, "escalated": 0, "local": 0}),
+         "zero"),
+    ]
+
+
 def record_run(res: Dict) -> str:
     """Write the run into the job_status ledger. Returns the note it recorded.
 
