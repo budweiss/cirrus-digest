@@ -411,6 +411,21 @@ if __name__ == "__main__":
                 f"{len(d.get('updated_entities', []))} updated, "
                 f"{rf.get('refreshed', 0)} refreshed, "
                 f"{rf.get('found_new_info', 0)} found_new_info"
+                # S150. The sweep evidence, so "0 new" is READABLE. Without it
+                # the note cannot distinguish "discovery found nothing" from
+                # "discovery found 58 fresh candidates and the council kept
+                # none" -- and on 2026-09-11 that ambiguity sent the completeness
+                # alert's `why` at the county source, which had answered
+                # perfectly every night for eight nights. Same fix as
+                # billnewdev's `swept` counts, for the same reason.
+                #
+                # Deliberately NOT added to the rule's produced_patterns: the
+                # Rule SUMS its matches, so counting candidates would make
+                # "0 kept of 58 swept" read as productive and delete the check
+                # (the halftimecatalogue lesson).
+                + f", swept {d.get('fresh_candidates', 0)} fresh of "
+                  f"{d.get('candidates', 0)} candidates, council kept "
+                  f"{d.get('council_kept', 0)}"
                 # A failed directory step must not hide inside an otherwise
                 # green line -- it is the only part that reaches the client
                 # with a NAME on it.

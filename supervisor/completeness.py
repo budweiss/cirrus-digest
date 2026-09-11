@@ -128,15 +128,39 @@ RULES = {
     # rotation; a day where none of the 5 yields anything is plausible, three in
     # a row means the source is gone (which is exactly what happened when Kent
     # County moved domains and started 403-ing us).
+    # S150. This rule could not read the note the job actually writes.
+    # `found_new_info["'\s:]+(\d+)` expects the count AFTER the word
+    # ("found_new_info: 1"); hoa_daily_research writes it BEFORE ("1
+    # found_new_info"). So the ONE signal that marks a productive refresh was
+    # invisible, and the job banked zero-runs while working. Measured over eight
+    # nights: found_new_info ran 0,3,0,1,0,0,1,1 -- half those nights were
+    # productive and none of them counted.
+    #
+    # Same defect as billnewdev's on 2026-09-10, and the same lesson: the rule
+    # and the note are one contract, and nothing was checking that they agreed.
+    #
+    # The `why` was wrong too, which is worse than unhelpful -- it sent the
+    # reader at the county source. Those eight nights all read
+    # `directory ok=True rows=224`; the source has never been the problem. What
+    # is actually happening is the council keeping 0-2 of ~57 fresh candidates,
+    # which is a quality gate doing its job, not a fault.
     "hoaleads": Rule(
         "hoaleads",
-        [r"(\d+)\s+new", r"(\d+)\s+updated", r"(\d+)\s+lead",
-         r"found_new_info[\"'\s:]+(\d+)"],
+        [r"(\d+)\s+new\b", r"(\d+)\s+updated", r"(\d+)\s+lead",
+         r"(\d+)\s+found_new_info", r"found_new_info[\"'\s:]+(\d+)"],
         zero_phrases=("no genuine leads", "no new leads", "no leads"),
+        # The one genuinely broken case, and the job already says it in these
+        # words. Caught on the FIRST run, not after three -- a directory that
+        # stopped answering is wrong immediately.
+        fail_phrases=("directory failed",),
         max_zero_runs=3,
-        why="Bill's HOA deep dive produced nothing — check whether the county "
-            "source is reachable (Kent County moved to kentcountyde.gov and "
-            "403s automated fetchers; New Castle/Sussex use ArcGIS layers).",
+        why="Bill's HOA deep dive produced nothing for three runs. Read the "
+            "note's own numbers FIRST: `directory N rows` means the county "
+            "source answered, and `swept N fresh of N candidates` means "
+            "discovery ran. If those are healthy the council simply kept "
+            "nothing, which is normal on most nights — it keeps 0-2 of ~57. "
+            "Only `DIRECTORY FAILED` means the source is the problem, and that "
+            "fires on its own without waiting for this threshold.",
     ),
     # Business-idea pipeline (CIRRUS today, may move to CUMULUS). Generation is
     # adversarially filtered on purpose, so zero KEPT ideas is normal for a day
@@ -886,7 +910,17 @@ def selftest() -> bool:
         r = check({"hoaleads": {"ok": True, "epoch": epoch, "note": real}}, state)
     ck("three zero runs DO alert", r["ok"] is False)
     ck("alert names the job", any(s["job"] == "hoaleads" for s in r["stalled"]))
-    ck("alert carries actionable why", "kentcountyde.gov" in r["stalled"][0]["why"])
+    # S150. This used to assert "kentcountyde.gov" was in the why -- pinning
+    # guidance that pointed the reader at the county source. Eight consecutive
+    # nights of journal output read `directory ok=True rows=224`; the source has
+    # never been the problem, and sending someone there on a false alarm is
+    # worse than a bare alert. The why now tells them to read the note's OWN
+    # numbers first, which is the thing that actually distinguishes the cases.
+    _why = r["stalled"][0]["why"]
+    ck("alert's why points at the note's own evidence, not a guessed cause",
+       "directory" in _why and "swept" in _why)
+    ck("...and names the one thing that IS the source failing",
+       "DIRECTORY FAILED" in _why)
 
     # Productivity resets the counter.
     state = {}
@@ -1372,6 +1406,32 @@ def selftest() -> bool:
     finally:
         _sp.run = _real_run
         _reset()
+
+    # ---- S150: hoaleads' rule could not read hoaleads' note ---------------
+    # The count comes BEFORE the word in the real note ("1 found_new_info"); the
+    # pattern expected it after. Measured over eight nights, half of them
+    # productive, none of them counted. These fixtures are the REAL strings the
+    # job writes, taken off the journal -- a retyped approximation is how the
+    # mismatch survived in the first place.
+    _hl = RULES["hoaleads"]
+    _hl_real = ("0 new, 0 updated, 5 refreshed, 1 found_new_info, "
+                "directory 224 rows, swept 58 fresh of 65 candidates, council kept 0")
+    _hl_quiet = _hl_real.replace("1 found_new_info", "0 found_new_info")
+    _hl_broke = ("0 new, 0 updated, 5 refreshed, 0 found_new_info, "
+                 "DIRECTORY FAILED: HTTPError 403, swept 0 fresh of 0 candidates, "
+                 "council kept 0")
+    ck("a refresh that found new info is PRODUCTIVE (it was scored zero)",
+       _hl.productivity(_hl_real) == (1, True))
+    ck("a night that found nothing is still a zero",
+       _hl.productivity(_hl_quiet) == (0, True))
+    ck("a failed county directory is BLIND on the FIRST run, not after three",
+       _hl.productivity(_hl_broke)[0] < 0)
+    ck("a newly discovered entity counts",
+       _hl.productivity(_hl_real.replace("0 new", "2 new"))[0] >= 2)
+    # The halftimecatalogue trap: evidence must not become production, or the
+    # rule can never fire again.
+    ck("the swept/candidate counts do NOT inflate production",
+       _hl.productivity(_hl_quiet)[0] == 0)
 
     # ---- S150: a job that has NEVER recorded a run ------------------------
     # The hole: overdue_jobs only judged jobs WITH a ledger row, so a scheduled
