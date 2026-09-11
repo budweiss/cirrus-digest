@@ -89,6 +89,33 @@ def summarize(new):
     return "\n".join(lines)
 
 
+def compose_quiet(swept):
+    """The quiet-week note. S144.
+
+    Kept beside compose() and used by BOTH the live path and the dry-run
+    preview, so `--dry-run` shows the email that would actually go out. The
+    dry-run used to print "Live mode would send NOTHING", which stopped being
+    true the moment this branch started sending and would have been a diagnostic
+    stating the opposite of the behaviour.
+    """
+    return "\n".join([
+        "Hi Bill,",
+        "",
+        "Weekly check on new Delaware residential developments "
+        "(50+ units, Kent & Sussex counties).",
+        "",
+        "Nothing new this week.",
+        "",
+        f"Searched: {swept}. No project crossed into the list since the last "
+        "check. These come along roughly once a month, so a quiet week is "
+        "normal — this note is so you can tell a quiet week from a broken one.",
+        "",
+        "Your workbook from the last update still stands; nothing in it changed.",
+        "",
+        f"— {NODE} (Buddy's assistant)",
+    ])
+
+
 def compose(new):
     return "\n".join([
         "Hi Bill,",
@@ -135,6 +162,39 @@ def _swept():
                 f"{len(d.get('building_permits') or [])} permit")
     except Exception:
         return "swept unknown (plus_leads.json unreadable)"
+
+
+def _send(body, attach=True):
+    """Send one email to Bill. Returns True on a confirmed send.
+
+    S144: extracted so the quiet-week note and the leads email go out the SAME
+    way -- one sender, one CC, one duplicate stamp. A second hand-rolled send
+    path is how a send stops being guarded: send_guard.mark_sent is what stops
+    an auto-restart re-mailing a client, and it has to run for BOTH kinds of
+    email or the quiet-week note becomes the one that can double-send.
+
+    attach=False for the quiet-week note: nothing changed, so re-attaching the
+    same workbook every quiet week would be noise, not service.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+        tf.write(body)
+        bodyfile = tf.name
+    args = [sys.executable, str(DIGEST_DIR / "send_bid_email.py"),
+            TO, SUBJECT, bodyfile]
+    if attach:
+        args.append(str(XLSX))
+    env = dict(os.environ, CC_EMAIL=CC)
+    # run from DIGEST_DIR so send_bid_email's `from send_digest import ...` resolves
+    r = subprocess.run(args, cwd=str(DIGEST_DIR), capture_output=True,
+                       text=True, env=env)
+    print((r.stdout or "") + (r.stderr or ""))
+    print("send exit:", r.returncode)
+    if r.returncode == 0:
+        # Stamp FIRST, then record -- see billsnow for why the order matters.
+        import send_guard
+        if not send_guard.mark_sent("billnewdev", SUBJECT):
+            print("WARNING: send stamp not written — a restart could re-send.")
+    return r.returncode == 0
 
 
 def _rec(dry, ok, note=""):
@@ -188,8 +248,23 @@ def main():
         print(f'quiet-week note would be: "no new leads ({_swept()})"')
 
     if not new and not dry:
-        print("No new leads this week — no email sent.")
-        _rec(dry, True, f"no new leads ({_swept()})")
+        # S144 (Buddy, 2026-09-10). This used to return silently, and the cost of
+        # that showed up from the client's chair: Bill's last development-leads
+        # email was 2026-08-03 -- the one that wrongly listed 504 leads because
+        # the source had renumbered itself -- and then five weeks of nothing. A
+        # weekly product that goes quiet after a visibly broken send does not
+        # read as "working, nothing to report". It reads as abandoned.
+        #
+        # Qualifying 50+ unit developments genuinely arrive about once a month,
+        # so most weeks ARE empty. The fix is not to manufacture leads; it is to
+        # make a quiet week legible AS a quiet week, by saying what was searched.
+        # Same principle as the completeness note: 0 found out of 546 swept is a
+        # different statement from 0 found.
+        swept = _swept()
+        print(f"No new leads this week — sending the quiet-week note ({swept}).")
+        ok = _send(compose_quiet(swept), attach=False)
+        _rec(dry, ok, (f"quiet week sent ({swept})" if ok
+                       else f"quiet week SEND FAILED ({swept})"))
         return
 
     # Build the attachment (needed whenever we would send, and useful to verify in dry-run)
@@ -199,7 +274,7 @@ def main():
     if new:
         body = compose(new)
     else:
-        body = "(dry-run: 0 NEW leads — baseline run or no change. Live mode would send NOTHING.)"
+        body = compose_quiet(_swept())   # exactly what live would send
 
     print("=" * 70)
     print("SUBJECT:", SUBJECT)
@@ -211,23 +286,8 @@ def main():
         print("DRY RUN — nothing sent.")
         return
 
-    # Live send via the shared CIRRUS SMTP sender (run from DIGEST_DIR so its
-    # `from send_digest import ...` resolves).
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
-        tf.write(body)
-        bodyfile = tf.name
-    env = dict(os.environ, CC_EMAIL=CC)
-    r = subprocess.run([sys.executable, str(DIGEST_DIR / "send_bid_email.py"),
-                        TO, SUBJECT, bodyfile, str(XLSX)],
-                       cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
-    print((r.stdout or "") + (r.stderr or ""))
-    print("send exit:", r.returncode)
-    if r.returncode == 0:
-        # Stamp FIRST, then record -- see billsnow for why the order matters.
-        import send_guard
-        if not send_guard.mark_sent("billnewdev", SUBJECT):
-            print("WARNING: send stamp not written — a restart could re-send.")
-    _rec(dry, r.returncode == 0, "sent" if r.returncode == 0 else "send failed")
+    ok = _send(body, attach=True)
+    _rec(dry, ok, "sent" if ok else "send failed")
 
 
 if __name__ == "__main__":
