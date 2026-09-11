@@ -40,6 +40,11 @@ CADENCE_H = {
     # recovered from afterwards. Daily 07:15, run by a scheduled task that
     # ssh's to cumulus1; 26h leaves the usual 2h of grace.
     "immaculatecheck": 26,
+    # S148. Daily 01:00 on CIRRUS. Watched from the day it was created, for the
+    # reason at the top of this table -- and with extra force here, because this
+    # job's ENTIRE purpose is noticing silence. One that stopped silently would
+    # be the joke version of itself.
+    "clientcontact":  26,
     "cumulusstatepull": 26,     # daily 01:45 (CIRRUS pulls cumulus1 non-git
                                 # state so the backup chain does not start on
                                 # Buddy's laptop; must beat Time Machine ~02:30)

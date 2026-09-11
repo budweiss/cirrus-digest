@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""client_contact_daily.py — daily "has each client heard from us?" sweep.
+
+S148. Runs on CIRRUS, not on the Mac, and that choice is the point.
+
+`client-contact` existed as a Mac-side runner command from S145 and ran only
+when someone asked — which is the same shape as the problem it solves. It was
+built after a session concluded a client had been ignored for five weeks,
+emailed him an apology saying so, and was wrong. A check against that only fires
+when you already suspect is not a check.
+
+WHY CIRRUS. The Mac is powered down for hours at a time (2026-09-10: seven).
+A daily job there would silently skip those nights, and a monitor that silently
+does not run is the exact failure class this whole line of work exists to close.
+CIRRUS is always up, reaches CUMULUS over the LAN, and is where the daily
+cadence already lives.
+
+Reads both mailboxes — each box can only see its own — and REFUSES to report
+on one. See client_contact_report.assess().
+"""
+import json
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import client_contact_report as R          # noqa: E402
+
+DAYS = 45
+CUMULUS = "buddy@192.168.0.204"            # LAN, as cirrus-cumulus-link probes
+CUMULUS_DIR = "~/cirrus-digest"
+CUMULUS_PY = ".venv/bin/python3"
+DRY = "--dry-run" in sys.argv
+
+
+def _probe_local(out):
+    r = subprocess.run([sys.executable, str(HERE / "client_contact_probe.py"), str(DAYS)],
+                       capture_output=True, text=True, timeout=180, cwd=str(HERE))
+    (out / "CIRRUS.json").write_text(r.stdout or "")
+    return r.returncode
+
+
+def _probe_cumulus(out):
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", CUMULUS,
+         f"cd {CUMULUS_DIR} && {CUMULUS_PY} client_contact_probe.py {DAYS}"],
+        capture_output=True, text=True, timeout=240)
+    (out / "CUMULUS.json").write_text(r.stdout or "")
+    return r.returncode
+
+
+def _rec(ok, note):
+    if DRY:
+        return
+    try:
+        import job_status
+        job_status.record("clientcontact", ok, note)
+    except Exception:
+        pass
+
+
+def _tg(msg):
+    """Reuse model_health.tg -- the same token, the same Markdown, the same
+    swallow-on-failure posture every other CIRRUS job already uses. Writing a
+    second sender here is how snow/send_bid_email.py became T89."""
+    if DRY:
+        print("[dry-run] would telegram:\n" + msg)
+        return
+    try:
+        import model_health
+        model_health.tg(msg)
+    except Exception as e:
+        print("telegram failed:", type(e).__name__, e)
+
+
+def main():
+    print(f"[{datetime.now():%Y-%m-%d %H:%M}] client-contact daily "
+          f"({'dry-run' if DRY else 'live'})")
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td)
+        rc_l, rc_c = _probe_local(out), _probe_cumulus(out)
+        v = R.assess(out)
+
+        if not v.get("ok"):
+            # UNVERIFIABLE is a finding, not a quiet success. Recorded ok=False so
+            # the completeness check sees it; a sweep that could not look must
+            # never read the same as a sweep that looked and found nothing.
+            note = f"UNVERIFIABLE: {v.get('refusal')}"
+            print(note, f"(probe rc: cirrus={rc_l} cumulus={rc_c})")
+            _rec(False, note)
+            _tg(f"client-contact could not verify today: {v.get('refusal')}\n"
+                f"Not reporting a partial answer — one mailbox looks exactly like "
+                f"both. Probe exit codes: cirrus={rc_l} cumulus={rc_c}.")
+            return 1
+
+        quiet, silent = v["quiet"], v["silent"]
+        for c in silent:
+            print(f"  {c}: NO SEND IN WINDOW")
+        for q in quiet:
+            print(f"  {q['client']}: {q['days']}d quiet (limit {q['limit']}d)")
+        if not quiet and not silent:
+            print(f"  all clients heard from inside their window "
+                  f"({v['n_sends']} sends across both mailboxes)")
+
+        bits = ([f"{c} — nothing at all in {DAYS}d" for c in silent]
+                + [f"{q['client']} — {q['days']}d quiet, expected within "
+                   f"{q['limit']}d" for q in quiet])
+        note = ("; ".join(bits) if bits
+                else f"all clients current ({v['n_sends']} sends)")
+        # ok=True even when a client is quiet: the JOB worked. Whether a client
+        # is overdue is the finding it is meant to produce, not a fault in it.
+        _rec(True, note)
+        if bits:
+            _tg("*A client has not heard from us:*\n"
+                + "\n".join(f"• {b}" for b in bits)
+                + "\n\n_Both mailboxes checked (cirrustask + cumulus). Exempt: "
+                  "Justin — the halftime dashboard is his channel._")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

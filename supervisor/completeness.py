@@ -335,6 +335,22 @@ RULES = {
     # reason, which applies here exactly: Rule.productivity SUMS its matches, so
     # 0 new + 546 swept = 546 = "productive" would make this rule unfireable and
     # silently delete the check.
+    # S148. clientcontact (daily 01:00, CIRRUS) reports whether each client has
+    # heard from us. Its PRODUCTIVE case is "all clients current" -- a day with
+    # no finding is the good day -- so counting findings would have it stall
+    # every healthy week. What must never pass silently is a sweep that could
+    # not LOOK, which the job records as ok=False and this catches as a fail
+    # phrase on the first run.
+    "clientcontact": Rule(
+        "clientcontact", [r"(\d+)\s+sends"], max_zero_runs=999,
+        zero_phrases=(),
+        produced_phrases=("all clients current", "quiet", "nothing at all"),
+        fail_phrases=("unverifiable",),
+        why="clientcontact could not read BOTH mailboxes. It refuses to report "
+            "on one, because a half-answer looks exactly like a whole one -- "
+            "that is the error it exists to prevent (T90). Check the CIRRUS->"
+            "cumulus1 LAN link (runner cirrus-cumulus-link) and both keys.",
+    ),
     "billnewdev": Rule(
         "billnewdev", [r"(\d+)\s+new", r"(\d+)\s+lead"], max_zero_runs=6,
         zero_phrases=("no new leads", "nothing new"),
