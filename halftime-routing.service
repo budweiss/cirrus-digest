@@ -10,6 +10,13 @@ Group=buddy
 WorkingDirectory=/home/buddy/cirrus-digest
 Environment=HOME=/home/buddy
 Environment=TARGET_ENV=beta
+# S155 (Buddy: "bump routing to 8 workers now") — Phase D step 2, after three
+# catalogue runs on the endpoint were read clean (S3 held, escalation 0% on two
+# of three). Same reasoning as the catalogue unit: the extraction calls go to
+# the TP=2 vLLM endpoint (vllm_url in credentials), which batches, so eight
+# concurrent model calls instead of one. Without vllm_url this must stay 1 --
+# ollama cannot batch and S119 measured escalation 2/7 -> 6/7 at concurrency.
+Environment=HALFTIME_ROUTING_EXTRACT_WORKERS=8
 # 8 games x 7 metros, each a search + fetches + a model call: the first full
 # sweep took about two hours. Set EXPLICITLY rather than trusting the oneshot
 # default, because a start timeout that kills the job at 90 seconds would leave

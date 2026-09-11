@@ -1,9 +1,11 @@
 [Unit]
-Description=Halftime routing sweep — weekly, ahead of the working week
+Description=Halftime routing sweep — nightly, ahead of each day
 
-# Sunday 22:00. WEEKLY, not nightly: announced tour dates move slowly, and each
-# full sweep is ~2 hours of search and model time for data that changes little
-# day to day. Sunday night means the week opens with a fresh board.
+# 22:00 DAILY. Was Sunday-only when the job was built (S79); Buddy asked for it
+# nightly and /etc was changed to match, but this file was not — so repo and
+# live drifted, and `halftime-routing-install` would have silently cp'd the
+# weekly schedule back over the daily one, skipping Justin's board until the
+# next Sunday with nothing to say it had happened. Corrected S155; see T91.
 #
 # Slot chosen from a live window-audit, not by eyeballing:
 #   21:30-21:45 com.cirrus.devloop is the last thing before it, and the next
@@ -13,7 +15,7 @@ Description=Halftime routing sweep — weekly, ahead of the working week
 #
 # Retiming this is NOT `systemctl restart` — see T39.
 [Timer]
-OnCalendar=Sun *-*-* 22:00:00
+OnCalendar=*-*-* 22:00:00
 Persistent=true
 
 [Install]
