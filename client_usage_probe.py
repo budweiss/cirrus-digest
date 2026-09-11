@@ -113,5 +113,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
-# S152 T92 proof: this comment rides along, and the deploy subject must name the file.
