@@ -90,6 +90,19 @@ def summarize(new):
 
 
 def compose_quiet(swept):
+    c = _swept_counts()
+    if c:
+        swept_sentence = (
+            f"We checked {c['plus']} built communities, {c['dev']} development "
+            f"applications and {c['permit']} building permits across Kent and "
+            "Sussex. None of them crossed into the list since the last check.")
+    else:
+        # Say it plainly rather than quietly dropping the evidence: a note that
+        # cannot show what it searched is exactly the ambiguity this email exists
+        # to remove, and Bill should see that we know it.
+        swept_sentence = ("We ran the usual search, but could not read back the "
+                          "counts this time — flagging that rather than leaving "
+                          "it out.")
     """The quiet-week note. S144.
 
     Kept beside compose() and used by BOTH the live path and the dry-run
@@ -106,9 +119,10 @@ def compose_quiet(swept):
         "",
         "Nothing new this week.",
         "",
-        f"Searched: {swept}. No project crossed into the list since the last "
-        "check. These come along roughly once a month, so a quiet week is "
-        "normal — this note is so you can tell a quiet week from a broken one.",
+        swept_sentence,
+        "",
+        "These come along roughly once a month, so a quiet week is normal. "
+        "This note is so you can tell a quiet week from a broken one.",
         "",
         "Your workbook from the last update still stands; nothing in it changed.",
         "",
@@ -155,13 +169,29 @@ def _swept():
     Fails to "swept unknown" rather than to silence -- a missing artifact is
     itself worth seeing in the note, not a reason to drop the evidence.
     """
+    c = _swept_counts()
+    if c is None:
+        return "swept unknown (plus_leads.json unreadable)"
+    return f"swept {c['plus']} plus, {c['dev']} dev-app, {c['permit']} permit"
+
+
+def _swept_counts():
+    """The raw sweep counts, or None if the artifact cannot be read.
+
+    S144: split out because _swept() above is a MONITORING string -- terse,
+    jargon, meant for the completeness ledger -- and the quiet-week email needs
+    the same numbers in English. Reusing _swept() verbatim in the client note
+    produced "Searched: swept 546 plus, 249 dev-app, 33 permit", which is our
+    telemetry showing through to Bill. One source of truth for the numbers, two
+    renderings for two audiences.
+    """
     try:
         d = json.loads((OUT / "plus_leads.json").read_text())
-        return (f"swept {len(d.get('plus_projects') or [])} plus, "
-                f"{len(d.get('dev_applications') or [])} dev-app, "
-                f"{len(d.get('building_permits') or [])} permit")
+        return {"plus": len(d.get("plus_projects") or []),
+                "dev": len(d.get("dev_applications") or []),
+                "permit": len(d.get("building_permits") or [])}
     except Exception:
-        return "swept unknown (plus_leads.json unreadable)"
+        return None
 
 
 def _send(body, attach=True):
