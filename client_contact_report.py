@@ -22,6 +22,17 @@ from pathlib import Path
 # not an assertion.
 EXPECTED_MAILBOXES = {"cirrustask@gmail.com", "cumulus@cumulustask.com"}
 
+# S152. How long a SELF-SERVE tool may go unused before that is worth saying.
+# A different question from contact, and on 2026-09-11 the one that mattered:
+# Aggie was 21 days without an email (inside her limit, unflagged) and 63 days
+# without generating an offer. Justin is exempt from the CONTACT check because
+# his dashboard IS the delivery channel -- which made him invisible to it
+# entirely, so use is the only signal he has at all.
+USAGE_DAYS = {
+    "aggie":  30,    # a working agent generating no offers in a month
+    "justin": 21,    # if he stops opening the page, the channel has gone dead
+}
+
 DEFAULT_QUIET_DAYS = 14
 QUIET_DAYS = {
     "alyssa": 3,     # daily literacy digest -- three quiet days is already wrong
@@ -37,6 +48,23 @@ EXEMPT = {
 }
 
 
+def merge_usage(boxes):
+    """Newest use per client across every box that could see the tool.
+
+    S152. Each box reports only the tools it hosts, so this takes the MAX rather
+    than the first: both boxes carry a copy of offer_history.json, and only
+    CUMULUS serves the halftime dashboard.
+    """
+    out = {}
+    for u in boxes:
+        for client, rec in (u or {}).items():
+            e = rec.get("epoch")
+            cur = out.get(client)
+            if cur is None or (e is not None and (cur.get("epoch") or 0) < e):
+                out[client] = dict(rec)
+    return out
+
+
 def assess(d):
     """Structured verdict for a directory of probe outputs. No printing.
 
@@ -48,7 +76,7 @@ def assess(d):
      "silent": [client], "seen": {client: [(when, send)]}}
     """
     from datetime import datetime, timezone
-    boxes, sends, known = [], [], set()
+    boxes, sends, known, usage_boxes = [], [], set(), []
     for f in sorted(Path(d).glob("*.json")):
         try:
             o = json.loads(f.read_text())
@@ -59,6 +87,8 @@ def assess(d):
                     "refusal": f"{o.get('box', f.stem)}: {o.get('error')}"}
         boxes.append((f.stem, o.get("box", "?"), o.get("mailbox", "?")))
         known |= set(o.get("recipients") or [])
+        if o.get("usage"):
+            usage_boxes.append(o["usage"])
         for sd in o.get("sends", []):
             sd = dict(sd)
             sd["box"] = (o.get("mailbox") or "?").split("@")[-1]
