@@ -66,7 +66,8 @@ class Rule:
     """
 
     def __init__(self, name, produced_patterns, max_zero_runs, why,
-                 zero_phrases=(), produced_phrases=(), fail_phrases=()):
+                 zero_phrases=(), produced_phrases=(), fail_phrases=(),
+                 evidence=()):
         self.name = name
         self.produced_patterns = [re.compile(p, re.I) for p in produced_patterns]
         # S81, the mirror image of zero_phrases and found the same way -- by
@@ -92,6 +93,19 @@ class Rule:
         # A quiet week and a blind week read the same in the count; only the
         # evidence distinguishes them, which is why the evidence is in the note.
         self.fail_phrases = tuple(f.lower() for f in fail_phrases)
+        # S150. Words whose numbers are DELIBERATELY not production -- sweep
+        # evidence, backlog sizes, counters a human reads to tell a quiet run
+        # from a broken one. Declaring them is not documentation: runner/
+        # rule_note_lint.py fails when a job writes a number that is neither
+        # captured by a pattern nor listed here, which forces the question
+        # "production or evidence?" to be ANSWERED for every counter a job
+        # emits, instead of being decided by accident.
+        #
+        # Three bugs in two days came from that ambiguity, in both directions:
+        # hoaleads wrote "1 found_new_info" that no pattern captured (real work
+        # scored as zero), and vendormail counted "13 open" -- a standing
+        # backlog -- as production, which made its rule unfireable.
+        self.evidence = tuple(e.lower() for e in evidence)
         self.max_zero_runs = max_zero_runs
         self.why = why
 
@@ -161,6 +175,9 @@ RULES = {
             "nothing, which is normal on most nights — it keeps 0-2 of ~57. "
             "Only `DIRECTORY FAILED` means the source is the problem, and that "
             "fires on its own without waiting for this threshold.",
+        # The sweep evidence added this session. Counting it would make
+        # "0 kept of 58 swept" read as productive and delete the rule.
+        evidence=("refreshed", "fresh", "candidate", "candidates", "kept", "directory"),
     ),
     # Business-idea pipeline (CIRRUS today, may move to CUMULUS). Generation is
     # adversarially filtered on purpose, so zero KEPT ideas is normal for a day
@@ -173,6 +190,7 @@ RULES = {
         why="No ideas survived critique for a week — re-measure the critique "
             "against the recorded controls above _CRITIQUE_SYSTEM before "
             "assuming the pipeline is fine.",
+        evidence=("generated", "rejected"),   # inputs and discards; `kept` is the output
     ),
     "businessideascan": Rule(
         "businessideascan",
@@ -180,6 +198,7 @@ RULES = {
         max_zero_runs=5,
         why="Intake admitted nothing for five runs — check the local prefilter "
             "is not over-rejecting and that the email/RSS sources still fetch.",
+        evidence=("rejected", "email", "emails"),  # swept volume and discards, not output
     ),
     # ALOPECIA daily collector (S96). RCW's research monitor, daily 05:45 on
     # CUMULUS. Four sources: PubMed, ClinicalTrials.gov, NAAF, medRxiv.
@@ -218,6 +237,7 @@ RULES = {
             "day's 101 items, so it alone going empty looks like total "
             "failure), then PubMed E-utilities. RCW's research monitor is "
             "blind until this is fixed.",
+        evidence=("new",),    # `found` is the signal; `new` is a subset of it and would double-count
     ),
     # ALOPECIA weekly brief (S96). WEEKLY, Fri 07:00 — so the threshold is in
     # RUNS and 2 means a FORTNIGHT of briefs carrying nothing. The billsnow
@@ -247,6 +267,8 @@ RULES = {
             "died between collector and brief), then the brief's own window: "
             "from #2 it reads 'since the brief we actually sent', so a bad "
             "state file can silently narrow the window to nothing.",
+        evidence=("sent",),   # "brief #3 sent" -- that 3 is an ISSUE NUMBER, not a count;
+                              # the produced_phrase "sent" is what marks the send
     ),
     # entity_kb weekly digest — Bill's Delaware HOA research. WEEKLY Mon 05:00.
     #
@@ -301,6 +323,9 @@ RULES = {
             "`sources` count in the note first: if it is still ~32 the sweep "
             "is running and the extractors have stopped matching (a site "
             "redesign); if it has dropped, the source list itself is broken.",
+        # `sources` was ALREADY documented above as must-not-count; `new`/`updated`
+        # are subsets of `found`. Declaring them makes that reasoning enforceable.
+        evidence=("new", "updated", "source", "sources"),
     ),
     # Halftime routing sweep (S79) — nightly 22:00, who is announced near each
     # Steelers home date.
@@ -330,6 +355,7 @@ RULES = {
             "list. Check halftime_dashboard.HOME_GAMES is populated and "
             "readable; games_swept is a static count (7 as of 2026-09-02) and "
             "should not move until the schedule is rolled forward.",
+        evidence=("unusable",),   # rows it could not use -- a quality counter, not output
     ),
     # Bill's other two client jobs — weekly, and they SEND him email, so a
     # stalled one is directly client-visible. Weekly cadence means the
@@ -408,6 +434,8 @@ RULES = {
         "modelhealth", [r"(\d+)\s+ok"], max_zero_runs=1,
         why="ZERO LLM providers healthy — every paid model is unreachable. "
             "Check credentials and provider funding immediately.",
+        evidence=("healed", "broken", "needs-funding", "err", "provider",
+                  "current", "model", "models"),   # status counters; `ok` is the signal
     ),
     # Vendor/account mail watcher (S67). Genuinely quiet most days — zero new
     # items is the NORMAL case, so this is only about the scan itself dying.
@@ -427,9 +455,21 @@ RULES = {
             "provider reachability (llm-ping) and the rate-card fetches before "
             "assuming the prompts went stale.",
     ),
+    # S150, found by runner/rule_note_lint.py the hour it was written: this
+    # counted `open` -- the STANDING BACKLOG -- as production. The live note
+    # reads "0 new, 12 re-surfaced, 13 open, 4 noise", so it scored 13 and read
+    # as productive while finding nothing new. With a non-empty backlog the rule
+    # could never reach a zero run, so max_zero_runs=30 was unreachable and the
+    # check was dead. Exactly the trap halftimecatalogue's comment warns about,
+    # in a rule written after that comment.
+    #
+    # `re-surfaced` IS work -- it is the watcher bringing an item back to
+    # attention -- so it becomes the second signal. `open` and `noise` are
+    # counters a human reads.
     "vendormail": Rule(
         "vendormail",
-        [r"(\d+)\s+new", r"(\d+)\s+open"],
+        [r"(\d+)\s+new", r"(\d+)\s+re-surfaced"],
+        evidence=("open", "noise"),
         max_zero_runs=30,
         why="Vendor-mail watcher has tracked nothing for a month — confirm the "
             "inboxes are still reachable rather than assuming a quiet month.",
