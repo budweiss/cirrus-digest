@@ -324,6 +324,59 @@ def selftest() -> int:
         box(d, "two", "hostB", B, [one])
         ck("a probe reporting ok=false refuses", main(d) == 3)
 
+    # ---- S152: the USAGE half. Different question from contact, and the one
+    # the Aggie investigation showed was actually load-bearing.
+    from datetime import timedelta as _td
+    _now = datetime.now(timezone.utc)
+
+    def usage_dir(d, usage, box="hostB"):
+        box_(d, "one", "hostA", A, [one]); box_(d, "two", box, B, [one])
+        f = Path(d) / "two.json"
+        o = _json.loads(f.read_text()); o["usage"] = usage; f.write_text(_json.dumps(o))
+
+    def box_(d, stem, host, mailbox, sends):
+        (Path(d) / f"{stem}.json").write_text(_json.dumps({
+            "box": host, "ok": True, "mailbox": mailbox,
+            "recipients": ["bill", "aggie"], "sends": list(sends)}))
+
+    fresh = (_now - _td(days=2)).timestamp()
+    stale = (_now - _td(days=63)).timestamp()
+
+    with tempfile.TemporaryDirectory() as d:
+        usage_dir(d, {"aggie": {"epoch": stale, "what": "the OFFER tool"}})
+        v = assess(d)
+        ck("a tool unused past its limit is reported",
+           [u["client"] for u in v["stale_use"]] == ["aggie"])
+        ck("...with the age, so the alert is actionable",
+           round(v["stale_use"][0]["days"]) == 63)
+    with tempfile.TemporaryDirectory() as d:
+        usage_dir(d, {"aggie": {"epoch": fresh, "what": "the OFFER tool"}})
+        ck("a tool used recently is NOT reported", assess(d)["stale_use"] == [])
+    with tempfile.TemporaryDirectory() as d:
+        usage_dir(d, {"aggie": {"epoch": None, "what": "the OFFER tool"}})
+        v = assess(d)
+        ck("a tool NEVER used is reported as never, not as 0 days",
+           v["stale_use"] and v["stale_use"][0]["never"] is True)
+    with tempfile.TemporaryDirectory() as d:
+        # No probe could see either tool. This must NOT read as "both abandoned"
+        # -- it is the same false-alarm shape the contact check produced, and the
+        # reason unknown_use is a separate bucket.
+        box_(d, "one", "hostA", A, [one]); box_(d, "two", "hostB", B, [one])
+        v = assess(d)
+        ck("an unreadable tool is UNKNOWN, never 'unused'", v["stale_use"] == [])
+        ck("...and the gap is reported rather than swallowed",
+           sorted(v["unknown_use"]) == ["aggie", "justin"])
+    with tempfile.TemporaryDirectory() as d:
+        # Both boxes carry offer_history; the NEWEST use must win, not the first.
+        box_(d, "one", "hostA", A, [one]); box_(d, "two", "hostB", B, [one])
+        for stem, ep in (("one", stale), ("two", fresh)):
+            f = Path(d) / f"{stem}.json"
+            o = _json.loads(f.read_text())
+            o["usage"] = {"aggie": {"epoch": ep, "what": "the OFFER tool"}}
+            f.write_text(_json.dumps(o))
+        ck("the NEWEST use across boxes wins, not the first seen",
+           assess(d)["stale_use"] == [])
+
     print()
     print("all client_contact_report selftests passed" if not bad else f"{bad} FAILED")
     return 1 if bad else 0
