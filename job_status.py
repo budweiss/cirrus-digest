@@ -767,6 +767,16 @@ def selftest():
     _failed = {"last_run": "x", "epoch": _now - 60, "ok": False, "note": "bad"}
     _rj = sorted(REMOTE_JOBS)[0] if REMOTE_JOBS else None
     _lj = next(n for n in CADENCE_H if n not in REMOTE_JOBS)
+    # T32 + S155: every summarize() below MUST get its own declared-state file.
+    # Without _declared_path these read the LIVE first-sighting stamps, which
+    # made the block time-dependent: it passed when written and went red once
+    # those stamps aged past S150's "never-ran stops being neutral" window --
+    # a failing test that described nothing wrong with the code. It also made
+    # "one failed LOCAL job makes the run not-ok" pass for the WRONG reason,
+    # since long-missing jobs forced all_ok False on their own.
+    import tempfile as _tf
+    _dpdir = _tf.mkdtemp()
+    _dp = Path(_dpdir) / "declared.json"
 
     if _rj:
         # The accesscheck shape (S102): an unreachable box must read NEUTRALLY.
@@ -774,7 +784,7 @@ def selftest():
         # second when you mean the first is how a dead monitor looks like a
         # late one.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: None)
+                                _fetch=lambda: None, _declared_path=_dp)
         _rline = [l for l in _lines if _rj in l]
         ck("an unreachable CUMULUS renders the remote job as can't-confirm",
            _rline and "unreachable — can't confirm" in _rline[0])
@@ -784,7 +794,7 @@ def selftest():
 
         # The inverse: reachable box -> a real row, not the excuse line.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: {_rj: _fresh})
+                                _fetch=lambda: {_rj: _fresh}, _declared_path=_dp)
         _rline = [l for l in _lines if _rj in l]
         ck("...while a REACHABLE CUMULUS produces a real row instead",
            _rline and "can't confirm" not in _rline[0]
@@ -792,22 +802,23 @@ def selftest():
 
         # A remote job that FAILED must still fail the run.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: {_rj: _failed})
+                                _fetch=lambda: {_rj: _failed}, _declared_path=_dp)
         ck("a FAILED remote job makes the whole run not-ok", _ok is False)
 
         # On CUMULUS nothing is fetched remotely at all.
         _called = []
         summarize(_local={_lj: _fresh}, _node="CUMULUS",
-                  _fetch=lambda: _called.append(1))
+                  _fetch=lambda: _called.append(1), _declared_path=_dp)
         ck("on CUMULUS the remote fetch is never attempted", _called == [])
 
     # all_ok aggregation, both directions.
-    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS")
+    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS", _declared_path=_dp)
     ck("one failed LOCAL job makes the run not-ok", _ok is False)
     _lines, _ok = summarize(_local={n: _fresh for n in CADENCE_H},
-                            _node="CUMULUS")
+                            _node="CUMULUS", _declared_path=_dp)
     ck("...and an all-healthy ledger is ok — or the flag is stuck off",
        _ok is True)
+    __import__("shutil").rmtree(_dpdir, ignore_errors=True)
 
     # _fetch_remote: the branch that decides "unreachable" vs "garbage".
     class _R:
