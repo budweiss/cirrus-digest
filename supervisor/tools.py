@@ -799,8 +799,26 @@ def selftest() -> bool:
         ck('...and is pinned to NO arguments with a trailing ""',
            bool(tik) and all(ln.rstrip().endswith('""') for ln in tik))
 
-    ck("restart_service refuses a unit outside the allowlist",
-       "not in ALLOWED_UNITS" in (restart_service.__doc__ or "") or True)
+    # S167: this used to read `"not in ALLOWED_UNITS" in (...doc__...) or True`
+    # -- `or True` makes a check that cannot fail, which manufactures
+    # confidence in the very gate this file exists to prove. Assert the real
+    # refusal path instead, inside the same tempdir-ledger redirect as the
+    # file_repair_ticket refusals above (a refusal ledgers before returning,
+    # so without the redirect this writes to the LIVE ledger off-box -- T32).
+    import ledger as _ledger2
+    import tempfile as _tempfile2
+    _saved2 = (_ledger2.STATE_DIR, _ledger2.LEDGER_JSONL, _ledger2.LEDGER_MD)
+    with _tempfile2.TemporaryDirectory() as _td2:
+        _ledger2.STATE_DIR = Path(_td2)
+        _ledger2.LEDGER_JSONL = Path(_td2) / "ledger.jsonl"
+        _ledger2.LEDGER_MD = Path(_td2) / "CHANGES.md"
+        try:
+            ck("restart_service refuses a unit outside the allowlist",
+               restart_service("sshd.service").startswith("REFUSED"))
+            ck("reset_failed refuses a unit outside the allowlist",
+               reset_failed("sshd.service").startswith("REFUSED"))
+        finally:
+            _ledger2.STATE_DIR, _ledger2.LEDGER_JSONL, _ledger2.LEDGER_MD = _saved2
     ck("_normalize_unit appends .service", _normalize_unit("cirrus-api") == "cirrus-api.service")
     ck("_normalize_unit leaves a full name alone",
        _normalize_unit("cloudflared.service") == "cloudflared.service")

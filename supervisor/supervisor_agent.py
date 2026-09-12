@@ -305,6 +305,14 @@ def _hb_signature(hb: dict) -> str:
     Deliberately NOT hb["detail"] -- that carries counts and free text which
     drift between ticks, and a signature that changes every minute is the same
     as no cooldown at all.
+
+    S167: `blind` and `overdue` were missing from the signature, so a NEW
+    problem of either kind arriving during an unrelated problem's cooldown
+    produced the same signature as the one already cooling and was held for
+    the rest of the window -- while S146's design is that a blind sweep
+    reports on the FIRST run. Job names only for both, never note text:
+    blind entries embed a journal excerpt that drifts between ticks, which
+    is the detail-line problem above wearing a different key.
     """
     parts = ["units:" + ",".join(sorted(hb.get("failed_units") or []))]
     if not hb.get("credentials_ok", True):
@@ -315,6 +323,10 @@ def _hb_signature(hb: dict) -> str:
     parts.append("stalled:" + ",".join(sorted(x.get("job", "")
                                               for x in comp.get("stalled") or [])))
     parts.append("unreadable:" + ",".join(sorted(comp.get("unreadable") or [])))
+    parts.append("blind:" + ",".join(sorted(x.split(" (", 1)[0]
+                                            for x in comp.get("blind") or [])))
+    parts.append("overdue:" + ",".join(sorted(x.get("job", "")
+                                              for x in comp.get("overdue") or [])))
     return "|".join(parts)
 
 
@@ -385,16 +397,26 @@ def main_loop():
 def selftest() -> bool:
     """S81: the escalation cooldown, which is the thing standing between a
     widened failure scan and a burned monthly budget."""
-    global HB_ESCALATION_FILE
+    global HB_ESCALATION_FILE, STATE_DIR
     import tempfile
     checks = []
 
     def ck(name, cond):
         checks.append((name, bool(cond)))
 
-    saved = HB_ESCALATION_FILE
-    tmp = pathlib.Path(tempfile.mkdtemp()) / "esc.json"
-    HB_ESCALATION_FILE = tmp
+    # S167: redirect STATE_DIR as well as the escalation file. The function
+    # under test calls STATE_DIR.mkdir(parents=True) on the live /opt path
+    # before writing; off-box that mkdir raises (no writable
+    # /opt/cumulus-supervisor), the except swallows it, the write never
+    # happens -- and with nothing persisted, every call re-escalates, so
+    # "the same problem one minute later does NOT" failed 3x on any dev
+    # machine. The production logic was never wrong; the test just could
+    # not run anywhere but cumulus1 (T32: selftests must not need a live
+    # path). Verified: with a writable STATE_DIR all checks pass off-box.
+    saved = (STATE_DIR, HB_ESCALATION_FILE)
+    tmpdir = pathlib.Path(tempfile.mkdtemp())
+    STATE_DIR = tmpdir
+    HB_ESCALATION_FILE = tmpdir / "esc.json"
     try:
         hb_scout = {"failed_units": ["opportunity-scout.service"],
                     "credentials_ok": True, "scan_degraded": False,
@@ -434,12 +456,33 @@ def selftest() -> bool:
            _hb_signature(dict(hb_scout, failed_units=["b.service", "a.service"]))
            == _hb_signature(dict(hb_scout, failed_units=["a.service", "b.service"])))
 
+        # S167: a NEW blind sweep or newly overdue job must NOT inherit an
+        # unrelated problem's cooldown -- S146's blind case is defined as
+        # report-immediately, and an overdue job is a harder failure than a
+        # stalled one. Both were absent from the signature until today.
+        hb_blind = dict(hb_scout, completeness={
+            "stalled": [], "unreadable": [],
+            "blind": ["billnewdev ('no new leads (swept 0 plus, ...)')"]})
+        ck("a blind sweep IS a different signature",
+           _hb_signature(hb_blind) != sig)
+        ck("...and escalates even while the first problem is cooling",
+           _should_escalate_hb(_hb_signature(hb_blind), t0 + 100_000 + 120))
+        ck("the blind signature ignores journal-excerpt drift",
+           _hb_signature(dict(hb_scout, completeness={
+               "stalled": [], "unreadable": [],
+               "blind": ["billnewdev ('a completely different note')"]}))
+           == _hb_signature(hb_blind))
+        hb_overdue = dict(hb_scout, completeness={
+            "stalled": [], "unreadable": [], "overdue": [{"job": "pedagogy"}]})
+        ck("a newly overdue job IS a different signature",
+           _hb_signature(hb_overdue) != sig)
+
         # An unwritable state file must not swallow the alert.
         HB_ESCALATION_FILE = pathlib.Path("/nonexistent-dir-s81/esc.json")
         ck("an unwritable state file still lets the alert through",
            _should_escalate_hb("anything", t0))
     finally:
-        HB_ESCALATION_FILE = saved
+        STATE_DIR, HB_ESCALATION_FILE = saved
 
     bad = 0
     for name, ok in checks:

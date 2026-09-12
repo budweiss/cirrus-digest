@@ -123,10 +123,19 @@ def run_heartbeat() -> dict:
     # Deterministic and free, so it belongs on the 60s tick; when it trips,
     # ok=False routes it into the EXISTING escalation path rather than adding a
     # second one. Never allowed to break the heartbeat itself.
+    #
+    # S167: ...and never allowed to VANISH into it, either. The exception
+    # branch below used to fabricate ok=True, and because comp["detail"] only
+    # reaches the alert when ok is False, a completeness module that raised on
+    # every tick rendered as "all clear" -- the exact could-not-check-reads-
+    # as-healthy shape the degraded-scan path above exists to prevent. A crash
+    # is caught here so the tick survives; ok=False is what makes it visible.
+    # The 6h escalation cooldown bounds the cost of a persistently raising
+    # check to one reasoning pass per 6h, and the monthly cap backs that.
     try:
         comp = completeness.check()
     except Exception as e:
-        comp = {"ok": True, "detail": f"completeness check unavailable: {e}",
+        comp = {"ok": False, "detail": f"completeness check raised: {e!r}",
                 "stalled": [], "unreadable": [], "unmonitored": []}
 
     detail_parts = []
@@ -210,6 +219,19 @@ def selftest() -> bool:
         hb = run_heartbeat()
         ck("a clean box still reports ok", hb["ok"] is True)
         ck("...with no degraded flag", hb["scan_degraded"] is False)
+
+        # S167: a completeness module that RAISES must escalate, never read
+        # as all-clear. The exception branch used to absorb a crash into
+        # ok=True, and because comp["detail"] only reaches the alert when
+        # ok is False, a module raising on every tick was invisible.
+        def _boom():
+            raise RuntimeError("boom")
+        _c.check = _boom
+        hb = run_heartbeat()
+        ck("a completeness crash flips ok=False, never 'all clear'",
+           hb["ok"] is False)
+        ck("...and the crash is named in the detail line",
+           "completeness check raised" in hb["detail"])
     finally:
         globals()["_list_failed_units"], globals()["_credentials_ok"] = saved[0], saved[1]
         _c.check = saved[2]
