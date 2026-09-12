@@ -71,10 +71,10 @@ MAX_FILES_PER_PATCH = 4
 MAX_FILE_CONTEXT    = 45_000     # WHOLE-FILE rewrite ceiling. NOT an input limit —
                                  # Sonnet takes far more. It tracks the OUTPUT budget:
                                  # a whole-file rewrite must be returned COMPLETE and
-                                 # 45k chars is ~11-15k tokens, which the 32768
-                                 # max_tokens covers WITH thinking headroom (S161 —
-                                 # was calibrated to 16384 before the builder model
-                                 # started thinking). Files above this are
+                                 # 45k chars is ~11-15k tokens, well inside the 32768
+                                 # max_tokens (S161 — was 16384; the builder's
+                                 # thinking is now disabled, so the budget is all
+                                 # patch text). Files above this are
                                  # not refused any more — they go to EDIT mode (S71).
 MAX_EDIT_FILE       = 200_000    # a file we will SHOW for edit mode. Input-only: edits
                                  # emit just the changed hunks, so the output budget
@@ -388,20 +388,25 @@ def call_claude_build(system: str, user: str):
     if not key:
         raise RuntimeError("no anthropic_api_key in credentials.json")
     model = _builder_model(creds)
-    # S161: 16384 -> 32768. Six consecutive nights (2026-09-05 .. 09-10) every
-    # build died here with "no text in model reply (stop_reason=max_tokens)":
-    # claude-sonnet-5 now thinks before it writes, and thinking is billed
-    # against max_tokens BEFORE any answer text — the S91 gemini trap, the
-    # S74/S75 deepseek one, and S141's local-model fix, now on the builder
-    # itself. A build prompt is hard enough that thinking alone can exceed
-    # 16k tokens, leaving zero for the patch. 32768 covers a 45k-char
-    # whole-file rewrite (~11-15k tokens, the MAX_FILE_CONTEXT ceiling)
-    # plus thinking headroom; edit-mode patches need far less.
+    # S161: thinking DISABLED, and max_tokens 16384 -> 32768. Six consecutive
+    # nights (2026-09-05 .. 09-10) every build died here with "no text in model
+    # reply (stop_reason=max_tokens)": claude-sonnet-5 now thinks ADAPTIVELY by
+    # default and bills thinking against max_tokens BEFORE any answer text —
+    # the S91 gemini trap, the S74/S75 deepseek one, and S141's local-model
+    # fix, now on the builder itself. A build prompt is hard enough that
+    # thinking alone exceeded 16384 — and on 2026-09-11 it exceeded 32768 too
+    # (ledger: out_tok hit the cap exactly, zero text blocks, $0.54 of thinking
+    # for nothing). model_health's own rule after two ratchets is STOP — drop
+    # thinking from the call instead. {type: disabled} is accepted on Sonnet 5
+    # and restores exactly the builder behaviour that worked until 09-05; the
+    # raised budget stays as headroom for whole-file rewrites (the 45k-char
+    # MAX_FILE_CONTEXT ceiling is ~11-15k tokens of patch text).
     resp = requests.post(
         CLAUDE_API_URL,
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                  "content-type": "application/json"},
         json={"model": model, "max_tokens": 32768, "system": system,
+              "thinking": {"type": "disabled"},
               "messages": [{"role": "user", "content": user}]},
         timeout=300)
     resp.raise_for_status()
@@ -428,6 +433,7 @@ def build_model_patch(system: str, user: str, attempts: int = 2):
     unterminated-string JSONDecodeError from parse_model_json) no longer burns
     the nightly build slot — see Session-47 carry-over #8. Raises the last
     error if every attempt fails, so build_item still records a build-error."""
+    import requests as _rq
     last = None
     for n in range(1, attempts + 1):
         try:
@@ -435,9 +441,14 @@ def build_model_patch(system: str, user: str, attempts: int = 2):
             if not (reply and reply.strip()):
                 raise ValueError("empty model reply")
             return parse_model_json(reply)
-        except (ValueError, RuntimeError) as e:
+        except (ValueError, RuntimeError, _rq.RequestException) as e:
             # ValueError covers json.JSONDecodeError (truncated/unterminated);
             # RuntimeError covers the "no text in model reply" 0-char case.
+            # _rq.RequestException covers transport failures — S161: a read
+            # timeout on attempt 2 used to ESCAPE this loop (it is an OSError,
+            # not a ValueError/RuntimeError), so one network flake killed the
+            # whole build without its second swing. HTTPError (raise_for_status)
+            # lands here too.
             last = e
             _log(f"model patch attempt {n}/{attempts} failed: {e}")
     raise last
@@ -445,9 +456,19 @@ def build_model_patch(system: str, user: str, attempts: int = 2):
 
 # ── git / shell helpers ───────────────────────────────────────────────────────
 def _run(args, cwd=None, timeout=120):
-    r = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                       capture_output=True, text=True, timeout=timeout)
-    return r.returncode, (r.stdout + r.stderr).strip()
+    # S161: a probe that HANGS must come back as an ordinary failure, not as a
+    # TimeoutExpired escaping to build_item's catch-all — that is what killed
+    # prop-2026-09-07-705585 twice (a mis-dispatched bare `selftest` ran the
+    # full cirrus_daily production path and hung the pre-patch baseline for
+    # 300s). rc=124 is the shell convention for "timed out"; every caller here
+    # already treats rc != 0 as failure, so a hung suite is recorded as red
+    # (and excused as prebroken) instead of killing the build.
+    try:
+        r = subprocess.run(args, cwd=str(cwd) if cwd else None,
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout}s: {' '.join(str(a) for a in args)[:200]}"
 
 
 def _git(args, cwd=PROJECT_DIR, timeout=120):
@@ -594,7 +615,13 @@ _DISPATCH_DASH_RX = re.compile(r"[\"']--selftest[\"']")
 _DISPATCH_BARE_RX = re.compile(
     r"arg[sv][^\n]*[\"']selftest[\"']"       # "selftest" in args / argv[1] == "selftest"
     r"|[\"']selftest[\"'][^\n]*arg[sv]"
-    r"|==\s*[\"']selftest[\"']")             # elif cmd == "selftest":
+    # cmd == "selftest" / argv[1] == "selftest" — the lvalue must be the
+    # dispatch variable. S161: the old bare `== "selftest"` alternative also
+    # matched ASSERTIONS inside a suite (cirrus_daily.py: `r.get("box") ==
+    # "selftest"`), so gate 2/3 invoked that module as `selftest` — which its
+    # dispatch does not know — and fell through to the PRODUCTION __main__
+    # (a 20-minute digest fetch, or in cirrus_bot.py's case THE LIVE BOT).
+    r"|(?:\bcmd|\bargv(?:\[\d+\])?)\s*==\s*[\"']selftest[\"']")
 # `if __name__ == "__main__":` whose body is nothing but a call to the selftest
 # (optionally via sys.exit / raise SystemExit). Anything else in that block and
 # we must NOT invoke the file bare -- that would run its production path.
@@ -1999,12 +2026,15 @@ def selftest() -> bool:
                         "usage": {"input_tokens": 321, "output_tokens": 54}}
 
         _saved_post, _saved_creds = _rq.post, globals()["_creds"]
-        _rq.post = lambda *a, **k: _R2()
+        _sent = {}
+        _rq.post = lambda *a, **k: (_sent.update(k), _R2())[1]
         globals()["_creds"] = lambda: _tc2
         try:
             _txt = call_claude_build("s", "u")
             _rows2 = [json.loads(l) for l in open(_led2)] if Path(_led2).exists() else []
             ck("S135: call_claude_build still returns the model text", _txt == "PATCH")
+            ck("S161: the builder call sends thinking disabled (adaptive thinking ate the budget)",
+               (_sent.get("json") or {}).get("thinking") == {"type": "disabled"})
             ck("S135: ...and ledgers ONE row tagged dev_agent:build with REAL usage",
                len(_rows2) == 1 and _rows2[0].get("task") == "dev_agent:build"
                and _rows2[0].get("in_tok") == 321 and _rows2[0].get("out_tok") == 54
@@ -2811,6 +2841,29 @@ def _selftest():
     finally:
         globals()["call_claude_build"] = _orig_call
 
+    # S161: a TRANSPORT failure (read timeout, 5xx) is retried too — it is an
+    # OSError, not a ValueError/RuntimeError, and used to escape the loop on
+    # one network flake (prop-2026-09-03-621658, 2026-09-11 attempt 2).
+    _calls = {"n": 0}
+    def _flaky_transport(s, u):
+        _calls["n"] += 1
+        if _calls["n"] == 1:
+            raise _rq.ReadTimeout("read timed out. (read timeout=300)")
+        return '{"summary":"ok2","files":[],"notes":""}'
+    globals()["call_claude_build"] = _flaky_transport
+    try:
+        _jj2 = build_model_patch("sys", "usr", attempts=2)
+        check("build_model_patch: a transport timeout consumes an attempt, not the build",
+              _jj2["summary"] == "ok2" and _calls["n"] == 2)
+    finally:
+        globals()["call_claude_build"] = _orig_call
+
+    # S161: a probe that HANGS comes back rc=124, never an escaping exception
+    # (the mis-dispatched cirrus_daily production run hung the baseline 300s).
+    _rc_t, _out_t = _run([sys.executable, "-c", "import time; time.sleep(3)"], timeout=1)
+    check("_run: a hung probe returns rc=124 instead of raising",
+          _rc_t == 124 and "timed out" in _out_t)
+
     # ...and that the failure it just logged did NOT land in the operational log
     # (S82). The retry above is the only place the suite exercises _log's error
     # path, so this is measured right where it happens, not asserted in theory.
@@ -2984,6 +3037,18 @@ def _selftest():
         # defect S80 fixed in dev-agent-selftest. So: run both, never guess.
         check("selftest_argvs: a module answering to BOTH gets BOTH run",
               selftest_argvs(conv / "both.py") == [["--selftest"], ["selftest"]])
+        # S161: the bare-`== "selftest"` alternative also matched ASSERTIONS —
+        # cirrus_daily.py's `r.get("box") == "selftest"` had gate 2/3 invoke
+        # the module as `selftest`, which its dispatch does not know, so the
+        # PRODUCTION __main__ ran (for cirrus_bot.py that is THE LIVE BOT).
+        (conv / "assertshape.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    if '--selftest' in sys.argv:\n        sys.exit(0)\n"
+            "    print('PRODUCTION PATH')\n"
+            "# inside the suite: check(\"rows\", all(r.get(\"box\") == \"selftest\" for r in rows), True)\n")
+        check("selftest_argvs: an assertion == \"selftest\" is NOT a bare dispatch (S161)",
+              selftest_argvs(conv / "assertshape.py") == [["--selftest"]])
         check("selftest_argvs: dev_agent itself answers to both",
               len(selftest_argvs(Path(__file__))) == 2)
         # `def _selftest` -- dev_loop's spelling, and the RISK CLASSIFIER was
