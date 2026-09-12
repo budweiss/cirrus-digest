@@ -195,14 +195,20 @@ def open_for_thread(client: str, subject: str, path: Path = None) -> list:
 def overdue(now: datetime = None, path: Path = None) -> list:
     """Promises past their SLA and still owed.
 
-    A CONFIRMED promise is the serious one -- the client has said yes and is
-    waiting. It is reported even inside its SLA window once the window passes,
-    and its age is measured from the confirmation, not from the offer.
+    A CONFIRMED promise is the only one that is owed -- the client has said
+    yes and is waiting, and its age is measured from the confirmation, not
+    from the offer. S162: an OPEN row is an OFFER the client never answered —
+    a cold lead, not a broken promise. Reporting those as overdue produced
+    four standing false alarms (three on CUMULUS, one on CIRRUS — every one
+    an unanswered conditional offer, "if Bill wants New Castle…" 17 days
+    cold) that Skywarden escalated to Buddy daily as "client promise(s)
+    OVERDUE". Open offers stay visible as counts in report() and in the
+    supervisor's "offered/confirmed" line; they are not alarms.
     """
     now = now or datetime.now()
     late = []
     for p in _fold(path).values():
-        if p.get("state") not in OPEN_STATES:
+        if p.get("state") != "confirmed":
             continue
         stamp = p.get("confirmed_at") or p.get("at")
         try:
@@ -271,6 +277,12 @@ def selftest() -> int:
         check("another client's thread does not",
               open_for_thread("aggie", "Re: Back Creek - the president, plus "
                                        "every HOA contact", path=p) == [])
+
+        # S162: an unanswered OFFER past its SLA is not an overdue promise —
+        # the client never said yes; it is a cold lead, not a debt. Four
+        # standing false alarms (three CUMULUS, one CIRRUS) were all this.
+        check("an open offer past SLA is NOT overdue",
+              overdue(now=datetime.now() + timedelta(hours=72), path=p) == [])
 
         check("confirming works", confirm_promise(pid, "client said go ahead", path=p))
         check("state is now confirmed",
