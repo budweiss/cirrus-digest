@@ -221,9 +221,72 @@ def extract_from_latest(prefix="digest"):
     return extract_actions(files[0])
 
 
+# ── Selftest ─────────────────────────────────────────────────────────────────
+
+def selftest() -> bool:
+    """Exercise the pure decision-making functions with explicit inputs and
+    expected outputs. Does not touch the network, Ollama, or the filesystem
+    (other than the module-level ACTIONS_DIR mkdir already done at import).
+    Returns True on success, False on any failure (also prints failures)."""
+    failures = []
+
+    def check(name, got, expected):
+        if got != expected:
+            failures.append(f"{name}: expected {expected!r}, got {got!r}")
+
+    # split_digest_chunks: small content stays as one chunk
+    chunks = split_digest_chunks("item one\n---\nitem two", max_chunk=5500)
+    check("split_digest_chunks/small", chunks, ["item one\n---\nitem two"])
+
+    # split_digest_chunks: forces a split when max_chunk is small
+    chunks = split_digest_chunks("aaaaaaaaaa\n---\nbbbbbbbbbb", max_chunk=12)
+    check("split_digest_chunks/forced_split", chunks, ["aaaaaaaaaa", "bbbbbbbbbb"])
+
+    # split_digest_chunks: empty content yields no chunks
+    chunks = split_digest_chunks("", max_chunk=5500)
+    check("split_digest_chunks/empty", chunks, [])
+
+    # parse_sections: basic heading + bullet parsing
+    text = (
+        "## ACTION ITEMS\n"
+        "- Install foo (source: bar)\n"
+        "## RECOMMENDATIONS\n"
+        "* Try qux\n"
+        "## CIRRUS IMPROVEMENT NOTES\n"
+        "## INTERESTING TOOLS/MODELS\n"
+        "## FOLLOW-UP READING\n"
+        "- Read the baz paper\n"
+    )
+    parsed = parse_sections(text)
+    check("parse_sections/action_items", parsed["ACTION ITEMS"], ["- Install foo (source: bar)"])
+    check("parse_sections/recommendations", parsed["RECOMMENDATIONS"], ["- Try qux"])
+    check("parse_sections/improvement_notes", parsed["CIRRUS IMPROVEMENT NOTES"], [])
+    check("parse_sections/follow_up", parsed["FOLLOW-UP READING"], ["- Read the baz paper"])
+
+    # parse_sections: bullets before any heading are dropped
+    text_no_heading = "- orphan bullet\n## ACTION ITEMS\n- real bullet\n"
+    parsed2 = parse_sections(text_no_heading)
+    check("parse_sections/orphan_dropped", parsed2["ACTION ITEMS"], ["- real bullet"])
+
+    # _NONE_BULLET: matches placeholder "none"/"n/a" bullets, not real content
+    check("_NONE_BULLET/none", bool(_NONE_BULLET.match("- None")), True)
+    check("_NONE_BULLET/na", bool(_NONE_BULLET.match("- N/A")), True)
+    check("_NONE_BULLET/nothing", bool(_NONE_BULLET.match("- Nothing to report")), True)
+    check("_NONE_BULLET/real", bool(_NONE_BULLET.match("- Install the new model")), False)
+
+    if failures:
+        for f in failures:
+            log(f"SELFTEST FAIL: {f}")
+        return False
+    log("selftest: all checks passed")
+    return True
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
+    elif len(sys.argv) > 1:
         extract_actions(Path(sys.argv[1]))
     else:
         # Default: extract from latest weekly digest
