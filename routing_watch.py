@@ -177,10 +177,75 @@ def watch_latest(prefix="daily"):
         return []
 
 
+def selftest():
+    """Exercise the pure decision-making functions with explicit inputs/expected
+    outputs. Returns True on success, False on failure. Does not touch network,
+    Ollama, or the real playbook/digest files."""
+    failures = []
+
+    def check(label, actual, expected):
+        if actual != expected:
+            failures.append(f"{label}: expected {expected!r}, got {actual!r}")
+
+    # split_digest_chunks: single small block stays as one chunk.
+    check("split_digest_chunks single block",
+          split_digest_chunks("hello world"),
+          ["hello world"])
+
+    # split_digest_chunks: multiple blocks under max_chunk stay merged into one chunk.
+    check("split_digest_chunks merged",
+          split_digest_chunks("a\n---\nb\n---\nc", max_chunk=1000),
+          ["a\n---\nb\n---\nc"])
+
+    # split_digest_chunks: blocks that exceed max_chunk split into separate chunks.
+    check("split_digest_chunks split",
+          split_digest_chunks("aaaaa\n---\nbbbbb\n---\nccccc", max_chunk=8),
+          ["aaaaa", "bbbbb", "ccccc"])
+
+    # split_digest_chunks: blank/whitespace-only content yields no chunks.
+    check("split_digest_chunks blank", split_digest_chunks("   \n  "), [])
+
+    # _norm: lowercases, strips non-word chars, truncates to 80 chars.
+    check("_norm basic", _norm("- Use GPT-4 for coding!"), "usegpt4forcoding")
+    check("_norm empty", _norm(""), "")
+    long_input = "x" * 200
+    check("_norm truncates", _norm(long_input), ("x" * 80))
+
+    # _existing_keys: nonexistent playbook file -> empty set (no crash).
+    global PLAYBOOK
+    orig_playbook = PLAYBOOK
+    try:
+        PLAYBOOK = Path("/tmp/__routing_watch_selftest_nonexistent__.md")
+        if PLAYBOOK.exists():
+            failures.append("_existing_keys: test path unexpectedly exists")
+        check("_existing_keys missing file", _existing_keys(), set())
+
+        # _existing_keys: only lines starting with '-' are counted, and normalized.
+        PLAYBOOK.write_text("# header\n- Use Claude for long context\nnot a bullet\n- USE GPT-4 for coding\n")
+        expected = {_norm("- Use Claude for long context"), _norm("- USE GPT-4 for coding")}
+        check("_existing_keys parses bullets", _existing_keys(), expected)
+    finally:
+        try:
+            if PLAYBOOK.exists():
+                PLAYBOOK.unlink()
+        except Exception:
+            pass
+        PLAYBOOK = orig_playbook
+
+    if failures:
+        for f in failures:
+            log(f"selftest FAIL: {f}")
+        return False
+    log("selftest: all checks passed")
+    return True
+
+
 if __name__ == "__main__":
     import sys
     try:
-        if len(sys.argv) > 1:
+        if "--selftest" in sys.argv:
+            sys.exit(0 if selftest() else 1)
+        elif len(sys.argv) > 1:
             watch(Path(sys.argv[1]))
         else:
             watch_latest("daily")
