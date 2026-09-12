@@ -36,8 +36,23 @@ def telegram(text):
         urllib.request.urlopen(req, timeout=30).read()
         return True
     except Exception as e:
-        print("telegram send failed:", e)
-        return False
+        # S161: job output breaks Markdown — a square-bracketed error line
+        # ("Command '['/Library...") 400'd the 16:30 alert on 2026-09-11 and
+        # it was LOST, the one day the alert mattered. Retry as plain text:
+        # the alert matters more than the formatting. cirrus_bot.send_message
+        # has carried this fallback for its own sends all along.
+        try:
+            data = json.dumps({"chat_id": int(chat), "text": text}).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{tok}/sendMessage", data=data,
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "CirrusJobsCheck/1.0"})
+            urllib.request.urlopen(req, timeout=30).read()
+            print("telegram: Markdown 400 — sent as plain text instead")
+            return True
+        except Exception as e2:
+            print("telegram send failed:", e2)
+            return False
 
 
 def main():
