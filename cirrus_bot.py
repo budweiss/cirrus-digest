@@ -117,6 +117,16 @@ def _back_off(method, payload):
         time.sleep(delay)
 
 
+def _api_error_line(method, e, body):
+    """The one-line API error log, with Telegram's own reason when it gave
+    one (S168). The bare HTTP status ("400: Bad Request") never says WHICH
+    rejection it was — can't parse entities, message empty, chat not found —
+    and those demand different fixes; on 2026-09-12 the /builds and /approve
+    400s were provable only by reconstructing the queue after the fact."""
+    desc = body.get("description", "") if isinstance(body, dict) else ""
+    return f"API error ({method}): {e}" + (f" — {desc[:140]}" if desc else "")
+
+
 def api_call(method, params=None):
     url = f"{API_URL}/{method}"
     if params:
@@ -138,11 +148,11 @@ def api_call(method, params=None):
         return result
     except urllib.error.HTTPError as e:
         # Return the error body so callers can inspect ok/error_code
-        log(f"API error ({method}): {e}")
         try:
             body = json.loads(e.read())
         except Exception:
             body = {"ok": False, "error_code": e.code}
+        log(_api_error_line(method, e, body))
         # 409 (a second bot on the same token) and 429 (flood control) both
         # arrive here INSTANTLY, so the poll loop used to spin as fast as the
         # network allowed: 12,400 lines in one minute, measured 2026-07-21.
@@ -200,10 +210,16 @@ def send_message(chat_id, text):
         # Telegram rejects messages with unmatched/invalid markdown (400 error).
         # Retry as plain text so tool output with tabs, dashes, etc. always sends.
         if not result.get("ok"):
-            api_call("sendMessage", {
+            retry = api_call("sendMessage", {
                 "chat_id": chat_id,
                 "text": chunk,
             })
+            # S168: say the recovery out loud. Until now a markdown 400 plus
+            # a successful plain-text retry left ONLY the error line in
+            # bot.log, so the morning brief counted a delivered message as a
+            # failure ("2 error line(s)", 2026-09-12).
+            if retry.get("ok"):
+                log("sendMessage: markdown rejected — delivered as plain text")
         if n < total:
             time.sleep(0.5)
 
@@ -2342,6 +2358,18 @@ def selftest() -> bool:
     chunks = split_for_telegram(long_text, max_len=100)
     check("split_long_multiple", len(chunks) > 1)
     check("split_long_within_limit", all(len(c) <= 100 for c in chunks))
+
+    # S168: the API error line carries Telegram's own reason when it gave one
+    check("api_error_line includes the description",
+          "can't parse entities" in _api_error_line(
+              "sendMessage", Exception("HTTP Error 400"),
+              {"description": "Bad Request: can't parse entities"}))
+    check("api_error_line has no dangling separator when there is none",
+          _api_error_line("sendMessage", Exception("HTTP Error 400"), {})
+          .endswith("HTTP Error 400"))
+    check("api_error_line tolerates a non-dict body",
+          "HTTP Error 400" in _api_error_line("sendMessage",
+                                              Exception("HTTP Error 400"), None))
 
     # is_uncertain: empty/short/hedging answers are uncertain; a confident
     # factual answer is not.

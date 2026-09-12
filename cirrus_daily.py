@@ -149,6 +149,24 @@ _PAYWALL_PHRASES = [
     "read the full story",
 ]
 
+# S168: pcmag.com is a FREE site whose articles cross-link each other with
+# "read the full story here" — ordinary editorial prose that trips the
+# paywall phrase check on the raw page (7 false hits, four in one night on
+# one article; the same page fetches 200/885KB with the full text). These
+# hosts are known-free: skipping the phrase check for them beats weakening
+# the phrase list that every real wall still needs. Suffix match, same rule
+# as the cookie domains above.
+_PAYWALL_CHECK_EXEMPT_HOSTS = ("pcmag.com",)
+
+
+def _paywall_hit(page_text_lower: str, url: str) -> bool:
+    """Paywall phrase check with the known-free exemption (S168)."""
+    host = urlparse(url).netloc.lower()
+    if any(host == d or host.endswith("." + d)
+           for d in _PAYWALL_CHECK_EXEMPT_HOSTS):
+        return False
+    return any(phrase in page_text_lower for phrase in _PAYWALL_PHRASES)
+
 PAYWALL_LOG_PATH = LOG_DIR / "paywalls.log"
 
 def log_paywall_hit(url: str, sender: str, subject: str):
@@ -1097,7 +1115,7 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         page_text_lower = resp.text.lower()
 
         # Paywall check before full parse
-        is_paywalled = any(phrase in page_text_lower for phrase in _PAYWALL_PHRASES)
+        is_paywalled = _paywall_hit(page_text_lower, url)
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -1948,6 +1966,25 @@ def selftest() -> bool:
           whole_word_match("ai", "new AI model released"), True)
     check("whole_word_match: rejects substring inside another word",
           whole_word_match("ai", "sent via email"), False)
+
+    # S168: pcmag is a FREE site whose own cross-links ("read the full story
+    # here") tripped the phrase check — 7 false hits, 4 in one night. The
+    # phrase list stays intact for every real wall; pcmag is exempt.
+    _crosslink = ("...the best mobile networks usa 2026 "
+                  "read the full story here, but we can reveal...")
+    check("paywall_hit: pcmag's editorial cross-link is NOT a paywall",
+          _paywall_hit(_crosslink, "https://www.pcmag.com/articles/x"), False)
+    check("paywall_hit: ...on a pcmag subdomain either",
+          _paywall_hit(_crosslink, "https://amp.pcmag.com/x"), False)
+    check("paywall_hit: the SAME text on any other host still is",
+          _paywall_hit(_crosslink, "https://www.example.com/x"), True)
+    check("paywall_hit: a lookalike host does NOT get the exemption",
+          _paywall_hit(_crosslink, "https://notpcmag.com/x"), True)
+    check("paywall_hit: a suffix-attack host does NOT get it either",
+          _paywall_hit(_crosslink, "https://pcmag.com.evil.example/x"), True)
+    check("paywall_hit: a real wall on pcmag still fails the status check "
+          "(only the phrase check is exempted)",
+          "pcmag.com" in _PAYWALL_CHECK_EXEMPT_HOSTS, True)
 
     # matches_keywords reads EMAIL_CFG["keywords"] at call time — pin it to a
     # known list for the duration of this check, then restore exactly what

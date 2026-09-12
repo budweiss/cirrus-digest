@@ -299,9 +299,34 @@ def is_transient(reason):
     return any(m.lower() in r.lower() for m in TRANSIENT)
 
 
+def _fetch_feed_retried(feed_fn, channel_id, attempts=3, backoff=4.0,
+                        sleep_fn=time.sleep):
+    """S168: a feed 404 can be a MINUTE-LONG YouTube blip, not a gone feed.
+    On 2026-09-12 at 00:30 three channels 404'd in one run and every one of
+    them was back to 200 by morning (verified from two networks) — but run()
+    fetched each channel exactly once, so a one-minute edge blip cost the
+    whole night's watch and read in the brief as "feed gone". Retry the
+    transient shapes (404, 429, 5xx, and network errors, which carry no HTTP
+    code) a couple of times before recording an error. A 403/401 is a block,
+    not a blip — retrying those just hammers, so they raise at once.
+    """
+    last = None
+    for attempt in range(attempts):
+        try:
+            return feed_fn(channel_id)
+        except Exception as e:
+            last = e
+            code = getattr(e, "code", None)
+            if code is not None and 400 <= code < 500 and code not in (404, 429):
+                raise                      # blocked/refused: retrying wastes time
+            if attempt + 1 < attempts and backoff:
+                sleep_fn(backoff)
+    raise last
+
+
 def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         transcript_fn=None, extract_fn=None, seen_path=None, out_dir=None,
-        pause=0.0):
+        pause=0.0, feed_attempts=3, feed_backoff=4.0):
     """Injectable throughout so the selftest touches no network and no live file (T32)."""
     channels = channels if channels is not None else load_channels()
     feed_fn = feed_fn or fetch_feed
@@ -316,15 +341,17 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
 
     for ch in channels:
         try:
-            vids = feed_fn(ch["channel_id"])
+            vids = _fetch_feed_retried(feed_fn, ch["channel_id"],
+                                       feed_attempts, feed_backoff)
         except Exception as e:
             # S161: carry the HTTP status — "HTTPError" alone leaves a 429
             # (back off) indistinguishable from a 403 (blocked) or a 404
             # (feed gone), and each demands a different response. Three
             # nights of bare "HTTPError" on every channel proved that.
             _c = getattr(e, "code", None)
-            errors.append("%s: %s%s" % (ch.get("name", "?"), type(e).__name__,
-                                        f" {_c}" if _c is not None else ""))
+            errors.append("%s: %s%s (after %d attempt(s))"
+                          % (ch.get("name", "?"), type(e).__name__,
+                             f" {_c}" if _c is not None else "", feed_attempts))
             continue
         if transient_stop:
             break
@@ -556,6 +583,60 @@ def selftest():
            "normal and successful" in render(_read, "2026-09-04"))
         ck("run: no-transcript never calls the model", called == [])
 
+    # ── S168: feed retry — a blip is not a gone feed ─────────────────────
+    # The 2026-09-12 00:30 run: three channels 404'd once each, all back to
+    # 200 by morning, and the night was lost with no retry anywhere.
+    import urllib.error as _ue
+
+    def _http(code):
+        return _ue.HTTPError("http://x", code, "err", {}, None)
+
+    calls = {"n": 0}
+
+    def flaky(cid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _http(404)
+        return parse_feed(FEED_FIXTURE)
+
+    with tempfile.TemporaryDirectory() as td:
+        r = run(channels=chans, feed_fn=flaky,
+                transcript_fn=lambda v: ("a transcript", ""),
+                extract_fn=lambda v, t, l: [],
+                seen_path=Path(td) / "s.json", out_dir=Path(td) / "o",
+                feed_backoff=0.0)
+        ck("run: a first-try 404 blip is retried, not recorded as an error",
+           r["errors"] == [] and r["processed"] == 2)
+        ck("run: ...and it costs exactly one retry", calls["n"] == 2)
+
+    calls2 = {"n": 0}
+
+    def always404(cid):
+        calls2["n"] += 1
+        raise _http(404)
+
+    with tempfile.TemporaryDirectory() as td:
+        r = run(channels=chans, feed_fn=always404,
+                seen_path=Path(td) / "s.json", out_dir=Path(td) / "o",
+                feed_backoff=0.0)
+        ck("run: a persistent 404 IS recorded once, attempts named",
+           len(r["errors"]) == 1 and "attempt" in r["errors"][0])
+        ck("run: ...after exactly the configured attempts", calls2["n"] == 3)
+
+    calls3 = {"n": 0}
+
+    def blocked(cid):
+        calls3["n"] += 1
+        raise _http(403)
+
+    with tempfile.TemporaryDirectory() as td:
+        r = run(channels=chans, feed_fn=blocked,
+                seen_path=Path(td) / "s.json", out_dir=Path(td) / "o",
+                feed_backoff=0.0)
+        ck("run: a 403 block is NOT retried (no hammering)", calls3["n"] == 1)
+        ck("run: ...but it is still recorded", len(r["errors"]) == 1)
+
+
     # An extract failure is NOT a missing transcript. The first live run on
     # CIRRUS reported "no-transcript 3, 3 errors" for three videos whose
     # transcripts were fetched fine (14,256 chars on one) -- the extract error
@@ -644,7 +725,10 @@ def selftest():
         # by the time anyone looked the feeds were fetching fine again. A count
         # is not a diagnosis.
         ck("run: the error names the channel AND the exception, not just a count",
-           r5["errors"][0] == "Bad: OSError")
+           # S168: the string gained an attempts suffix (the feed is now
+           # retried before an error is recorded). Pinning the full string
+           # still forces a later format change to state its case here.
+           r5["errors"][0] == "Bad: OSError (after 3 attempt(s))")
 
     # --dry-run writes NOTHING
     with tempfile.TemporaryDirectory() as td:

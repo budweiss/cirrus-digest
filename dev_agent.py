@@ -1621,21 +1621,37 @@ def awaiting(builds=None):
             if b.get("status") == "awaiting-confirm"]
 
 
+def _code(text):
+    """Telegram legacy-Markdown code span for free text (S168).
+
+    A build id, summary, file list or council note is ARBITRARY prose —
+    "self_review.py", "qwen2.5:72b", a truncation mid-word — and one
+    unbalanced * _ ` [ in it makes Telegram 400 the WHOLE /builds reply.
+    Measured 2026-09-12 09:07: the markdown send 400'd on exactly such a
+    list and only the plain-text fallback delivered it (bot.log). A code
+    span renders its contents literally; the only character that can break
+    one is a backtick, so that is flattened. The command chrome (*bold*,
+    _italic_) keeps its markup; the DATA goes in spans.
+    """
+    return "`" + str(text).replace("`", "'") + "`"
+
+
 def list_builds_text():
     rows = awaiting()
     if not rows:
         return "No builds awaiting confirmation."
     lines = [f"🔧 *{len(rows)} build(s) awaiting confirm:*", ""]
     for i, b in enumerate(rows, 1):
-        lines.append(f"*{i}. {b['id']}* — {b.get('summary', b.get('detail',''))[:80]}")
-        lines.append(f"   files: {', '.join(b.get('files', []))}")
+        lines.append(f"*{i}. {_code(b['id'])}* — "
+                     f"{_code(b.get('summary', b.get('detail',''))[:80])}")
+        lines.append(f"   files: {_code(', '.join(b.get('files', [])))}")
         lines.append(f"   tests: compile {b.get('test_compile','?')}, "
                      f"dry-run {b.get('test_dryrun','?')}")
         c = b.get("council") or {}
         if c.get("verdict"):
             mark = {"approve": "🟢", "concerns": "🟡", "reject": "🔴"}.get(c["verdict"], "⚪")
             held = "  🔒 HELD (reply `unhold N` to override)" if b.get("council_hold") else ""
-            lines.append(f"   {mark} council: {c['verdict']} — {c.get('notes','')[:90]}{held}")
+            lines.append(f"   {mark} council: {c['verdict']} — {_code(c.get('notes','')[:90])}{held}")
         lines.append("")
     lines.append("_Reply `ship N` to deploy or `discard N` to drop._")
     return "\n".join(lines)
@@ -2237,6 +2253,39 @@ def selftest() -> bool:
     ok, _, ch = plan_edits({"a.py": "X\n", "b.py": "keep\n"},
                            [{"path": "a.py", "find": "X", "replace": "Y"}])
     ck("untouched files are not reported as changed", ok and set(ch) == {"a.py"})
+
+    # ── S168: /builds free text can no longer 400 the whole reply ─────────
+    # A build summary is arbitrary prose; one unbalanced entity in it made
+    # Telegram reject the WHOLE /builds message (2026-09-12 09:07, bot.log —
+    # only the plain-text fallback delivered it). Code spans protect the
+    # data; the chrome keeps its markup.
+    ck("_code wraps prose in a protective span",
+       _code("self_review.py") == "`self_review.py`")
+    ck("_code flattens the one character that can break a span",
+       _code("a`b") == "`a'b`")
+    _saved_awaiting = globals()["awaiting"]
+    try:
+        globals()["awaiting"] = lambda builds=None: [{
+            "id": "prop-2026-09-12-1",
+            "summary": "self_review.py (525 lines) defines no selftest(). "
+                       "Add one that exercis",
+            "files": ["self_review.py"],
+            "council": {"verdict": "concerns",
+                        "notes": "uses *emphasis* and _both_ kinds"},
+        }]
+        _txt = list_builds_text()
+        # With every free-text special inside a code span, the only entities
+        # Telegram parses are the chrome's — balanced by construction. The
+        # 09:07 failure was an odd count of a special char in raw prose.
+        _specials = sum(_txt.count(c) for c in "*_`[")
+        ck("a special-laden build leaves the message balanced",
+           _specials % 2 == 0)
+        ck("...and the data is visibly code-spanned",
+           "`self_review.py (525 lines)" in _txt)
+        ck("...and the chrome markup survived",
+           "*1." in _txt and "_Reply" in _txt)
+    finally:
+        globals()["awaiting"] = _saved_awaiting
 
     bad = 0
     for name, good in checks:
