@@ -14,7 +14,7 @@ during the week is what gets sent.
 """
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -24,6 +24,54 @@ import entity_kb                   # noqa: E402
 
 TO = "Buddy.Weiss@outlook.com"
 LOCK = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+
+# ── S169: the deterministic Saturday sender (systemd timer) ──────────────────
+# On 2026-09-12 the Saturday recap was a desktop session task — a five-step
+# prompt whose EMAIL was the last step. It fired at 09:00, ran the check
+# (the ledger has it at 09:00:56), and stopped short of the send, silently.
+# Buddy found out at 11:30 because there was nothing to find. The send now
+# has a deterministic path (`immaculate-saturday-final.timer` on CUMULUS
+# runs this script with --window every Saturday 09:05), and the guards below
+# make a weekly timer safe: outside contest week it records a quiet no-op,
+# inside it a re-fire is suppressed like billsnow's duplicate guard.
+SENT_MARKER = HERE / "logs/immaculate-final-sent.json"
+WINDOW = timedelta(hours=36)   # opens Sat 01:00 ET for a Sunday 1pm lock
+
+
+def _send_window_open(now=None):
+    """True only in sight of the lock — an email after it is worthless and
+    one a month early is noise."""
+    now = now or datetime.now(timezone.utc)
+    return (LOCK - WINDOW) <= now <= LOCK
+
+
+def _already_sent_today(now=None):
+    now = now or datetime.now(timezone.utc)
+    try:
+        d = json.loads(SENT_MARKER.read_text())
+        return str(d.get("sent_utc", ""))[:10] == now.strftime("%Y-%m-%d")
+    except Exception:
+        return False
+
+
+def _stamp_sent(now=None):
+    now = now or datetime.now(timezone.utc)
+    try:
+        SENT_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        SENT_MARKER.write_text(json.dumps({"sent_utc": now.isoformat()}))
+    except Exception:
+        pass          # the marker is a courtesy, never a reason to fail
+
+
+def _record(ok, note):
+    """Report to the job ledger so Skywarden sees this job like any other —
+    a FAILED send exits nonzero, becomes a failed unit, and is the
+    heartbeat's business. try/except: monitoring must never break the send."""
+    try:
+        import job_status
+        job_status.record("immaculatesaturdayfinal", ok, note[:200])
+    except Exception:
+        pass
 
 
 def recent_changes(hours=36, db_path=None):
@@ -110,9 +158,25 @@ def compose(rows, changes, now=None):
 
 def main():
     dry = "--dry-run" in sys.argv
+    windowed = "--window" in sys.argv
+    # S169: --window is the deterministic (systemd-timer) path. ORDER MATTERS:
+    # the contest-state guards come FIRST — off-season the CRM legitimately
+    # holds anything, and the 24-answer refusal must not fire weekly for months.
+    if windowed and not _send_window_open():
+        print("no active contest — the send window is closed")
+        _record(True, "no active contest — the send window is closed")
+        return 0
+    if windowed and _already_sent_today():
+        # the billsnow/alopeciabrief idiom: a re-fire is the guard doing its
+        # job, not a failure — record a good run, send nothing.
+        print("already sent today — duplicate send suppressed")
+        _record(True, "already sent today — duplicate send suppressed")
+        return 0
     rows = store.answers()
     if len(rows) != 24:
         print(f"REFUSING TO SEND: the CRM holds {len(rows)} answers, not 24.")
+        if windowed:
+            _record(False, f"REFUSED: CRM holds {len(rows)} answers, not 24")
         return 1
     changes = recent_changes()
     subject, body = compose(rows, changes)
@@ -130,6 +194,10 @@ def main():
     ok = _send_mail(creds.get("outlook_email", ""), creds.get("outlook_password", ""),
                     TO, "", subject, body)
     print("email:", "sent" if ok else "FAILED")
+    if windowed:
+        if ok:
+            _stamp_sent()
+        _record(ok, "sent" if ok else "email send FAILED")
     return 0 if ok else 1
 
 
@@ -160,6 +228,71 @@ def selftest() -> int:
     _, b3 = compose(rows, [], now=LOCK + timedelta(hours=1))
     ck("after the lock it stops telling him to hurry",
        "final" in b3 and "hours from now" not in b3)
+
+    # ── S169: the deterministic Saturday sender's guards ─────────────────
+    ck("the window is open in sight of the lock",
+       _send_window_open(LOCK - timedelta(hours=12)) is True)
+    ck("...closed 48h out", _send_window_open(LOCK - timedelta(hours=48)) is False)
+    ck("...and closed once the lock passes",
+       _send_window_open(LOCK + timedelta(hours=1)) is False)
+
+    import tempfile as _tf
+    _saved = (globals()["SENT_MARKER"], globals()["_record"],
+              globals()["_send_window_open"], store.answers)
+    try:
+        with _tf.TemporaryDirectory() as _td:
+            globals()["SENT_MARKER"] = Path(_td) / "sent.json"
+            ck("a fresh marker path means not sent today",
+               _already_sent_today() is False)
+            _stamp_sent()
+            ck("...and after stamping it means sent today",
+               _already_sent_today() is True)
+
+            # The guard ORDER is the whole point: off-window, main() must
+            # return BEFORE touching the CRM, which legitimately holds
+            # anything off-season.
+            recorded = []
+            globals()["_record"] = lambda ok, note: recorded.append((ok, note))
+            globals()["_send_window_open"] = lambda now=None: False
+            store.answers = lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("CRM must not be read off-window"))
+            _argv, sys.argv = sys.argv, ["x", "--window"]
+            try:
+                rc = main()
+            finally:
+                sys.argv = _argv
+            ck("off-window exits 0 without touching the CRM", rc == 0)
+            ck("...and records a quiet no-op, not a failure",
+               recorded == [(True, "no active contest — the send window is closed")])
+
+            # In-window with today's send already done: suppressed, good run.
+            recorded.clear()
+            globals()["_send_window_open"] = lambda now=None: True
+            _argv, sys.argv = sys.argv, ["x", "--window"]
+            try:
+                rc = main()
+            finally:
+                sys.argv = _argv
+            ck("an in-window re-fire is suppressed, not duplicated", rc == 0)
+            ck("...and recorded as the guard working, ok=True",
+               recorded and recorded[0][0] is True
+               and "suppressed" in recorded[0][1])
+
+            # In-window with the wrong answer count: refuses, records FAILURE.
+            recorded.clear()
+            globals()["SENT_MARKER"] = Path(_td) / "never.json"
+            store.answers = lambda *a, **k: [{}] * 23
+            _argv, sys.argv = sys.argv, ["x", "--window"]
+            try:
+                rc = main()
+            finally:
+                sys.argv = _argv
+            ck("in-window with != 24 answers refuses", rc == 1)
+            ck("...and records ok=False so the heartbeat sees it",
+               recorded and recorded[0][0] is False)
+    finally:
+        (globals()["SENT_MARKER"], globals()["_record"],
+         globals()["_send_window_open"], store.answers) = _saved
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAILURE(S)'}")
     return 1 if fails else 0
 

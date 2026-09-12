@@ -40,6 +40,11 @@ CADENCE_H = {
     # recovered from afterwards. Daily 07:15, run by a scheduled task that
     # ssh's to cumulus1; 26h leaves the usual 2h of grace.
     "immaculatecheck": 26,
+    # S169. The deterministic Saturday final-recap email (systemd timer on
+    # CUMULUS, Sat 09:05) — after the session-task version fired at 09:00 on
+    # 2026-09-12, ran the check, and never reached the send, silently. Weekly
+    # beat, records "no active contest" off-season; 192h = a week + grace.
+    "immaculatesaturdayfinal": 192,
     # S148. Daily 01:00 on CIRRUS. Watched from the day it was created, for the
     # reason at the top of this table -- and with extra force here, because this
     # job's ENTIRE purpose is noticing silence. One that stopped silently would

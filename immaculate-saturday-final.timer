@@ -1,0 +1,26 @@
+[Unit]
+Description=Immaculate Saturday final-recap email — Sat 09:05 (S169)
+
+# WHY THIS TIMER EXISTS. Until 2026-09-12 the Saturday recap was a desktop
+# session task — a five-step prompt whose EMAIL was the last step. That
+# morning it fired at 09:00, ran the daily check (the ledger has it at
+# 09:00:56), and stopped short of the send, silently: no failure recorded
+# anywhere, and Buddy found out at 11:30 because there was nothing to find.
+# A must-happen send does not belong at the end of a session prompt. This
+# timer runs the sender directly, every Saturday 09:05, and the --window
+# guard in immaculate_email.py makes the weekly beat a quiet no-op outside
+# contest week. A FAILED send exits nonzero -> failed unit -> Skywarden's
+# heartbeat, which is the detection the session task never had.
+#
+# Saturday has no busy-window rule (weekdays 08:00-16:00 only); 09:05 sits
+# after the daily 07:15 check so the recap reflects it.
+#
+# Retiming is `cumulus-schedule`, never a bare restart — Persistent=true
+# means a restart holding an old stamp FIRES the job (T39). The install
+# stamps it elapsed for the same reason.
+[Timer]
+OnCalendar=Sat *-*-* 09:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

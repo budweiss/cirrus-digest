@@ -538,6 +538,14 @@ NO_ZERO_STATE = {
         "is heartbeat's; there is no third state for a zero-run rule to detect. "
         "Cover is complete without one — the cadence check catches a run that "
         "never happened, heartbeat catches a send that failed.",
+    # S169 — the deterministic Saturday final-recap email.
+    "immaculatesaturdayfinal":
+        "Its notes are a closed set: 'sent', 'no active contest — the send "
+        "window is closed', and 'already sent today — duplicate send "
+        "suppressed' are all ok=True, and each means the job did its whole "
+        "job (off-season, a quiet no-op IS the correct run). A failed or "
+        "refused send sets ok=False and is heartbeat's. There is no third "
+        "state for a zero-run rule to detect.",
 }
 
 
