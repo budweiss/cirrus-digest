@@ -625,6 +625,41 @@ def _slug_for(idea_label: str, title: str) -> str:
     return entity_kb.slugify(idea_label or title)
 
 
+def _same_idea(a: str, b: str) -> bool:
+    """True only when two labels plausibly name the SAME business idea.
+
+    S165: resolve_slug() used to accept search_entities()' top hit unchecked,
+    and that matcher fires on just TWO shared words longer than 3 chars --
+    deliberately loose, because it was built for near-verbatim "what do you
+    have on X" lookups in the HOA CRM. Pointed at idea labels it merged
+    DISTINCT ideas that shared generic words: "WARN Act Layoff Lead Feed for
+    Staffing Firms" merged into "ttb-new-craft-beverage-lead-feed" ({lead,
+    feed}), "Startup Hiring Velocity Signal Feed" into
+    "automated-executive-funding-signal-feed" ({signal, feed}). upsert_entity
+    then overwrote the entity NAME, so the pipeline's only 8/10 idea (the TTB
+    COLA lead feed) spent weeks invisible under a 6/10 idea's name, and one
+    rejected idea was silently resurrected as a candidate.
+
+    A hidden merge is worse than a visible duplicate: a dupe is noise a human
+    can collapse; a merge destroys an idea's identity and its score. So this
+    gate is strict -- a genuinely same idea resurfaces with near-identical
+    wording far more often than two different ideas share 75% of their
+    content words.
+    """
+    na = " ".join((a or "").lower().replace("-", " ").split())
+    nb = " ".join((b or "").lower().replace("-", " ").split())
+    if not na or not nb:
+        return False
+    if na == nb or na in nb or nb in na:
+        return True
+    wa = {w for w in na.split() if len(w) > 3 and w.isalnum()}
+    wb = {w for w in nb.split() if len(w) > 3 and w.isalnum()}
+    if len(wa) < 3 or len(wb) < 3:
+        return False
+    overlap = len(wa & wb)
+    return overlap >= 3 and overlap / min(len(wa), len(wb)) >= 0.75
+
+
 def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
     """Return (slug, is_new). Checks entity_kb for an existing entity that
     already covers this idea before minting a new slug.
@@ -634,14 +669,19 @@ def resolve_slug(idea_label: str, title: str, db_path: str = None) -> tuple:
     episode and its companion post about the SAME underlying story -- the
     LLM labels each article slightly differently, so slug-only matching
     can't collapse them. Same fuzzy-match-first pattern
-    hoa_daily_research.run_discovery() already uses for communities."""
+    hoa_daily_research.run_discovery() already uses for communities.
+
+    S165: ...but only reuse the slug when _same_idea() confirms the match is
+    genuinely the same idea -- see its comment for the merge corruption the
+    unchecked version caused."""
     name = idea_label or title
     try:
-        matches = entity_kb.search_entities(KB_PROJECT, name, db_path=db_path, limit=1)
+        matches = entity_kb.search_entities(KB_PROJECT, name, db_path=db_path, limit=3)
     except Exception:
         matches = []
-    if matches:
-        return matches[0]["slug"], False
+    for m in matches:
+        if _same_idea(name, m.get("name", "")):
+            return m["slug"], False
     return entity_kb.slugify(name), True
 
 
@@ -1262,6 +1302,28 @@ def selftest() -> bool:
         checks.append(("the same idea seen again is NOT a second entity", new2 is False))
         _slug3, new3 = resolve_slug("Automated Podcast Clip Service", "t3", db_path=db_path)
         checks.append(("an unrelated idea still resolves as new", new3 is True))
+
+        # S165 regression: search_entities() fires on just two shared words,
+        # and resolve_slug() used to accept that unchecked -- DISTINCT ideas
+        # sharing generic words ("lead feed", "signal feed") got merged and
+        # the later idea's name overwrote the earlier one's entity. These
+        # pairs are the actual live collisions from the KB.
+        entity_kb.upsert_entity(KB_PROJECT, "ttb-new-craft-beverage-lead-feed",
+                                "TTB New Craft Beverage Lead Feed", db_path=db_path)
+        _s, new4 = resolve_slug("WARN Act Layoff Lead Feed for Staffing Firms",
+                                "t4", db_path=db_path)
+        checks.append(("distinct ideas sharing two generic words do NOT merge",
+                       new4 is True))
+        entity_kb.upsert_entity(KB_PROJECT, "automated-executive-funding-signal-feed",
+                                "Automated Executive Funding Signal Feed", db_path=db_path)
+        _s, new5 = resolve_slug("Startup Hiring Velocity Signal Feed",
+                                "t5", db_path=db_path)
+        checks.append(("distinct signal feeds do NOT merge", new5 is True))
+        entity_kb.upsert_entity(KB_PROJECT, "uspto-trademark-squatter-watch",
+                                "USPTO Trademark Squatter Watch", db_path=db_path)
+        _s, new6 = resolve_slug("USPTO Trademark Squatter Watch Service",
+                                "t6", db_path=db_path)
+        checks.append(("a near-identical rewording DOES still merge", new6 is False))
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
