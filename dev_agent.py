@@ -2844,11 +2844,12 @@ def _selftest():
     # S161: a TRANSPORT failure (read timeout, 5xx) is retried too — it is an
     # OSError, not a ValueError/RuntimeError, and used to escape the loop on
     # one network flake (prop-2026-09-03-621658, 2026-09-11 attempt 2).
+    import requests as _rqt
     _calls = {"n": 0}
     def _flaky_transport(s, u):
         _calls["n"] += 1
         if _calls["n"] == 1:
-            raise _rq.ReadTimeout("read timed out. (read timeout=300)")
+            raise _rqt.ReadTimeout("read timed out. (read timeout=300)")
         return '{"summary":"ok2","files":[],"notes":""}'
     globals()["call_claude_build"] = _flaky_transport
     try:
