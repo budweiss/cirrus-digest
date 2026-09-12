@@ -318,7 +318,13 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         try:
             vids = feed_fn(ch["channel_id"])
         except Exception as e:
-            errors.append("%s: %s" % (ch.get("name", "?"), type(e).__name__))
+            # S161: carry the HTTP status — "HTTPError" alone leaves a 429
+            # (back off) indistinguishable from a 403 (blocked) or a 404
+            # (feed gone), and each demands a different response. Three
+            # nights of bare "HTTPError" on every channel proved that.
+            _c = getattr(e, "code", None)
+            errors.append("%s: %s%s" % (ch.get("name", "?"), type(e).__name__,
+                                        f" {_c}" if _c is not None else ""))
             continue
         if transient_stop:
             break
@@ -572,6 +578,19 @@ def selftest():
             raise RuntimeError("model down")
         r4 = run(channels=chans, feed_fn=feed, transcript_fn=lambda v: ("t", ""),
                  extract_fn=boom, seen_path=Path(td) / "s.json", out_dir=Path(td) / "o")
+
+    # S161: a feed error must carry its HTTP status — "HTTPError" alone leaves
+    # a 429 (back off) indistinguishable from a 403 (blocked) / 404 (feed gone).
+    with tempfile.TemporaryDirectory() as td:
+        import urllib.error as _ue
+        def feed403(cid):
+            raise _ue.HTTPError("u", 403, "Forbidden", None, None)
+        r5 = run(channels=chans[:1], feed_fn=feed403,
+                 transcript_fn=lambda v: ("t", ""),
+                 extract_fn=lambda v, t, l: [],
+                 seen_path=Path(td) / "s.json", out_dir=Path(td) / "o")
+        ck("run: a feed error records the HTTP status code",
+           r5["errors"] and "403" in r5["errors"][0])
         ck("run: an extractor exception is recorded, not fatal",
            r4["processed"] == 2 and len(r4["errors"]) == 2)
 
