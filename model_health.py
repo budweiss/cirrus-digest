@@ -566,6 +566,16 @@ def tailnet_verdict(status, expect=TAILNET_EXPECT, now=None):
     elif not self_.get("Online"):
         problems.append(f"THIS node ({self_host}) reports Online=False")
 
+    if problems:
+        # STOP HERE when the local node is the problem. A logged-out node sees
+        # no peers at all, so evaluating them would report every healthy box as
+        # ABSENT -- three alarms for one fault, two of them accusing machines
+        # that are fine. Measured on CIRRUS the day this shipped: it named
+        # cumulus1 and cumulus2 absent while both were up. A check that blames
+        # the wrong box is worse than a quiet one, because the next person stops
+        # believing it.
+        return problems, "peers unknowable while this node is off the tailnet"
+
     seen = {}
     for peer in ((status or {}).get("Peer") or {}).values():
         h = (peer.get("HostName") or "").lower()
@@ -1821,6 +1831,25 @@ def selftest():
                   "c": {"HostName": "buddyss-macbook-pro", "Online": False}}})
     _ok = not any("macbook" in x for x in _probs)
     print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: an offline LAPTOP is not an alert (cry-wolf guard)")
+    fails += 0 if _ok else 1
+    # S173, found by running the check FOR REAL on CIRRUS: a logged-out node
+    # sees no peers, so evaluating them named cumulus1 and cumulus2 ABSENT while
+    # both were up. One fault must not produce three alarms, two of them against
+    # healthy machines. Asserted in BOTH directions so the gate cannot be
+    # loosened (peers ignored when local is broken) or tightened into silence
+    # (peers still evaluated when local is fine) without a FAIL.
+    _probs, _ = tailnet_verdict(
+        {"BackendState": "NeedsLogin", "Self": {"HostName": "cirrus", "Online": False},
+         "Peer": {}})
+    _ok = len(_probs) == 1 and "not on the tailnet" in _probs[0]
+    print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: a logged-out node blames ONLY itself, never its peers")
+    fails += 0 if _ok else 1
+    _probs, _ = tailnet_verdict(
+        {"BackendState": "Running", "Self": {"HostName": "cumulus1", "Online": True},
+         "Peer": {"a": {"HostName": "cirrus", "Online": False},
+                  "b": {"HostName": "cumulus2", "Online": True}}})
+    _ok = any("cirrus is OFFLINE" in x for x in _probs)
+    print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: ...but a HEALTHY node still audits its peers")
     fails += 0 if _ok else 1
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
