@@ -525,6 +525,116 @@ def check_detached_jobs(creds=None):
     return (f"detached jobs: {ok} marker(s), none unaccounted for", False)
 
 
+# ── Tailnet reachability (S173) ──────────────────────────────────────────────
+# CIRRUS sat OFF the tailnet for 21 days and nothing said so. Every existing
+# check watched whether JOBS ran, and they all ran -- ssh reaches CIRRUS over
+# the Cloudflare tunnel, so losing the tailnet cost us a fallback path silently.
+# Root cause was `brew services start tailscale` on 2026-09-05 starting a fresh
+# daemon with an EMPTY state file: service up, node logged out, and "started
+# successfully" reported as if that were the same thing.
+#
+# THE DESIGN POINT: a box that is off the tailnet cannot report that it is off
+# the tailnet. So this checks BOTH directions -- the local daemon's own backend
+# state, AND every expected peer as seen from here. Run on two boxes, each
+# covers the other's blind spot; run on one, it still catches its own logout.
+#
+# Only SERVERS are expected up. A laptop being offline is normal, and a check
+# that flags it every day is a check that gets muted (rule 3b).
+TAILSCALE_BINS = ("/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
+                  "/usr/bin/tailscale", "tailscale")
+TAILNET_EXPECT = ("cirrus", "cumulus1", "cumulus2")
+
+
+def tailnet_verdict(status, expect=TAILNET_EXPECT, now=None):
+    """(problems, summary) from a parsed `tailscale status --json` dict.
+
+    Pure and offline so the selftest can drive it with fixtures -- the IO lives
+    in check_tailnet(). Reads only named fields; the JSON also carries node
+    public keys and this must never echo them (SECRET-EXPOSURE-PREVENTION).
+    """
+    from datetime import timezone          # module imports only datetime+timedelta
+    now = now or datetime.now(timezone.utc)
+    problems = []
+
+    state = (status or {}).get("BackendState") or "unknown"
+    self_ = (status or {}).get("Self") or {}
+    self_host = (self_.get("HostName") or "?").lower()
+    if state != "Running":
+        # NeedsLogin is the 2026-09-05 CIRRUS failure exactly.
+        problems.append(f"THIS node ({self_host}) is not on the tailnet: "
+                        f"BackendState={state}")
+    elif not self_.get("Online"):
+        problems.append(f"THIS node ({self_host}) reports Online=False")
+
+    seen = {}
+    for peer in ((status or {}).get("Peer") or {}).values():
+        h = (peer.get("HostName") or "").lower()
+        if h:
+            seen[h] = peer
+
+    for want in expect:
+        w = want.lower()
+        if w == self_host:
+            continue                      # covered by the Self checks above
+        peer = seen.get(w)
+        if peer is None:
+            # Also how a rename is caught: re-authenticating a node whose old
+            # record still holds the name comes back as "cirrus-1", and the
+            # expected "cirrus" then goes ABSENT rather than silently passing.
+            problems.append(f"{want} is ABSENT from the tailnet (renamed? removed?)")
+            continue
+        if peer.get("Online"):
+            continue
+        age = ""
+        ls = peer.get("LastSeen") or ""
+        try:
+            t = datetime.fromisoformat(ls.replace("Z", "+00:00"))
+            days = (now - t).days
+            age = f", last seen {days}d ago" if days >= 1 else ", last seen <1d ago"
+        except Exception:  # noqa: BLE001 -- a missing/odd timestamp must not hide the offline
+            age = f", last seen {ls or 'unknown'}"
+        problems.append(f"{want} is OFFLINE{age}")
+
+    online = [w for w in expect
+              if w.lower() == self_host or (seen.get(w.lower()) or {}).get("Online")]
+    summary = f"{len(online)}/{len(expect)} expected node(s) online"
+    return problems, summary
+
+
+def check_tailnet(creds=None):
+    """(line, should_notify). S173. Never raises."""
+    import subprocess                     # not a module-level import in this file
+    expect = tuple((creds or {}).get("tailnet_expect") or TAILNET_EXPECT)
+    raw, last_err = "", ""
+    for b in TAILSCALE_BINS:
+        try:
+            r = subprocess.run([b, "status", "--json"], capture_output=True,
+                               text=True, timeout=20)
+            if r.returncode == 0 and r.stdout.strip():
+                raw = r.stdout
+                break
+            last_err = (r.stderr or r.stdout or "").strip()[:120]
+        except FileNotFoundError:
+            continue
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {e}"
+    if not raw:
+        # No tailscale, or the daemon is down. That is a FINDING, not a pass:
+        # an empty probe is a missing measurement, never a negative one (T76).
+        return (f"tailnet: could not read status ({last_err or 'no tailscale binary'})",
+                True)
+    try:
+        status = json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        return (f"tailnet: unparseable status ({type(e).__name__})", True)
+
+    problems, summary = tailnet_verdict(status, expect)
+    if problems:
+        return ("tailnet: " + "; ".join(problems[:3])
+                + (f" (+{len(problems)-3} more)" if len(problems) > 3 else ""), True)
+    return (f"tailnet: {summary}", False)
+
+
 # ── Endpoint config vs REALITY (S141, watcher audit item 4) ──────────────────
 # `serve-tp2.sh` says what we ASK the engine for. It does not say what the
 # engine DID. vLLM resolves several of those flags against what the hardware
@@ -1136,6 +1246,7 @@ def main():
     tr_line, tr_notify = check_local_truncation(creds)            # S141
     ep_line, ep_notify = check_endpoint_config(creds)             # S141
     dj_line, dj_notify = check_detached_jobs(creds)               # S141
+    tn_line, tn_notify = check_tailnet(creds)                     # S173
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
@@ -1144,6 +1255,7 @@ def main():
     print(f"  cutoff:  {tr_line}")
     print(f"  engine:  {ep_line}")
     print(f"  detach:  {dj_line}")
+    print(f"  tailnet: {tn_line}")
     print(f"  runtime: {runtime_line}")
     print(f"  {models_line}")
     print(f"  {dl_line}")
@@ -1157,7 +1269,7 @@ def main():
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify
-            or ep_notify or dj_notify or dl_notify):
+            or ep_notify or dj_notify or dl_notify or tn_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -1663,6 +1775,53 @@ def selftest():
     # nothing invokes is not a test -- the dev-loop's gate 2 runs exactly this
     # entry point.
     fails += selftest_delist()
+
+    # ── S173: the tailnet check. Driven with fixtures, because the live tailnet
+    #    is not a test -- on the day this shipped it happened to have CIRRUS
+    #    offline, and a green run against a healthy fleet proves nothing.
+    _SELF_C1 = {"HostName": "cumulus1", "Online": True}
+    _tn = [
+        # (label, status, must_flag_substring_or_None)
+        ("the real S173 failure: cirrus offline 21d, seen from cumulus1",
+         {"BackendState": "Running", "Self": _SELF_C1,
+          "Peer": {"a": {"HostName": "cirrus", "Online": False,
+                         "LastSeen": "2026-08-22T17:47:42Z"},
+                   "b": {"HostName": "cumulus2", "Online": True}}}, "cirrus is OFFLINE"),
+        ("this node logged out -- the box reports its OWN blind spot",
+         {"BackendState": "NeedsLogin", "Self": {"HostName": "cirrus", "Online": False},
+          "Peer": {}}, "not on the tailnet"),
+        ("a re-auth that came back as cirrus-1 is caught, not silently passed",
+         {"BackendState": "Running", "Self": _SELF_C1,
+          "Peer": {"a": {"HostName": "cirrus-1", "Online": True},
+                   "b": {"HostName": "cumulus2", "Online": True}}}, "ABSENT"),
+        ("Self Online=False flags even when the backend says Running",
+         {"BackendState": "Running", "Self": {"HostName": "cumulus1", "Online": False},
+          "Peer": {"a": {"HostName": "cirrus", "Online": True},
+                   "b": {"HostName": "cumulus2", "Online": True}}}, "Online=False"),
+        ("a missing LastSeen still reports OFFLINE -- no timestamp, no excuse",
+         {"BackendState": "Running", "Self": _SELF_C1,
+          "Peer": {"a": {"HostName": "cirrus", "Online": False},
+                   "b": {"HostName": "cumulus2", "Online": True}}}, "cirrus is OFFLINE"),
+        ("a HEALTHY fleet is silent -- the control, without which the rest is noise",
+         {"BackendState": "Running", "Self": _SELF_C1,
+          "Peer": {"a": {"HostName": "cirrus", "Online": True},
+                   "b": {"HostName": "cumulus2", "Online": True}}}, None),
+    ]
+    for _label, _st, _want in _tn:
+        _probs, _summary = tailnet_verdict(_st)
+        _ok = (not _probs) if _want is None else any(_want in x for x in _probs)
+        print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: {_label}")
+        fails += 0 if _ok else 1
+    # rule 3b scoping: a laptop is not a server. Flagging it daily is how this
+    # check would get muted, so its absence from the alert is itself asserted.
+    _probs, _ = tailnet_verdict(
+        {"BackendState": "Running", "Self": _SELF_C1,
+         "Peer": {"a": {"HostName": "cirrus", "Online": True},
+                  "b": {"HostName": "cumulus2", "Online": True},
+                  "c": {"HostName": "buddyss-macbook-pro", "Online": False}}})
+    _ok = not any("macbook" in x for x in _probs)
+    print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: an offline LAPTOP is not an alert (cry-wolf guard)")
+    fails += 0 if _ok else 1
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
