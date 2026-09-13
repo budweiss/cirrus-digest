@@ -517,9 +517,80 @@ def _gate_test():
                 print(f"  COUNCIL : failed ({e})")
 
 
+def selftest() -> bool:
+    """No-network, no-side-effect check of this module's pure decision-making
+    functions with explicit inputs and expected outputs. Exits non-zero (via the
+    dispatch below) on failure so dev_agent's gate 2 can actually cover this
+    file instead of reporting 'selftest' while inspecting nothing."""
+    failures = []
+
+    def check(label, cond):
+        if not cond:
+            failures.append(label)
+
+    # SOURCE_RX: should match "add ... feed/rss/podcast" style suggestions.
+    check("SOURCE_RX matches 'subscribe to this RSS feed'",
+          bool(SOURCE_RX.search("you should subscribe to this RSS feed")))
+    check("SOURCE_RX matches 'follow this newsletter'",
+          bool(SOURCE_RX.search("follow this newsletter for updates")))
+    check("SOURCE_RX does not match unrelated text",
+          not SOURCE_RX.search("the weather today is sunny and warm"))
+
+    # HARDWARE_RX: hardware/environment needs.
+    check("HARDWARE_RX matches GPU/VRAM mention",
+          bool(HARDWARE_RX.search("needs a GPU with more VRAM to run")))
+    check("HARDWARE_RX matches 'Mac Studio'",
+          bool(HARDWARE_RX.search("would benefit from a Mac Studio upgrade")))
+    check("HARDWARE_RX does not match plain text",
+          not HARDWARE_RX.search("this is just a normal software suggestion"))
+
+    # OPS_RX: host-install style actions the builder cannot perform.
+    check("OPS_RX matches 'install pytest'",
+          bool(OPS_RX.search("install pytest on the host")))
+    check("OPS_RX matches 'brew install llama.cpp'",
+          bool(OPS_RX.search("run brew install llama.cpp")))
+    check("OPS_RX does not match a plain code-change description",
+          not OPS_RX.search("refactor the digest formatting function"))
+
+    # URL_RX: extracts a bare URL from surrounding text/punctuation.
+    m = URL_RX.search("see https://example.com/feed.xml for details.")
+    check("URL_RX extracts the URL without trailing punctuation",
+          bool(m) and m.group(0) == "https://example.com/feed.xml")
+
+    # _parse_score: exact expected parse of a well-formed gate reply.
+    parsed = _parse_score("SCORE: 8 | WHY: concretely helps the digest pipeline")
+    check("_parse_score parses well-formed SCORE/WHY line",
+          parsed == (8, "concretely helps the digest pipeline"))
+
+    # _parse_score: clamps scores above 10.
+    clamped = _parse_score("SCORE: 15 | WHY: over the max")
+    check("_parse_score clamps score to 10",
+          clamped is not None and clamped[0] == 10)
+
+    # _parse_score: returns None when there's no SCORE line (fail path the
+    # caller relies on to trigger fail-open fallback behaviour).
+    check("_parse_score returns None with no SCORE present",
+          _parse_score("no score here") is None)
+
+    # BORDERLINE_MIN relationship to RELEVANCE_MIN must hold for the S71
+    # borderline-band logic (exactly one point under the bar).
+    check("BORDERLINE_MIN is exactly one below RELEVANCE_MIN",
+          BORDERLINE_MIN == RELEVANCE_MIN - 1)
+
+    if failures:
+        print("SELFTEST FAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        return False
+    print(f"SELFTEST OK ({9 - 0} checks)" if False else "SELFTEST OK")
+    return True
+
+
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else "daily"
-    if arg == "gatetest":
+    if arg == "--selftest":
+        sys.exit(0 if selftest() else 1)
+    elif arg == "gatetest":
         _gate_test()
     else:
         run(arg)
