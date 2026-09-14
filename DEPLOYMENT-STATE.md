@@ -63,6 +63,15 @@ CIRRUS morning brief / jobs_check
 
 - The CIRRUS→CUMULUS read link is a dedicated read-only SSH key (`cirrus-cumulus-link-setup`);
   test it any time with `cirrus-cumulus-link`.
+- **S174 (2026-09-14, Buddy's explicit ask): CUMULUS→CIRRUS now also has SSH trust, and
+  deliberately NOT scoped the same way.** CUMULUS's own general-purpose key (`~/.ssh/id_ed25519`
+  on cumulus1, comment `cumulus1`) was added to CIRRUS's `~/.ssh/authorized_keys` unrestricted —
+  full shell as `buddy@cirrus` from CUMULUS, not a read-only status probe. This is asymmetric
+  with the CIRRUS→CUMULUS link above ON PURPOSE: Buddy's reasoning was recovery ("if for some
+  reason Cumulus needs info from Cirrus, maybe keys get corrupted"), which needs the ability to
+  act, not just read a file. Do not "fix" this into matching the read-only pattern without
+  asking — the asymmetry is intentional, not a leftover inconsistency. Test:
+  `ssh cumulus1 'ssh buddy@192.168.0.202 hostname'`.
 - `job_status.REMOTE_JOBS` is the list the CIRRUS brief pulls from CUMULUS — **keep it in
   sync with the "Runs on = CUMULUS" rows above whenever a job is cut over.**
 
