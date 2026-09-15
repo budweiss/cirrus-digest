@@ -494,21 +494,43 @@ _PREFILTER_PROMPT = (
 )
 
 
-def prefilter_local(title: str, text: str) -> tuple:
+def prefilter_local(title: str, text: str, creds: dict = None) -> tuple:
     """Cheap local triage before paying for the council.
-    Returns (should_escalate: bool, reason: str)."""
+    Returns (should_escalate: bool, reason: str).
+
+    S177: now records itself to the spend ledger (llm_budget.record_call, at
+    $0 like every other local call) when creds is passed. This call existed
+    since before S132 added llm_providers.call()'s ledger recording, so it
+    has been REAL local volume invisible to llm-spend-report the whole time
+    -- it does not go through llm_providers.py at all (a different Ollama API
+    shape: /api/generate here vs. the chat endpoint _ollama() uses), so it
+    was never counted. Pure addition: creds=None (the selftest below, which
+    runs with no Ollama and no creds) skips recording exactly like it always
+    has -- no change to the return value or control flow either way, and the
+    record call is best-effort/never-raises like every other ledger call in
+    this codebase.
+    """
     try:
         import cirrus_daily as B
         import requests
+        prompt = _PREFILTER_PROMPT.format(title=title[:200], text=text[:4000])
         r = requests.post(
             f"{B.OLLAMA_HOST}/api/generate",
             json={"model": B.MODEL,
-                  "prompt": _PREFILTER_PROMPT.format(title=title[:200], text=text[:4000]),
+                  "prompt": prompt,
                   "stream": False,
                   "options": {"temperature": 0, "num_ctx": 4096}},
             timeout=60)
         r.raise_for_status()
         ans = (r.json().get("response") or "").strip().upper()
+        if creds is not None:
+            try:
+                import llm_budget
+                llm_budget.record_call(creds, "ollama", B.MODEL,
+                                       len(prompt), len(ans),
+                                       task="business_idea_scan")
+            except Exception:
+                pass
         if ans.startswith("NO"):
             return False, "local triage: no operating business described"
         if ans.startswith("YES"):
@@ -905,7 +927,7 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
     RELEVANCE_MIN, same adversarial critique."""
     # Free local triage first -- most inbound text is not about a business at
     # all, and there is no reason to pay a council to tell us that.
-    escalate, why_local = prefilter_local(title, text)
+    escalate, why_local = prefilter_local(title, text, creds=creds)
     if not escalate:
         result["prefiltered"] = result.get("prefiltered", 0) + 1
         record_source(source_name, "prefiltered")
@@ -1175,6 +1197,70 @@ def selftest() -> bool:
     _ok, _why = prefilter_local("x", "y")  # no Ollama in the dev checkout
     checks.append(("prefilter fails OPEN when the local model is unreachable",
                    _ok is True and "fail-open" in _why))
+
+    # S177: prefilter_local now records itself to the spend ledger when creds
+    # is passed -- previously silent local volume, invisible to
+    # llm-spend-report since before S132 existed. Injects a fake module into
+    # sys.modules["requests"] rather than requiring the real package to be
+    # importable -- this checkout has no Ollama AND no `requests` installed
+    # (same class of dev-checkout gap the test above already works around),
+    # so this works regardless of what's actually installed here vs. on-box.
+    # Stubs llm_budget.record_call to capture what it was called with rather
+    # than writing a real ledger row.
+    import sys as _sys
+    import types as _types
+    _fake_requests = _types.ModuleType("requests")
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"response": "YES"}
+
+    _fake_requests.post = lambda *a, **k: _FakeResp()
+    _real_requests_mod = _sys.modules.get("requests")
+
+    # cirrus_daily itself imports feedparser, also not installed in this dev
+    # checkout -- fake it too, with just the two attributes prefilter_local
+    # actually reads.
+    _fake_cirrus_daily = _types.ModuleType("cirrus_daily")
+    _fake_cirrus_daily.OLLAMA_HOST = "http://fake-ollama"
+    _fake_cirrus_daily.MODEL = "fake-model"
+    _real_cirrus_daily_mod = _sys.modules.get("cirrus_daily")
+
+    import llm_budget as _lb
+    _real_record_call = _lb.record_call
+    _recorded = []
+
+    def _fake_record_call(creds, provider, model, in_chars, out_chars, **kw):
+        _recorded.append((provider, model, in_chars, out_chars, kw.get("task")))
+        return None
+
+    try:
+        _sys.modules["requests"] = _fake_requests
+        _sys.modules["cirrus_daily"] = _fake_cirrus_daily
+        _lb.record_call = _fake_record_call
+        prefilter_local("t", "x", creds={"anything": True})
+        checks.append(("prefilter_local: creds passed -> records itself to "
+                       "the ledger as an ollama call, tagged for this project",
+                       len(_recorded) == 1 and _recorded[0][0] == "ollama"
+                       and _recorded[0][1] == "fake-model"
+                       and _recorded[0][4] == "business_idea_scan"))
+        _recorded.clear()
+        prefilter_local("t", "x")   # creds=None, the default
+        checks.append(("prefilter_local: no creds -> records nothing (same "
+                       "best-effort convention as every other ledger call)",
+                       len(_recorded) == 0))
+    finally:
+        _lb.record_call = _real_record_call
+        if _real_requests_mod is not None:
+            _sys.modules["requests"] = _real_requests_mod
+        else:
+            _sys.modules.pop("requests", None)
+        if _real_cirrus_daily_mod is not None:
+            _sys.modules["cirrus_daily"] = _real_cirrus_daily_mod
+        else:
+            _sys.modules.pop("cirrus_daily", None)
 
     # Source stats: the evidence Buddy will use to tighten filters later.
     import os as _os
