@@ -1,0 +1,16 @@
+[Unit]
+Description=ALOPECIA etiology-synthesis agent (S177) — hypothesis synthesis for the standing "what causes this" question
+After=network-online.target cumulus-creds-materialize.service alopecia-collect.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/.venvs/alopecia-agent/bin/python /home/buddy/cirrus-digest/alopecia_agent/agent.py
+
+[Install]
+WantedBy=multi-user.target

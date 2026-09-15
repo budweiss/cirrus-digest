@@ -1,0 +1,19 @@
+[Unit]
+Description=ALOPECIA etiology-synthesis agent — 05:50, daily
+
+# Slot chosen from a LIVE window-audit (S177, 2026-09-15), not by eyeballing:
+#   CUMULUS 05:30 modelhealth · 05:45 alopecia-collect · 06:00 pedagogy
+# 05:50 sits AFTER the collector (producer-before-consumer -- this agent reads
+# alopecia-collect's freshly written daily file, so it must run after it, the
+# same rule alopecia-brief.timer's own comment already documents) and clear of
+# both neighbors: the collector itself finishes in ~4s, so 5 minutes is ample
+# margin, and there are 10 minutes of headroom before pedagogy at 06:00.
+#
+# Persistent=true so a box that was down still catches up same-day rather
+# than silently skipping a day's hypothesis review.
+[Timer]
+OnCalendar=*-*-* 05:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
