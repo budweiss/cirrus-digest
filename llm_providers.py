@@ -12,8 +12,14 @@ Design principles
   already used by cirrus_bot.call_gemini/call_grok/call_claude and the template:
   anthropic_api_key/claude_dev_model(or claude_model), gemini_api_key/gemini_model,
   grok_api_key/grok_model, openai_api_key/openai_model, deepseek_api_key/deepseek_model.
-  S159 adds kimi_api_key/kimi_model (Moonshot, model id `kimi-k3`), gated like
-  ollama/vllm: callable but NOT in DEFAULT_ORDER, so keying it re-routes nothing.
+  S159 adds kimi_api_key/kimi_model (Moonshot, model id `kimi-k3`). S177
+  PROMOTES it into DEFAULT_ORDER (was gated out like ollama/vllm, callable
+  but never routed to) after a real local_bench.py comparison on CUMULUS
+  showed it agreeing with Anthropic on 8/9 real judgments across two call
+  shapes -- see docs/COWORK-WORKLIST.md and the S177 recap. It is still
+  dormant-until-keyed like every cloud provider: CIRRUS has no
+  kimi_api_key today, so this is currently a CUMULUS-only routing change
+  in practice, code shared by both boxes.
 * BACKWARD COMPATIBLE with dev_agent's Claude call (same api.anthropic.com/v1/messages
   request shape). STDLIB ONLY (urllib) — no new dependencies.
 
@@ -39,7 +45,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek"]
+DEFAULT_ORDER = ["anthropic", "gemini", "grok", "openai", "deepseek", "kimi"]
 _TIMEOUT = 120
 
 # S132: every call() records itself to the spend ledger (llm_budget.record_call).
@@ -295,6 +301,33 @@ def _record_usage(provider, model, usage, cached):
         pass
 
 
+_ANTHROPIC_EFFORT_VALUES = ("low", "medium", "high", "xhigh", "max")
+
+
+def _anthropic_extra(creds):
+    """{} or {"thinking": {...}, "output_config": {"effort": ...}}. S177:
+    Buddy's ask was "best results when we need to reach out" -- a durable
+    creds field (anthropic_effort), not a per-job env var like vLLM's
+    VLLM_REASONING_EFFORT, because this is meant to be the standing config
+    for every call that reaches the cloud, not a one-off per-job tweak.
+
+    Only current-generation models (Sonnet 5 / Opus 5 / the Fable family)
+    accept output_config.effort -- Haiku 4.5 and older models reject it
+    with a 400. This is opt-in via credentials.json and deliberately NOT
+    auto-derived from the configured model name (that would be a second
+    copy of model-capability knowledge to keep in sync, the exact class of
+    bug the S103 last_model() docstring warns about) -- whoever sets
+    anthropic_effort is responsible for pairing it with a model that
+    supports it, same as the vLLM reasoning-effort field already assumes
+    of its own server.
+    """
+    effort = (creds.get("anthropic_effort") or "").strip().lower()
+    if effort not in _ANTHROPIC_EFFORT_VALUES:
+        return {}
+    return {"thinking": {"type": "adaptive"},
+            "output_config": {"effort": effort}}
+
+
 def _anthropic(creds, system, user, max_tokens):
     key = creds.get("anthropic_api_key")
     if not key:
@@ -311,12 +344,14 @@ def _anthropic(creds, system, user, max_tokens):
         sys_field = system
 
     _LAST.model = model
+    body = {"model": model, "max_tokens": max_tokens, "system": sys_field,
+           "messages": [{"role": "user", "content": user}]}
+    body.update(_anthropic_extra(creds))
     resp = _http_post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": key, "anthropic-version": "2023-06-01",
          "content-type": "application/json"},
-        {"model": model, "max_tokens": max_tokens, "system": sys_field,
-         "messages": [{"role": "user", "content": user}]},
+        body,
     )
     _record_usage("anthropic", model, resp.get("usage") or {}, want_cache)
     return "".join(b.get("text", "") for b in resp.get("content", [])
@@ -769,19 +804,22 @@ def selftest():
             _unknown_raised = True
         check("call: unknown provider raises", _unknown_raised)
 
-        # ── S159: the kimi provider, and the GATE that keeps it out of routing.
-        #    The gate is the part worth testing: kimi is dormant-until-keyed like
-        #    every cloud provider, but it is ALSO absent from DEFAULT_ORDER, so a
-        #    key landing must not silently add a council voice and a bill line.
-        #    Without this, "kimi in DEFAULT_ORDER" is a one-word edit nothing
-        #    would catch until the next invoice.
+        # ── S159: the kimi provider. S177: PROMOTED into DEFAULT_ORDER after a
+        #    real local_bench.py comparison (not a guess) showed it agreeing
+        #    with Anthropic on 8/9 real judgments -- it is still
+        #    dormant-until-keyed like every cloud provider, same as the other
+        #    four; the only thing that changed is its ORDER position, not the
+        #    key-gate every provider already has.
         check("kimi: registered with a key field",
               "kimi" in _PROVIDERS and _KEY_FIELD.get("kimi") == "kimi_api_key")
-        check("kimi: ABSENT from DEFAULT_ORDER (the S73/S92 routing gate)",
-              "kimi" not in DEFAULT_ORDER)
-        _kimi_keyed = {_KEY_FIELD["kimi"]: "not-a-real-key"}
-        check("kimi: available() ignores it EVEN WHEN KEYED -- the gate, not the key",
-              available(_kimi_keyed) == available({}))
+        check("kimi: now IN DEFAULT_ORDER (S177 promotion, evidence-based)",
+              "kimi" in DEFAULT_ORDER)
+        check("kimi: still dormant until keyed, exactly like every other "
+              "cloud provider -- promotion changed its ORDER, not the gate",
+              "kimi" not in available({}))
+        check("kimi: keying it makes it selectable, same as any provider",
+              available({"kimi_api_key": "EXAMPLE-fake-kimi-key-not-real"}) == ["kimi"])
+        _kimi_keyed = {"kimi_api_key": "EXAMPLE-fake-kimi-key-not-real"}
         for _c, _want, _label in (
                 ({}, "no kimi_api_key", "unkeyed"),
                 (_kimi_keyed, "no kimi_model", "keyed but no model")):
@@ -894,6 +932,28 @@ def selftest():
                 os.environ.pop(VLLM_EFFORT_ENV, None)
             else:
                 os.environ[VLLM_EFFORT_ENV] = _saved_effort
+
+        # ── S177: anthropic_effort — same idea as vLLM's per-job reasoning
+        # effort, but a durable creds field rather than an env var, and only
+        # reaches the wire when explicitly set (opt-in, no default).
+        call("anthropic", "s", "u", {"anthropic_api_key": "k"})
+        check("anthropic effort: no anthropic_effort set -> body unchanged, "
+              "no thinking/output_config fields sent",
+              "thinking" not in _seen_body["b"] and "output_config" not in _seen_body["b"])
+        call("anthropic", "s", "u", {"anthropic_api_key": "k", "anthropic_effort": "max"})
+        check("anthropic effort: anthropic_effort=max -> adaptive thinking + "
+              "output_config.effort=max reach the wire",
+              _seen_body["b"].get("thinking") == {"type": "adaptive"}
+              and _seen_body["b"].get("output_config") == {"effort": "max"})
+        call("anthropic", "s", "u",
+             {"anthropic_api_key": "k", "anthropic_effort": " XHIGH "})
+        check("anthropic effort: case/whitespace normalised, same as vLLM's",
+              _seen_body["b"].get("output_config") == {"effort": "xhigh"})
+        call("anthropic", "s", "u",
+             {"anthropic_api_key": "k", "anthropic_effort": "ultra"})
+        check("anthropic effort: a value outside the vocabulary is DROPPED, "
+              "not sent (no 400 on a client job, same policy as vLLM's gate)",
+              "output_config" not in _seen_body["b"])
 
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so
