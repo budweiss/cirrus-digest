@@ -638,6 +638,80 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
     return (p, call(p, system, user, creds, max_tokens, task=task, record=record))
 
 
+def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
+                     parse=None, stats=None, local_model=None, retries=0):
+    """Try vLLM, then ollama, then escalate to the cloud council. S177.
+
+    This is the SAME three-tier fallback halftime_catalogue.py's local-
+    extraction path has used since S125/S92 (vLLM -> ollama -> escalate,
+    a vLLM miss counted under `stats['vllm_fallback']` rather than as an
+    escalation, so a dead endpoint shows up honestly instead of quietly
+    becoming a paid call) -- extracted here so a NEW call site doesn't
+    hand-roll those ~15 lines a third and fourth time. Existing call sites
+    are NOT migrated to this; their hand-rolled version is proven live and
+    touching working code to DRY it up is not what this was asked for.
+
+    parse: optional callable(raw_text) -> result. If given, a tier's reply
+    is accepted only when parse(raw) is not None/falsy -- mirrors halftime's
+    own `parse_acts` gate exactly (an unparseable reply falls through to the
+    next tier rather than being "accepted" as garbage). If omitted, any
+    non-empty (stripped) reply is accepted.
+
+    stats: optional dict, incremented under 'vllm_fallback' on a vLLM miss
+    -- same convention halftime uses, so llm-spend-report can tell a dead
+    endpoint from a real cloud escalation rather than conflating them.
+
+    local_model: optional override for WHICH ollama model to try, without
+    touching the box's single configured `ollama_model` credential or
+    adding a task-class registry ahead of any evidence one is needed
+    (see bench_local.md / local_bench.py) -- constructs a creds copy with
+    ollama_model overridden; the vLLM tier is unaffected (its model is
+    fixed by the endpoint, not a per-call choice).
+
+    Returns (result, tier) where tier is "vllm", "ollama", or the cloud
+    provider name escalate() actually used. Raises ProviderError only if
+    the cloud tier itself fails or fails parse -- same raise contract as
+    call()/escalate(); a caller that wants "never raises" (like halftime)
+    wraps this in try/except itself rather than this function swallowing
+    errors a different way than its siblings do.
+    """
+    def _accept(raw):
+        if parse is None:
+            return raw if (raw or "").strip() else None
+        return parse(raw)
+
+    if creds.get("vllm_url"):
+        try:
+            raw = call("vllm", system, user, creds, max_tokens=max_tokens,
+                      retries=retries, task=task)
+            result = _accept(raw)
+            if result is not None:
+                return result, "vllm"
+        except ProviderError:
+            pass
+        if stats is not None:
+            stats["vllm_fallback"] = stats.get("vllm_fallback", 0) + 1
+
+    if creds.get("ollama_url"):
+        _oc = creds if local_model is None else dict(creds, ollama_model=local_model)
+        try:
+            raw = call("ollama", system, user, _oc, max_tokens=max_tokens,
+                      retries=retries, task=task)
+            result = _accept(raw)
+            if result is not None:
+                return result, "ollama"
+        except ProviderError:
+            pass
+
+    provider, raw = escalate(system, user, creds, max_tokens=max_tokens,
+                             mode="single", task=task)
+    result = _accept(raw)
+    if result is None:
+        raise ProviderError(
+            f"cloud reply from {provider} failed parse/empty check")
+    return result, provider
+
+
 # ── self-test (python3 llm_providers.py selftest | --selftest) ────────────────
 def selftest():
     """Exercise the decision functions with explicit inputs. Returns True/False.
@@ -988,6 +1062,83 @@ def selftest():
         _LAST.model = None            # leave the thread slot as the caller found it
         globals()["_RECORDING"] = _prev_rec   # back to OFF for the rest of the suite
         _sh.rmtree(_td, ignore_errors=True)
+
+        # ── S177: call_local_first() — the extracted vLLM->ollama->cloud chain ──
+        # Reuses the _stub(model, text) helper already defined above (line 998);
+        # its first arg is the recorded "model" (irrelevant here), second is
+        # the reply text, which is all these checks care about.
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
+        _PROVIDERS["vllm"] = _stub("m", "vllm answer")
+        _PROVIDERS["ollama"] = _stub("m", "ollama answer")
+        _PROVIDERS["anthropic"] = _stub("m", "cloud answer")
+        _cr = {"vllm_url": "http://v", "vllm_model": "m",
+              "ollama_url": "http://o", "ollama_model": "m",
+              "anthropic_api_key": "a"}
+        _res, _tier = call_local_first("s", "u", _cr)
+        check("call_local_first: vLLM configured and healthy -> used, no fallback",
+              _res == "vllm answer" and _tier == "vllm")
+
+        _PROVIDERS["vllm"] = lambda c, s, u, m: (
+            _ for _ in ()).throw(ProviderError("down"))
+        _stats = {}
+        _res, _tier = call_local_first("s", "u", _cr, stats=_stats)
+        check("call_local_first: dead vLLM falls to ollama, counted "
+              "vllm_fallback (never silently an escalation)",
+              _res == "ollama answer" and _tier == "ollama"
+              and _stats.get("vllm_fallback") == 1)
+
+        _PROVIDERS["ollama"] = lambda c, s, u, m: (
+            _ for _ in ()).throw(ProviderError("down too"))
+        _res, _tier = call_local_first("s", "u", _cr)
+        check("call_local_first: both local tiers down -> escalates to cloud",
+              _res == "cloud answer" and _tier == "anthropic")
+
+        _res, _tier = call_local_first(
+            "s", "u", {"anthropic_api_key": "a"})
+        check("call_local_first: no local creds at all -> straight to cloud, "
+              "no vLLM/ollama attempted",
+              _res == "cloud answer" and _tier == "anthropic")
+
+        _PROVIDERS["vllm"] = _stub("m", "vllm answer")
+        _PROVIDERS["ollama"] = _stub("m", "ollama answer")
+        _res, _tier = call_local_first(
+            "s", "u", _cr,
+            parse=lambda r: r if r == "cloud answer" else None)
+        check("call_local_first: a parse gate that rejects both local tiers "
+              "falls all the way to cloud (mirrors halftime's parse_acts gate)",
+              _res == "cloud answer" and _tier == "anthropic")
+        _res, _tier = call_local_first(
+            "s", "u", _cr,
+            parse=lambda r: r if r == "ollama answer" else None)
+        check("call_local_first: parse gate rejects vLLM's reply specifically "
+              "but accepts ollama's -- falls through one tier, not all",
+              _tier == "ollama")
+
+        try:
+            call_local_first("s", "u", _cr, parse=lambda r: None)
+            _all_rejected_raised = False
+        except ProviderError:
+            _all_rejected_raised = True
+        check("call_local_first: a parse gate that rejects EVERY tier "
+              "including cloud raises, rather than returning a value that "
+              "failed its own gate", _all_rejected_raised)
+
+        _seen_model = {}
+
+        def _capture_ollama(c, s, u, m):
+            _seen_model["m"] = c.get("ollama_model")
+            return "ok"
+        _PROVIDERS["ollama"] = _capture_ollama
+        call_local_first("s", "u",
+                         {"ollama_url": "http://o", "ollama_model": "default-model",
+                          "anthropic_api_key": "a"},
+                         local_model="qwen2.5-coder:14b")
+        check("call_local_first: local_model= overrides the box's configured "
+              "ollama_model for this call only",
+              _seen_model.get("m") == "qwen2.5-coder:14b")
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
     finally:
         globals()["_http_post"] = _real_post
         _PROVIDERS.clear()

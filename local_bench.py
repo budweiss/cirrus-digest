@@ -45,6 +45,13 @@ USAGE
     local_bench.py --list                     what prompt sets are available
     local_bench.py --set prefilter --n 10     run 10 prompts through both
     local_bench.py --set prefilter --local-only   no cloud calls, no spend
+    local_bench.py --set prefilter --cloud anthropic,kimi   compare against
+                                               MULTIPLE cloud providers at once
+                                               (S177) -- each needs its own
+                                               *_api_key in this box's
+                                               credentials.json or it is
+                                               reported as an error for that
+                                               provider only, not a hard stop.
 
 Nothing here writes to the KB, sends mail, or changes routing. It is read-only
 against the system and additive-only in what it produces (a report file).
@@ -175,11 +182,32 @@ def structural_match(cloud_text, local_text):
     return set(c.keys()) == set(l.keys()) if isinstance(c, dict) and isinstance(l, dict) else True
 
 
+def parse_clouds(cloud_arg, local_only):
+    """--cloud "anthropic, kimi" -> ["anthropic", "kimi"]; --local-only -> []
+    regardless of --cloud (local-only means NO cloud calls at all, not "call
+    zero providers from a list"). Pure function, no I/O -- selftest covers it
+    directly rather than through a live run."""
+    if local_only:
+        return []
+    return [c.strip() for c in (cloud_arg or "").split(",") if c.strip()]
+
+
+def run_one_cloud(provider, system, prompt, creds, local_text):
+    """One cloud provider's result for one prompt, paired against the local
+    reply already produced. Never raises -- a provider without a key, or one
+    that errors, is a per-provider data point, not a run-stopping failure for
+    the OTHER providers being compared."""
+    text, sec, err = call_cloud(provider, system, prompt, creds)
+    return dict(text=text.strip()[:200], sec=round(sec, 1), err=err,
+               struct=structural_match(text, local_text) if not err else None)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="setname", default="prefilter")
     ap.add_argument("--model", default=None, help="local model (default: largest qwen present)")
-    ap.add_argument("--cloud", default="anthropic")
+    ap.add_argument("--cloud", default="anthropic",
+                    help="comma-separated for multiple providers, e.g. anthropic,kimi")
     ap.add_argument("--local-only", action="store_true", help="no cloud calls, no spend")
     ap.add_argument("--n", type=int, default=0, help="limit prompts")
     ap.add_argument("--list", action="store_true")
@@ -203,42 +231,44 @@ def main():
         print(f"!! unknown set {a.setname!r}; try --list")
         return 2
     prompts = s["prompts"][:a.n] if a.n else s["prompts"]
+    clouds = parse_clouds(a.cloud, a.local_only)
     creds = {} if a.local_only else load_creds()
 
     print(f"set        : {a.setname} — {s['why']}")
     print(f"local model: {model}")
-    print(f"cloud      : {'(skipped)' if a.local_only else a.cloud}")
+    print(f"cloud      : {'(skipped)' if not clouds else ', '.join(clouds)}")
     print(f"prompts    : {len(prompts)}\n")
 
     rows, lat = [], []
     for i, p in enumerate(prompts, 1):
         lt, lsec, lerr = call_local(model, s["system"], p, timeout=300)
         lat.append(lsec)
-        if a.local_only:
-            ct, csec, cerr = "", 0.0, None
-        else:
-            ct, csec, cerr = call_cloud(a.cloud, s["system"], p, creds)
-        struct = None if a.local_only else structural_match(ct, lt)
-        rows.append(dict(n=i, prompt=p[:60], local=lt.strip()[:200], cloud=ct.strip()[:200],
-                         lsec=round(lsec, 1), csec=round(csec, 1),
-                         lerr=lerr, cerr=cerr, struct=struct))
-        mark = {True: "match", False: "MISMATCH", None: "-"}[struct]
-        print(f"  [{i}] local {lsec:5.1f}s  cloud {csec:5.1f}s  structure: {mark}")
+        cloud_results = {c: run_one_cloud(c, s["system"], p, creds, lt) for c in clouds}
+        rows.append(dict(n=i, prompt=p[:60], local=lt.strip()[:200],
+                         lsec=round(lsec, 1), lerr=lerr, clouds=cloud_results))
+        marks = ", ".join(
+            f"{c} {r['sec']:5.1f}s {('MISMATCH' if r['struct'] is False else 'match' if r['struct'] else '-')}"
+            + (f" !!{r['err']}" if r["err"] else "")
+            for c, r in cloud_results.items()
+        ) or "(local-only)"
+        print(f"  [{i}] local {lsec:5.1f}s  {marks}")
         if lerr:
             print(f"      !! local error: {lerr}")
-        if cerr:
-            print(f"      !! cloud error: {cerr}")
 
     ok = [r for r in rows if not r["lerr"]]
-    struct_rows = [r for r in rows if r["struct"] is not None]
     print("\n== summary ==")
     print(f"  local answered      : {len(ok)}/{len(rows)}")
     if lat:
         print(f"  local latency       : median {statistics.median(lat):.1f}s  max {max(lat):.1f}s")
-    if struct_rows:
-        m = sum(1 for r in struct_rows if r["struct"])
-        print(f"  structural agreement: {m}/{len(struct_rows)}"
-              "   (cloud returned JSON; did local return the same shape?)")
+    for c in clouds:
+        c_rows = [r["clouds"][c] for r in rows]
+        c_ok = [r for r in c_rows if not r["err"]]
+        struct_rows = [r for r in c_rows if r["struct"] is not None]
+        print(f"  [{c}] answered      : {len(c_ok)}/{len(c_rows)}")
+        if struct_rows:
+            m = sum(1 for r in struct_rows if r["struct"])
+            print(f"  [{c}] structural agreement: {m}/{len(struct_rows)}"
+                  "   (this cloud returned JSON; did local return the same shape?)")
     print("\n  NOTE: this does not score which answer is BETTER. That needs a human")
     print("        reading the pairs below — which is what the report file is for.")
 
@@ -246,10 +276,60 @@ def main():
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = os.path.join(OUT_DIR, f"local-bench-{a.setname}-{stamp}.json")
     with open(path, "w") as f:
-        json.dump(dict(set=a.setname, model=model, cloud=a.cloud, rows=rows), f, indent=2)
+        json.dump(dict(set=a.setname, model=model, clouds=clouds, rows=rows), f, indent=2)
     print(f"\n  pairs written to: {path}")
     return 0
 
 
+def selftest():
+    """Pure-function coverage for the S177 multi-cloud extension. No network,
+    no credentials, no ollama needed -- exercises parse_clouds() and
+    run_one_cloud()'s error/struct handling with a stubbed call_cloud."""
+    ok = True
+
+    def check(name, cond):
+        nonlocal ok
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        ok = ok and cond
+
+    check("parse_clouds: single provider, unchanged behavior",
+          parse_clouds("anthropic", False) == ["anthropic"])
+    check("parse_clouds: comma-separated, trimmed",
+          parse_clouds(" anthropic, kimi ,  grok", False) == ["anthropic", "kimi", "grok"])
+    check("parse_clouds: --local-only forces empty list regardless of --cloud",
+          parse_clouds("anthropic,kimi", True) == [])
+    check("parse_clouds: empty string -> empty list, not ['']",
+          parse_clouds("", False) == [])
+
+    global call_cloud
+    _real_call_cloud = call_cloud
+
+    def _stub_ok(provider, system, prompt, creds, max_tokens=2048):
+        return ('{"keep": true}', 1.5, None)
+
+    def _stub_err(provider, system, prompt, creds, max_tokens=2048):
+        return ("", 0.3, "no kimi_api_key")
+
+    try:
+        globals()["call_cloud"] = _stub_ok
+        r = run_one_cloud("anthropic", "sys", "prompt", {}, '{"keep": false}')
+        check("run_one_cloud: a healthy provider gets a struct verdict",
+              r["err"] is None and r["struct"] is True and r["sec"] == 1.5)
+
+        globals()["call_cloud"] = _stub_err
+        r = run_one_cloud("kimi", "sys", "prompt", {}, '{"keep": false}')
+        check("run_one_cloud: an unkeyed/errored provider reports its OWN "
+              "error, struct=None (not applicable), and does not raise",
+              r["err"] == "no kimi_api_key" and r["struct"] is None)
+    finally:
+        globals()["call_cloud"] = _real_call_cloud
+
+    return ok
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("selftest", "--selftest"):
+        _passed = selftest()
+        print("PASS" if _passed else "FAIL")
+        raise SystemExit(0 if _passed else 1)
     raise SystemExit(main())
