@@ -1194,9 +1194,38 @@ def selftest() -> bool:
     # S66: the local pre-filter must fail OPEN -- if the local model is down,
     # items escalate to the paid council rather than being silently dropped.
     # Getting this backwards would quietly discard opportunities to save cents.
-    _ok, _why = prefilter_local("x", "y")  # no Ollama in the dev checkout
-    checks.append(("prefilter fails OPEN when the local model is unreachable",
-                   _ok is True and "fail-open" in _why))
+    #
+    # S177 FIX: this used to rely on the CALLING ENVIRONMENT having no
+    # reachable Ollama ("no Ollama in the dev checkout") to exercise the
+    # fail-open path -- true in the Mac dev sandbox, FALSE the moment this
+    # selftest is actually run on CIRRUS, which has a real, live Ollama.
+    # There, prefilter_local("x","y") reached the real model and returned a
+    # real (if nonsensical) verdict instead of failing open, and this check
+    # silently FAILED on the one box it most needs to be trustworthy on --
+    # found by actually running selftest() on-box (S177), not in dev. Forces
+    # unreachability deterministically instead of hoping the environment
+    # cooperates: a fake requests.post that raises, exactly like a real
+    # connection refusal would.
+    import sys as _sys2
+    import types as _types2
+    _fake_requests_down = _types2.ModuleType("requests")
+
+    def _raise_conn_error(*a, **k):
+        raise ConnectionError("simulated: no Ollama reachable")
+    _fake_requests_down.post = _raise_conn_error
+    _real_requests_mod2 = _sys2.modules.get("requests")
+    try:
+        _sys2.modules["requests"] = _fake_requests_down
+        _ok, _why = prefilter_local("x", "y")
+        checks.append(("prefilter fails OPEN when the local model is "
+                       "unreachable (forced deterministically, not left to "
+                       "the calling environment's luck)",
+                       _ok is True and "fail-open" in _why))
+    finally:
+        if _real_requests_mod2 is not None:
+            _sys2.modules["requests"] = _real_requests_mod2
+        else:
+            _sys2.modules.pop("requests", None)
 
     # S177: prefilter_local now records itself to the spend ledger when creds
     # is passed -- previously silent local volume, invisible to
