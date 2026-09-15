@@ -24,7 +24,13 @@ import llm_budget  # noqa: E402
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
 TASK = "alopecia-agent"
 
-MONTHLY_CAP_USD = 20.00  # PLACEHOLDER -- Buddy confirms the real cap before arming.
+MONTHLY_CAP_USD = 30.00  # S177: reasoned, not confirmed -- agent.py caps each
+                        # daily pass at $2.00 (EST_COST_PER_RUN_USD), so 30
+                        # days at the ceiling would be $60/mo; $30 lands at
+                        # half that as a real circuit breaker without being
+                        # so tight it stalls on a normal month. Buddy should
+                        # still confirm or adjust this before arming -- it's
+                        # his money, this is a reasoned default, not his answer.
 
 
 def _load_creds(path=None):
