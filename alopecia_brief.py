@@ -291,7 +291,35 @@ def strip_model_title(body):
     return "\n".join(lines[i:])
 
 
-def assemble(body, items, meta, full, since_day, today, number):
+CAUSE_RESEARCH_DRAFT_PATH = PROJECT_DIR / "alopecia" / "cause_research_draft.md"
+
+
+def consume_cause_research_section(path=None):
+    """S177: read the etiology-synthesis agent's staging draft
+    (alopecia_agent's append_to_brief_draft output) and consume it -- the
+    content becomes part of THIS brief, and the file is cleared so next
+    week doesn't repeat it. Returns "" (section omitted entirely, not
+    printed empty) if nothing is staged.
+
+    A side-effecting helper, deliberately kept OUT of assemble()/
+    empty_brief() themselves -- both stay pure functions of their already-
+    computed inputs (body/items/meta, same as today), so calling them in a
+    test never touches a real file. build() calls this once and passes the
+    result in.
+    """
+    path = Path(path) if path else CAUSE_RESEARCH_DRAFT_PATH
+    try:
+        content = path.read_text().strip()
+    except Exception:
+        return ""
+    if not content:
+        return ""
+    path.write_text("")
+    return "\n".join(["## Cause research (etiology-synthesis agent)", "",
+                      content, ""])
+
+
+def assemble(body, items, meta, full, since_day, today, number, cause_section=""):
     head = ["# Alopecia areata — weekly brief #%d" % number,
             "",
             "_%s · %s · %d item(s)_" % (
@@ -320,6 +348,9 @@ def assemble(body, items, meta, full, since_day, today, number):
                   "(`alopecia/briefs/%s-council.json`) and can be compared "
                   "directly." % today, ""]
 
+    if cause_section:
+        parts += [cause_section]
+
     parts += [sources_appendix(items), "", "---", "",
               "_Research monitor, not medical advice. Nothing here is a "
               "recommendation to start, stop or change any treatment — that is "
@@ -329,10 +360,13 @@ def assemble(body, items, meta, full, since_day, today, number):
     return "\n".join(parts)
 
 
-def empty_brief(today, since_day, number):
+def empty_brief(today, since_day, number, cause_section=""):
     """A period with nothing new is a result, not a failure — and it is not a
-    reason to spend a council call."""
-    return "\n".join([
+    reason to spend a council call. cause_section can still be non-empty
+    even on a quiet collector week -- the etiology agent runs on its own
+    daily cadence and may have refined a hypothesis with no NEW collector
+    items at all (e.g. re-weighing existing evidence)."""
+    parts = [
         "# Alopecia areata — weekly brief #%d" % number, "",
         "_%s · changes since %s_" % (today, since_day), "", "---", "",
         "## What changed", "",
@@ -347,8 +381,11 @@ def empty_brief(today, since_day, number):
         "questions. They stay open:", "", STANDING_QUESTIONS, "",
         "## Council disagreements", "",
         "No council call was made — there was nothing to synthesise.", "",
-        "---", "",
-        "_Research monitor, not medical advice._"])
+    ]
+    if cause_section:
+        parts += [cause_section]
+    parts += ["---", "", "_Research monitor, not medical advice._"]
+    return "\n".join(parts)
 
 
 # ── run ─────────────────────────────────────────────────────────────────────
@@ -377,8 +414,14 @@ def build(full=None, now=None, daily_dir=None, state_path=None, creds=None):
 
     log("corpus %d item(s); this brief covers %d" % (len(corpus), len(items)))
 
+    # S177: consumed ONCE per brief build, regardless of which path below
+    # renders it -- a quiet collector week can still have a real
+    # etiology-agent update (it runs on its own daily cadence and may
+    # refine a hypothesis with no NEW collector items at all).
+    cause_section = consume_cause_research_section()
+
     if not items:
-        md = empty_brief(today, since_day, number)
+        md = empty_brief(today, since_day, number, cause_section=cause_section)
         meta = {"members": [], "judge": None, "degraded": False,
                 "reason": "no items — no council call"}
         return ("Alopecia areata — weekly brief #%d (quiet week)" % number,
@@ -393,7 +436,8 @@ def build(full=None, now=None, daily_dir=None, state_path=None, creds=None):
         ",".join(meta.get("members") or []), meta.get("judge"),
         " (DEGRADED: %s)" % meta.get("reason") if meta.get("degraded") else ""))
 
-    md = assemble(body, items, meta, full, since_day, today, number)
+    md = assemble(body, items, meta, full, since_day, today, number,
+                  cause_section=cause_section)
     subject = "Alopecia areata — weekly brief #%d%s" % (
         number, " (full review to date)" if full else "")
     return subject, md, meta, items, {"count": number, "last_brief_day": today}
@@ -664,6 +708,45 @@ def selftest():
     ck("a markdown link is not double-wrapped",
        _html("[x](https://e.org)").count("<a href") == 1)
     ck("no leftover bold markers", "**" not in h)
+
+    # ── S177: cause-research section (etiology agent's brief splice) ────────
+    with tempfile.TemporaryDirectory() as td:
+        draft = Path(td) / "cause_research_draft.md"
+
+        ck("consume_cause_research_section: a missing draft file -> "
+           "empty section, not an error",
+           consume_cause_research_section(draft) == "")
+
+        draft.write_text("   \n\n  ")
+        ck("consume_cause_research_section: a whitespace-only draft is "
+           "treated as nothing staged", consume_cause_research_section(draft) == "")
+
+        draft.write_text("\n---\n## 2026-09-15\n\nEvidence points toward "
+                         "viral triggers (grade C).\n")
+        section = consume_cause_research_section(draft)
+        ck("consume_cause_research_section: real staged content becomes a "
+           "titled section", section.startswith("## Cause research")
+           and "viral triggers" in section)
+        ck("consume_cause_research_section: CONSUMES it -- the file reads "
+           "empty on a second call, so next week doesn't repeat it",
+           consume_cause_research_section(draft) == "")
+
+        ck("assemble: an empty cause_section adds nothing (default "
+           "behavior unchanged for every existing caller)",
+           "Cause research" not in assemble(
+               "## Real\n\nx.", items, meta, True, "", "2026-09-01", 1))
+        ck("assemble: a non-empty cause_section is included",
+           "viral triggers" in assemble(
+               "## Real\n\nx.", items, meta, True, "", "2026-09-01", 1,
+               cause_section="## Cause research\n\nviral triggers here"))
+
+        ck("empty_brief: an empty cause_section adds nothing",
+           "Cause research" not in empty_brief("2026-09-15", "2026-09-08", 1))
+        ck("empty_brief: a non-empty cause_section appears even on a "
+           "QUIET collector week -- the etiology agent has its own cadence",
+           "viral triggers" in empty_brief(
+               "2026-09-15", "2026-09-08", 1,
+               cause_section="## Cause research\n\nviral triggers here"))
 
     print("\n%s" % ("ALL PASS" if ok[0] else "FAILURES ABOVE"))
     return ok[0]
