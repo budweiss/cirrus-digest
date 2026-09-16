@@ -257,5 +257,114 @@ def main(dry_run=False):
         _job_status_record(True, f"ran, cost=${cost:.4f}")
 
 
+# ── selftest ──────────────────────────────────────────────────────────────────
+def selftest():
+    """Offline: no network, no live SDK call, no live Telegram/job_status (T32).
+    Tests main()'s decision logic and _job_status_record's safety net --
+    NOT run_reasoning_pass itself (that drives a real claude_agent_sdk
+    query(), same reason supervisor_agent.py's own selftest tests its pure
+    decision functions like _hb_signature/_should_escalate_hb but not
+    run_reasoning_pass there either)."""
+    import types
+    ok = True
+
+    def check(name, cond):
+        nonlocal ok
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        ok = ok and cond
+
+    g = globals()
+    saved_run_pass = g["run_reasoning_pass"]
+    saved_ledger_append = g["ledger_append"]
+    saved_job_status_mod = sys.modules.get("job_status")
+    saved_allow = budget.allow
+    saved_send_telegram = tools.send_telegram_summary
+
+    recorded = []
+    ledgered = []
+    g["ledger_append"] = lambda entry: ledgered.append(entry)
+    fake_job_status = types.ModuleType("job_status")
+    fake_job_status.record = lambda name, ok_, note: recorded.append((name, ok_, note))
+
+    def fake_job_status_raises(name, ok_, note):
+        raise RuntimeError("simulated job_status failure")
+
+    telegram_sent = []
+
+    try:
+        sys.modules["job_status"] = fake_job_status
+        tools.send_telegram_summary = lambda msg: (telegram_sent.append(msg) or "sent")
+
+        _job_status_record(True, "test note")
+        check("_job_status_record: passes through to job_status.record with "
+              "the fixed job name 'alopeciaagent'",
+              recorded == [("alopeciaagent", True, "test note")])
+
+        fake_job_status.record = fake_job_status_raises
+        try:
+            _job_status_record(True, "x")
+            _raised = False
+        except Exception:
+            _raised = True
+        check("_job_status_record: a job_status failure is swallowed, "
+              "never raises (a monitoring write must not break the job "
+              "it is monitoring)", not _raised)
+        fake_job_status.record = lambda name, ok_, note: recorded.append((name, ok_, note))
+
+        # ── main(): budget-disallowed skip ──
+        recorded.clear()
+        telegram_sent.clear()
+        budget.allow = lambda est_cost_usd: (False, 12.34, "cap reached")
+        main(dry_run=False)
+        check("main(): budget skip sends a Telegram explaining why",
+              len(telegram_sent) == 1 and "cap reached" in telegram_sent[0])
+        check("main(): a REAL run's budget skip DOES record to job_status "
+              "as ok=True (a working cap is not a failure), with the "
+              "reason in the note",
+              recorded == [("alopeciaagent", True, "skipped (budget): cap reached")])
+
+        recorded.clear()
+        telegram_sent.clear()
+        main(dry_run=True)
+        check("main(): a DRY-RUN's budget skip does NOT touch job_status "
+              "at all -- a manual test must never look like a completed "
+              "scheduled run", recorded == [])
+
+        # ── main(): a real (non-dry) reasoning pass ──
+        budget.allow = lambda est_cost_usd: (True, 0.0, "ok")
+
+        async def fake_pass(reason, dry_run=False):
+            return 1.2345, Path("/fake/transcript.md")
+        g["run_reasoning_pass"] = fake_pass
+
+        recorded.clear()
+        main(dry_run=False)
+        check("main(): a real run records to job_status as ok=True with "
+              "the actual cost in the note",
+              len(recorded) == 1 and recorded[0][0] == "alopeciaagent"
+              and recorded[0][1] is True and "1.2345" in recorded[0][2])
+
+        recorded.clear()
+        main(dry_run=True)
+        check("main(): a dry run completing does NOT record to job_status "
+              "-- only a REAL scheduled run may (T32/S177: a manual test "
+              "must not mask a genuine scheduled failure the same day)",
+              recorded == [])
+    finally:
+        g["run_reasoning_pass"] = saved_run_pass
+        g["ledger_append"] = saved_ledger_append
+        budget.allow = saved_allow
+        tools.send_telegram_summary = saved_send_telegram
+        if saved_job_status_mod is not None:
+            sys.modules["job_status"] = saved_job_status_mod
+        else:
+            sys.modules.pop("job_status", None)
+
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     main(dry_run="--dry-run" in sys.argv)
