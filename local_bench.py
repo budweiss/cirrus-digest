@@ -88,8 +88,20 @@ def local_models():
         return []
 
 
-def call_local(model, system, user, max_tokens=2048, timeout=300):
-    """Returns (text, seconds, error). Never raises — a failure is a datapoint."""
+def call_local(model, system, user, max_tokens=2048, timeout=300, *,
+               creds=None, task="local_bench"):
+    """Returns (text, seconds, error). Never raises — a failure is a datapoint.
+
+    S180: records a non-empty reply to the spend ledger (llm_budget.record_call,
+    at $0, same convention llm_providers.call() itself uses) — this hits
+    ollama's /api/chat directly, bypassing llm_providers.py entirely, so
+    every local call this script ever made was invisible to llm-spend-report
+    (the exact gap S176/S177 already found and fixed once in
+    business_idea_scan.py's prefilter_local). creds defaults to None/{} in
+    --local-only runs (main()'s own safety guard against an accidental cloud
+    call) — recording still works then, just tagged box="unknown" instead of
+    the real box name, since resolve() falls back cleanly; app_dir=REPO keeps
+    the ledger path correct either way."""
     body = json.dumps({
         "model": model,
         "stream": False,
@@ -103,7 +115,16 @@ def call_local(model, system, user, max_tokens=2048, timeout=300):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
-        return d.get("message", {}).get("content", ""), time.time() - t0, None
+        text = d.get("message", {}).get("content", "")
+        if text.strip():
+            try:
+                import llm_budget
+                llm_budget.record_call(creds or {}, "ollama", model,
+                                       len(system or "") + len(user or ""),
+                                       len(text), task=task, app_dir=REPO)
+            except Exception:
+                pass
+        return text, time.time() - t0, None
     except Exception as e:
         return "", time.time() - t0, str(e)[:200]
 
@@ -241,7 +262,8 @@ def main():
 
     rows, lat = [], []
     for i, p in enumerate(prompts, 1):
-        lt, lsec, lerr = call_local(model, s["system"], p, timeout=300)
+        lt, lsec, lerr = call_local(model, s["system"], p, timeout=300,
+                                    creds=creds, task=f"local_bench:{a.setname}")
         lat.append(lsec)
         cloud_results = {c: run_one_cloud(c, s["system"], p, creds, lt) for c in clouds}
         rows.append(dict(n=i, prompt=p[:60], local=lt.strip()[:200],
@@ -323,6 +345,73 @@ def selftest():
               r["err"] == "no kimi_api_key" and r["struct"] is None)
     finally:
         globals()["call_cloud"] = _real_call_cloud
+
+    # S180: call_local() now records itself to the spend ledger -- it hits
+    # ollama directly (bypassing llm_providers.py), so this was real local
+    # volume invisible to llm-spend-report until now. Stub BOTH urlopen (no
+    # network) and llm_budget.record_call (no live ledger file, T32) so this
+    # is fully offline.
+    import io
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._buf = io.BytesIO(json.dumps(payload).encode())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self._buf.read()
+
+    _real_urlopen = urllib.request.urlopen
+    recorded = []
+
+    class _FakeBudget:
+        @staticmethod
+        def record_call(creds, provider, model, in_chars, out_chars, *,
+                        task="", app_dir=None):
+            recorded.append(dict(provider=provider, model=model, task=task))
+
+    _real_modules_budget = sys.modules.get("llm_budget")
+    sys.modules["llm_budget"] = _FakeBudget
+    try:
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
+            {"message": {"content": "  {\"keep\": true}  "}})
+        text, sec, err = call_local("qwen3.8:27b", "sys", "prompt",
+                                    creds={"llm_budget": {"box": "test"}},
+                                    task="local_bench:prefilter")
+        check("call_local: a non-empty reply records to the ledger "
+              "(provider=ollama, the actual model, the actual task)",
+              err is None and len(recorded) == 1
+              and recorded[0] == dict(provider="ollama", model="qwen3.8:27b",
+                                      task="local_bench:prefilter"))
+
+        recorded.clear()
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
+            {"message": {"content": "   "}})
+        call_local("qwen3.8:27b", "sys", "prompt", creds={})
+        check("call_local: an EMPTY reply does not record a row (matches "
+              "llm_providers.call()'s own 'non-empty reply' convention)",
+              recorded == [])
+
+        recorded.clear()
+
+        def _raise(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+        urllib.request.urlopen = _raise
+        text, sec, err = call_local("qwen3.8:27b", "sys", "prompt", creds={})
+        check("call_local: a transport error still returns (text, sec, err) "
+              "without raising, and records nothing",
+              err is not None and recorded == [])
+    finally:
+        urllib.request.urlopen = _real_urlopen
+        if _real_modules_budget is not None:
+            sys.modules["llm_budget"] = _real_modules_budget
+        else:
+            sys.modules.pop("llm_budget", None)
 
     return ok
 
