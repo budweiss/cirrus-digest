@@ -41,6 +41,32 @@ class RoutingTests(unittest.TestCase):
                 lp.call_local_first('s','u',self.creds,privacy='LOCAL_ONLY',task='alopecia-agent')
         self.assertEqual(self.calls,[])
 
+    def test_explicit_ollama_specialist_skips_general_vllm(self):
+        c=dict(self.creds,ollama_url='http://localhost:11434',vllm_url='http://localhost:8000')
+        seen=[]
+        def specialist(creds,*args):
+            seen.append(creds['ollama_model']);return 'valid'
+        with patch.dict(lp._PROVIDERS, {'ollama':specialist,
+                'vllm':lambda *a: self.fail('wrong general model')}):
+            value,tier=lp.call_local_first('s','u',c,local_provider='ollama',
+                local_model='specialist-fixture',privacy='LOCAL_ONLY')
+        self.assertEqual((value,tier),('valid','ollama'))
+        self.assertEqual(seen,['specialist-fixture'])
+
+    def test_selected_provider_failure_does_not_substitute(self):
+        c=dict(self.creds,ollama_url='http://localhost:11434',vllm_url='http://localhost:8000')
+        with patch.dict(lp._PROVIDERS, {'vllm':lambda *a: (_ for _ in ()).throw(lp.ProviderError('offline'))}):
+            with self.assertRaises(lp.ProviderError):
+                lp.call_local_first('s','u',c,local_provider='vllm')
+        self.assertFalse(self.calls)
+
+    def test_invalid_or_missing_target_fails_closed(self):
+        for kwargs in ({'local_provider':'typo'}, {'local_provider':'vllm','local_model':'ignored'},
+                       {'local_provider':'ollama'}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(lp.ProviderError):
+                lp.call_local_first('s','u',self.creds,**kwargs)
+        self.assertFalse(self.calls)
+
     def test_unknown_privacy_fails_closed(self):
         with self.assertRaises(lp.ProviderError):
             lp.call('ollama','s','u',self.creds,privacy='typo')

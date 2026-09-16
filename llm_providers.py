@@ -748,7 +748,8 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
 
 
 def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
-                     parse=None, stats=None, local_model=None, retries=0, privacy=None):
+                     parse=None, stats=None, local_model=None, retries=0, privacy=None,
+                     local_provider=None):
     """Try vLLM, then ollama, then escalate to the cloud council. S177.
 
     This is the SAME three-tier fallback halftime_catalogue.py's local-
@@ -777,6 +778,10 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
     ollama_model overridden; the vLLM tier is unaffected (its model is
     fixed by the endpoint, not a per-call choice).
 
+    local_provider: optional strict selection of ollama or vllm. When set,
+    no other local/cloud provider is attempted on failure. local_model may
+    select an Ollama specialist; it cannot override a fixed vLLM endpoint.
+
     Returns (result, tier) where tier is "vllm", "ollama", or the cloud
     provider name escalate() actually used. Raises ProviderError only if
     the cloud tier itself fails or fails parse -- same raise contract as
@@ -796,6 +801,11 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
     genuinely wants full effort on its cloud tier should call escalate()
     directly (as call_council does), not through this function.
     """
+    # An explicit specialist target must never silently become another model.
+    if local_provider not in (None, "ollama", "vllm"):
+        raise ProviderError("unknown local provider")
+    if local_provider == "vllm" and local_model is not None:
+        raise ProviderError("vllm model is fixed by its endpoint")
     import llm_routing
     try:
         route_policy = llm_routing.policy(task or DEFAULT_TASK, creds, privacy)
@@ -808,7 +818,7 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
             return raw if (raw or "").strip() else None
         return parse(raw)
 
-    if creds.get("vllm_url"):
+    if local_provider in (None, "vllm") and creds.get("vllm_url"):
         try:
             raw = call("vllm", system, user, creds, max_tokens=max_tokens,
                       retries=retries, task=task)
@@ -820,7 +830,7 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
         if stats is not None:
             stats["vllm_fallback"] = stats.get("vllm_fallback", 0) + 1
 
-    if creds.get("ollama_url"):
+    if local_provider in (None, "ollama") and creds.get("ollama_url"):
         _oc = creds if local_model is None else dict(creds, ollama_model=local_model)
         try:
             raw = call("ollama", system, user, _oc, max_tokens=max_tokens,
@@ -830,6 +840,9 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
                 return result, "ollama"
         except ProviderError:
             pass
+
+    if local_provider is not None:
+        raise ProviderError("selected local provider unavailable or output rejected")
 
     if route_policy.get("profile") and _RECORDING:
         try:
