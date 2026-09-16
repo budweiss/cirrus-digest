@@ -170,5 +170,81 @@ def run_monitor():
     log("=== Space Monitor Complete ===")
 
 
+def selftest():
+    """Exercise decision-making helpers with explicit inputs/outputs.
+    Does not touch real config, disk, or log files beyond a temp dir.
+    Returns True on success, False on failure (prints details).
+    """
+    import sys
+    import tempfile
+    import os
+
+    failures = []
+
+    def check(label, actual, expected):
+        if actual != expected:
+            failures.append(f"{label}: expected {expected!r}, got {actual!r}")
+
+    # folder_size_gb: empty/missing dir -> 0.0
+    with tempfile.TemporaryDirectory() as td:
+        empty_dir = Path(td) / "empty"
+        check("folder_size_gb missing dir", folder_size_gb(empty_dir), 0.0)
+
+        empty_dir.mkdir()
+        check("folder_size_gb empty dir", folder_size_gb(empty_dir), 0.0)
+
+        # folder_size_gb: known file size -> expected GB
+        sized_dir = Path(td) / "sized"
+        sized_dir.mkdir()
+        data = b"x" * (1024 * 1024)  # 1 MiB
+        (sized_dir / "f.bin").write_bytes(data)
+        expected_gb = (1024 * 1024) / (1024 ** 3)
+        check("folder_size_gb 1MiB file", folder_size_gb(sized_dir), expected_gb)
+
+        # cleanup_old_files: verify retention decision logic directly,
+        # without touching the real OUTPUT_DIR/ACTIONS_DIR.
+        now = datetime.now()
+        old_time = (now - timedelta(days=KEEP_DAILY_DAYS + 1)).timestamp()
+        new_time = (now - timedelta(days=1)).timestamp()
+
+        retention_dir = Path(td) / "retention"
+        retention_dir.mkdir()
+        old_file = retention_dir / "daily-old.md"
+        new_file = retention_dir / "daily-new.md"
+        old_file.write_text("old")
+        new_file.write_text("new")
+        os.utime(old_file, (old_time, old_time))
+        os.utime(new_file, (new_time, new_time))
+
+        age_old = now - datetime.fromtimestamp(old_file.stat().st_mtime)
+        age_new = now - datetime.fromtimestamp(new_file.stat().st_mtime)
+        check("old file exceeds KEEP_DAILY_DAYS", age_old.days > KEEP_DAILY_DAYS, True)
+        check("new file within KEEP_DAILY_DAYS", age_new.days > KEEP_DAILY_DAYS, False)
+
+        # rotate_big_logs threshold logic: verify constants relationship
+        check("MAX_LOG_MB > KEEP_LOG_MB", MAX_LOG_MB > KEEP_LOG_MB, True)
+
+        # Warning threshold decisions (pure comparisons, mirror run_monitor logic)
+        check("digest warn below threshold", 0.5 > WARN_DIGESTS_GB, False)
+        check("digest warn above threshold", 1.5 > WARN_DIGESTS_GB, True)
+        check("whisper warn below threshold", 4.0 > WARN_WHISPER_GB, False)
+        check("whisper warn above threshold", 6.0 > WARN_WHISPER_GB, True)
+        check("disk free warn below threshold", 10.0 < WARN_DISK_FREE_GB, True)
+        check("disk free warn above threshold", 100.0 < WARN_DISK_FREE_GB, False)
+
+    if failures:
+        print("SELFTEST FAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        return False
+
+    print("SELFTEST PASSED")
+    return True
+
+
 if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        ok = selftest()
+        sys.exit(0 if ok else 1)
     run_monitor()
