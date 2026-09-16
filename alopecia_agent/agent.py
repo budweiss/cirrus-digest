@@ -108,8 +108,8 @@ def _build_mcp_tools(dry_run=False):
                                                        args["prompt"])}]}
 
     @tool("call_council",
-          "The actual judgment step: ask the full cloud council (Anthropic "
-          "at max effort, plus every other keyed provider including Kimi) "
+          "The actual judgment step: ask the bounded cloud review selected "
+          "by shared routing policy (at most two configured providers) "
           "to weigh new evidence against existing hypotheses.", {"prompt": str})
     async def _call_council(args):
         return {"content": [{"type": "text", "text": tools.call_council(args["prompt"])}]}
