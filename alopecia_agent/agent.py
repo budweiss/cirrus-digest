@@ -221,6 +221,18 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
     return cost, transcript_path
 
 
+def _job_status_record(ok, note):
+    """Best-effort, never raises -- mirrors alopecia_collect.py/
+    alopecia_brief.py's own pattern. Only called for REAL scheduled runs
+    (dry_run=False): a manual dry-run test completing must not read as
+    "the job ran today" and mask a real scheduled failure the same day."""
+    try:
+        import job_status
+        job_status.record("alopeciaagent", ok, note)
+    except Exception as e:
+        print(f"job_status.record failed: {e}")
+
+
 def main(dry_run=False):
     allowed, spent, why = budget.allow(est_cost_usd=EST_COST_PER_RUN_USD)
     if not allowed:
@@ -228,12 +240,21 @@ def main(dry_run=False):
             f"Alopecia agent: skipping today's run -- {why}.")
         ledger_append({"event": "reasoning-pass-skipped", "tool": "agent",
                       "detail": why, "result": result})
+        # S177: recorded as OK, not a failure -- a budget cap correctly
+        # doing its job is not the same as the job being broken, same
+        # reasoning alopeciabrief's own send_guard-blocked path uses. The
+        # note still says WHY, so a human reading job_status sees the real
+        # reason rather than a bare "ok".
+        if not dry_run:
+            _job_status_record(True, f"skipped (budget): {why}")
         return
     reason = "manual dry-run" if dry_run else "scheduled daily run"
     cost, transcript_path = asyncio.run(run_reasoning_pass(reason, dry_run=dry_run))
     ledger_append({"event": "reasoning-pass", "tool": "agent", "detail": reason,
                   "result": f"cost=${cost:.4f} transcript={transcript_path}"})
     print(f"transcript: {transcript_path}")
+    if not dry_run:
+        _job_status_record(True, f"ran, cost=${cost:.4f}")
 
 
 if __name__ == "__main__":

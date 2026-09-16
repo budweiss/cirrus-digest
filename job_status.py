@@ -145,6 +145,13 @@ CADENCE_H = {
     # send_guard-blocked path, so this row can never become a permanent false
     # OVERDUE for a job that simply never records.
     "alopeciabrief":    24 * 8,
+    # S177 ALOPECIA P5. Daily 05:50 CUMULUS. Registered in the same change
+    # that armed the timer (T44) -- agent.py's main() calls job_status.record
+    # on BOTH the normal reasoning-pass path and the budget-skip path (same
+    # discipline alopeciabrief's own comment above describes), so a month
+    # where the cap is hit every day still can't become a permanent false
+    # OVERDUE for a job that simply never records.
+    "alopeciaagent":    26,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -161,6 +168,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "cumulusdailybrief", "entitykbdigest",
                  "alopeciacollect",                       # S82, runs on CUMULUS
                  "alopeciabrief",                         # S95, runs on CUMULUS
+                 "alopeciaagent",                         # S177, runs on CUMULUS
                  "immaculatecheck",                       # S141, runs on CUMULUS
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
