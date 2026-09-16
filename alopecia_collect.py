@@ -89,6 +89,25 @@ PRIORITIES = [
 ]
 DEFAULT_PRIORITY = (7, "general AA news")
 
+# S177/S180: androgenetic alopecia (AGA, "pattern baldness") is a DIFFERENT,
+# androgen-driven condition, not autoimmune -- but the etiology band's own
+# genetic/susceptibility/heritability terms (rank 3, above) are exactly the
+# vocabulary AGA's own genetics literature uses too, so items about AGA kept
+# landing in P3 "etiology / cause / trigger" as if they were AA causation
+# research. Found live, twice, by the etiology-synthesis agent's own dry
+# runs: 19 of 23 P3 items in both runs were AGA noise (DHT/miniaturization
+# mechanism papers). Checked BEFORE the PRIORITIES loop, not folded into it,
+# because this is a condition-relevance filter, not a topic classifier --
+# and gated on "areata" NOT also appearing, so a genuine AA-vs-AGA
+# differential-diagnosis paper (which names both conditions) still classifies
+# normally instead of being misfiled as out-of-scope noise.
+AGA_PATTERN = (
+    r"(androgenetic|androgenic) alopecia|male pattern (hair loss|baldness)|"
+    r"female pattern hair loss|\bfphl\b|dihydrotestosterone|\bdht\b|"
+    r"5[- ]?alpha[- ]?reductase|finasteride|dutasteride|miniaturi[sz]ation"
+)
+AGA_PRIORITY = (8, "androgenetic alopecia (AGA) -- different condition, filtered")
+
 
 def log(msg):
     print("[%s] alopecia_collect: %s" % (
@@ -277,6 +296,8 @@ def classify(item):
     """(rank, label) for an item, from its title and any extra text."""
     text = "%s %s" % (item.get("title", ""), item.get("extra", ""))
     low = text.lower()
+    if "areata" not in low and re.search(AGA_PATTERN, low):
+        return AGA_PRIORITY
     for rank, label, pattern in PRIORITIES:
         if re.search(pattern, low):
             return rank, label
@@ -518,6 +539,32 @@ def selftest():
        classify({"title": "A survey of barbers"})[0] == DEFAULT_PRIORITY[0])
     ck("classify: priority 1 beats a lower rank in the same title",
        classify({"title": "Diet in alopecia universalis"})[0] == 1)
+
+    # S177/S180 REGRESSION: AGA (androgenetic/pattern-baldness, a different
+    # condition) was flooding P3 "etiology" via shared genetic/susceptibility
+    # vocabulary -- 19/23 real P3 items in two live agent dry runs. These are
+    # real title shapes from that noise.
+    AGA_TITLES = [
+        "Dutasteride versus finasteride in androgenetic alopecia: a "
+        "randomized trial",
+        "DHT-mediated hair follicle miniaturization in male pattern "
+        "baldness",
+        "5-alpha-reductase inhibitors for androgenetic alopecia: a "
+        "systematic review",
+        "Genetic susceptibility loci for female pattern hair loss",
+    ]
+    still_p3_or_better = [t for t in AGA_TITLES if classify({"title": t})[0] <= 3]
+    ck("classify: AGA (pattern-baldness) noise no longer lands in P3 "
+       "etiology or better (%d/%d correctly filtered)"
+       % (len(AGA_TITLES) - len(still_p3_or_better), len(AGA_TITLES)),
+       not still_p3_or_better)
+    ck("classify: AGA items get the explicit out-of-scope label, not just "
+       "bumped to 'general AA news'",
+       classify({"title": AGA_TITLES[0]}) == AGA_PRIORITY)
+    ck("classify: a genuine AA-vs-AGA differential-diagnosis paper (names "
+       "BOTH conditions) still classifies normally, not filtered as noise",
+       classify({"title": "Trichoscopic differentiation of alopecia "
+                          "areata from androgenetic alopecia"})[0] == 3)
 
     # dedupe
     a = [{"key": "pmid:1"}, {"key": "pmid:2"}]
