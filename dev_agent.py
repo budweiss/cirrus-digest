@@ -220,7 +220,11 @@ def parse_model_json(text: str):
         if i == -1 or j == -1:
             raise ValueError("no JSON object in model reply")
         t = t[i:j + 1]
-    return json.loads(t)
+    # strict=False: raw control characters (literal newlines/tabs) are legal
+    # content here — the model's patch replies carry file text, and strict
+    # mode killed both nightly attempts for prop-2026-09-12-379843
+    # ("Invalid control character at: line 1 column 511").
+    return json.loads(t, strict=False)
 
 
 def may_build(item: dict) -> bool:
