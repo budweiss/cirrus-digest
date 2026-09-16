@@ -59,6 +59,11 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertEqual(after['email'], before['email'])
             self.assertEqual(len(after['rss']), 2)
 
+    def test_empty_overlay_preserves_absent_email_section(self):
+        data = {'digest': {'output_dir': '/tmp/pedagogy'}}
+        self.assertEqual(runtime.merge(data, {}), data)
+        self.assertEqual(runtime.merge(data, {'digest': {'output_dir': '/tmp/pedagogy'}}), data)
+
     def test_deploy_check_rejects_invalid_pedagogy_path(self):
         path, base = self.source()
         runtime.runtime_path(path).write_text(json.dumps({'digest': {

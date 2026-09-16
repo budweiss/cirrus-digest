@@ -75,8 +75,8 @@ def merge(base, overlay):
     if set(paths) - {'output_dir', 'log_dir'}:
         raise ValueError('runtime digest overlay may contain only paths')
     result.setdefault('digest', {}).update(paths)
-    accounts = result.setdefault('email', {}).setdefault('accounts', [])
     for account in overlay.get('email', {}).get('accounts', []):
+        accounts = result.setdefault('email', {}).setdefault('accounts', [])
         label = account.get('label')
         if not label:
             raise ValueError('runtime account requires a label')
