@@ -194,7 +194,15 @@ def call_council(prompt: str) -> str:
         "mechanistic/review, E unclassified). This is research synthesis, "
         "NEVER treatment advice -- do not recommend any action to a patient.")
     try:
-        pairs = llm_providers.escalate(system, prompt, creds, max_tokens=2048,
+        # S177: 2048 was NOT enough even after llm_providers._anthropic()'s
+        # 4096-token effort floor -- caught live: the agent's own first
+        # post-fix dry run still logged Anthropic (and DeepSeek) returning
+        # empty on THIS call specifically, the hardest prompt this agent
+        # makes (weigh several real items against existing hypotheses,
+        # across 5 providers). 8000 matches the precedent already set by
+        # halftime_catalogue.py's LOCAL_EXTRACT_MAX_TOKENS for its own
+        # heavy-extraction task, rather than guessing a new number.
+        pairs = llm_providers.escalate(system, prompt, creds, max_tokens=8000,
                                       mode="council", task="alopecia-agent")
         result = "\n\n".join(f"--- {p} ---\n{t}" for p, t in pairs)
         members = [p for p, _ in pairs]
