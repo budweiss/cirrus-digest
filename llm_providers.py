@@ -728,6 +728,18 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
     call()/escalate(); a caller that wants "never raises" (like halftime)
     wraps this in try/except itself rather than this function swallowing
     errors a different way than its siblings do.
+
+    S177: the cloud-escalation tier deliberately does NOT engage
+    creds["anthropic_effort"], even when the box has it configured --
+    found live, twice, via the alopecia agent's own dry runs: this
+    function's whole premise is "local failed, get a workable answer fast,
+    local-equivalent effort", not "give me your deepest reasoning". Forcing
+    max-effort adaptive thinking onto what's supposed to be the cheap/fast
+    fallback tier repeatedly produced empty replies (thinking consuming the
+    whole token budget) on ordinary routine-classification prompts that
+    never needed deep reasoning in the first place. A caller that
+    genuinely wants full effort on its cloud tier should call escalate()
+    directly (as call_council does), not through this function.
     """
     def _accept(raw):
         if parse is None:
@@ -757,7 +769,9 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
         except ProviderError:
             pass
 
-    provider, raw = escalate(system, user, creds, max_tokens=max_tokens,
+    _cloud_creds = creds if "anthropic_effort" not in creds else {
+        k: v for k, v in creds.items() if k != "anthropic_effort"}
+    provider, raw = escalate(system, user, _cloud_creds, max_tokens=max_tokens,
                              mode="single", task=task)
     result = _accept(raw)
     if result is None:
@@ -1241,6 +1255,32 @@ def selftest():
         check("call_local_first: local_model= overrides the box's configured "
               "ollama_model for this call only",
               _seen_model.get("m") == "qwen2.5-coder:14b")
+
+        # S177: the cloud-escalation tier must NOT inherit anthropic_effort --
+        # found live via the alopecia agent's own dry runs (see call_local_first's
+        # docstring). Real adapters, HTTP stubbed, so this tests the actual
+        # _anthropic() code path, not a restatement of the fix.
+        _PROVIDERS.clear()
+        _PROVIDERS.update(_real_providers)
+        _seen_effort_body = {}
+        globals()["_http_post"] = lambda url, headers, body, timeout=_TIMEOUT: (
+            _seen_effort_body.update(b=body) or
+            {"choices": [{"message": {"content": "ok"}}],
+             "content": [{"type": "text", "text": "ok"}]})
+        call_local_first("s", "u", {"anthropic_api_key": "a",
+                                    "anthropic_effort": "max"})
+        check("call_local_first: anthropic_effort does NOT reach the wire "
+              "through this function's cloud tier, even when configured "
+              "(this tier is meant to be cheap/fast, not deep reasoning)",
+              "output_config" not in _seen_effort_body["b"])
+        call("anthropic", "s", "u", {"anthropic_api_key": "a",
+                                     "anthropic_effort": "max"})
+        check("...while a DIRECT call()/escalate() (e.g. call_council's own "
+              "path) still gets full effort -- this strips it only inside "
+              "call_local_first, not from the credential globally",
+              _seen_effort_body["b"].get("output_config") == {"effort": "max"})
+
+        _LAST.model = None            # leave the thread slot as the caller found it
         _PROVIDERS.clear()
         _PROVIDERS.update(_real_providers)
     finally:
