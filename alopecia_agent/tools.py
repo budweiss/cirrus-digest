@@ -185,8 +185,8 @@ def call_local(task_class: str, prompt: str) -> str:
 
 
 def call_council(prompt: str) -> str:
-    """The actual judgment step: ask the full cloud council (Anthropic at
-    max effort, plus every other keyed provider including Kimi) to weigh
+    """The actual judgment step: ask the bounded shared-policy cloud review
+    (up to two configured providers) to weigh
     new evidence against existing hypotheses. This is where real reasoning
     happens -- routine local calls feed it, they do not replace it."""
     creds = _load_creds()

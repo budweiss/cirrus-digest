@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "profiles": {
+    "extraction": {"cloud_order": ["anthropic", "gemini"], "max_cloud_providers": 1},
+    "research": {"cloud_order": ["anthropic", "gemini", "kimi"], "max_cloud_providers": 2},
+    "coding": {"cloud_order": ["anthropic", "openai"], "max_cloud_providers": 2}
+  },
+  "tasks": {
+    "halftime_catalogue": "extraction",
+    "halftime_routing": "extraction",
+    "alopecia-agent": "research"
+  }
+}

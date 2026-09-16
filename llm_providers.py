@@ -40,6 +40,8 @@ import json
 import os
 import sys
 import threading
+import time
+import uuid
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -629,7 +631,7 @@ def available(creds):
 
 
 def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
-         task=None, record=True, session_id=None):
+         task=None, record=True, session_id=None, privacy=None):
     """Call ONE provider by name. Returns reply text. Raises ProviderError.
 
     Retries once (retries=1) on an EMPTY/whitespace reply. Guards the S47 #8
@@ -644,6 +646,17 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     caller that records the call itself with richer tags (ensemble's council
     and judge rows) -- without it those calls would be counted twice.
     """
+    _LAST.model = None  # blocked calls must not expose the previous model
+    import llm_routing
+    try:
+        route_policy = llm_routing.authorize(
+            provider, task or DEFAULT_TASK, creds, system, user,
+            max(max_tokens, _EFFORT_MIN_MAX_TOKENS) if provider == "anthropic" and _anthropic_extra(creds) else max_tokens,
+            privacy=privacy, session_id=session_id)
+    except llm_routing.RoutingError as exc:
+        raise ProviderError(str(exc)) from exc
+    if route_policy.get("profile") and provider not in llm_routing.LOCAL:
+        retries = 0  # one paid attempt per selected provider
     _LAST.usage = {}
     _LAST.model = None            # never let a stale model answer for this call
     _LAST.finish_reason = None
@@ -652,6 +665,8 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     _LAST.session_id = session_id
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
+    attempt_id = uuid.uuid4().hex
+    started = time.monotonic()
     reply = ""
     for _ in range(retries + 1):
         _LAST.usage = {}
@@ -663,13 +678,21 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
             # each retry separately, but never invent usage for transport errors.
             if record and (reply.strip() or any(v is not None for v in _LAST.usage.values())):
                 _record(provider, system, user, reply, creds, task)
+            if route_policy.get("profile") and _RECORDING:
+                try:
+                    llm_routing.audit(task or DEFAULT_TASK, provider,
+                        "reply_received" if reply.strip() else "no_usable_reply",
+                        route_policy, attempt_id=attempt_id,
+                        elapsed_seconds=round(time.monotonic()-started, 3))
+                except OSError as exc:
+                    raise ProviderError("routing audit unavailable after provider call") from exc
         if reply.strip():
             break
     return reply
 
 
 def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
-             task=None, record=True, session_id=None):
+             task=None, record=True, session_id=None, privacy=None):
     """Policy-driven call across configured providers.
 
     Reads defaults from creds['dev_escalation'] = {"mode":..., "order":[...]}.
@@ -679,12 +702,25 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
     Raises ProviderError if no provider has a key.
     S132: task= and record= are forwarded to every call() (see call()).
     """
+    import llm_routing
+    try:
+        selected, route_policy = llm_routing.cloud_order(
+            task or DEFAULT_TASK, creds, order=order, privacy=privacy)
+    except llm_routing.RoutingError as exc:
+        raise ProviderError(str(exc)) from exc
+    if route_policy.get("profile"):
+        order = selected
     pol = creds.get("dev_escalation", {}) or {}
     mode = mode or pol.get("mode", "single")
-    order = order or pol.get("order") or DEFAULT_ORDER
+    order = order if route_policy.get("profile") else (order or pol.get("order") or DEFAULT_ORDER)
     avail = [p for p in order if creds.get(_KEY_FIELD.get(p, "")) and p in _PROVIDERS]
+    if route_policy.get("profile"):
+        avail = avail[:route_policy["max_cloud_providers"]]
     if not avail:
-        raise ProviderError("no providers have keys configured")
+        raise ProviderError("no approved providers have keys configured")
+
+    if privacy is not None:
+        creds = dict(creds, llm_privacy=route_policy["privacy"])
 
     if mode == "council":
         out = []
@@ -712,7 +748,7 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
 
 
 def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
-                     parse=None, stats=None, local_model=None, retries=0):
+                     parse=None, stats=None, local_model=None, retries=0, privacy=None):
     """Try vLLM, then ollama, then escalate to the cloud council. S177.
 
     This is the SAME three-tier fallback halftime_catalogue.py's local-
@@ -760,6 +796,13 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
     genuinely wants full effort on its cloud tier should call escalate()
     directly (as call_council does), not through this function.
     """
+    import llm_routing
+    try:
+        route_policy = llm_routing.policy(task or DEFAULT_TASK, creds, privacy)
+    except llm_routing.RoutingError as exc:
+        raise ProviderError(str(exc)) from exc
+    creds = dict(creds, llm_privacy=route_policy["privacy"])
+
     def _accept(raw):
         if parse is None:
             return raw if (raw or "").strip() else None
@@ -788,6 +831,11 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
         except ProviderError:
             pass
 
+    if route_policy.get("profile") and _RECORDING:
+        try:
+            llm_routing.audit(task or DEFAULT_TASK, "local", "local_unavailable_or_rejected", route_policy)
+        except OSError as exc:
+            raise ProviderError("routing audit unavailable") from exc
     _cloud_creds = creds if "anthropic_effort" not in creds else {
         k: v for k, v in creds.items() if k != "anthropic_effort"}
     provider, raw = escalate(system, user, _cloud_creds, max_tokens=max_tokens,

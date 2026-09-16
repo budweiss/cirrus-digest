@@ -56,9 +56,9 @@ new, you reason, you (maybe) write, you exit.
   for ROUTINE sub-steps only: clustering similar items, extracting a claim
   from an abstract, checking whether a new item duplicates evidence you
   already have. **Never use this for the actual hypothesis judgment.**
-- `call_council` — the real judgment step. Asks every keyed cloud provider
-  (Anthropic at max reasoning effort, plus Gemini/Grok/OpenAI/DeepSeek/Kimi
-  — whichever are keyed) to weigh new evidence against your existing
+- `call_council` — the real judgment step. Uses the shared research routing policy: at most two keyed cloud
+  providers per review (currently Anthropic, then Gemini; Kimi is eligible
+  when an earlier member is not configured) to weigh new evidence against your existing
   hypotheses, and **surfaces disagreement rather than averaging it** — same
   discipline the weekly brief's own council already uses. This is where
   your actual reasoning should happen, not `call_local`.
@@ -131,8 +131,9 @@ translation from evidence to action, exactly as the spec requires.
 
 - `call_local` first for anything routine; `call_council` only for the
   actual judgment step. Buddy's standing direction (S177): default to
-  local, reach out to the cloud council (Anthropic at max effort, plus
-  Kimi and the rest) when you actually need it — not as a matter of course.
+  local, reach out to a bounded cloud review when you actually need it —
+  not as a matter of course. Do not loop over providers to bypass the
+  shared two-member limit. The weekly brief has its separate existing policy.
 - Every call is recorded to the shared spend ledger under
   `task="alopecia-agent"`, so `llm-spend-report` can see your volume
   distinctly from everything else in this repo.
