@@ -166,7 +166,9 @@ def main():
             for name in placement.watch_keys(placement.normalize(fields[0])):
                 if name in jobs:
                     jobs[name]["ok"] = False
-                    jobs[name]["note"] = "failed systemd unit: " + fields[0]
+                    jobs[name]["systemd_failure"] = fields[0]
+                    # Keep the last completion note for productivity parsers;
+                    # current systemd failure is independent, explicit evidence.
     except (OSError, subprocess.TimeoutExpired):
         _fail("cannot read current failed units")
 

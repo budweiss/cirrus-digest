@@ -207,8 +207,9 @@ back failed, that is the finding, and it is more important than the restart.
   independently of your own judgment, as a second gate), and attempting it
   repeatedly wastes a turn.
 - **`file_repair_ticket`** (S91) — **the one tool you have that can lead to a
-  code fix.** Call it when you have confirmed a failed unit, run
-  `restart_service`, and it failed *again*. That second failure is the signal:
+  code fix.** For restart-allowed services, call it after a failed restart.
+  For batch jobs in the ticket policy but outside the restart policy, gather
+  the failure evidence and file directly; do not restart them. A repeat failure is the signal:
   the fault is in the code, not in a dead process, and no amount of restarting
   will touch it.
 
@@ -355,7 +356,7 @@ and trying wastes a turn:
   unit, when your check shows it's actually failed or missed a scheduled run.
   Do this yourself, then it's ledgered automatically (you don't need to log it
   yourself — the tool does that). Notify Buddy that you did it.
-- **AUTO-FILE + LOG (S91):** `file_repair_ticket`, once a restart has already
+- **AUTO-FILE + LOG (S91):** `file_repair_ticket`, for a non-restartable batch failure, or once a permitted restart has already
   failed on an allow-listed unit. This is auto-apply because filing changes
   nothing on any box — it only puts the problem in front of something that can
   write code. The resulting patch still waits for Buddy's tap.

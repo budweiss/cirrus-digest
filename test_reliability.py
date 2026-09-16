@@ -71,6 +71,31 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(llm_providers.call('test', '', '', {}, 100, retries=1), 'answer')
             self.assertEqual(rec.call_count, 2)
 
+    def test_degraded_council_keeps_billed_retries_and_session(self):
+        import ensemble
+        def empty(*args):
+            llm_providers._LAST.usage = {'input': 10, 'output': 2}
+            llm_providers._LAST.model = 'empty-model'
+            return ''
+        def good(*args):
+            llm_providers._LAST.usage = {'input': 20, 'output': 5}
+            llm_providers._LAST.model = 'good-model'
+            return 'usable answer'
+        creds = {'anthropic_api_key': 'test', 'gemini_api_key': 'test',
+                 'dev_escalation': {'order': ['anthropic', 'gemini']}}
+        with patch.object(ensemble, '_load_budget', return_value=(None, None, None, {})), \
+             patch.dict(llm_providers._PROVIDERS, {'anthropic': empty, 'gemini': good}), \
+             patch.object(llm_providers, '_RECORDING', True), \
+             patch.object(llm_budget, 'record_call') as record:
+            meta, text = ensemble.best_answer('system', 'user', creds, mode='council',
+                                              task='test-job', session_id='run-1')
+            self.assertTrue(meta['degraded'])
+            self.assertEqual(text, 'usable answer')
+            self.assertEqual(record.call_count, 3)
+            self.assertEqual([c.kwargs['out_tok'] for c in record.call_args_list], [2, 2, 5])
+            self.assertTrue(all(c.kwargs['session_id'] == 'run-1' for c in record.call_args_list))
+            self.assertTrue(all(c.kwargs['task'] == 'test-job:council' for c in record.call_args_list))
+
     def test_transport_error_does_not_reuse_old_usage(self):
         llm_providers._LAST.usage = {'input': 999, 'output': 999}
         with patch.dict(llm_providers._PROVIDERS, {'test': lambda *a: (_ for _ in ()).throw(OSError())}), patch.object(llm_providers, '_record') as rec:

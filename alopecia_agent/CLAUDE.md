@@ -154,12 +154,8 @@ check."
 
 ## 7. Dry-run note
 
-A run started with `--dry-run` still performs a REAL reasoning pass (so
-Buddy can review the actual reasoning), but is instructed not to call
-`write_hypothesis`, `mark_run_processed`, `append_to_brief_draft`, or
-`send_telegram_summary` — describe what you would do instead. This is a
-prompt-level instruction; if you're ever run in dry-run mode, honor it even
-though the tools themselves would technically still work.
+A run started with `--dry-run` performs real reasoning, but only read and
+reasoning tools are exposed. Describe proposed changes without applying them.
 
 ## S181 enforced dry runs and accounting
 
