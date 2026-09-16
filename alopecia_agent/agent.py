@@ -76,9 +76,12 @@ def _build_mcp_tools():
 
     @tool("write_hypothesis",
           "Create or refine ONE hypothesis. evidence_grade must be A "
-          "(controlled trial) through E (unclassified). NEVER phrase "
-          "statement as treatment advice -- this is a causation-research "
-          "finding, not a recommendation.",
+          "(controlled trial) through E (unclassified). supporting/"
+          "contradicting: put each distinct item (a citation key or a "
+          "longer note) on its OWN LINE -- do not separate items with "
+          "commas, since a note's own prose may contain commas. NEVER "
+          "phrase statement as treatment advice -- this is a "
+          "causation-research finding, not a recommendation.",
           {"hyp_id": str, "statement": str, "evidence_grade": str,
            "supporting": str, "contradicting": str})
     async def _write_hypothesis(args):

@@ -129,12 +129,16 @@ def write_hypothesis(hyp_id: str, statement: str, evidence_grade: str,
                      supporting: str = "", contradicting: str = "") -> str:
     """Create or refine ONE hypothesis. evidence_grade must be one of A-E
     (same vocabulary as alopecia_brief.py's item grading: A controlled trial
-    ... E unclassified). supporting/contradicting are comma-separated item
-    keys (from read_new_etiology_items's key=... field or the KB's citations).
-    Never phrase statement as treatment advice -- this is a causation-research
-    finding, not a recommendation."""
-    sup = [s.strip() for s in supporting.split(",") if s.strip()]
-    con = [s.strip() for s in contradicting.split(",") if s.strip()]
+    ... E unclassified). supporting/contradicting are ONE ITEM PER LINE --
+    either a short citation key (from read_new_etiology_items's key=... field
+    or the KB's citations) or a longer note about non-cited/general-knowledge
+    evidence. Put each distinct item on its own line; do NOT rely on commas
+    to separate items -- a note's own prose commonly contains commas, and
+    splitting on them shreds it (S177 bug: a comma-split here corrupted the
+    first real run's evidence trail). Never phrase statement as treatment
+    advice -- this is a causation-research finding, not a recommendation."""
+    sup = [s.strip() for s in supporting.splitlines() if s.strip()]
+    con = [s.strip() for s in contradicting.splitlines() if s.strip()]
     try:
         state = hypothesis_store.load()
         hypothesis_store.upsert(state, hyp_id, statement, evidence_grade,
@@ -410,6 +414,22 @@ def selftest():
             check("write_hypothesis: an invalid grade is REJECTED, not "
                   "silently coerced", "REJECTED" in write_hypothesis(
                       "h2", "x", "Z"))
+            write_hypothesis(
+                "h3", "IFN-gamma driven immune privilege collapse", "D",
+                contradicting="Council flags (general literature knowledge, "
+                              "not from a cited item here): a subset shows "
+                              "weak IFN signatures, not resolved.\npmid:42706968")
+            h3_state = hypothesis_store.load()
+            h3 = hypothesis_store.find(h3_state, "h3")
+            check("write_hypothesis: a prose note containing embedded commas "
+                  "survives as ONE item, not shredded at every comma "
+                  "(S177 regression -- corrupted the first real run's "
+                  "evidence trail)",
+                  h3["contradicting_items"] == sorted([
+                      "Council flags (general literature knowledge, not "
+                      "from a cited item here): a subset shows weak IFN "
+                      "signatures, not resolved.",
+                      "pmid:42706968"]))
             check("read_hypothesis_state: reflects what was just written",
                   "h1" in read_hypothesis_state()
                   and "molecular mimicry" in read_hypothesis_state())
