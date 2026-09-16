@@ -22,8 +22,8 @@ from datetime import datetime
 from pathlib import Path
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
-with open(CONFIG_PATH) as f:
-    CONFIG = json.load(f)
+from runtime_config import load_sources
+CONFIG = load_sources(CONFIG_PATH)
 
 DIGEST_CFG  = CONFIG["digest"]
 OUTPUT_DIR  = Path(DIGEST_CFG["output_dir"])

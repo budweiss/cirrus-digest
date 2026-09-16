@@ -120,7 +120,8 @@ def load_json(path, default=None):
 
 
 def load_config():
-    cfg = load_json(CONFIG_PATH)
+    from runtime_config import load_sources
+    cfg = load_sources(CONFIG_PATH)
     if not cfg:
         raise SystemExit(f"missing/invalid {CONFIG_PATH}")
     return cfg
@@ -537,7 +538,8 @@ def discover_sources(cfg, creds, state, dry=False):
             log(f"  - {r['name']}: {r['reason']}")
         if accepted and not dry:
             add_sources(cfg, accepted)
-            CONFIG_PATH.write_text(json.dumps(cfg, indent=1, ensure_ascii=False))
+            from runtime_config import save_pedagogy_sources
+            save_pedagogy_sources(CONFIG_PATH, accepted)
             state["last_discovery"] = datetime.now().strftime("%Y-%m-%d")
             state["dry_streak"] = 0
         if not accepted:
@@ -1186,7 +1188,8 @@ if __name__ == "__main__":
             log(f"  - {r['name']}: {r['reason']}")
         if _acc:
             add_sources(_cfg, _acc)
-            CONFIG_PATH.write_text(json.dumps(_cfg, indent=1, ensure_ascii=False))
+            from runtime_config import save_pedagogy_sources
+            save_pedagogy_sources(CONFIG_PATH, _acc)
         print(f"manual add: {len(_acc)} added, {len(_rej)} rejected "
               f"(now {len(_cfg.get('rss', []))} rss, "
               f"{len(_cfg.get('podcasts', []))} podcasts)")

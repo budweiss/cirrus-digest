@@ -439,7 +439,8 @@ if __name__ == "__main__":
         for f in sorted(OUT_DIR.glob("*.md")):
             print("  %s" % f.name)
         raise SystemExit(0)
-    cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
+    from runtime_config import load_sources
+    cfg = load_sources(PROJECT_DIR / "config/sources.json")
     cr = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     allow = cfg.get("email", {}).get("newsletter_allowlist", [".substack.com"])
     raise SystemExit(0 if fetch(cfg, cr, allow).get("saved", 0) >= 0 else 1)

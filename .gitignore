@@ -124,3 +124,8 @@ credentials.json.*
 
 # Host paths/mailboxes must survive code updates (S181).
 config/runtime.local.json
+
+# S182 host paths and discovered pedagogy feeds
+config/runtime-pedagogy.local.json
+config/sources-pedagogy.local.json
+config/sources-pedagogy.local.json.lock

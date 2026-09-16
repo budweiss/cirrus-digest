@@ -17,8 +17,8 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
 CREDS_PATH  = Path.home() / "projects/cirrus-digest/config/credentials.json"
 
-with open(CONFIG_PATH) as f:
-    CONFIG = json.load(f)
+from runtime_config import load_sources
+CONFIG = load_sources(CONFIG_PATH)
 
 with open(CREDS_PATH) as f:
     CREDS = json.load(f)

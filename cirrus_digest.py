@@ -33,8 +33,8 @@ from urllib.parse import urlparse
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
 
-with open(CONFIG_PATH) as f:
-    CONFIG = json.load(f)
+from runtime_config import load_sources
+CONFIG = load_sources(CONFIG_PATH)
 
 PODCASTS    = CONFIG["podcasts"]
 DIGEST_CFG  = CONFIG["digest"]

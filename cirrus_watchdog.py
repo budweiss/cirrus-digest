@@ -263,8 +263,8 @@ def check_and_heal():
     st = launchctl_state()
     findings, repairs = [], []
     try:
-        from runtime_config import check
-        check(Path(__file__).resolve().parent / "config/sources.json")
+        from runtime_config import check_all
+        check_all(Path(__file__).resolve().parent / "config")
     except Exception:
         findings.append("INVALID runtime configuration: check host overlay and sources")
 

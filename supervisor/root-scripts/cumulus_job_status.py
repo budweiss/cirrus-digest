@@ -176,7 +176,7 @@ def main():
     sys.path.insert(0, str(APP))
     try:
         import runtime_config
-        runtime_config.check(APP / "config/sources.json", "cumulus-research")
+        runtime_config.check_all(APP / "config", "cumulus-research")
         config_ok = True
     except Exception:
         config_ok = False

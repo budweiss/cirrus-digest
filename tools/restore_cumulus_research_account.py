@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """S76 repair: put the 'cumulus-research' email account back into
-config/sources.json on cumulus1.
+config/runtime.local.json on cumulus1.
 
 The account entry is CUMULUS-local (never in git). The S75 pull-restoration
 clobbered sources.json before skip-worktree protected it; the localize repair
@@ -16,11 +16,12 @@ import shutil
 import sys
 from datetime import date
 
-CUR = "config/sources.json"
+CUR = "config/runtime.local.json"
 BAK = "config/sources.json.bak-localize"
 LABEL = "cumulus-research"
 
-cur = json.load(open(CUR))
+from pathlib import Path
+cur = json.loads(Path(CUR).read_text()) if Path(CUR).exists() else {}
 accts = cur.setdefault("email", {}).setdefault("accounts", [])
 if any(a.get("label") == LABEL for a in accts):
     print(f"'{LABEL}' already present — nothing to do")
@@ -47,7 +48,8 @@ if not found:
                  "via tools/restore_cumulus_research_account.py (S76).",
     }]
 
-shutil.copy(CUR, f"{CUR}.bak-{date.today().isoformat()}")
+if Path(CUR).exists():
+    shutil.copy(CUR, f"{CUR}.bak-{date.today().isoformat()}")
 accts.append(found[0])
 with open(CUR, "w") as f:
     f.write(json.dumps(cur, indent=2) + "\n")

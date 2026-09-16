@@ -546,8 +546,8 @@ def read_inbox():
 
     limit = min(int(request.args.get("limit", 10)), 25)
     try:
-        with open(PROJECT_DIR / "config/sources.json") as f:
-            accounts = json.load(f).get("email", {}).get("accounts", [])
+        from runtime_config import load_sources
+        accounts = load_sources(PROJECT_DIR / "config/sources.json").get("email", {}).get("accounts", [])
     except Exception as e:
         return jsonify({"error": f"sources.json: {e}"}), 500
 
@@ -986,8 +986,8 @@ def deploy():
     git_ok = git.returncode == 0
     if git_ok:
         try:
-            from runtime_config import check
-            check(PROJECT_DIR / "config/sources.json")
+            from runtime_config import check_all
+            check_all(PROJECT_DIR / "config")
         except Exception:
             git_ok = False
             git_output += "\nruntime configuration preflight FAILED"
@@ -1023,8 +1023,8 @@ def deploy_all():
     GET: /admin/deploy-all?job=none&token=<token>
          ?job=com.cirrus.api   optional: restart a CIRRUS service (same allowlist as /deploy)
     The CUMULUS pull is ff-only and NON-destructive: on any conflict it reports the
-    failure and leaves CUMULUS untouched (never force-resets — its sources.json is
-    skip-worktree localized; use the runner cumulus-git-reset for a deliberate resync).
+    failure without force-resetting local data. Host paths/mailboxes live in
+    ignored runtime overlays, and both source configurations are validated.
     """
     require_token()
     job = request.args.get("job", "none").strip()
@@ -1038,8 +1038,8 @@ def deploy_all():
     cirrus_ok = git.returncode == 0
     if cirrus_ok:
         try:
-            from runtime_config import check
-            check(PROJECT_DIR / "config/sources.json")
+            from runtime_config import check_all
+            check_all(PROJECT_DIR / "config")
         except Exception:
             cirrus_ok = False
             cirrus_out += "\nruntime configuration preflight FAILED"

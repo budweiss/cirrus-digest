@@ -381,7 +381,8 @@ def fetch_candidates(creds: dict) -> tuple:
     must be reported as a partial scan.
     """
     try:
-        cfg = json.loads(SOURCES_PATH.read_text())
+        from runtime_config import load_sources
+        cfg = load_sources(SOURCES_PATH)
         accounts = (cfg.get("email") or {}).get("accounts", []) or []
     except Exception as e:
         log(f"  could not read sources.json: {e}")

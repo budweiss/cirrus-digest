@@ -43,7 +43,8 @@ BUILDS_FILE = PROJECT_DIR / "logs/dev-loop/builds.json"
 # Make sibling modules importable when launched by full path from launchd.
 sys.path.insert(0, str(PROJECT_DIR))
 
-CONFIG = json.load(open(CONFIG_PATH))
+from runtime_config import load_sources
+CONFIG = load_sources(CONFIG_PATH)
 CREDS  = json.load(open(CREDS_PATH))
 
 DIGEST_CFG  = CONFIG["digest"]

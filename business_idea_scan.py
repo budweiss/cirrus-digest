@@ -65,7 +65,8 @@ def inherited_sources() -> list:
     a business idea at all -- that is fine and expected: the relevance gate
     rejects those cheaply, before the more expensive critique ever runs."""
     try:
-        cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
+        from runtime_config import load_sources
+        cfg = load_sources(PROJECT_DIR / "config/sources.json")
     except Exception:
         return []
     out = []
@@ -787,7 +788,8 @@ def fetch_business_emails(creds: dict, lookback_days: int = _EMAIL_LOOKBACK_DAYS
     from email.header import decode_header, make_header
 
     try:
-        cfg = json.loads((PROJECT_DIR / "config/sources.json").read_text())
+        from runtime_config import load_sources
+        cfg = load_sources(PROJECT_DIR / "config/sources.json")
         accounts = (cfg.get("email") or {}).get("accounts", []) or []
     except Exception as e:
         print(f"  email: cannot read sources.json ({e}) — 0 emails this run", flush=True)
