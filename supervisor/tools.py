@@ -639,6 +639,9 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
     return result
 
 
+ALERT_CONTEXT = ""  # stable incident-generation context, supplied by the run loop
+
+
 def request_opus_upgrade(reason: str) -> str:
     """S64: ask Buddy's permission to use Opus for the rest of THIS reasoning
     pass onward — call this if a task genuinely seems to need deeper
@@ -649,7 +652,14 @@ def request_opus_upgrade(reason: str) -> str:
     you're requesting an upgrade and will revisit next time you're woken."""
     import opus_approval
     text = opus_approval.create_opus_request(reason)
-    result = send_telegram(text)
+    if text is None:
+        return "SUPPRESSED: an unanswered/unconsumed request already occupies the reply slot"
+    try:
+        result = send_telegram(text)
+    except Exception:
+        opus_approval.record_request_delivery(False)
+        raise
+    opus_approval.record_request_delivery(result == 'sent')
     ledger_append({"event": "action", "tool": "request_opus_upgrade",
                    "tier_name": "notify", "detail": reason[:120], "result": result})
     return result
@@ -663,7 +673,7 @@ def request_guidance(issue: str, question: str) -> str:
     it. NOT for routine anomalies you can already report-and-move-on from
     via send_telegram — this is for when you need a human decision. Sends
     Buddy a Telegram describing the issue and your question; his free-text
-    reply (within 2 hours) is read back to you at the START of your NEXT
+    reply (within 7 days) is read back to you at the START of your NEXT
     invocation, before you begin your checks. This pass itself still
     finishes without an answer — note in your summary that you've escalated
     and will act on Buddy's direction next time you're woken.
@@ -676,8 +686,18 @@ def request_guidance(issue: str, question: str) -> str:
     file_repair_ticket, not this. An unanswered request re-fires on every wake
     and costs a reasoning pass each time -- see CLAUDE.md section 2."""
     import opus_approval
-    text = opus_approval.create_guidance_request(issue, question)
-    result = send_telegram(text)
+    text = opus_approval.create_guidance_request(issue, question, context=ALERT_CONTEXT)
+    if text is None:
+        result = "SUPPRESSED: existing request or unchanged incident already asked; do not rephrase and resend"
+        ledger_append({"event": "guidance-suppressed", "tool": "request_guidance",
+                       "tier_name": "notify", "detail": "unchanged incident or busy reply slot", "result": result})
+        return result
+    try:
+        result = send_telegram(text)
+    except Exception:
+        opus_approval.record_request_delivery(False)
+        raise
+    opus_approval.record_request_delivery(result == 'sent')
     ledger_append({"event": "action", "tool": "request_guidance",
                    "tier_name": "notify", "detail": f"{issue[:80]} | {question[:80]}",
                    "result": result})

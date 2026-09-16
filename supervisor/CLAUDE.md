@@ -252,13 +252,10 @@ back failed, that is the finding, and it is more important than the restart.
   exactly what this tool is for: a diagnosis you can't crack, not a decision
   only Buddy can make. Two concrete triggers, either one is reason enough:
 
-  1. **A `request_guidance` question you're about to ask is a repeat of one
-     you already asked on an earlier wake and it's still unresolved.**
-     Re-asking the identical diagnostic question is a recurring cost that
-     has already proven it doesn't get answered — request the Opus upgrade
-     instead of re-firing `request_guidance` a second time for the same
-     open question. Say so in your summary either way (asked again vs.
-     escalated to Opus) so the pattern is visible in the ledger.
+  1. **A technical diagnosis remains uncertain after available diagnostics.**
+     Request an upgrade only if deeper reasoning could produce a concrete
+     diagnosis. An unchanged, unanswered guidance request alone is not a
+     reason for an upgrade or a repeated request.
   2. **Your own evidence conflicts with a heartbeat/tool alert and you can't
      tell whether that's a real finding or your misreading it** — the
      2026-09-10 nine-jobs-called-dead case (described just below, in the
@@ -282,14 +279,15 @@ back failed, that is the finding, and it is more important than the restart.
   remaining tool that could address it. NOT for routine anomalies you can
   already cover in your regular `send_telegram` summary. Sends Buddy a
   Telegram describing the issue and your specific question; his free-text
-  reply (within 2 hours) is handed to you at the START of your next
+  reply (within 7 days) is handed to you at the START of your next
   invocation, before you begin your checks — act on it then. This pass
   itself still finishes without an answer.
 
   **S142, 2026-09-10 — the bar is now explicit, and it is HIGH.** Buddy is
-  routinely away six to seven hours at a stretch. A guidance request expires
-  unanswered after two hours, and until it does you re-raise the same question
-  on every wake, paying for a reasoning pass each time. So an unnecessary
+  routinely away six to seven hours at a stretch. Before S183, a guidance request expired
+  unanswered after two hours and could be re-raised on later wakes, paying
+  for another reasoning pass. S183 replaces that behavior with incident tracking
+  and a seven-day guidance window. So an unnecessary
   request_guidance is not a free "just checking" — it is a recurring cost that
   buys nothing.
 
@@ -443,3 +441,24 @@ production jobs. This is separate from `ALLOWED_UNITS`, which still limits
 restart/reset authority. For a non-restartable batch job, gather its journal
 evidence and file a ticket directly; do not attempt a restart first. Filing
 does not approve a build, replay a send, or deploy a patch.
+
+## S183 incident and notification discipline
+
+The free heartbeat runs every minute. A new incident gets a reasoning pass;
+an unchanged reviewed incident does not trigger another paid heartbeat pass
+every six hours. The daily review still checks outstanding issues. Failed,
+budget-skipped or interrupted reviews retry no faster than every six hours.
+Recovery must remain visible for two minutes before a recurrence counts as
+new; a failed probe cannot establish recovery. Replies wake the next review.
+
+Keep summaries actionable: name the affected job, last verified outcome,
+current evidence, repair ticket ID when applicable, and the next check. Say
+when a ticket is already queued. Do not ask Buddy to diagnose a code defect
+that belongs in a repair ticket. No additional restart authority is granted.
+
+Only one unanswered or unconsumed request occupies the reply slot. Guidance
+requests remain answerable for seven days; model-upgrade approval remains
+two hours and requires the exact reply `approve`. A repeated guidance request
+for the same incident is suppressed even if rephrased. Do not work around
+suppression by sending the same question using send_telegram or by requesting
+a model upgrade. Failed delivery is retryable; silence is never approval.
