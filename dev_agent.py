@@ -2883,6 +2883,20 @@ def _selftest():
     j = parse_model_json('Sure!\n{"summary":"s2","files":[{"path":"a.py","content":"c"}],"notes":""} thanks')
     check("parse_model_json: prose-wrapped", j["files"][0]["path"] == "a.py")
 
+    # S178: RAW control characters inside JSON string values — models emit
+    # unescaped newlines/tabs when writing code into patch strings. Strict
+    # json.loads rejects them ("Invalid control character") — prop-2026-09-12-379843,
+    # both patch attempts on 2026-09-15, and 09-11's 621658/454534. The
+    # strict=False fix must parse them.
+    _ctl = '{"summary":"s","files":[{"path":"a.py","content":"x=1' + chr(10) + 'y=2"}],"notes":""}'
+    try:
+        json.loads(_ctl, strict=True)
+        check("parse_model_json: control-char fixture is strictly hostile", False)
+    except json.JSONDecodeError:
+        check("parse_model_json: control-char fixture is strictly hostile", True)
+    check("parse_model_json: raw control chars inside string values",
+          parse_model_json(_ctl)["files"][0]["content"] == "x=1" + chr(10) + "y=2")
+
     # build_model_patch: a truncated/empty first reply is retried, not fatal (S47 #8)
     _orig_call = call_claude_build
     _replies = iter(['{"summary":"s","files":[',                    # truncated -> ValueError
