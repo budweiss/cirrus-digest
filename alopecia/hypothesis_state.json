@@ -1,0 +1,120 @@
+{
+  "hypotheses": [
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "D"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "D",
+      "first_seen": "2026-09-16",
+      "id": "aa_ifng_immune_privilege_collapse",
+      "last_updated": "2026-09-16",
+      "statement": "The proximal trigger of the alopecia areata T-cell attack is collapse of hair-follicle immune privilege, via IFN-\u03b3-driven MHC class I upregulation on follicular epithelium and CXCL9/CXCL10-mediated recruitment of CD8+ NKG2D+ cytotoxic T cells.",
+      "supporting_items": [
+        "pmid:42706968"
+      ]
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "D"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "D",
+      "first_seen": "2026-09-16",
+      "id": "aa_il15_tolerance_loss",
+      "last_updated": "2026-09-16",
+      "statement": "IL-15 signaling contributes at the trigger/amplifier level to the alopecia areata T-cell attack by driving loss of immune tolerance and activation/expansion of CD8+ NKG2D+ effector T cells against hair-follicle antigens.",
+      "supporting_items": [
+        "pmid:42707815"
+      ]
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "C"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "C",
+      "first_seen": "2026-09-16",
+      "id": "aa_atopic_autoimmune_comorbidity_clustering",
+      "last_updated": "2026-09-16",
+      "statement": "Age- and phenotype-specific clustering of atopic and autoimmune comorbidities in alopecia areata patients suggests either shared upstream immune-dysregulation pathways or distinct AA endotypes that lower the threshold for the follicular T-cell attack, rather than a single uniform trigger.",
+      "supporting_items": [
+        "pmid:42704199"
+      ]
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "D"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "D",
+      "first_seen": "2026-09-16",
+      "id": "aa_genetic_susceptibility_threshold",
+      "last_updated": "2026-09-16",
+      "statement": "Inherited variation at HLA class II and NKG2D-ligand loci lowers the threshold for the alopecia areata T-cell attack, functioning as susceptibility architecture rather than the acute trigger itself.",
+      "supporting_items": [
+        "pmid:42706968"
+      ]
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "E"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "E",
+      "first_seen": "2026-09-16",
+      "id": "aa_multihit_threshold_framework",
+      "last_updated": "2026-09-16",
+      "statement": "The alopecia areata T-cell attack results from a multi-hit threshold process in which inherited immune-susceptibility variants combine with a second, currently unspecified exogenous or endogenous hit to collapse hair-follicle immune privilege past a critical threshold.",
+      "supporting_items": []
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "E"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "E",
+      "first_seen": "2026-09-16",
+      "id": "aa_exogenous_second_hit_stress_infection",
+      "last_updated": "2026-09-16",
+      "statement": "Exogenous exposures such as psychological stress or infection may act as a second hit that precipitates the alopecia areata T-cell attack in genetically predisposed individuals.",
+      "supporting_items": []
+    },
+    {
+      "confidence_trend": [
+        {
+          "date": "2026-09-16",
+          "grade": "E"
+        }
+      ],
+      "contradicting_items": [],
+      "evidence_grade": "E",
+      "first_seen": "2026-09-16",
+      "id": "aa_jak_stat_effector_pathway",
+      "last_updated": "2026-09-16",
+      "statement": "\u03b3c-cytokine/JAK-STAT signaling is a common downstream effector pathway through which the alopecia areata T-cell attack is executed, though this is currently better supported as a treatment-response observation than as evidence of an initiating cause.",
+      "supporting_items": [
+        "pmid:42724161"
+      ]
+    }
+  ],
+  "last_processed_date": "2026-09-16"
+}
