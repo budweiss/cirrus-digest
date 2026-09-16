@@ -50,10 +50,23 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertTrue(self.git('ls-files', '-v', 'config/sources.json').startswith(b'H '))
             self.assertTrue(Path(result['backup']).exists())
             self.assertEqual(migrate(path, apply=True)['status'], 'already migrated')
-            # Simulate an incoming tracked config update after migration.
-            incoming = json.loads(path.read_text())
-            incoming['rss'].append({'name': 'new', 'rss': 'https://example.invalid/new'})
-            path.write_text(json.dumps(incoming))
+            # Exercise an actual fast-forward pull whose commit edits sources.json.
+            with tempfile.TemporaryDirectory() as upstream:
+                remote = Path(upstream)/'remote.git'
+                writer = Path(upstream)/'writer'
+                def run(*args):
+                    return subprocess.check_output(args, stderr=subprocess.STDOUT)
+                run('git', 'clone', '--bare', str(self.root), str(remote))
+                run('git', 'clone', str(remote), str(writer))
+                run('git', '-C', str(writer), 'config', 'user.email', 'test@example.invalid')
+                run('git', '-C', str(writer), 'config', 'user.name', 'Test')
+                incoming_path = writer/'config/sources.json'
+                incoming = json.loads(incoming_path.read_text())
+                incoming['rss'].append({'name': 'new', 'rss': 'https://example.invalid/new'})
+                incoming_path.write_text(json.dumps(incoming))
+                run('git', '-C', str(writer), 'commit', '-am', 'update sources')
+                run('git', '-C', str(writer), 'push', 'origin', 'HEAD')
+                self.git('pull', '--ff-only', str(remote), 'HEAD')
             after = runtime.load_sources(path)
             self.assertEqual(after['digest'], before['digest'])
             self.assertEqual(after['email'], before['email'])
