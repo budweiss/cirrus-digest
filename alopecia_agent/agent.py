@@ -21,10 +21,12 @@ there) -- same idea, different directory, no /opt involved.
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from claude_agent_sdk import (
-    ClaudeAgentOptions, ResultMessage, create_sdk_mcp_server, query, tool,
+    AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock,
+    create_sdk_mcp_server, query, tool,
 )
 
 APP_DIR = Path(__file__).resolve().parent
@@ -32,10 +34,11 @@ PROJECT_DIR = APP_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from alopecia_agent import budget, tools           # noqa: E402
-from alopecia_agent.ledger import ledger_append    # noqa: E402
+from alopecia_agent.ledger import ledger_append, STATE_DIR  # noqa: E402
 
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
 EST_COST_PER_RUN_USD = 2.00
+TRANSCRIPT_DIR = STATE_DIR / "transcripts"
 
 SYSTEM_PROMPT = """You are the Alopecia etiology-synthesis agent (S177, v1).
 Your operating contract -- what you can do, the non-medical-advice boundary,
@@ -182,11 +185,40 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
                    f"escalation with: \"{guidance}\" -- act on this before "
                    f"anything else this run.")
 
+    # S177: found live on the agent's own first dry run -- the ledger only
+    # ever logged terse tool-call summaries (by design, see tools.py's
+    # _log(), truncated to keep the audit trail scannable), so there was
+    # NOTHING durable anywhere showing what the model actually said: no
+    # narrative between tool calls, no final summary. Buddy reviewing a
+    # dry run needs exactly that, so it's captured here and written to its
+    # own transcript file -- ResultMessage.total_cost_usd was the only
+    # field this used to read; .result (the final assistant text) and the
+    # running AssistantMessage/TextBlock narrative were both being
+    # silently discarded.
     cost = 0.0
+    final_result = ""
+    narrative = []
     async for msg in query(prompt=prompt, options=options):
-        if isinstance(msg, ResultMessage):
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock) and block.text.strip():
+                    narrative.append(block.text.strip())
+        elif isinstance(msg, ResultMessage):
             cost = msg.total_cost_usd or 0.0
-    return cost
+            final_result = msg.result or ""
+
+    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    transcript_path = TRANSCRIPT_DIR / f"{'dryrun' if dry_run else 'run'}-{stamp}.md"
+    parts = [f"# Alopecia agent run — {stamp}", "",
+            f"Trigger: {reason}", f"Dry run: {dry_run}", f"Cost: ${cost:.4f}", "",
+            "## Narrative (between tool calls)", ""]
+    parts += (narrative or ["_(none -- the model went straight to tool calls "
+                            "with no intervening text)_"])
+    parts += ["", "## Final summary", "",
+             final_result or "_(ResultMessage carried no .result text)_"]
+    transcript_path.write_text("\n\n".join(parts) + "\n")
+    return cost, transcript_path
 
 
 def main(dry_run=False):
@@ -198,9 +230,10 @@ def main(dry_run=False):
                       "detail": why, "result": result})
         return
     reason = "manual dry-run" if dry_run else "scheduled daily run"
-    cost = asyncio.run(run_reasoning_pass(reason, dry_run=dry_run))
-    ledger_append({"event": "reasoning-pass", "tool": "agent",
-                  "detail": reason, "result": f"cost=${cost:.4f}"})
+    cost, transcript_path = asyncio.run(run_reasoning_pass(reason, dry_run=dry_run))
+    ledger_append({"event": "reasoning-pass", "tool": "agent", "detail": reason,
+                  "result": f"cost=${cost:.4f} transcript={transcript_path}"})
+    print(f"transcript: {transcript_path}")
 
 
 if __name__ == "__main__":
