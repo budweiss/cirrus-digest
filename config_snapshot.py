@@ -36,7 +36,7 @@ RETAIN_DAYS = 60   # S80: was 14, but _prune had been inert for months (the
                    # decision to make once the mechanism has been seen working.
 
 # Mutable files worth snapshotting (skip credentials — never copy secrets).
-FILES = ["sources.local.json", "pending_approvals.json", "sources.json",
+FILES = ["sources.local.json", "runtime.local.json", "pending_approvals.json", "sources.json",
          "email_omit.txt"]
 
 

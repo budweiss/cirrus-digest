@@ -114,7 +114,7 @@ def _record(provider, system, user, reply, creds, task):
         import llm_budget as _B
         _B.record_call(creds, provider, last_model() or "?",
                        len(system or "") + len(user or ""), len(reply or ""),
-                       task=(task or DEFAULT_TASK),
+                       task=(task or DEFAULT_TASK), session_id=getattr(_LAST, "session_id", None),
                        app_dir=str(Path(__file__).resolve().parent),
                        in_tok=getattr(_LAST, "usage", {}).get("input"),
                        out_tok=getattr(_LAST, "usage", {}).get("output"))
@@ -629,7 +629,7 @@ def available(creds):
 
 
 def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
-         task=None, record=True):
+         task=None, record=True, session_id=None):
     """Call ONE provider by name. Returns reply text. Raises ProviderError.
 
     Retries once (retries=1) on an EMPTY/whitespace reply. Guards the S47 #8
@@ -649,6 +649,7 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     _LAST.finish_reason = None
     _LAST.provider = provider     # S141: so a truncation record can name it
     _LAST.task = task or ""
+    _LAST.session_id = session_id
     if provider not in _PROVIDERS:
         raise ProviderError(f"unknown provider: {provider}")
     reply = ""
@@ -668,7 +669,7 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
 
 
 def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
-             task=None, record=True):
+             task=None, record=True, session_id=None):
     """Policy-driven call across configured providers.
 
     Reads defaults from creds['dev_escalation'] = {"mode":..., "order":[...]}.
@@ -690,7 +691,7 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
         for p in avail:
             try:
                 out.append((p, call(p, system, user, creds, max_tokens,
-                                    task=task, record=record)))
+                                    task=task, record=record, session_id=session_id)))
             except ProviderError as e:
                 out.append((p, f"ERROR: {e}"))
         return out
@@ -700,14 +701,14 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
         for p in avail:
             try:
                 return (p, call(p, system, user, creds, max_tokens,
-                                task=task, record=record))
+                                task=task, record=record, session_id=session_id))
             except ProviderError as e:
                 last = e
         raise ProviderError(f"all providers failed; last error: {last}")
 
     # "single" (default)
     p = avail[0]
-    return (p, call(p, system, user, creds, max_tokens, task=task, record=record))
+    return (p, call(p, system, user, creds, max_tokens, task=task, record=record, session_id=session_id))
 
 
 def call_local_first(system, user, creds, max_tokens=2048, *, task=None,

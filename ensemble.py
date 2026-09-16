@@ -212,7 +212,7 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         # never recorded before -- it is one of the seven "invisible" callers.
         prov, text = L.escalate(system, user, creds, max_tokens=max_tokens,
                                 mode=("failover" if mode == "council" else mode),
-                                task=task)
+                                task=task, session_id=session_id or task)
         meta["members"] = [prov]
         meta["judge"] = prov
         return meta, text
@@ -282,6 +282,11 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         draft = _local_draft(system, user, local)
         if draft:
             meta["draft_by"] = "ollama"
+            if B is not None:
+                B.record_call(creds, "ollama", local.get("model", "?"),
+                              len(system) + len(user), len(draft),
+                              task=f"{task}:draft", session_id=session_id or task,
+                              app_dir=str(app_dir) if app_dir else None)
             # A downgrade is not a failure, but it is not nothing either: the
             # endpoint was configured and did not answer, and only this line
             # says so.
@@ -300,11 +305,9 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
 
     # 2) council: every keyed provider answers independently
     try:
-        # record=False: the members are recorded BELOW with ":council" tags and
-        # the member's own model; letting call() record them too would double
-        # every council row (S132).
+        # Record at the provider boundary, including billed empty responses and retries.
         raw = L.escalate(system, user, creds, max_tokens=max_tokens, mode="council",
-                         record=False)
+                         task=f"{task}:council", session_id=session_id or task)
     except Exception as e:
         return _baseline(f"council call failed ({e})")
     members = [(p, t) for p, t in raw
@@ -325,22 +328,12 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
             return meta, members[0][1]
         return _baseline("council returned no usable replies")
 
-    # record council member spend (best-effort, estimate-based)
-    if cfg is not None and ledger:
-        for p, t in members:
-            try:
-                B.record(session_id or task, p, _model_for(p, creds),
-                         (len(system) + len(user)) // 4, len(t) // 4, cfg,
-                         box=box, ledger_path=ledger, task=f"{task}:council")
-            except Exception:
-                pass
-
     # 3) synthesize with the judge (Claude preferred)
     try:
         vetted = L.call(judge, _JUDGE_SYSTEM,
                         _judge_prompt(system, user, members, draft),
                         creds, max_tokens=max_tokens,
-                        record=False)      # recorded below as ":judge" (S132)
+                        task=f"{task}:judge", session_id=session_id or task)
         meta["judge"] = judge
     except Exception as e:
         # judge failed — return the answer from the most-preferred available member
@@ -357,13 +350,6 @@ def best_answer(system, user, creds, *, max_tokens=8000, task="",
         meta["reason"] = "judge returned empty; used member answer"
         meta["judge"] = best[0]
         return meta, best[1]
-    if cfg is not None and ledger:
-        try:
-            B.record(session_id or task, judge, _model_for(judge, creds),
-                     (len(system) + len(user)) // 4, len(vetted) // 4, cfg,
-                     box=box, ledger_path=ledger, task=f"{task}:judge")
-        except Exception:
-            pass
     meta["reason"] = f"council of {len(members)} → {judge} synthesis"
     return meta, vetted
 
@@ -432,11 +418,12 @@ def selftest():
           and _calls["esc_kw"][-1].get("task") == "bill-x")
     _calls["call_kw"].clear(); _calls["esc_kw"].clear()
     best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}), task="bill-y")
-    check("S132: the COUNCIL escalate passes record=False (members are recorded "
-          "below with ':council' tags -- not twice)",
-          any(k.get("mode") == "council" and k.get("record") is False for k in _calls["esc_kw"]))
-    check("S132: the JUDGE call passes record=False (recorded below as ':judge')",
-          any(k.get("prov") == "anthropic" and k.get("record") is False for k in _calls["call_kw"]))
+    check("council calls retain provider accounting and task tags",
+          any(k.get("mode") == "council" and k.get("record", True)
+              and k.get("task", "").endswith(":council") for k in _calls["esc_kw"]))
+    check("judge retains provider accounting and task tags",
+          any(k.get("prov") == "anthropic" and k.get("record", True)
+              and k.get("task", "").endswith(":judge") for k in _calls["call_kw"]))
 
     # council mode with 3 providers -> judge synthesis, not degraded
     m, t = best_answer("sys", "usr", dict(base_creds, dev_escalation={"mode": "council"}))
