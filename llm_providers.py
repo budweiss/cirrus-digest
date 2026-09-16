@@ -328,6 +328,22 @@ def _anthropic_extra(creds):
             "output_config": {"effort": effort}}
 
 
+_EFFORT_MIN_MAX_TOKENS = 4096
+# S177 (found live, same day the effort feature shipped): Anthropic's
+# adaptive thinking draws from the SAME max_tokens budget as the answer
+# text -- same mechanism as the S91 Gemini bug (_gemini's own docstring:
+# "thinking tokens are drawn from maxOutputTokens before any text is
+# emitted"), just Anthropic's turn. Several real call sites across this
+# repo size max_tokens for a short answer with NO thinking headroom at all
+# -- business_idea_scan.py's _relevance()=200, critique()=300,
+# estimate()=700. The moment creds["anthropic_effort"] is set, ALL of them
+# were one adaptive-thinking pass away from spending their whole budget on
+# thinking and returning EMPTY TEXT, silently -- caught live via the
+# alopecia agent's own first dry run (call_local's escalation logged
+# "cloud reply from anthropic failed parse/empty check" twice). Fixed
+# centrally, once, here: raise the WIRE max_tokens floor only when effort
+# is active, never lower a caller's own larger request. No caller
+# anywhere in the repo needs to know this floor exists or size around it.
 def _anthropic(creds, system, user, max_tokens):
     key = creds.get("anthropic_api_key")
     if not key:
@@ -343,10 +359,13 @@ def _anthropic(creds, system, user, max_tokens):
     else:
         sys_field = system
 
+    extra = _anthropic_extra(creds)
+    wire_max_tokens = max(max_tokens, _EFFORT_MIN_MAX_TOKENS) if extra else max_tokens
+
     _LAST.model = model
-    body = {"model": model, "max_tokens": max_tokens, "system": sys_field,
+    body = {"model": model, "max_tokens": wire_max_tokens, "system": sys_field,
            "messages": [{"role": "user", "content": user}]}
-    body.update(_anthropic_extra(creds))
+    body.update(extra)
     resp = _http_post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -954,6 +973,31 @@ def selftest():
         check("anthropic effort: a value outside the vocabulary is DROPPED, "
               "not sent (no 400 on a client job, same policy as vLLM's gate)",
               "output_config" not in _seen_body["b"])
+
+        # ── S177: the wire max_tokens floor -- found LIVE the same day the
+        # effort feature shipped. Adaptive thinking draws from the same
+        # max_tokens budget as the answer (same mechanism as the S91 Gemini
+        # bug, Anthropic's turn); several real callers size max_tokens for a
+        # short answer with zero thinking headroom (business_idea_scan.py:
+        # 200/300/700) and would silently get empty replies the moment
+        # effort is active. This must NOT touch callers when effort is off.
+        call("anthropic", "s", "u",
+             {"anthropic_api_key": "k"}, max_tokens=200)
+        check("anthropic effort OFF: a small caller max_tokens (200) reaches "
+              "the wire UNCHANGED -- the floor only applies when effort is on",
+              _seen_body["b"]["max_tokens"] == 200)
+        call("anthropic", "s", "u",
+             {"anthropic_api_key": "k", "anthropic_effort": "max"}, max_tokens=200)
+        check("anthropic effort ON: a small caller max_tokens (200) is "
+              "RAISED to the floor, so thinking can't zero out the answer "
+              "(this is the exact bug the alopecia agent's first dry run hit)",
+              _seen_body["b"]["max_tokens"] == _EFFORT_MIN_MAX_TOKENS)
+        call("anthropic", "s", "u",
+             {"anthropic_api_key": "k", "anthropic_effort": "max"}, max_tokens=16000)
+        check("anthropic effort ON: a caller ALREADY ABOVE the floor (16000) "
+              "is left alone -- this raises a floor, it never lowers a "
+              "caller's own larger request",
+              _seen_body["b"]["max_tokens"] == 16000)
 
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so
