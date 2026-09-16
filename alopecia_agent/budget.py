@@ -44,8 +44,8 @@ def _load_creds(path=None):
 def spent_this_month(creds=None) -> float:
     creds = creds if creds is not None else _load_creds()
     cfg, box, ledger_path = llm_budget.resolve(creds, app_dir=str(PROJECT_DIR))
-    if cfg is None:
-        return 0.0
+    if cfg is None or not ledger_path:
+        raise ValueError("missing accounting configuration")
     month = datetime.now().strftime("%Y-%m")
     total = 0.0
     for row in llm_budget._read_ledger(ledger_path):
@@ -57,10 +57,11 @@ def spent_this_month(creds=None) -> float:
 
 def allow(est_cost_usd: float = 0.0, creds=None) -> tuple:
     """Return (allowed: bool, spent_this_month: float, reason: str). Never
-    raises -- a pricing/ledger read failure is treated as $0 spent (fails
-    OPEN on the budget check itself, same as llm_budget.record_call's own
-    best-effort philosophy), not as a reason to block the agent entirely."""
-    spent = spent_this_month(creds)
+    raises -- a pricing/ledger read failure blocks paid work rather than reporting zero spend."""
+    try:
+        spent = spent_this_month(creds)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False, 0.0, "accounting unavailable; paid run blocked"
     if spent + est_cost_usd > MONTHLY_CAP_USD:
         return False, spent, (f"${spent:.2f} spent this month + ${est_cost_usd:.2f} "
                               f"estimated would exceed ${MONTHLY_CAP_USD:.2f} monthly cap")
@@ -146,8 +147,8 @@ def selftest():
         check("allow: staying under the real cap is still allowed",
               allowed)
 
-    check("spent_this_month: an unreadable pricing file -> $0, never raises",
-          spent_this_month({"llm_budget": {"pricing_path": "/nonexistent-x/p.json"}}) == 0.0)
+    check("an unreadable pricing file blocks paid work",
+          not allow(1, {"llm_budget": {"pricing_path": "/nonexistent-x/p.json"}})[0])
 
     print("PASS" if ok else "FAIL")
     return ok

@@ -54,8 +54,11 @@ journal excerpt out of the process table, which is world-readable.
 Prints one JSON object: {"id": ..., "tier": ..., "tier_name": ..., "status": ...}
 """
 import json
+import fcntl
+from datetime import datetime, timedelta
 import re
 import sys
+from pathlib import Path
 
 APP_DIR = "/home/buddy/cirrus-digest"
 
@@ -104,7 +107,16 @@ def main() -> int:
         print(json.dumps({"error": f"unit name refused: {unit[:40]!r}"}))
         return 3
 
-    title = f"{unit} is failing and a restart does not fix it"
+    try:
+        allowed = json.loads(Path("/etc/cumulus-supervisor-ticket-units.json").read_text())
+    except (OSError, ValueError):
+        print(json.dumps({"error": "repair-ticket policy unreadable"}))
+        return 3
+    if not isinstance(allowed, list) or unit not in allowed:
+        print(json.dumps({"error": "unit outside repair-ticket policy"}))
+        return 3
+
+    title = f"{unit} has a diagnosed operational failure"
     detail = f"Unit: {unit}\n\n{detail}"
 
     try:
@@ -114,14 +126,19 @@ def main() -> int:
         return 4
 
     try:
-        ticket = dev_loop.ticket_create(
-            requester=REQUESTER,
-            projects=PROJECTS,
-            title=title,
-            detail=detail,
-            origin=ORIGIN,
-            project_dir=APP_DIR,
-        )
+        queue = dev_loop._ticket_path(Path(APP_DIR))
+        with open(str(queue) + ".skywarden.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            existing = [json.loads(line) for line in queue.read_text().splitlines() if line.strip()] if queue.exists() else []
+            ticket = next((t for t in reversed(existing)
+                           if t.get("origin") == ORIGIN
+                           and t.get("status") in ("queued", "session")
+                           and str(t.get("created", "")) >= (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+                           and t.get("detail", "").startswith(f"Unit: {unit}\n")), None)
+            if ticket is None:
+                ticket = dev_loop.ticket_create(
+                    requester=REQUESTER, projects=PROJECTS, title=title,
+                    detail=detail, origin=ORIGIN, project_dir=APP_DIR)
     except Exception as e:  # noqa: BLE001
         print(json.dumps({"error": f"ticket_create failed: {type(e).__name__}: {e}"}))
         return 5

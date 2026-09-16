@@ -115,7 +115,9 @@ def _record(provider, system, user, reply, creds, task):
         _B.record_call(creds, provider, last_model() or "?",
                        len(system or "") + len(user or ""), len(reply or ""),
                        task=(task or DEFAULT_TASK),
-                       app_dir=str(Path(__file__).resolve().parent))
+                       app_dir=str(Path(__file__).resolve().parent),
+                       in_tok=getattr(_LAST, "usage", {}).get("input"),
+                       out_tok=getattr(_LAST, "usage", {}).get("output"))
     except Exception:
         pass
 
@@ -255,6 +257,8 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
     # one, so every truncation we cause buys a cloud call. That happened all
     # day on 2026-09-09 (reasoning tokens ate a 4,000 budget) and nothing
     # anywhere recorded it; it had to be reproduced by hand to be seen at all.
+    usage = resp.get("usage") or {}
+    _LAST.usage = {"input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens")}
     _note_finish(resp["choices"][0].get("finish_reason"), model)
     return resp["choices"][0]["message"]["content"]
 
@@ -372,7 +376,11 @@ def _anthropic(creds, system, user, max_tokens):
          "content-type": "application/json"},
         body,
     )
-    _record_usage("anthropic", model, resp.get("usage") or {}, want_cache)
+    usage = resp.get("usage") or {}
+    _LAST.usage = {"input": (usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+                            + usage.get("cache_read_input_tokens", 0)) if usage else None,
+                   "output": usage.get("output_tokens")}
+    _record_usage("anthropic", model, usage, want_cache)
     return "".join(b.get("text", "") for b in resp.get("content", [])
                    if b.get("type") == "text")
 
@@ -406,6 +414,9 @@ def _gemini(creds, system, user, max_tokens):
     # on cumulus1, 2026-09-01, 12 runs), so a 64-token budget left room for the
     # answer only about half the time — 5 of 12 runs came back with no parts.
     # Same class as the S74/S75 DeepSeek finding, one provider over.
+    usage = resp.get("usageMetadata") or {}
+    _LAST.usage = {"input": usage.get("promptTokenCount"),
+                   "output": (usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)) if usage else None}
     cand = (resp.get("candidates") or [{}])[0]
     parts = ((cand.get("content") or {}).get("parts")) or []
     if not parts:
@@ -633,6 +644,7 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     caller that records the call itself with richer tags (ensemble's council
     and judge rows) -- without it those calls would be counted twice.
     """
+    _LAST.usage = {}
     _LAST.model = None            # never let a stale model answer for this call
     _LAST.finish_reason = None
     _LAST.provider = provider     # S141: so a truncation record can name it
@@ -641,11 +653,17 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
         raise ProviderError(f"unknown provider: {provider}")
     reply = ""
     for _ in range(retries + 1):
-        reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""
+        _LAST.usage = {}
+        reply = ""
+        try:
+            reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""
+        finally:
+            # A billed empty/truncated response still consumed tokens. Record
+            # each retry separately, but never invent usage for transport errors.
+            if record and (reply.strip() or any(v is not None for v in _LAST.usage.values())):
+                _record(provider, system, user, reply, creds, task)
         if reply.strip():
             break
-    if record and reply.strip():
-        _record(provider, system, user, reply, creds, task)
     return reply
 
 

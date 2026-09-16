@@ -52,7 +52,7 @@ def _load_creds():
     return json.loads(CREDS_PATH.read_text())
 
 
-def _build_mcp_tools():
+def _build_mcp_tools(dry_run=False):
     @tool("read_kb", "Query the grounded Alopecia foundation KB (read-only)",
           {"question": str, "top_k": int})
     async def _read_kb(args):
@@ -140,6 +140,8 @@ def _build_mcp_tools():
                               "text": tools.request_guidance(args["issue"],
                                                              args["question"])}]}
 
+    if dry_run:
+        return [_read_kb, _read_new_etiology_items, _read_hypothesis_state, _call_local, _call_council]
     return [_read_kb, _read_new_etiology_items, _read_hypothesis_state,
             _write_hypothesis, _mark_run_processed, _call_local, _call_council,
             _append_to_brief_draft, _send_telegram_summary, _request_guidance]
@@ -148,21 +150,17 @@ def _build_mcp_tools():
 async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
     """Runs one claude-agent-sdk reasoning pass. Returns cost in USD.
 
-    dry_run=True still runs a REAL pass (so the reasoning can be reviewed)
-    but the prompt instructs it not to call any of the four write-shaped
-    tools -- write_hypothesis, mark_run_processed, append_to_brief_draft,
-    send_telegram_summary -- and to describe what it WOULD do instead.
-    This is a prompt-level instruction, not a Python-level gate (the tools
-    themselves are not separately locked in dry-run mode); the build's own
-    checklist is for Buddy to review several real dry-run passes by hand
-    before trusting a run to actually write.
+    Dry runs expose only read/reasoning tools. Audit, transcript and paid
+    usage records are retained; project mutations and sends are unavailable.
     """
     creds = _load_creds()
-    mcp_tools = _build_mcp_tools()
+    mcp_tools = _build_mcp_tools(dry_run=dry_run)
     server = create_sdk_mcp_server(name="alopecia", tools=mcp_tools)
     allowed = [f"mcp__alopecia__{t.name}" for t in mcp_tools]
 
     options = ClaudeAgentOptions(
+        tools=[],  # Only the explicit MCP tools; no inherited shell/file tools.
+        strict_mcp_config=True,
         mcp_servers={"alopecia": server},
         allowed_tools=allowed,
         permission_mode="bypassPermissions",
@@ -182,7 +180,7 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
                    "append_to_brief_draft, or send_telegram_summary this "
                    "pass -- describe what you WOULD do instead, so Buddy "
                    "can review the reasoning before anything is written.")
-    guidance = tools.consume_guidance()
+    guidance = None if dry_run else tools.consume_guidance()
     if guidance:
         prompt += (f" NOTE: Buddy replied to your prior request_guidance "
                    f"escalation with: \"{guidance}\" -- act on this before "
@@ -198,6 +196,9 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
     # field this used to read; .result (the final assistant text) and the
     # running AssistantMessage/TextBlock narrative were both being
     # silently discarded.
+    import llm_budget
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    run_id = "alopecia-sdk:" + stamp
     cost = 0.0
     final_result = ""
     narrative = []
@@ -207,11 +208,16 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
                 if isinstance(block, TextBlock) and block.text.strip():
                     narrative.append(block.text.strip())
         elif isinstance(msg, ResultMessage):
-            cost = msg.total_cost_usd or 0.0
+            if msg.total_cost_usd is None:
+                raise ValueError("SDK result omitted cost; accounting incomplete")
+            cost = msg.total_cost_usd
+            llm_budget.record_sdk_cost(creds, cost, task="alopecia-agent:coordinator",
+                                       run_id=run_id, app_dir=str(PROJECT_DIR))
+            if getattr(msg, "is_error", False):
+                raise RuntimeError("SDK reasoning pass failed; its cost was recorded")
             final_result = msg.result or ""
 
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     transcript_path = TRANSCRIPT_DIR / f"{'dryrun' if dry_run else 'run'}-{stamp}.md"
     parts = [f"# Alopecia agent run — {stamp}", "",
             f"Trigger: {reason}", f"Dry run: {dry_run}", f"Cost: ${cost:.4f}", "",
@@ -239,7 +245,7 @@ def _job_status_record(ok, note):
 def main(dry_run=False):
     allowed, spent, why = budget.allow(est_cost_usd=EST_COST_PER_RUN_USD)
     if not allowed:
-        result = tools.send_telegram_summary(
+        result = "dry-run budget blocked" if dry_run else tools.send_telegram_summary(
             f"Alopecia agent: skipping today's run -- {why}.")
         ledger_append({"event": "reasoning-pass-skipped", "tool": "agent",
                       "detail": why, "result": result})

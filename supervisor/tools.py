@@ -69,6 +69,18 @@ ALLOWED_UNITS = {
 }
 
 
+def ticket_units():
+    """Repair-ticket authority is separate from restart authority."""
+    path = Path("/etc/cumulus-supervisor-ticket-units.json")
+    if not path.exists():
+        path = Path(__file__).resolve().parent / "ticket_units.json"
+    try:
+        values = json.loads(path.read_text())
+        return set(values) if isinstance(values, list) else set()
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
 def _normalize_unit(unit: str) -> str:
     unit = (unit or "").strip()
     if unit and not unit.endswith(".service"):
@@ -578,8 +590,8 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
     # T11 — namespace gate. The unit name reaches a script that writes to the
     # dev-loop's work queue, so it is matched against the same fixed set the
     # restart/reset tools use. Refuse rather than fall back to a default.
-    if unit not in ALLOWED_UNITS:
-        result = (f"REFUSED: '{unit}' is not on the supervised unit list. "
+    if unit not in ticket_units():
+        result = (f"REFUSED: '{unit}' is not on the repair-ticket unit list. "
                   f"Use request_guidance for anything outside it.")
         ledger_append({"event": "action", "tool": "file_repair_ticket",
                        "tier_name": "refused", "detail": unit, "result": result})

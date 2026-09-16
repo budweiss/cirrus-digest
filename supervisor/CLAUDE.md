@@ -433,3 +433,12 @@ Summarize: what you checked, what you found, what you fixed (if anything),
 and what (if anything) needs Buddy's attention. Keep it under ~500
 characters. Never report a status you did not actually verify with a tool
 call this run — no assumptions carried over from a previous invocation.
+
+## S181 repair coverage
+
+`file_repair_ticket` accepts the deployed `ticket_units.json` policy, generated
+from the runtime registry, including Halftime, Alopecia, and other scheduled
+production jobs. This is separate from `ALLOWED_UNITS`, which still limits
+restart/reset authority. For a non-restartable batch job, gather its journal
+evidence and file a ticket directly; do not attempt a restart first. Filing
+does not approve a build, replay a send, or deploy a patch.

@@ -121,3 +121,6 @@ cirrus-digest-sources.json
 # committed in this repo's history — this keeps it that way by construction.
 # credentials.template.json does not match this pattern and stays tracked.
 credentials.json.*
+
+# Host paths/mailboxes must survive code updates (S181).
+config/runtime.local.json

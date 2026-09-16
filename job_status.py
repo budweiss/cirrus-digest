@@ -289,12 +289,21 @@ def record(name, ok, note=""):
             except Exception:
                 pass
             data = {}
+        previous = data.get(name, {})
         data[name] = {
             "last_run": datetime.now().isoformat(timespec="seconds"),
             "epoch": int(time.time()),
             "ok": bool(ok),
             "note": (note or "")[:200],
         }
+        if ok:
+            data[name]["last_success"] = data[name]["last_run"]
+            data[name]["last_success_epoch"] = data[name]["epoch"]
+        else:
+            for field, legacy in (("last_success", "last_run"), ("last_success_epoch", "epoch")):
+                value = previous.get(field, previous.get(legacy) if previous.get("ok") else None)
+                if value is not None:
+                    data[name][field] = value
         _write_status_atomic(data)
     finally:
         if lock is not None:

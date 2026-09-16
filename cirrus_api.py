@@ -984,10 +984,17 @@ def deploy():
     )
     git_output = (git.stdout + git.stderr).strip()
     git_ok = git.returncode == 0
+    if git_ok:
+        try:
+            from runtime_config import check
+            check(PROJECT_DIR / "config/sources.json")
+        except Exception:
+            git_ok = False
+            git_output += "\nruntime configuration preflight FAILED"
 
     # Optionally restart a service
     restart_info = None
-    if job and job != "none":
+    if git_ok and job and job != "none":
         if job not in ALLOWED_SERVICES:
             return jsonify({
                 "git": {"ok": git_ok, "output": git_output},
@@ -1029,10 +1036,17 @@ def deploy_all():
     )
     cirrus_out = (git.stdout + git.stderr).strip()
     cirrus_ok = git.returncode == 0
+    if cirrus_ok:
+        try:
+            from runtime_config import check
+            check(PROJECT_DIR / "config/sources.json")
+        except Exception:
+            cirrus_ok = False
+            cirrus_out += "\nruntime configuration preflight FAILED"
 
     # 2. Optional CIRRUS service restart
     restart_info = None
-    if job and job != "none":
+    if cirrus_ok and job and job != "none":
         if job not in ALLOWED_SERVICES:
             return jsonify({
                 "cirrus": {"ok": cirrus_ok, "output": cirrus_out},
@@ -1055,6 +1069,7 @@ def deploy_all():
             ["ssh", "-o", "ConnectTimeout=20", "-o", "BatchMode=yes",
              "buddy@192.168.0.204",
              "cd /home/buddy/cirrus-digest && git pull --ff-only 2>&1 && "
+             "python3 runtime_config.py --account cumulus-research && "
              "echo HEAD=$(git rev-parse --short HEAD)"],
             capture_output=True, text=True, timeout=60
         )

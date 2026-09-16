@@ -66,8 +66,8 @@ except Exception:
 
 CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
 
-with open(CONFIG_PATH) as f:
-    CONFIG = json.load(f)
+from runtime_config import load_sources
+CONFIG = load_sources(CONFIG_PATH)
 
 WEB_SOURCES = CONFIG["web_sources"]
 EMAIL_CFG   = CONFIG["email"]

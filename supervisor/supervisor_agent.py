@@ -245,6 +245,8 @@ async def run_reasoning_pass(reason: str) -> float:
     model = "opus" if upgraded else "sonnet"
 
     options = ClaudeAgentOptions(
+        tools=[],  # Only the explicit MCP tools; no inherited shell/file tools.
+        strict_mcp_config=True,
         mcp_servers={"supervisor": server},
         allowed_tools=allowed,
         permission_mode="bypassPermissions",

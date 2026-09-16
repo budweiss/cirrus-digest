@@ -149,6 +149,38 @@ def main():
         if isinstance(entry, dict):
             jobs[name] = {k: entry[k] for k in FIELDS if k in entry}
 
+    # Current systemd failure overrides an older successful ledger entry.
+    import subprocess
+    try:
+        r = subprocess.run(["systemctl", "list-units", "--failed", "--all",
+                            "--plain", "--no-legend", "--no-pager"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode:
+            _fail("cannot read current failed units")
+        sys.path.insert(0, str(APP))
+        import placement
+        for line in r.stdout.splitlines():
+            fields = line.strip().lstrip("●×* ").split()
+            if not fields:
+                continue
+            for name in placement.watch_keys(placement.normalize(fields[0])):
+                if name in jobs:
+                    jobs[name]["ok"] = False
+                    jobs[name]["note"] = "failed systemd unit: " + fields[0]
+    except (OSError, subprocess.TimeoutExpired):
+        _fail("cannot read current failed units")
+
+    # Evaluate host configuration without invoking any client pipeline.
+    sys.path.insert(0, str(APP))
+    try:
+        import runtime_config
+        runtime_config.check(APP / "config/sources.json", "cumulus-research")
+        config_ok = True
+    except Exception:
+        config_ok = False
+    jobs["runtimeconfig"] = {"ok": config_ok, "epoch": int(time.time()),
+                             "note": "valid" if config_ok else "invalid host configuration"}
+
     # The cadence table, from the one place it is maintained. A second copy
     # would drift, and the first symptom of that drift would be the supervisor's
     # cadence check going quiet.

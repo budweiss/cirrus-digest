@@ -184,7 +184,7 @@ def allow(session_id, est_cost, cfg, *, box="unknown", ledger_path=None):
 
 def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
            ledger_path=None, batch=False, cache_read_frac=0.0, task="", tier="",
-           strict=True):
+           strict=True, usage_basis="unspecified"):
     """Append one call to the ledger and return the row (with computed cost).
     Call AFTER a successful API call using its ACTUAL usage.input_tokens/output_tokens.
 
@@ -209,6 +209,7 @@ def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
         "in_tok": int(in_tok), "out_tok": int(out_tok), "batch": bool(batch),
         "cache_read_frac": round(float(cache_read_frac), 3),
         "cost": round(cost, 6), "task": task, "tier": tier,
+        "usage_basis": usage_basis, "cost_basis": "configured_rates",
     }
     if unpriced:
         row["unpriced"] = True
@@ -242,9 +243,43 @@ def record_call(creds, provider, model, in_chars, out_chars, *, task="",
         return record(session_id or task or "untagged", provider, model or "?",
                       max(0, i), max(0, o), cfg,
                       box=box, ledger_path=ledger, task=task or "", tier=tier,
-                      strict=False)
+                      strict=False, usage_basis=("provider_tokens" if in_tok is not None and out_tok is not None else "character_estimate"))
     except Exception:
         return None
+
+
+def record_sdk_cost(creds, cost, *, task, run_id, model="sonnet", app_dir=None, ts=None, cost_basis="sdk_reported"):
+    """Idempotent SDK coordinator cost; separate from tool/provider calls.
+
+    Lock across dedup and append. An unreadable ledger blocks recording instead
+    of resetting history or silently presenting zero spend.
+    """
+    import fcntl
+    import math
+    value = float(cost)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("invalid SDK cost")
+    cfg, box, path = resolve(creds, app_dir)
+    if not cfg or not path:
+        raise ValueError("missing accounting configuration")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        for line in f:
+            row = json.loads(line)
+            if row.get("event_id") == run_id:
+                return row
+        row = {"ts": ts or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+               "event_id": run_id, "box": box, "session_id": "alopecia-agent",
+               "task": task, "provider": "anthropic-sdk", "model": model,
+               "cost": value, "cost_basis": cost_basis, "usage_basis": "sdk_session",
+               "unit": "agent_run"}
+        f.seek(0, 2)
+        f.write(json.dumps(row) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+        return row
 
 
 def notify_thresholds(session_id, cfg, ledger_path, notify_fn):

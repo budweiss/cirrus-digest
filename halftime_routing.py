@@ -1294,4 +1294,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        if not any(arg in sys.argv for arg in ("--selftest", "--dry-run")):
+            import job_status
+            job_status.record("halftimerouting", False, "failed: " + type(exc).__name__)
+        raise

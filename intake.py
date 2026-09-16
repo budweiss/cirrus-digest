@@ -614,11 +614,20 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             "(create it via vi on CIRRUS; template: intake_senders.template.json)")
         return 0
 
-    config = load_json(CONFIG_PATH) or {}
+    from runtime_config import load_sources
+    try:
+        config = load_sources(CONFIG_PATH)
+    except (OSError, ValueError, TypeError):
+        log("ERROR: invalid runtime sources configuration")
+        if not dry_run:
+            _record_status(False, "invalid runtime sources configuration")
+        return 1
     creds = load_json(CREDS_PATH) or {}
     account = find_account(config)
     if not account:
         log(f"ERROR: no '{INTAKE_ACCOUNT_LABEL}' account in sources.json")
+        if not dry_run:
+            _record_status(False, "required intake account missing")
         return 1
     key = account.get("credential_key", "")
     password = creds.get(key)
@@ -1272,7 +1281,8 @@ def peek(name_filter: str = "") -> int:
     if not allowlist:
         log("no allowlist configured — nothing to peek")
         return 0
-    config = load_json(CONFIG_PATH) or {}
+    from runtime_config import load_sources
+    config = load_sources(CONFIG_PATH)
     creds = load_json(CREDS_PATH) or {}
     account = next((a for a in config.get("email", {}).get("accounts", [])
                     if a.get("label") == INTAKE_ACCOUNT_LABEL), None)
@@ -1325,7 +1335,8 @@ def requeue(name_filter: str) -> int:
     if not allowlist:
         log("no allowlist configured")
         return 1
-    config = load_json(CONFIG_PATH) or {}
+    from runtime_config import load_sources
+    config = load_sources(CONFIG_PATH)
     creds = load_json(CREDS_PATH) or {}
     account = next((a for a in config.get("email", {}).get("accounts", [])
                     if a.get("label") == INTAKE_ACCOUNT_LABEL), None)

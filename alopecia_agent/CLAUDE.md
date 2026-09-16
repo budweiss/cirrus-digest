@@ -160,3 +160,11 @@ Buddy can review the actual reasoning), but is instructed not to call
 `send_telegram_summary` — describe what you would do instead. This is a
 prompt-level instruction; if you're ever run in dry-run mode, honor it even
 though the tools themselves would technically still work.
+
+## S181 enforced dry runs and accounting
+
+Dry runs expose only read/reasoning tools. Hypothesis writes, cursor updates,
+guidance consumption and notifications are unavailable. Transcript/audit and
+spend records are still written: a dry run makes real paid model calls. The
+shared spend ledger now includes the SDK coordinator separately from its
+local/council tools; an unreadable accounting configuration blocks a paid run.

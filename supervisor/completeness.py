@@ -532,6 +532,11 @@ RULES = {
 # completeness skips). If a job can write a third note meaning "ran fine,
 # produced nothing", it does not belong here — it needs a rule.
 NO_ZERO_STATE = {
+    "runtimeconfig": "Host configuration is validated live by the status feed.",
+    "accesscheck": "Connectivity is binary; failures and cadence are checked.",
+    "intake": "A quiet inbox is valid; successful polls and failure status are checked.",
+    "immaculatecheck": "Contest checks may be locked/off-season; freshness is checked.",
+    "alopeciaagent": "No hypothesis change is valid; failures and cadence are checked.",
     "cumulusdailybrief":
         "Its note is binary by construction: `\"sent\" if ok else \"email FAILED "
         "to send\"` (cumulus_daily_brief.py). The failure path sets ok=False and "
@@ -860,6 +865,7 @@ def check(status=None, state=None, now=None):
     state = state if state is not None else _load(STATE_PATH, {})
 
     stalled, unreadable, blind = [], [], []
+    failed_runs = sorted(name for name, entry in status.items() if entry.get("ok") is False)
 
     # S96. AN EMPTY LEDGER IS NOT A CLEAN BILL OF HEALTH.
     #
@@ -934,6 +940,8 @@ def check(status=None, state=None, now=None):
     # S96: "did it run at all?" -- the question neither half of Skywarden asked.
     overdue = overdue_jobs(status, now)
     parts = []
+    if failed_runs:
+        parts.append("failed job completions: " + ", ".join(failed_runs))
     for o in overdue:
         parts.append(f"{o['job']}: {o['why']}")
     for s in stalled:
@@ -954,7 +962,8 @@ def check(status=None, state=None, now=None):
         # S96: `overdue` DOES flip it. A job that has not run is a harder
         # failure than one that ran and produced nothing, and it is the case
         # that went unseen for three hours on 2026-09-02.
-        "ok": not stalled and not unreadable and not overdue and not blind,
+        "ok": not stalled and not unreadable and not overdue and not blind and not failed_runs,
+        "failed_runs": failed_runs,
         "stalled": stalled,
         "unreadable": unreadable,
         "blind": blind,
@@ -1030,7 +1039,7 @@ def selftest() -> bool:
     # A FAILED run is heartbeat's job -- don't double-report or count it.
     state = {}
     r = check({"hoaleads": {"ok": False, "epoch": _NOW_E + 1, "note": "crashed"}}, state)
-    ck("failed runs are left to heartbeat", r["ok"] is True and not r["stalled"])
+    ck("failed completion is unhealthy even inside a live wrapper", r["ok"] is False and r["failed_runs"] == ["hoaleads"] and not r["stalled"])
 
     # An unparseable note must NOT read as healthy.
     state = {}
