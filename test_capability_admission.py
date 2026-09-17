@@ -34,6 +34,14 @@ class AdmissionTests(unittest.TestCase):
         self.e.append(copy.deepcopy(self.e[0]));self.assertEqual(self.call(),[])
         self.e=self.e[:1];self.h.append(copy.deepcopy(self.h[0]));self.assertEqual(self.call(),[])
         self.e=[None,42];self.assertEqual(self.call(),[])
+    def test_other_project_evaluations_do_not_disqualify_this_task(self):
+        for override in ({'task':'other'}, {'capability':'other'},
+                         {'prompt_sha256':'b'*64}, {'contract_sha256':'b'*64}):
+            self.e.append(dict(self.e[0], **override))
+        self.assertEqual(len(self.call()), 1)
+        self.e.append(dict(self.e[0]))
+        self.assertEqual(self.call(), [])
+
     def test_missing_or_invalid_contract_cannot_reuse_evidence(self):
         self.e[0].pop('contract_sha256')
         self.assertEqual(self.call(), [])

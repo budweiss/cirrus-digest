@@ -32,6 +32,12 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
         or any(c not in "0123456789abcdef" for c in contract_sha256)):
         raise ValueError("task contract must be a SHA-256 digest")
     digest = prompt_digest(system)
+    # A shared catalogue may qualify one model for several independent tasks.
+    # Duplicate detection applies only inside the requested evaluation scope.
+    evaluations = [r for r in evaluations if isinstance(r, dict)
+                   and r.get("task") == task and r.get("capability") == capability
+                   and r.get("prompt_sha256") == digest
+                   and r.get("contract_sha256") == contract_sha256]
     admitted = []
     seen = set()
     # Duplicate identities are ambiguous: admit neither record.
