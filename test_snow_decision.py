@@ -44,4 +44,9 @@ class Decision(unittest.TestCase):
         self.assertNotEqual(s.weekly_budget({},datetime(2026,9,28))[1],session)
         with self.assertRaises(ValueError):s.weekly_budget({'llm_budget':{'per_session_usd':float('nan')}})
 
+    def test_every_snow_stage_has_paid_call_governance(self):
+        import llm_routing
+        for task in ['billsnow','billsnow:draft','billsnow:council','billsnow:judge']:
+            self.assertEqual(llm_routing.policy(task, {})['profile'],'research')
+
 if __name__=='__main__': unittest.main()

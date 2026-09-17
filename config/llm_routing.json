@@ -28,6 +28,10 @@
     "halftime_catalogue": "extraction",
     "halftime_routing": "extraction",
     "alopecia-agent": "research",
-    "hoa-leads:screen-local": "extraction"
+    "hoa-leads:screen-local": "extraction",
+    "billsnow": "research",
+    "billsnow:draft": "research",
+    "billsnow:council": "research",
+    "billsnow:judge": "research"
   }
 }
