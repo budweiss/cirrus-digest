@@ -675,6 +675,10 @@ def extract_acts(source_block: str, creds: dict,
     try:
         # Routine extraction must not inherit the host deep-reasoning setting.
         cloud_creds = {k: v for k, v in creds.items() if k != "anthropic_effort"}
+        reviewed = _reviewed_cloud(system, user, cloud_creds, pool)
+        if reviewed is not None:
+            provider, acts = reviewed
+            return acts, _tag(provider), True
         provider, raw = llm_providers.escalate(
             system, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
         acts = parse_acts(raw, pool)
@@ -725,6 +729,37 @@ def _reviewed_vllm(system, user, creds, pool):
         task="halftime_catalogue", capability="catalogue:" + pool,
         contract_sha256=contract, max_cost_usd=0, pool="local", privacy="LOCAL_ONLY",
         max_tokens=LOCAL_EXTRACT_MAX_TOKENS, parse=lambda raw: parse_acts(raw, pool))
+
+def _reviewed_cloud(system, user, creds, pool):
+    """One qualified cloud specialist, only after existing local attempts fail."""
+    if not CAPABILITY_RECORDS.exists():
+        return None
+    records = json.loads(CAPABILITY_RECORDS.read_text())
+    pools = records.get('cloud_pools', {})
+    if pool not in pools:
+        return None
+    limit = records.get('cloud_max_user_bytes', {}).get(pool)
+    if type(limit) is not int or limit <= 0:
+        raise ValueError('cloud qualification requires a bounded input scope')
+    if len(user.encode()) > limit:
+        return None
+    import hashlib, inspect
+    from capability_admission import dispatch_reviewed
+    from capability_health import observe_cloud
+    evaluations = pools[pool]
+    if not isinstance(evaluations, list):
+        raise ValueError('invalid cloud evaluations')
+    providers = sorted({r.get('id') for r in evaluations if isinstance(r, dict)
+                        and r.get('id') in ('anthropic', 'gemini')})
+    # Metadata calls contain no task content. The dispatcher enforces privacy
+    # and configured budgets before sending any content to the chosen provider.
+    health = [observe_cloud(creds, p) for p in providers]
+    return dispatch_reviewed(system, user, creds, evaluations=evaluations,
+        health=health, task='halftime_catalogue', capability='catalogue:'+pool,
+        contract_sha256=hashlib.sha256(inspect.getsource(parse_acts).encode()).hexdigest(),
+        max_cost_usd=0.10, pool='cloud', max_tokens=PAID_EXTRACT_MAX_TOKENS,
+        parse=lambda raw: parse_acts(raw, pool))
+
 
 def _fields_for(act: dict, angle: str, model: str, escalated: bool,
                 pool: str = "variety") -> dict:
@@ -1218,7 +1253,7 @@ def selftest() -> int:
     _src = _extract_src()
     check("legacy and reviewed local tiers use the local budget, the paid tier does not",
           _src.count("max_tokens=LOCAL_EXTRACT_MAX_TOKENS") == 3
-          and _src.count("max_tokens=PAID_EXTRACT_MAX_TOKENS") == 1
+          and _src.count("max_tokens=PAID_EXTRACT_MAX_TOKENS") == 2
           and "max_tokens=4000" not in _src)
 
     # --- the exclusion Buddy asked for by name -------------------------

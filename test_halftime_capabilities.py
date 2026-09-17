@@ -35,6 +35,26 @@ class CatalogueIntegrationTests(unittest.TestCase):
         self.assertEqual(args['max_tokens'],hc.LOCAL_EXTRACT_MAX_TOKENS)
         self.assertEqual(args['max_cost_usd'],0);self.assertEqual(len(args['contract_sha256']),64)
         self.assertEqual(args['parse']('[]'),[])
+    def test_cloud_specialist_replaces_ordered_escalation(self):
+        with patch.object(lp,'call',side_effect=lp.ProviderError('local unavailable')),patch.object(hc,'_reviewed_cloud',return_value=('gemini',[])),patch.object(lp,'escalate') as legacy:
+            self.assertEqual(hc.extract_acts('fixture',self.creds)[0],[])
+        legacy.assert_not_called()
+
+    def test_cloud_specialist_failure_does_not_retry_paid_provider(self):
+        with patch.object(lp,'call',side_effect=lp.ProviderError('local unavailable')),patch.object(hc,'_reviewed_cloud',side_effect=lp.ProviderError('rejected')),patch.object(lp,'escalate') as legacy:
+            self.assertEqual(hc.extract_acts('fixture',self.creds),([],"",False))
+        legacy.assert_not_called()
+
+    def test_cloud_hook_passes_paid_limit_and_parsed_output(self):
+        self.path.write_text(json.dumps({'version':1,'cloud_pools':{'variety':[{'id':'gemini'}]},'cloud_max_user_bytes':{'variety':100}}))
+        with patch.object(admission,'dispatch_reviewed',return_value=('gemini',[])) as dispatch,patch.object(health,'observe_cloud',return_value={'id':'gemini'}):
+            self.assertEqual(hc._reviewed_cloud('s','u',self.creds,'variety'),('gemini',[]))
+        args=dispatch.call_args.kwargs
+        self.assertEqual(args['max_tokens'],hc.PAID_EXTRACT_MAX_TOKENS)
+        self.assertEqual(args['max_cost_usd'],0.10)
+        self.assertEqual(args['pool'],'cloud')
+        self.assertEqual(args['parse']('[]'),[])
+
     def test_rejected_reviewed_path_keeps_cold_ollama_fallback(self):
         self.path.write_text(json.dumps({'version':1,'pools':{'variety':[]}}))
         with patch.object(admission,'dispatch_reviewed',side_effect=lp.ProviderError('not eligible')),patch.object(health,'observe',return_value={}),patch.object(lp,'call',return_value='[]') as call,patch.object(lp,'escalate') as cloud:

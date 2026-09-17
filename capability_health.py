@@ -54,3 +54,48 @@ def observe(creds, provider, *, get=None, clock=None):
                     usable_input_tokens=capacity)
     except Exception as exc:
         return dict(record, status='observation_failed', error_type=type(exc).__name__)
+
+
+def _get_authenticated(url, headers):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as response:
+        raw = response.read(1024*1024 + 1)
+    if len(raw) > 1024*1024:
+        raise ValueError('oversized metadata')
+    return json.loads(raw)
+
+
+def observe_cloud(creds, provider, *, get=None, clock=None):
+    """Authenticated model metadata, no inference and no credentials in URLs.
+
+    This proves metadata access and model identity/capacity, not completion health.
+    Exact aliases that resolve to a different identifier must be requalified.
+    """
+    if provider not in ('anthropic', 'gemini'):
+        raise ValueError('unsupported cloud observation')
+    model = ((creds.get('claude_dev_model') or creds.get('claude_model'))
+             if provider == 'anthropic' else creds.get('gemini_model'))
+    row = dict(id=provider, model=model, location='cloud', healthy=False,
+               basis='authenticated_model_metadata_only')
+    key = creds.get(provider + '_api_key')
+    if not key or not isinstance(model, str) or not model:
+        return dict(row, status='not_configured')
+    encoded = urllib.parse.quote(model, safe='')
+    if provider == 'anthropic':
+        url = 'https://api.anthropic.com/v1/models/' + encoded
+        headers = {'x-api-key':key, 'anthropic-version':'2023-06-01'}
+    else:
+        url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encoded
+        headers = {'x-goog-api-key':key}
+    try:
+        data = (get or _get_authenticated)(url, headers)
+        identity = data.get('id') if provider == 'anthropic' else data.get('name', '').removeprefix('models/')
+        capacity = data.get('max_input_tokens') if provider == 'anthropic' else data.get('inputTokenLimit')
+        if identity != model:
+            return dict(row, status='model_identity_mismatch')
+        if type(capacity) is not int or capacity <= 0:
+            return dict(row, status='capacity_unknown')
+        return dict(row, healthy=True, status='ready_metadata',
+                    checked_at=(clock or time.time)(), usable_input_tokens=capacity)
+    except Exception as exc:
+        return dict(row, status='observation_failed', error_type=type(exc).__name__)

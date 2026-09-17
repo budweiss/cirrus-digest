@@ -251,6 +251,7 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
         body,
         timeout=timeout,
     )
+    _LAST.model = resp.get("model")  # response identity, never the requested alias
     # S141. finish_reason was read off the wire and dropped on the floor. It is
     # the single most useful field on this response: "length" means the model
     # was still talking when we cut it off. On a LOCAL model that is not a
@@ -378,6 +379,7 @@ def _anthropic(creds, system, user, max_tokens):
          "content-type": "application/json"},
         body,
     )
+    _LAST.model = resp.get("model")
     usage = resp.get("usage") or {}
     _LAST.usage = {"input": (usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
                             + usage.get("cache_read_input_tokens", 0)) if usage else None,
@@ -420,7 +422,9 @@ def _gemini(creds, system, user, max_tokens):
     usage = resp.get("usageMetadata") or {}
     _LAST.usage = {"input": usage.get("promptTokenCount"),
                    "output": (usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)) if usage else None}
+    _LAST.model = resp.get("modelVersion")
     cand = (resp.get("candidates") or [{}])[0]
+    _note_finish("length" if cand.get("finishReason") == "MAX_TOKENS" else cand.get("finishReason"), _LAST.model)
     parts = ((cand.get("content") or {}).get("parts")) or []
     if not parts:
         usage = resp.get("usageMetadata") or {}
@@ -990,7 +994,7 @@ def selftest():
         def _recording_post(url, headers, body, timeout=_TIMEOUT):
             _seen_timeout["t"] = timeout
             _seen_timeout["url"] = url
-            return {"choices": [{"message": {"content": "ok"}}]}
+            return {"model": body["model"], "choices": [{"message": {"content": "ok"}}]}
         globals()["_http_post"] = _recording_post
         call("vllm", "s", "u", {"vllm_url": "http://v/", "vllm_model": "srv"})
         check("vllm: the 900 s default timeout REACHES the transport",
@@ -1010,7 +1014,7 @@ def selftest():
 
         def _body_post(url, headers, body, timeout=_TIMEOUT):
             _seen_body["b"] = body
-            return {"choices": [{"message": {"content": "ok"}}]}
+            return {"model": body["model"], "choices": [{"message": {"content": "ok"}}]}
         globals()["_http_post"] = _body_post
         _vc = {"vllm_url": "http://v", "vllm_model": "m"}
         _saved_effort = os.environ.pop(VLLM_EFFORT_ENV, None)
@@ -1102,7 +1106,7 @@ def selftest():
         _PROVIDERS.clear()
         _PROVIDERS.update(_real_providers)
         globals()["_http_post"] = lambda *a, **k: {
-            "choices": [{"message": {"content": "hi"}}]}
+            "model": a[2]["model"], "choices": [{"message": {"content": "hi"}}]}
         call("ollama", "s", "u",
              {"ollama_url": "http://x", "ollama_model": "qwen3.8:27b"})
         check("last_model names the LOCAL model, not just the provider",
@@ -1114,7 +1118,7 @@ def selftest():
               last_model() == "gpt-x")
 
         globals()["_http_post"] = lambda *a, **k: {
-            "candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+            "modelVersion": "gemini-9", "candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
         # The literal below carries EXAMPLE deliberately: it is the placeholder
         # marker runner/pre-commit-secret-scan allows, and that guard blocked
         # this line when it was first written. It is a fixture, not a dodge --
