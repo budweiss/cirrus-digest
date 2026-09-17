@@ -30,4 +30,18 @@ class Decision(unittest.TestCase):
         self.assertTrue(s._run_failed(data))
         self.assertNotIn('email_body',data)
 
+    def test_weekly_budget_is_scoped_and_preserves_lower_limits(self):
+        from datetime import datetime
+        original={'llm_budget':{'per_session_usd':100,'per_call_usd':10,'per_day_usd':200}}
+        scoped, session=s.weekly_budget(original,datetime(2026,9,21))
+        self.assertEqual(session,'billsnow:2026-W39')
+        self.assertEqual(scoped['llm_budget'],{'per_session_usd':2,'per_call_usd':1,'per_day_usd':200})
+        self.assertEqual(original['llm_budget']['per_session_usd'],100)
+        lower,_=s.weekly_budget({'llm_budget':{'per_session_usd':0.5,'per_call_usd':0.1}})
+        self.assertEqual(lower['llm_budget']['per_session_usd'],0.5)
+        self.assertEqual(lower['llm_budget']['per_call_usd'],0.1)
+        self.assertEqual(s.weekly_budget({},datetime(2026,9,27))[1],session)
+        self.assertNotEqual(s.weekly_budget({},datetime(2026,9,28))[1],session)
+        with self.assertRaises(ValueError):s.weekly_budget({'llm_budget':{'per_session_usd':float('nan')}})
+
 if __name__=='__main__': unittest.main()

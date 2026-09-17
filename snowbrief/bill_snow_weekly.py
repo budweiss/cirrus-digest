@@ -208,8 +208,24 @@ def validate_decision(data):
     return all(not data[k].strip() for k in fields[1:])
 
 
+
+def weekly_budget(creds, now=None):
+    """Scope all council/draft/judge calls to one bounded ISO calendar week."""
+    import math
+    scoped = dict(creds)
+    budget = dict(creds.get("llm_budget") or {})
+    for key, ceiling in (("per_session_usd", 2.0), ("per_call_usd", 1.0)):
+        value = float(budget.get(key, ceiling))
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("invalid snow budget")
+        budget[key] = min(value, ceiling)
+    scoped["llm_budget"] = budget
+    year, week, _ = (now or datetime.now()).isocalendar()
+    return scoped, f"billsnow:{year}-W{week:02d}"
+
+
 def decide():
-    creds = json.load(open(CREDS_PATH))
+    creds, budget_session = weekly_budget(json.load(open(CREDS_PATH)))
     try:
         import llm_providers as L
     except Exception as e:
@@ -234,7 +250,7 @@ def decide():
         # own missing config rather than as "this caller wanted no draft".
         _hint = _local_hint()
         meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=8000,
-                                          task="billsnow", local=_hint,
+                                          task="billsnow", local=_hint, session_id=budget_session,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
         # | none) -- the journal is the witness that the endpoint drafted and
