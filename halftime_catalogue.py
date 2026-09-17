@@ -490,6 +490,7 @@ def angles_for_today(n: int = DEFAULT_ANGLES, day: int = None,
 def parse_acts(raw: str, pool: str = "variety") -> list | None:
     """Parse the model's JSON array. None means UNUSABLE, [] means none found.
 
+    A nonempty array whose records are all invalid is also unusable.
     The distinction matters and is the whole reason this returns a tri-state:
     "the model found nothing" is a real answer worth recording, while "the model
     produced something we cannot read" must escalate rather than be recorded as
@@ -537,7 +538,7 @@ def parse_acts(raw: str, pool: str = "variety") -> list | None:
                 "occasion": str(item.get("occasion") or "").strip()[:120],
                 "evidence": str(item.get("evidence") or "").strip()[:400],
             })
-        return out
+        return out if out or not data else None
     out = []
     for item in data:
         if not isinstance(item, dict):
@@ -556,7 +557,7 @@ def parse_acts(raw: str, pool: str = "variety") -> list | None:
             "home_base": str(item.get("home_base") or "").strip()[:120],
             "evidence": str(item.get("evidence") or "").strip()[:400],
         })
-    return out
+    return out if out or not data else None
 
 
 # S103: `extracted_by` is provenance, not knowledge. Adding the model tag to it
@@ -1344,20 +1345,20 @@ def selftest() -> int:
           "Super Bowl halftime shows" in _PROGRAM_SYSTEM)
 
     # the regression this pool would have hit silently: a programme record has
-    # no "name", so the ACT parser drops every row and returns [] — which reads
-    # as "found nothing" and does not escalate
+    # no "name". S192 returns None when every supplied row is invalid,
+    # so this wrong-schema response escalates rather than reporting no findings.
     _prog_json = ('[{"team":"Pittsburgh Steelers","season":"2023",'
                   '"act":"Steel City Dog Show","act_category":"dog show",'
                   '"band_only":false,"occasion":"","evidence":"e"}]')
     check("programme JSON through the ACT parser is DROPPED (why pool is threaded)",
-          parse_acts(_prog_json) == [])
+          parse_acts(_prog_json) is None)
     _rows = parse_acts(_prog_json, "program")
     check("programme JSON through the PROGRAMME parser survives",
           len(_rows) == 1 and _rows[0]["team"] == "Pittsburgh Steelers")
     check("a programme row with no season is dropped at parse time",
-          parse_acts('[{"team":"Chicago Bears","act":"x"}]', "program") == [])
+          parse_acts('[{"team":"Chicago Bears","act":"x"}]', "program") is None)
     check("a programme row with no team is dropped at parse time",
-          parse_acts('[{"season":"2024","act":"x"}]', "program") == [])
+          parse_acts('[{"season":"2024","act":"x"}]', "program") is None)
     check("unusable programme output still returns None so it ESCALATES",
           parse_acts("no json here", "program") is None)
     check("an empty programme array still means 'none found', not 'broken'",

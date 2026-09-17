@@ -34,6 +34,18 @@ class ExtractionEffortTests(unittest.TestCase):
             self.assertEqual(c['llm_budget'],original['llm_budget'])
             self.assertEqual(c['llm_privacy'],original['llm_privacy'])
 
+    def test_nonempty_invalid_records_are_not_successful_empty_results(self):
+        for pool in ('variety', 'program'):
+            self.assertEqual(catalogue.parse_acts('[]', pool), [])
+            for raw in ('[null]', '[42]', '[{}]', '[{"category":"acrobat"}]'):
+                self.assertIsNone(catalogue.parse_acts(raw, pool))
+        self.assertEqual(len(catalogue.parse_acts('[{}, {"name":"Fixture Act"}]')), 1)
+        with patch.object(lp, 'call', return_value='[{}]'), patch.object(lp, 'escalate', return_value=('anthropic', '[]')) as cloud:
+            acts, model, escalated = catalogue.extract_acts('synthetic', {})
+        self.assertEqual(acts, [])
+        self.assertTrue(escalated)
+        cloud.assert_called_once()
+
     def test_anthropic_truncation_is_observable_without_prompt(self):
         with tempfile.TemporaryDirectory() as td:
             ledger=Path(td)/'truncations.jsonl'
