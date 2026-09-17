@@ -140,9 +140,26 @@ def ollama(prompt, cfg, timeout=180, model=None):
                                    "options": {"num_ctx": 8192}},
                              timeout=timeout)
         resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        data = resp.json()
+        out = data.get("response", "").strip()
+        # Native Ollama calls bypass llm_providers; account here exactly once.
+        try:
+            import llm_budget
+            def tokens(key):
+                value = data.get(key)
+                return value if type(value) is int and value >= 0 else None
+            row = llm_budget.record_call(
+                load_json(CREDS_PATH, {}) or {}, "ollama", data.get("model") or mdl,
+                len(prompt), len(out), task="pedagogy:local", tier="local",
+                app_dir=str(Path(__file__).resolve().parent),
+                in_tok=tokens("prompt_eval_count"), out_tok=tokens("eval_count"))
+            if row is None:
+                log("local usage accounting unavailable")
+        except Exception:
+            log("local usage accounting unavailable")
+        return out
     except Exception as e:
-        return f"[Summarization error: {e}]"
+        return f"[Summarization error: {type(e).__name__}]"
 
 
 TEACHER_PROMPT = """You are writing for Alyssa, an EXPERIENCED 4th-grade
