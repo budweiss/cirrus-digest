@@ -12,12 +12,14 @@ def prompt_digest(system):
     return hashlib.sha256(system.encode('utf-8')).hexdigest()
 
 
-def candidates(evaluations, health, *, task, capability, system, now=None):
+def candidates(evaluations, health, *, task, capability, system, contract_sha256, now=None):
     """Return eligible records; absent or malformed evidence fails closed.
 
     Evaluation approval expires at most 30 days after evaluation. Health must
     identify the same model and be at most five minutes old. Context capacity
-    is the lower of the evaluated and observed usable capacities.
+    is the lower of the evaluated and observed usable capacities. The caller
+    hashes its versioned parser/schema/scoring contract; any change requires
+    new reviewed evidence rather than silently reusing an earlier approval.
     """
     now = time.time() if now is None else now
     def number(value):
@@ -26,6 +28,9 @@ def candidates(evaluations, health, *, task, capability, system, now=None):
         raise ValueError('invalid admission requirements')
     if not isinstance(evaluations, list) or not isinstance(health, list):
         return []
+    if (not isinstance(contract_sha256, str) or len(contract_sha256) != 64
+        or any(c not in "0123456789abcdef" for c in contract_sha256)):
+        raise ValueError("task contract must be a SHA-256 digest")
     digest = prompt_digest(system)
     admitted = []
     seen = set()
@@ -43,6 +48,7 @@ def candidates(evaluations, health, *, task, capability, system, now=None):
             continue
         if (row.get('approved') is not True or row.get('task') != task
             or row.get('capability') != capability or row.get('prompt_sha256') != digest
+            or row.get('contract_sha256') != contract_sha256
             or not isinstance(row.get('evidence_id'), str) or not row['evidence_id'].strip()):
             continue
         evaluated, expires = row.get('evaluated_at'), row.get('expires_at')
@@ -66,10 +72,10 @@ def candidates(evaluations, health, *, task, capability, system, now=None):
     return admitted
 
 
-def dispatch_reviewed(system, user, creds, *, evaluations, health, task, capability, **kwargs):
+def dispatch_reviewed(system, user, creds, *, evaluations, health, task, capability, contract_sha256, **kwargs):
     """Use reviewed records with the existing privacy/accounting dispatcher."""
     from capability_dispatch import dispatch
     records = candidates(evaluations, health, task=task, capability=capability,
-                         system=system, now=kwargs.get('now'))
+                         system=system, contract_sha256=contract_sha256, now=kwargs.get('now'))
     return dispatch(system, user, creds, candidates=records, task=task,
                     capability=capability, **kwargs)
