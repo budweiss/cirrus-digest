@@ -30,6 +30,7 @@ Modes:
 """
 
 import email
+import intake_maintenance
 import email.utils
 import imaplib
 import json
@@ -517,6 +518,10 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                 log(f"  skipped (not allowlisted): {from_addr} — "
                     f"'{decode_hdr(msg.get('Subject', ''))[:60]}'")
                 continue
+            if (msg.get("Auto-Submitted", "no").lower() != "no"
+                    or msg.get("Precedence", "").lower() in ("bulk", "list", "junk")
+                    or msg.get("List-Id") or msg.get("X-Auto-Response-Suppress")):
+                continue
             mid = msg.get("Message-ID", f"uid-{uid}")
             if mid in seen_ids:
                 # The only skip branch that used to log nothing at all (every
@@ -695,6 +700,27 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                      f"attempt(s): `{last_err}`", creds)
         return 1
 
+    holding = intake_maintenance.active(PROJECT_DIR)
+    if holding:
+        # Preserve all allowlisted human mail, even requests without a prefix.
+        # Normal prefix policy applies when the operator releases the queue.
+        if dry_run:
+            log(f"maintenance: would queue {len(messages)} message(s); no sends")
+            return 0
+        failures = intake_maintenance.defer(PROJECT_DIR, messages, creds,
+                                            mailer.send, client_promises.thread_key)
+        save_state(state)
+        if bounces:
+            telegram(f"Maintenance intake: {len(bounces)} delivery failure(s); review bounce records.", creds)
+        _record_status(not failures, f"maintenance: {len(messages)} queued; "
+                       f"{failures} notice failures/uncertain sends")
+        return int(bool(failures))
+    queued = intake_maintenance.pending(PROJECT_DIR, limit=None)
+    queued = [r for r in queued if r[1] in allowlist
+              and not needs_prefix_skip(allowlist[r[1]], r[2])][:5]
+    queued_ids = {r[4] for r in queued}
+    messages = queued + [r for r in messages if r[4] not in queued_ids]
+
     processed, limited, prefix_skipped = [], [], []
     for uid, from_addr, subject, body, mid in messages:
         entry = allowlist[from_addr]
@@ -856,6 +882,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
 
     if not dry_run:
         save_state(state)
+        for rec in processed:
+            intake_maintenance.complete(PROJECT_DIR, rec["from"], rec["message_id"])
 
     # Delivery-failure alert: any outgoing mail from this inbox that bounced
     # (client acks, digests, intro emails) — tell Buddy who it failed to reach.

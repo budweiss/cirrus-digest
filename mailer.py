@@ -144,7 +144,7 @@ def build(from_email, to, subject, body, cc=None, html=None,
 def send(from_email, password, to, subject, body, cc=None, html=None,
          attachments=None, from_name=True, creds=None, dry_run=False,
          on_error="raise", log=print, watch_promises=True, client=None,
-         project="general", message_id=""):
+         project="general", message_id="", auto_submitted=False):
     """Send one message. Returns True on success.
 
     on_error="raise"  -- propagate (callers that must fail loudly: the daily
@@ -173,6 +173,9 @@ def send(from_email, password, to, subject, body, cc=None, html=None,
     msg, recipients = build(from_email, to, subject, body, cc=cc, html=html,
                             attachments=attachments, from_name=from_name,
                             creds=creds)
+    if auto_submitted:
+        msg["Auto-Submitted"] = "auto-replied"
+        msg["X-Auto-Response-Suppress"] = "All"
     if dry_run:
         if log:
             log("DRY RUN — nothing sent")
