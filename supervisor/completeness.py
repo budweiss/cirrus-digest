@@ -857,7 +857,9 @@ def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
 
 def _maintenance_jobs():
     import time
-    cfg = _load(APP_DIR / 'config/project_maintenance.json', {})
+    cfg = _load(APP_DIR / 'config/project_maintenance.json', None)
+    if cfg is None:
+        cfg = _load(Path(__file__).resolve().parent / 'project_maintenance.json', {})
     try:
         if cfg.get('active') is True and time.time() < cfg['alert_until_epoch']:
             return set(cfg.get('paused_jobs', []))
