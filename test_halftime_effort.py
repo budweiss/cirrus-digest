@@ -46,6 +46,17 @@ class ExtractionEffortTests(unittest.TestCase):
         self.assertTrue(escalated)
         cloud.assert_called_once()
 
+    def test_routing_invalid_records_trigger_fallback(self):
+        self.assertEqual(routing.parse_events('[]'), [])
+        for raw in ('[null]', '[{}]', '[{"artist":"A"}]', '[{"date":"2026-11-01"}]'):
+            self.assertIsNone(routing.parse_events(raw))
+        self.assertEqual(len(routing.parse_events('[{}, {"artist":"A","date":"2026-11-01"}]')), 1)
+        with patch.object(lp, 'call', return_value='[{}]'), patch.object(lp, 'escalate', return_value=('anthropic', '[]')) as cloud:
+            stats = {}
+            self.assertEqual(routing._extract('synthetic', {}, stats), [])
+        self.assertEqual(stats.get('escalated'), 1)
+        cloud.assert_called_once()
+
     def test_anthropic_truncation_is_observable_without_prompt(self):
         with tempfile.TemporaryDirectory() as td:
             ledger=Path(td)/'truncations.jsonl'

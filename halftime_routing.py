@@ -261,7 +261,7 @@ def parse_events(raw: str) -> Optional[List[Dict]]:
                     "venue": str(item.get("venue") or "").strip()[:120],
                     "city": str(item.get("city") or "").strip()[:80],
                     "style": normalise_style(item.get("style"))})
-    return out
+    return out if out or not data else None
 
 
 # S141 — the style vocabulary, shared with halftime_catalogue's _MUSIC_SYSTEM
@@ -813,11 +813,11 @@ def _selftest_body(_real_log_path) -> int:
     check("empty output returns None, not an empty result",
           parse_events("") is None)
     check("a show with NO date is dropped, never guessed",
-          parse_events('[{"artist":"A"}]') == [])
+          parse_events('[{"artist":"A"}]') is None)
     check("a vague date is dropped",
-          parse_events('[{"artist":"A","date":"November 2026"}]') == [])
+          parse_events('[{"artist":"A","date":"November 2026"}]') is None)
     check("a show with no artist is dropped",
-          parse_events('[{"date":"2026-11-01"}]') == [])
+          parse_events('[{"date":"2026-11-01"}]') is None)
 
     check("a show on the day counts as near", near_game("2026-11-01", "2026-11-01"))
     check("three days before counts", near_game("2026-10-29", "2026-11-01"))
