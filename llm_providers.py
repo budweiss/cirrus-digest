@@ -612,9 +612,15 @@ def _vllm(creds, system, user, max_tokens):
         timeout = float(creds.get("vllm_timeout") or VLLM_DEFAULT_TIMEOUT)
     except (TypeError, ValueError):
         timeout = VLLM_DEFAULT_TIMEOUT
+    extra = _vllm_extra()
+    response_format = creds.get('vllm_response_format')
+    if response_format is not None:
+        if not isinstance(response_format, dict) or response_format.get('type') != 'json_schema':
+            raise ProviderError('invalid vllm response format')
+        extra = dict(extra, response_format=response_format)
     return _openai_compatible(url.rstrip("/") + "/v1/chat/completions",
                               "local", model, system, user, max_tokens,
-                              timeout=timeout, extra=_vllm_extra())
+                              timeout=timeout, extra=extra)
 
 
 _PROVIDERS = {
