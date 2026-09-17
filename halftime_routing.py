@@ -590,8 +590,10 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
     except Exception:
         pass
     try:
+        # Routine extraction must not inherit the host deep-reasoning setting.
+        cloud_creds = {k: v for k, v in creds.items() if k != "anthropic_effort"}
         _provider, raw = llm_providers.escalate(
-            _EXTRACT_SYSTEM, user, creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
+            _EXTRACT_SYSTEM, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
         got = parse_events(raw)
         if got is not None:
             stats["escalated"] = stats.get("escalated", 0) + 1

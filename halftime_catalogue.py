@@ -668,8 +668,10 @@ def extract_acts(source_block: str, creds: dict,
         pass          # no local model on this box, or it fell over — escalate
 
     try:
+        # Routine extraction must not inherit the host deep-reasoning setting.
+        cloud_creds = {k: v for k, v in creds.items() if k != "anthropic_effort"}
         provider, raw = llm_providers.escalate(
-            system, user, creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
+            system, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
         acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, _tag(provider), True

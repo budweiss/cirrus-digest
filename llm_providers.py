@@ -382,6 +382,7 @@ def _anthropic(creds, system, user, max_tokens):
     _LAST.usage = {"input": (usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
                             + usage.get("cache_read_input_tokens", 0)) if usage else None,
                    "output": usage.get("output_tokens")}
+    _note_finish("length" if resp.get("stop_reason") == "max_tokens" else resp.get("stop_reason"), model)
     _record_usage("anthropic", model, usage, want_cache)
     return "".join(b.get("text", "") for b in resp.get("content", [])
                    if b.get("type") == "text")
