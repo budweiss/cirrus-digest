@@ -700,13 +700,14 @@ def _reviewed_vllm(system, user, creds, pool):
     This first integration covers the existing vLLM step only. Ollama keeps its
     cold-load path, and cloud escalation retains its current policy and caps.
     """
-    if not CAPABILITY_RECORDS.exists():
+    from capability_registry import load_project
+    records = load_project('halftime_catalogue', CAPABILITY_RECORDS)
+    if records is None:
         return None
     import hashlib
     import inspect
     from capability_admission import dispatch_reviewed
     from capability_health import observe
-    records = json.loads(CAPABILITY_RECORDS.read_text())
     if records.get("version") != 1 or not isinstance(records.get("pools"), dict):
         raise ValueError("invalid capability rollout file")
     if pool not in records["pools"]:
@@ -732,9 +733,10 @@ def _reviewed_vllm(system, user, creds, pool):
 
 def _reviewed_cloud(system, user, creds, pool):
     """One qualified cloud specialist, only after existing local attempts fail."""
-    if not CAPABILITY_RECORDS.exists():
+    from capability_registry import load_project
+    records = load_project('halftime_catalogue', CAPABILITY_RECORDS)
+    if records is None:
         return None
-    records = json.loads(CAPABILITY_RECORDS.read_text())
     pools = records.get('cloud_pools', {})
     if pool not in pools:
         return None

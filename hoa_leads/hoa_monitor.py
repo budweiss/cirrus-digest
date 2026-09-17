@@ -312,12 +312,13 @@ def _qualified_local_screen(cands, creds):
     for the whole request, never one paid council per batch.
     """
     cfg = DIGEST_DIR / 'config/hoa_model_routing.json'
-    if not cfg.exists():
+    from capability_registry import load_project
+    record = load_project('hoa_screening', cfg)
+    if record is None:
         return None
     import hashlib, inspect
     from capability_health import observe
     from capability_admission import dispatch_reviewed
-    record = json.loads(cfg.read_text())
     if record.get('enabled') is not True:
         return None
     contract = hashlib.sha256((FILTER_INSTRUCTIONS + inspect.getsource(screening_format) + inspect.getsource(_screening_user) +
