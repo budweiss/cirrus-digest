@@ -193,6 +193,21 @@ and say so in reason. Do NOT invent ENSO states or numbers you cannot support fr
 baseline or the web findings."""
 
 
+
+def validate_decision(data):
+    """Reject malformed model decisions before persistence or client delivery."""
+    if not isinstance(data, dict) or type(data.get("material_change")) is not bool:
+        return False
+    fields = ("reason", "refresh_md", "email_subject", "email_body")
+    if any(not isinstance(data.get(k), str) for k in fields):
+        return False
+    if not data["reason"].strip():
+        return False
+    if data["material_change"]:
+        return all(data[k].strip() for k in fields)
+    return all(not data[k].strip() for k in fields[1:])
+
+
 def decide():
     creds = json.load(open(CREDS_PATH))
     try:
@@ -257,6 +272,9 @@ def decide():
     except Exception as e:
         return {"material_change": False, "error": True,
                 "reason": f"JSON parse failed ({e}); not sending."}, urls
+    if not validate_decision(data):
+        return {"material_change": False, "error": True,
+                "reason": "invalid model decision fields; not sending."}, urls
     # Clean model decision — NOT an error, even if the reason prose happens to
     # contain a word like "failed"/"parse". error stays falsy on this path.
     data["urls"] = urls
@@ -375,7 +393,8 @@ def main():
             return
 
     data, urls = decide()
-    material = bool(data.get("material_change")) and bool((data.get("email_body") or "").strip())
+    material = (not _run_failed(data) and validate_decision(data)
+                and data["material_change"] is True)
     print("material_change:", data.get("material_change"), "| sendable:", material)
     print("reason:", data.get("reason", ""))
 
