@@ -64,3 +64,10 @@ class MaintenanceTest(unittest.TestCase):
             send.assert_called_once()
             save.assert_called_once()
             self.assertEqual(len(m.pending(d)),1)
+
+    def test_alert_suppression_expires_without_releasing_work(self):
+        with tempfile.TemporaryDirectory() as d:
+            m.atomic(Path(d)/'config/project_maintenance.json', {'active':True,'paused_jobs':['example'],'alert_until_epoch':100})
+            self.assertEqual(m.held(d,'paused_jobs',now=99),{'example'})
+            self.assertEqual(m.held(d,'paused_jobs',now=100),set())
+            self.assertTrue(m.active(d))

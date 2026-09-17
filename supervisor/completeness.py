@@ -777,7 +777,10 @@ def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
                         "BLIND, which is not the same as nothing being overdue"}]
 
     out = []
+    paused = set() if injected else _maintenance_jobs()
     for job, entry in sorted(status.items()):
+        if job in paused:
+            continue
         cad = CADENCE_H.get(job)
         if not cad:
             continue                       # no expected cadence => nothing to judge
@@ -833,7 +836,7 @@ def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
     else:
         sched = set(sched)
         never = sorted(j for j in CADENCE_H
-                       if j in sched and j not in (status or {}))
+                       if j in sched and j not in (status or {}) and j not in paused)
         seen = _first_seen(never, int(now.timestamp()), state=state, save=save)
         for job in never:
             since = seen.get(job)
@@ -850,6 +853,17 @@ def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
                             f"or it fires and never reaches record()."),
                 })
     return out
+
+
+def _maintenance_jobs():
+    import time
+    cfg = _load(APP_DIR / 'config/project_maintenance.json', {})
+    try:
+        if cfg.get('active') is True and time.time() < cfg['alert_until_epoch']:
+            return set(cfg.get('paused_jobs', []))
+    except (TypeError, KeyError):
+        pass
+    return set()
 
 
 def check(status=None, state=None, now=None):
@@ -889,7 +903,10 @@ def check(status=None, state=None, now=None):
                           "no job has ever recorded. This exact silence hid a "
                           "dead monitor from S67 to S96.")
 
+    paused = set() if injected else _maintenance_jobs()
     for job, rule in RULES.items():
+        if job in paused:
+            continue
         entry = status.get(job)
         if not entry:
             continue                       # never run / not on this box

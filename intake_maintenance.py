@@ -70,3 +70,15 @@ def complete(root, address, mid):
         done = directory / 'completed'
         done.mkdir(exist_ok=True, mode=0o700)
         os.replace(source, done / source.name)
+
+
+def held(root, field, now=None):
+    """Bounded alert suppression; never changes actual run records."""
+    import time
+    try:
+        cfg = json.loads((Path(root)/'config/project_maintenance.json').read_text())
+        if cfg.get('active') is True and (time.time() if now is None else now) < cfg['alert_until_epoch']:
+            return set(cfg.get(field, []))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return set()

@@ -290,7 +290,11 @@ def check_and_heal():
             return f"last exit code {code}"
         return ""
 
+    from intake_maintenance import held
+    paused = held(Path(__file__).resolve().parent, 'paused_units')
     for svc in sorted(PERSISTENT | SCHEDULED | MONITOR_ONLY):
+        if svc in paused and svc not in PERSISTENT:
+            continue  # Explicit, time-bounded scheduled pause; no false repairs.
         problem = svc_problem(svc)
         # deeper functional checks even when launchctl looks fine
         if not problem and svc == "com.cirrus.api" and not api_ok():

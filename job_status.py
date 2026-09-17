@@ -457,7 +457,12 @@ def summarize(_local=None, _node=None, _fetch=None, _declared_path=None):
                if not ((remote if (use_remote and n in REMOTE_JOBS) else local)
                        or {}).get(n)]
     seen_first = _declared(now, missing, path=_declared_path)
+    from intake_maintenance import held
+    paused = held(Path(__file__).resolve().parent, 'paused_jobs')
     for name, cad_h in CADENCE_H.items():
+        if name in paused:
+            lines.append(f"⏸ {name}: planned maintenance; not executed")
+            continue
         is_remote = use_remote and name in REMOTE_JOBS
         if is_remote and remote is None:
             lines.append(f"• {name} (CUMULUS): unreachable — can't confirm")
