@@ -649,6 +649,10 @@ def extract_acts(source_block: str, creds: dict,
     # turned every call into a paid one would be the S92 failure with a bill.
     if creds.get("vllm_url"):
         try:
+            reviewed = _reviewed_vllm(system, user, creds, pool)
+            if reviewed is not None:
+                provider, acts = reviewed
+                return acts, _tag(provider), False
             raw = llm_providers.call("vllm", system, user, creds,
                                      max_tokens=LOCAL_EXTRACT_MAX_TOKENS, retries=0)
             acts = parse_acts(raw, pool)
@@ -680,6 +684,39 @@ def extract_acts(source_block: str, creds: dict,
         pass
     return [], "", False
 
+
+
+# Optional rollout file is application-owned; fetched sources never set it.
+CAPABILITY_RECORDS = PROJECT_DIR / "config" / "halftime_capabilities.json"
+
+
+def _reviewed_vllm(system, user, creds, pool):
+    """None means this pool has not migrated; errors use existing fallback.
+
+    This first integration covers the existing vLLM step only. Ollama keeps its
+    cold-load path, and cloud escalation retains its current policy and caps.
+    """
+    if not CAPABILITY_RECORDS.exists():
+        return None
+    import hashlib
+    import inspect
+    from capability_admission import dispatch_reviewed
+    from capability_health import observe
+    records = json.loads(CAPABILITY_RECORDS.read_text())
+    if records.get("version") != 1 or not isinstance(records.get("pools"), dict):
+        raise ValueError("invalid capability rollout file")
+    if pool not in records["pools"]:
+        return None
+    evaluations = records["pools"][pool]
+    if not isinstance(evaluations, list):
+        raise ValueError("invalid capability evaluation records")
+    evaluations = [r for r in evaluations if isinstance(r, dict) and r.get("id") == "vllm"]
+    contract = hashlib.sha256(inspect.getsource(parse_acts).encode()).hexdigest()
+    return dispatch_reviewed(
+        system, user, creds, evaluations=evaluations, health=[observe(creds, "vllm")],
+        task="halftime_catalogue", capability="catalogue:" + pool,
+        contract_sha256=contract, max_cost_usd=0, pool="local", privacy="LOCAL_ONLY",
+        max_tokens=LOCAL_EXTRACT_MAX_TOKENS, parse=lambda raw: parse_acts(raw, pool))
 
 def _fields_for(act: dict, angle: str, model: str, escalated: bool,
                 pool: str = "variety") -> dict:
@@ -1171,8 +1208,8 @@ def selftest() -> int:
     check("...with room for ~2,700 reasoning tokens AND the answer",
           LOCAL_EXTRACT_MAX_TOKENS >= 6000)
     _src = _extract_src()
-    check("both local tiers use the local budget, the paid tier does not",
-          _src.count("max_tokens=LOCAL_EXTRACT_MAX_TOKENS") == 2
+    check("legacy and reviewed local tiers use the local budget, the paid tier does not",
+          _src.count("max_tokens=LOCAL_EXTRACT_MAX_TOKENS") == 3
           and _src.count("max_tokens=PAID_EXTRACT_MAX_TOKENS") == 1
           and "max_tokens=4000" not in _src)
 
