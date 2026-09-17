@@ -18,6 +18,13 @@ class CatalogueIntegrationTests(unittest.TestCase):
             with patch.object(lp,'call',return_value='[]') as call,patch.object(health,'observe') as observe:
                 self.assertEqual(hc.extract_acts('fixture',self.creds)[0],[])
             self.assertEqual(call.call_args.args[0],'vllm');observe.assert_not_called()
+    def test_outside_qualified_input_scope_preserves_original_vllm(self):
+        self.path.write_text(json.dumps({'version':1,'pools':{'variety':[]},'max_user_bytes':{'variety':1}}))
+        with patch.object(lp,'call',return_value='[]') as call,patch.object(health,'observe') as observe:
+            self.assertEqual(hc.extract_acts('longer than qualified scope',self.creds)[0],[])
+        self.assertEqual(call.call_args.args[0],'vllm')
+        observe.assert_not_called()
+
     def test_enabled_pool_uses_reviewed_dispatch_without_duplicate_call(self):
         self.path.write_text(json.dumps({'version':1,'pools':{'variety':[{'id':'vllm'},{'id':'anthropic'}]}}))
         with patch.object(admission,'dispatch_reviewed',return_value=('vllm',[])) as dispatch,patch.object(health,'observe',return_value={'id':'vllm'}) as observe,patch.object(lp,'call') as call:

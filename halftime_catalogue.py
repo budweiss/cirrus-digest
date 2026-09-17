@@ -707,6 +707,14 @@ def _reviewed_vllm(system, user, creds, pool):
         raise ValueError("invalid capability rollout file")
     if pool not in records["pools"]:
         return None
+    # A rollout may qualify only bounded inputs. Larger requests retain the
+    # existing vLLM route rather than causing an unnecessary Ollama/cloud fallthrough.
+    limit = records.get("max_user_bytes", {}).get(pool)
+    if limit is not None:
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("invalid capability input limit")
+        if len(user.encode()) > limit:
+            return None
     evaluations = records["pools"][pool]
     if not isinstance(evaluations, list):
         raise ValueError("invalid capability evaluation records")
