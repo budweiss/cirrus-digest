@@ -58,7 +58,22 @@ def dispatch(system, user, creds, *, candidates, capability, task, max_cost_usd,
         raise lp.ProviderError('capability selection unavailable or requirements unmet') from exc
     reply = lp.call(chosen['id'], system, user, creds, max_tokens=max_tokens, retries=0,
                     task=task, privacy=policy['privacy'], session_id=session_id)
-    result = parse(reply) if parse is not None else (reply if reply.strip() else None)
+    def outcome(event):
+        try:
+            routing.audit(task, chosen['id'], event, policy)
+        except OSError as exc:
+            raise lp.ProviderError('capability outcome accounting unavailable') from exc
+
+    if lp.last_model() != chosen['model']:
+        outcome('capability_model_mismatch')
+        raise lp.ProviderError('responding model differs from evaluated model')
+    try:
+        result = parse(reply) if parse is not None else (reply if reply.strip() else None)
+    except Exception as exc:
+        outcome('capability_output_rejected')
+        raise lp.ProviderError('selected model output failed validation') from exc
     if result is None:
+        outcome('capability_output_rejected')
         raise lp.ProviderError('selected model returned unusable output')
+    outcome('capability_output_accepted')
     return chosen['id'], result

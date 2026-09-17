@@ -54,3 +54,20 @@ class DispatchTests(unittest.TestCase):
         for row in rows:row['estimated_request_cost_usd']=0
         with self.assertRaises(lp.ProviderError):self.invoke(candidates=rows,max_cost_usd=0)
         self.assertFalse(self.calls)
+
+    def test_parser_rejection_is_audited_without_private_text(self):
+        def reject(reply):raise ValueError('PRIVATE-PARSER-DATA')
+        with self.assertRaises(lp.ProviderError):self.invoke(parse=reject)
+        audit=self.audit.read_text()
+        self.assertIn('capability_output_rejected',audit)
+        self.assertNotIn('PRIVATE-PARSER-DATA',audit)
+
+    def test_empty_parsed_collection_is_valid_and_audited(self):
+        self.assertEqual(self.invoke(parse=lambda reply:[]),('gemini',[]))
+        self.assertIn('capability_output_accepted',self.audit.read_text())
+
+    def test_actual_model_mismatch_blocks_result(self):
+        def changed(*args):lp._LAST.model='unexpected';return 'valid'
+        with patch.dict(lp._PROVIDERS, {'gemini':changed}):
+            with self.assertRaises(lp.ProviderError):self.invoke()
+        self.assertIn('capability_model_mismatch',self.audit.read_text())
