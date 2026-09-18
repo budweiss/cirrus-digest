@@ -28,4 +28,24 @@ class HealthTests(unittest.TestCase):
     def test_cloud_provider_cannot_be_probed(self):
         with self.assertRaises(ValueError):observe({},'anthropic')
 
-if __name__=='__main__':unittest.main()
+
+class FoundationHealthTests(unittest.TestCase):
+    def test_kimi_exact_model_and_context(self):
+        from capability_health import observe_cloud
+        c={'kimi_api_key':'fixture','kimi_model':'kimi-k3'}
+        def get(url,headers):
+            self.assertEqual(url,'https://api.moonshot.ai/v1/models')
+            self.assertEqual(headers,{'Authorization':'Bearer fixture'})
+            return {'data':[{'id':'kimi-k3','context_length':1048576}]}
+        row=observe_cloud(c,'kimi',get=get,clock=lambda:1000)
+        self.assertTrue(row['healthy']);self.assertEqual(row['usable_input_tokens'],1048576)
+        self.assertNotIn('fixture',str(row))
+    def test_missing_key_and_unknown_capacity_fail_closed(self):
+        from capability_health import observe_cloud
+        self.assertFalse(observe_cloud({'kimi_model':'kimi-k3'},'kimi')['healthy'])
+        c={'kimi_api_key':'fixture','kimi_model':'kimi-k3'}
+        for payload in ({'data':[]},{'data':[{'id':'kimi-k3'}]}):
+            self.assertFalse(observe_cloud(c,'kimi',get=lambda *a:payload)['healthy'])
+
+if __name__ == '__main__':
+    unittest.main()

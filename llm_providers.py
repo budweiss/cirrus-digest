@@ -114,7 +114,7 @@ def _record(provider, system, user, reply, creds, task):
         return
     try:
         import llm_budget as _B
-        _B.record_call(creds, provider, last_model() or "?",
+        return _B.record_call(creds, provider, last_model() or "?",
                        len(system or "") + len(user or ""), len(reply or ""),
                        task=(task or DEFAULT_TASK), session_id=getattr(_LAST, "session_id", None),
                        app_dir=str(Path(__file__).resolve().parent),
@@ -211,6 +211,10 @@ _KEY_FIELD = {
 
 class ProviderError(RuntimeError):
     """Any provider call/config failure (missing key, HTTP error, bad response)."""
+
+
+class AccountingError(ProviderError):
+    """Accounting is uncertain: do not spend again through recovery."""
 
 
 # ── transport ─────────────────────────────────────────────────────────────────
@@ -642,7 +646,7 @@ def available(creds):
 
 
 def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
-         task=None, record=True, session_id=None, privacy=None):
+         task=None, record=True, session_id=None, privacy=None, strict_accounting=False):
     """Call ONE provider by name. Returns reply text. Raises ProviderError.
 
     Retries once (retries=1) on an EMPTY/whitespace reply. Guards the S47 #8
@@ -688,7 +692,9 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
             # A billed empty/truncated response still consumed tokens. Record
             # each retry separately, but never invent usage for transport errors.
             if record and (reply.strip() or any(v is not None for v in _LAST.usage.values())):
-                _record(provider, system, user, reply, creds, task)
+                recorded = _record(provider, system, user, reply, creds, task)
+                if strict_accounting and recorded is None:
+                    raise AccountingError("selected call accounting failed; review required")
             if route_policy.get("profile") and _RECORDING:
                 try:
                     llm_routing.audit(task or DEFAULT_TASK, provider,
@@ -696,7 +702,8 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
                         route_policy, attempt_id=attempt_id,
                         elapsed_seconds=round(time.monotonic()-started, 3))
                 except OSError as exc:
-                    raise ProviderError("routing audit unavailable after provider call") from exc
+                    raise (AccountingError if strict_accounting else ProviderError)(
+                        "routing audit unavailable after provider call") from exc
         if reply.strip():
             break
     return reply

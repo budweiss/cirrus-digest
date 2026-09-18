@@ -22,7 +22,7 @@ def select(candidates, *, capability, privacy, input_tokens, max_cost_usd, allow
     if type(max_cost_usd) not in (int, float) or not math.isfinite(max_cost_usd) or max_cost_usd < 0:
         raise NoEligibleModel('invalid cost limit')
     now = time.time() if now is None else now
-    if pool not in ('local', 'cloud') or (privacy == 'LOCAL_ONLY' and pool == 'cloud'):
+    if pool not in ('local', 'cloud', 'auto') or (privacy == 'LOCAL_ONLY' and pool == 'cloud'):
         raise NoEligibleModel('pool not permitted')
     for value in (now, health_max_age, min_quality):
         if type(value) not in (int, float) or not math.isfinite(value):
@@ -35,7 +35,7 @@ def select(candidates, *, capability, privacy, input_tokens, max_cost_usd, allow
             continue
         if candidate.get('healthy') is not True or not candidate.get('model'):
             continue
-        if candidate.get('location') != pool:
+        if candidate.get('location') not in ('local', 'cloud') or (pool != 'auto' and candidate.get('location') != pool):
             continue
         if privacy == 'LOCAL_ONLY' and candidate['location'] != 'local':
             continue
@@ -58,7 +58,9 @@ def select(candidates, *, capability, privacy, input_tokens, max_cost_usd, allow
         raise NoEligibleModel('no validated model meets requirements')
     chosen = min(eligible, key=lambda row: row[:3])[3]
     return {'id': chosen['id'], 'model': chosen['model'], 'capability': capability,
-            'privacy': privacy, 'reason': 'validated_capability_within_limits'}
+            'privacy': privacy, 'reason': 'reviewed_quality_then_estimated_cost',
+            'quality': chosen['capabilities'][capability]['quality'],
+            'estimated_request_cost_usd': chosen['estimated_request_cost_usd']}
 
 
 def selftest():

@@ -782,9 +782,11 @@ _TOPIC_COUNCIL_SYSTEM = (
 
 
 def _topic_brief(topic, cfg, creds):
-    """A topic brief for one of Alyssa's REQUESTS. These are high-value + low-volume,
-    so they get the full 4-LLM council (each drafts, Claude synthesizes the best),
-    when available — else the local model. Fail-open to local on any council issue."""
+    """Topic brief via reviewed foundation routing when registered.
+
+    Unmigrated hosts retain the legacy council/local path. Migrated routes defer
+    on admission failure instead of using an unqualified local fallback.
+    """
     prompt = TOPIC_PROMPT.format(topic=topic)
     if ensemble is not None and creds and creds.get("pedagogy_council", True):
         try:
@@ -796,7 +798,11 @@ def _topic_brief(topic, cfg, creds):
                     f"({'/'.join(meta.get('members', []))}→{meta.get('judge')})")
                 return text
         except Exception as e:
-            log(f"  topic council failed → local fallback: {e}")
+            from capability_registry import foundation_route
+            if foundation_route('pedagogy-topic', Path(__file__).resolve().parent) is not None:
+                # A rejected qualified route must not silently escape admission.
+                return '[Summarization error: qualified topic route requires review]'
+            log(f"  topic council failed → local fallback: {type(e).__name__}")
     return ollama(prompt, cfg, timeout=240)
 
 

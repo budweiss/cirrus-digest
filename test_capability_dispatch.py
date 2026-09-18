@@ -71,3 +71,29 @@ class DispatchTests(unittest.TestCase):
         with patch.dict(lp._PROVIDERS, {'gemini':changed}):
             with self.assertRaises(lp.ProviderError):self.invoke()
         self.assertIn('capability_model_mismatch',self.audit.read_text())
+
+    def test_cheaper_qualified_model_fits_budget_when_best_does_not(self):
+        import json
+        self.pricing.write_text(json.dumps({'models':{'m':{'in':1,'out':2},'costly':{'in':1000,'out':2000}},'caps_usd':{'per_call':.1,'per_session':1,'per_day':1}}))
+        self.creds['gemini_model']='costly'
+        rows=self.records();rows[1]['model']='costly'
+        rows[1]['capabilities']['extract']['model']='costly'
+        provider,_=self.invoke(candidates=rows,min_quality=.5)
+        self.assertEqual(provider,'anthropic')
+
+    def test_equal_quality_chooses_lower_cost(self):
+        import json
+        self.pricing.write_text(json.dumps({'models':{'m':{'in':1,'out':2},'cheap':{'in':.1,'out':.2}},'caps_usd':{'per_call':1,'per_session':1,'per_day':1}}))
+        self.creds['gemini_model']='cheap'
+        rows=self.records();rows[0]['capabilities']['extract']['quality']=.95
+        rows[1]['model']='cheap';rows[1]['capabilities']['extract']['model']='cheap'
+        def answer(*a):lp._LAST.model='cheap';return 'valid'
+        with patch.dict(lp._PROVIDERS,{'gemini':answer}):
+            self.assertEqual(self.invoke(candidates=rows)[0],'gemini')
+
+    def test_other_provider_effort_floor_does_not_eliminate_valid_local(self):
+        self.creds.update(anthropic_effort='high',vllm_url='http://localhost:8000',vllm_model='m')
+        rows=self.records()
+        local=dict(rows[1],id='vllm',location='local',usable_input_tokens=3000)
+        provider,_=self.invoke(candidates=rows+[local],pool='auto',privacy='LOCAL_ONLY',max_cost_usd=0)
+        self.assertEqual(provider,'vllm')

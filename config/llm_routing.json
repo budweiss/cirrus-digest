@@ -32,6 +32,18 @@
     "billsnow": "research",
     "billsnow:draft": "research",
     "billsnow:council": "research",
-    "billsnow:judge": "research"
+    "billsnow:judge": "research",
+    "pedagogy-topic": "research",
+    "research:decompose": "research",
+    "alopecia-brief": "research",
+    "pedagogy-topic:council": "research",
+    "pedagogy-topic:judge": "research",
+    "pedagogy-topic:draft": "research",
+    "research:decompose:council": "research",
+    "research:decompose:judge": "research",
+    "research:decompose:draft": "research",
+    "alopecia-brief:council": "research",
+    "alopecia-brief:judge": "research",
+    "alopecia-brief:draft": "research"
   }
 }

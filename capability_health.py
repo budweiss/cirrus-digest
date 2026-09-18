@@ -71,10 +71,10 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
     This proves metadata access and model identity/capacity, not completion health.
     Exact aliases that resolve to a different identifier must be requalified.
     """
-    if provider not in ('anthropic', 'gemini'):
+    if provider not in ('anthropic', 'gemini', 'kimi', 'openai', 'grok', 'deepseek'):
         raise ValueError('unsupported cloud observation')
     model = ((creds.get('claude_dev_model') or creds.get('claude_model'))
-             if provider == 'anthropic' else creds.get('gemini_model'))
+             if provider == 'anthropic' else creds.get(provider + '_model'))
     row = dict(id=provider, model=model, location='cloud', healthy=False,
                basis='authenticated_model_metadata_only')
     key = creds.get(provider + '_api_key')
@@ -84,13 +84,25 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
     if provider == 'anthropic':
         url = 'https://api.anthropic.com/v1/models/' + encoded
         headers = {'x-api-key':key, 'anthropic-version':'2023-06-01'}
-    else:
+    elif provider == 'gemini':
         url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encoded
         headers = {'x-goog-api-key':key}
+    else:
+        base = {'kimi':'https://api.moonshot.ai', 'openai':'https://api.openai.com',
+                'grok':'https://api.x.ai', 'deepseek':'https://api.deepseek.com'}[provider]
+        url = base + '/v1/models'
+        headers = {'Authorization':'Bearer ' + key}
     try:
         data = (get or _get_authenticated)(url, headers)
-        identity = data.get('id') if provider == 'anthropic' else data.get('name', '').removeprefix('models/')
+        if provider not in ('anthropic', 'gemini'):
+            matches = [r for r in data.get('data', []) if r.get('id') == model]
+            if len(matches) != 1:
+                return dict(row, status='model_identity_mismatch')
+            data = matches[0]
+        identity = data.get('id') if provider != 'gemini' else data.get('name', '').removeprefix('models/')
         capacity = data.get('max_input_tokens') if provider == 'anthropic' else data.get('inputTokenLimit')
+        if provider not in ('anthropic', 'gemini'):
+            capacity = data.get('context_length') or data.get('max_model_len')
         if identity != model:
             return dict(row, status='model_identity_mismatch')
         if type(capacity) is not int or capacity <= 0:

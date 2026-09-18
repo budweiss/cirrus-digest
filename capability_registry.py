@@ -24,3 +24,29 @@ def load_project(project, legacy_path):
     if record is not None and not isinstance(record, dict):
         raise ValueError('invalid project capability record')
     return record
+
+
+def foundation_route(task, root):
+    """Load an explicitly migrated council route from the existing registry."""
+    record = load_project('foundation:' + task, Path(root) / 'config' / 'foundation_capabilities.json')
+    if record is None:
+        return None
+    if record.get('enabled') is not True:
+        raise ValueError('foundation route disabled; review required')
+    return record
+
+
+def contract_digest(record, root):
+    """Bind reviews to the installed caller/parser code, not just its prompt."""
+    import hashlib
+    files = record.get('contract_files')
+    if not isinstance(files, dict) or not files:
+        raise ValueError('missing foundation contract')
+    root = Path(root).resolve()
+    for name, digest in files.items():
+        path = (root / name).resolve()
+        if root not in path.parents or path.suffix != '.py':
+            raise ValueError('invalid contract path')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError('foundation contract changed; review required')
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()

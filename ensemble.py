@@ -1,4 +1,11 @@
-"""ensemble.py — "best answer + cross-check" council synthesis for the client jobs.
+"""ensemble.py — reviewed foundation selection and legacy council synthesis.
+
+S230: projects registered as foundation:<task> in model_capabilities.json use
+reviewed admission, fresh health, quality/cost selection and bounded recovery.
+Unmigrated public routes retain the legacy pipeline described below. Private
+work without an approved local route always defers before inference.
+
+Legacy pipeline:
 
 Built S57 (2026-08-06) for the CUMULUS migration ensemble step. Gives the
 high-stakes client paths (bill_snow_weekly judgment; extensible to others) a
@@ -193,12 +200,148 @@ def _judge_prompt(orig_system, orig_user, members, draft):
     return "\n".join(parts)
 
 
+def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
+                    session_id, keep_answers, privacy=None, validate=None):
+    """Reviewed specialist; optional two-member review plus qualified synthesis.
+
+    No legacy escalation after admission failure. Recovery is at most one other
+    qualified specialist, and disabled for multi-review calls to bound spending.
+    """
+    import math
+    import llm_routing as R
+    from capability_registry import contract_digest
+    from capability_admission import candidates
+    from capability_dispatch import dispatch, plan
+    from capability_health import observe, observe_cloud
+    try:
+        contract = contract_digest(route, root)
+        requested = route.get('privacy', 'CLOUD_ALLOWED')
+        if privacy == 'LOCAL_ONLY':
+            requested = privacy
+        policy = R.policy(task, creds, requested)
+        pool = 'local' if policy['privacy'] == 'LOCAL_ONLY' else 'auto'
+        capability = route['capability']
+        limit = route['max_cost_usd']
+        if type(limit) not in (int, float) or not math.isfinite(limit) or limit < 0:
+            raise ValueError('invalid route budget')
+        if len(user.encode()) > route['max_user_bytes']:
+            raise ValueError('input exceeds reviewed scope')
+        reviewers = route.get('reviewers', 1)
+        if type(reviewers) is not int or reviewers not in (1, 2):
+            raise ValueError('invalid reviewer count')
+        if reviewers == 2 and not (creds.get('ensemble') or {}).get('enabled', True):
+            raise ValueError('multiple reviewers disabled by ensemble kill switch')
+        if reviewers == 2 and not route.get('review_reason'):
+            raise ValueError('multiple reviewers require a reviewed justification')
+        evaluations = route['evaluations']
+        providers = sorted({r['id'] for r in evaluations + route.get('judge_evaluations', [])})
+        # LOCAL_ONLY avoids even cloud metadata access.
+        health = [(observe(creds, p) if p in R.LOCAL else observe_cloud(creds, p))
+                  for p in providers if pool != 'local' or p in R.LOCAL]
+        records = candidates(evaluations, health, task=task, capability=capability,
+                             system=system, contract_sha256=contract)
+        args = dict(capability=capability, task=task, max_cost_usd=limit,
+                    pool=pool, privacy=policy['privacy'],
+                    min_quality=route.get('min_quality', 0.8), max_tokens=max_tokens)
+        selected = []
+        remaining = list(records)
+        for _ in range(reviewers):
+            chosen, _ = plan(system, user, creds, candidates=remaining, session_id=session_id or task, **args)
+            selected.append(chosen)
+            remaining = [r for r in remaining if r['id'] != chosen['id']]
+        judge_records = []
+        total = sum(r['estimated_request_cost_usd'] for r in selected)
+        if reviewers == 2:
+            judge_records = candidates(route.get('judge_evaluations', []), health,
+                task=task, capability=capability + ':synthesis', system=_JUDGE_SYSTEM,
+                contract_sha256=contract)
+            # Reserve maximum possible member answer bytes before paying anyone.
+            reserve = _judge_prompt(system, user, [(r['id'], 'x' * (4 * max_tokens))
+                                                   for r in selected], '')
+            judge, _ = plan(_JUDGE_SYSTEM, reserve, creds, candidates=judge_records,
+                           session_id=session_id or task, **dict(args, capability=capability + ':synthesis'))
+            total += judge['estimated_request_cost_usd']
+            cloud_ids = {r['id'] for r in selected + [judge] if r['id'] not in R.LOCAL}
+            if len(cloud_ids) > policy['max_cloud_providers']:
+                raise ValueError('project reviewer limit exceeded')
+        if total > limit:
+            raise ValueError('route budget exhausted')
+        cfg, box, ledger, _ = _load_budget(creds, root)
+        if total and (not cfg or not B.allow(session_id or task, total, cfg,
+                                             box=box, ledger_path=ledger)[0]):
+            raise ValueError('aggregate budget denied')
+    except (ValueError, KeyError, TypeError, OSError, L.ProviderError) as exc:
+        raise L.ProviderError('foundation route requires review or deferral') from exc
+    meta = dict(mode='dynamic', members=[], judge=None, degraded=False,
+                reason='reviewed_quality_then_estimated_cost', est_cost_usd=total,
+                draft_by='', draft_error='', models={})
+    answers = []
+    def invoke(rows, sysmsg=system, usrmsg=user, call_args=None):
+        return dispatch(sysmsg, usrmsg, creds, candidates=rows,
+                        parse=(lambda raw: raw if validate(raw) else None) if validate else None,
+                        session_id=session_id or task, **(call_args or args))
+    for choice in selected:
+        rows = [r for r in records if r['id'] == choice['id']]
+        try:
+            provider, text = invoke(rows)
+        except L.ProviderError as exc:
+            if isinstance(exc, L.AccountingError):
+                raise
+            if reviewers != 1 or type(route.get('max_recovery_attempts')) is not int or route.get('max_recovery_attempts') != 1:
+                raise
+            R.audit(task, choice['id'], 'foundation_recovery_requested', policy)
+            # Re-rank qualified peers; never restart the sequential provider list.
+            recovery_args = dict(args, max_cost_usd=max(0, limit - total))
+            recovery, _ = plan(system, user, creds, candidates=remaining,
+                session_id=session_id or task, **recovery_args)
+            if (choice['id'] not in R.LOCAL and recovery['id'] not in R.LOCAL
+                and policy['max_cloud_providers'] < 2):
+                raise L.ProviderError('project recovery provider limit exceeded')
+            meta['est_cost_usd'] += recovery['estimated_request_cost_usd']
+            provider, text = invoke(remaining, call_args=recovery_args)
+            meta['degraded'] = True
+            meta['reason'] = 'qualified_recovery_after_primary_failure'
+        meta['members'].append(provider)
+        meta['models'][provider] = L.last_model()
+        answers.append((provider, text))
+    if reviewers == 2:
+        planned_judge = [r for r in judge_records if r['id'] == judge['id']]
+        remaining_limit = max(0, limit - sum(r['estimated_request_cost_usd'] for r in selected))
+        provider, text = invoke(planned_judge, _JUDGE_SYSTEM,
+            _judge_prompt(system, user, answers, ''),
+            dict(args, capability=capability + ':synthesis', max_cost_usd=remaining_limit))
+        meta['judge'] = provider
+        meta['models'][provider] = L.last_model()
+        meta['reason'] = 'reviewed_cross_check_and_synthesis'
+    else:
+        provider, text = answers[0]
+        meta['judge'] = provider
+    if keep_answers:
+        meta['answers'] = answers
+    return meta, text
+
+
 # ── public entry ────────────────────────────────────────────────────────────────
 def best_answer(system, user, creds, *, max_tokens=8000, task="",
                 local=None, session_id=None, app_dir=None, mode=None,
-                keep_answers=False):
-    """Return (meta, text). See module docstring. Degrades to escalate() on any
-    council problem; only raises ProviderError if NO provider is keyed."""
+                keep_answers=False, privacy=None, validate=None):
+    """Return (metadata, text); migrated routes fail closed without legacy fallback."""
+    import llm_routing as R
+    from capability_registry import foundation_route
+    root = Path(app_dir) if app_dir else Path(__file__).resolve().parent
+    try:
+        route = foundation_route(task, root)
+        effective = R.policy(task, creds, privacy)['privacy']
+    except (ValueError, OSError, TypeError) as exc:
+        raise L.ProviderError('foundation registry or privacy unavailable') from exc
+    if route is not None:
+        return _dynamic_answer(system, user, creds, route=route, root=root,
+            task=task, max_tokens=max_tokens, session_id=session_id,
+            keep_answers=keep_answers, privacy=effective, validate=validate)
+    if effective == 'LOCAL_ONLY':
+        # The legacy optional draft bypasses admission. Private work must have
+        # an approved local route, otherwise defer before any model sees it.
+        raise L.ProviderError('private task requires a qualified local route')
     pol = creds.get("dev_escalation", {}) or {}
     mode = (mode or pol.get("mode", "single")).lower()
     ens = creds.get("ensemble", {}) or {}

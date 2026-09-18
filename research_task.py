@@ -66,7 +66,8 @@ def _council(system, user, creds, task, max_tokens=6000):
     """The existing 4-provider council. Returns (meta, text)."""
     import ensemble
     return ensemble.best_answer(system, user, creds, task=task,
-                                max_tokens=max_tokens, mode="council")
+                                max_tokens=max_tokens, mode="council",
+                                validate=_valid_decomposition if task == "research:decompose" else None)
 
 
 def decompose(question, requirements, creds):
@@ -82,16 +83,33 @@ def decompose(question, requirements, creds):
     usr = f"BRIEF\n{question}\n\nREQUIREMENTS (hard constraints)\n{reqs}"
     _, text = _council(sys_p, usr, creds, task="research:decompose", max_tokens=1500)
     try:
-        t = text.strip()
-        if t.startswith("```"):
-            t = t.split("```")[1]
-            t = t[4:] if t.lower().startswith("json") else t
-        d = json.loads(t.strip())
-        subs = [s for s in d.get("subquestions", []) if s][:MAX_SUBQ]
-        return subs, d.get("success_looks_like", "")
-    except Exception:
-        # Fail useful, not empty: the brief itself is always a valid question.
+        d = _parse_decomposition(text)
+        return d['subquestions'], d['success_looks_like']
+    except (ValueError, TypeError, KeyError):
+        # No second provider call: the question itself is a safe planning fallback.
         return [question], ""
+
+
+def _parse_decomposition(text):
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("```")[1]
+        t = t[4:] if t.lower().startswith("json") else t
+    d = json.loads(t.strip())
+    if (not isinstance(d, dict) or not isinstance(d.get('subquestions'), list)
+        or not 1 <= len(d['subquestions']) <= MAX_SUBQ
+        or any(not isinstance(x, str) or not x.strip() for x in d['subquestions'])
+        or not isinstance(d.get('success_looks_like'), str) or not d['success_looks_like'].strip()):
+        raise ValueError('invalid research planning contract')
+    return d
+
+
+def _valid_decomposition(text):
+    try:
+        _parse_decomposition(text)
+        return True
+    except (ValueError, TypeError, KeyError, IndexError):
+        return False
 
 
 def gather(subq, creds):
