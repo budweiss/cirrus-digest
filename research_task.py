@@ -58,6 +58,11 @@ MAX_RESULTS = 4       # search results per sub-question
 MAX_FETCH = 3         # pages actually fetched per sub-question
 
 
+PLANNING_SUCCESS = (
+    "Supported primary-source findings that answer the brief and meet all hard "
+    "requirements, or an explicit statement that evidence is insufficient.")
+
+
 def _creds():
     return json.load(open(os.path.join(REPO, "config", "credentials.json")))
 
@@ -65,6 +70,8 @@ def _creds():
 def _council(system, user, creds, task, max_tokens=6000):
     """The existing 4-provider council. Returns (meta, text)."""
     import ensemble
+    if task == 'research:decompose':
+        creds = _planning_creds(creds)
     return ensemble.best_answer(system, user, creds, task=task,
                                 max_tokens=max_tokens, mode="council",
                                 validate=_valid_decomposition if task == "research:decompose" else None)
@@ -77,9 +84,14 @@ def decompose(question, requirements, creds):
         "You break a research brief into at most %d SEPARATELY SEARCHABLE "
         "sub-questions. Each must be answerable from public sources and must "
         "matter to the decision. Do not pad to reach the limit — fewer, sharper "
-        "questions beat more vague ones. Reply ONLY with JSON: "
+        "questions beat more vague ones. Preserve all hard constraints. "
+        "A missing study or unsuccessful search means evidence is insufficient; "
+        "it does not prove that no evidence exists. Frame success as supported "
+        "findings or explicitly insufficient evidence, never assumed effectiveness "
+        "or a definitive absence claim. Do not invent findings. Reply ONLY with JSON: "
         '{"subquestions": ["..."], "success_looks_like": "one sentence"}' % MAX_SUBQ
     )
+    sys_p += " Set success_looks_like to this exact application acceptance rule: " + json.dumps(PLANNING_SUCCESS)
     usr = f"BRIEF\n{question}\n\nREQUIREMENTS (hard constraints)\n{reqs}"
     _, text = _council(sys_p, usr, creds, task="research:decompose", max_tokens=1500)
     try:
@@ -88,6 +100,19 @@ def decompose(question, requirements, creds):
     except (ValueError, TypeError, KeyError):
         # No second provider call: the question itself is a safe planning fallback.
         return [question], ""
+
+
+def _planning_creds(creds):
+    """Request-scoped structured output; never mutates stored credentials."""
+    return dict(creds, kimi_reasoning_effort='low', kimi_response_format={
+        'type': 'json_schema',
+        'json_schema': {'name': 'research_plan', 'strict': True, 'schema': {
+            'type': 'object', 'additionalProperties': False,
+            'required': ['subquestions', 'success_looks_like'],
+            'properties': {
+                'subquestions': {'type': 'array', 'minItems': 1, 'maxItems': MAX_SUBQ,
+                                 'items': {'type': 'string', 'minLength': 1}},
+                'success_looks_like': {'type': 'string', 'enum': [PLANNING_SUCCESS]}}}}})
 
 
 def _parse_decomposition(text):
@@ -99,7 +124,7 @@ def _parse_decomposition(text):
     if (not isinstance(d, dict) or not isinstance(d.get('subquestions'), list)
         or not 1 <= len(d['subquestions']) <= MAX_SUBQ
         or any(not isinstance(x, str) or not x.strip() for x in d['subquestions'])
-        or not isinstance(d.get('success_looks_like'), str) or not d['success_looks_like'].strip()):
+        or d.get('success_looks_like') != PLANNING_SUCCESS):
         raise ValueError('invalid research planning contract')
     return d
 

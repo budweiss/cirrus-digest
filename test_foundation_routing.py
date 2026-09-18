@@ -135,12 +135,13 @@ class FoundationTests(unittest.TestCase):
         self.assertNotIn('capability_output_accepted',self.audit.read_text())
 
     def test_research_planning_contract_rejects_malformed_and_oversized_plans(self):
-        from research_task import _valid_decomposition
+        from research_task import _valid_decomposition, PLANNING_SUCCESS
         for text in ('{"subquestions":["x"],"success_looks_like":unquoted"}',
                      '{"subquestions":[1],"success_looks_like":"ok"}',
                      json.dumps({'subquestions':['x']*7,'success_looks_like':'ok'})):
             self.assertFalse(_valid_decomposition(text))
-        self.assertTrue(_valid_decomposition('{"subquestions":["Which sources?"],"success_looks_like":"Supported comparison"}'))
+        self.assertTrue(_valid_decomposition(json.dumps({'subquestions':['Which sources?'],'success_looks_like':PLANNING_SUCCESS})))
+        self.assertFalse(_valid_decomposition(json.dumps({'subquestions':['Which sources?'],'success_looks_like':'Prove no evidence exists'})))
 
     def test_post_call_audit_failure_never_spends_on_recovery(self):
         import llm_routing
@@ -153,3 +154,40 @@ class FoundationTests(unittest.TestCase):
             with patch.object(llm_routing,'audit',side_effect=audit):
                 with self.assertRaises(L.AccountingError):self.invoke(self.route(max_recovery_attempts=1))
             self.assertEqual(len(self.calls),1)
+
+    def test_kimi_planning_schema_reaches_wire_without_global_mutation(self):
+        from research_task import _planning_creds
+        original=dict(kimi_api_key='fixture',kimi_model='kimi-k3')
+        scoped=_planning_creds(original)
+        with patch.object(L,'_http_post',return_value={'model':'kimi-k3','choices':[{'finish_reason':'stop','message':{'content':'{}'}}]}) as post:
+            L._kimi(scoped,'s','u',1500)
+        body=post.call_args.args[2]
+        self.assertTrue(body['response_format']['json_schema']['strict'])
+        self.assertEqual(body['max_tokens'],1500)
+        self.assertEqual(body['reasoning_effort'],'low')
+        self.assertNotIn('kimi_response_format',original)
+        with self.assertRaises(L.ProviderError):L._kimi(dict(original,kimi_response_format={'type':'text'}),'s','u',1500)
+
+    def test_judge_stays_pinned_when_actual_prompt_would_admit_better_peer(self):
+        route=self.route(reviewers=2,review_reason='reviewed high stakes')
+        route['judge_evaluations']=[dict(r,capability='research:synthesis',prompt_sha256=prompt_digest(ensemble._JUDGE_SYSTEM)) for r in route['evaluations']]
+        actual=ensemble._judge_prompt('sys','PRIVATE PAYLOAD',[('gemini','valid'),('anthropic','valid')],'')
+        self.health[1]['usable_input_tokens']=len(ensemble._JUDGE_SYSTEM.encode())+len(actual.encode())+1024+100+1
+        meta,_=self.invoke(route)
+        self.assertEqual(meta['judge'],'anthropic')
+        self.assertEqual(len(self.calls),3)
+
+    def test_research_caller_passes_scoped_schema_and_validator(self):
+        import research_task as R
+        raw=json.dumps({'subquestions':['Which primary sources?'],'success_looks_like':R.PLANNING_SUCCESS})
+        creds={'kimi_model':'kimi-k3'}
+        with patch.object(ensemble,'best_answer',return_value=({},raw)) as call:
+            questions,success=R.decompose('A public question',['Use primary sources'],creds)
+        self.assertEqual(success,R.PLANNING_SUCCESS)
+        self.assertEqual(questions,['Which primary sources?'])
+        self.assertEqual(call.call_args.kwargs['max_tokens'],1500)
+        self.assertTrue(call.call_args.kwargs['validate'](raw))
+        self.assertFalse(call.call_args.kwargs['validate']('{}'))
+        self.assertIn(R.PLANNING_SUCCESS,call.call_args.args[0])
+        self.assertEqual(call.call_args.args[2]['kimi_reasoning_effort'],'low')
+        self.assertNotIn('kimi_reasoning_effort',creds)

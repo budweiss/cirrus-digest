@@ -511,8 +511,22 @@ def _kimi(creds, system, user, max_tokens):
     if not model:
         raise ProviderError("no kimi_model set in credentials.json "
                             "(the API id is `kimi-k3`)")
+    response_format = creds.get('kimi_response_format')
+    extra = None
+    if response_format is not None:
+        if (not isinstance(response_format, dict)
+            or response_format.get('type') != 'json_schema'
+            or not isinstance(response_format.get('json_schema'), dict)
+            or response_format['json_schema'].get('strict') is not True):
+            raise ProviderError('invalid Kimi structured output contract')
+        extra = {'response_format': response_format}
+    effort = creds.get('kimi_reasoning_effort')
+    if effort is not None:
+        if effort not in ('low', 'high', 'max'):
+            raise ProviderError('invalid Kimi reasoning effort')
+        extra = dict(extra or {}, reasoning_effort=effort)
     return _openai_compatible("https://api.moonshot.ai/v1/chat/completions",
-                              key, model, system, user, max_tokens)
+                              key, model, system, user, max_tokens, extra=extra)
 
 
 def _ollama(creds, system, user, max_tokens):
