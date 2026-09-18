@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated watch list. Every id below was VERIFIED against the live RSS feed on 2026-09-04, not looked up and trusted. lane drives how a video is judged - see YT-WATCH-SPEC.md.",
+  "_comment": "Curated watch list. Channel identity and live RSS checked on each entry\u2019s verified date. Lane drives claim review; see YT-WATCH-SPEC.md.",
   "channels": [
     {
       "name": "Alex Ziskind",
@@ -34,6 +34,14 @@
       "lane": "news",
       "why": "AI tooling and news, incl. coverage of the Claude/Cowork product space. Buddy subscribes.",
       "verified": "2026-09-04, 15 videos in feed"
+    },
+    {
+      "name": "Rob Braxman Tech",
+      "handle": "@robbraxmantech",
+      "channel_id": "UCYVU6rModlGxvJbszCclGGw",
+      "lane": "hardware",
+      "why": "Buddy-requested source for local LLM production serving, speed versus accuracy, privacy, and RAG. Review reported GPT-OSS 120B preference and retrieval workflows as testable leads for Cirrus/Cumulus, not established recommendations.",
+      "verified": "2026-09-18: live RSS title Rob Braxman Tech; recent privacy/AI titles inspected"
     }
   ]
 }
