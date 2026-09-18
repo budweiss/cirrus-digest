@@ -73,6 +73,7 @@ _MODEL_FIELD = {
     "grok":      ("grok_model",),
     "openai":    ("openai_model",),
     "deepseek":  ("deepseek_model",),
+    "kimi":      ("kimi_model",),
 }
 _JUDGE_ORDER = ["anthropic", "openai", "gemini", "grok", "deepseek"]
 
