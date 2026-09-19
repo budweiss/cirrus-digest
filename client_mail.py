@@ -18,8 +18,9 @@ Usage:  python3 client_mail.py <sender_name> <body_file> [attachment]
   body_file:   path relative to ~/projects/cirrus-digest (e.g.
                mail/Alyssa-intro.md). First line "Subject: ..." is used as
                the subject (and stripped).
-  attachment:  optional path relative to the project dir (e.g.
-               mail/Guide.docx) to attach to the message.
+  attachment:  optional path(s) relative to the project dir (e.g.
+               mail/Guide.docx), comma-separated for more than one, to
+               attach to the message.
 """
 
 import json
@@ -54,6 +55,10 @@ def main() -> int:
     dry_run = "--dry-run" in sys.argv
     name, body_rel = argv[0].strip().lower(), argv[1]
     attach_rel = argv[2].strip() if len(argv) > 2 and argv[2].strip() else ""
+    # S232: comma-separated so a single send can carry more than one
+    # attachment (e.g. two alternative diagrams) -- mailer.send() already
+    # accepts a list, this CLI just never exposed more than one slot.
+    attach_rels = [a.strip() for a in attach_rel.split(",") if a.strip()]
 
     senders = json.loads((PROJECT_DIR / "config/intake_senders.json").read_text())
     entry = senders.get(name)
@@ -62,7 +67,7 @@ def main() -> int:
         return 1
     to_addr = entry["emails"][0]
 
-    attach = _safe_in_project(attach_rel) if attach_rel else None
+    attach = [_safe_in_project(a) for a in attach_rels] if attach_rels else None
     creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     from_email = creds["outlook_email"]   # legacy-misnamed: the Gmail sender
     password = creds["outlook_password"]
@@ -80,7 +85,7 @@ def main() -> int:
         # An external send is irreversible, so the FROM LINE gets read before
         # it goes, not inferred from config (S77).
         mailer.send(from_email, password, to_addr, subject, body,
-                    cc=CC_ADDR, attachments=[attach] if attach else None,
+                    cc=CC_ADDR, attachments=attach,
                     creds=creds, dry_run=True)
         print("  --- body (first 15 lines) ---")
         for line in body.splitlines()[:15]:
@@ -93,12 +98,13 @@ def main() -> int:
     # the ledger showed "0 open promises" the whole time it sat in his inbox.
     # A promise made deliberately is no less a promise than one a model wrote.
     mailer.send(from_email, password, to_addr, subject, body,
-                cc=CC_ADDR, attachments=[attach] if attach else None,
+                cc=CC_ADDR, attachments=attach,
                 creds=creds, client=name,
                 project=(entry.get("projects") or ["general"])[0])
 
     print(f"sent '{subject}' to {name} (cc Buddy)"
-          + (f" with attachment {Path(attach_rel).name}" if attach_rel else ""))
+          + (f" with attachment(s) {', '.join(Path(a).name for a in attach_rels)}"
+             if attach_rels else ""))
     return 0
 
 
