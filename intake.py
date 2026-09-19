@@ -1153,6 +1153,29 @@ def selftest() -> int:
     check("plain subject kept", parse_request_title("more salt data") == "more salt data")
     check("empty subject", parse_request_title("") == "(no subject)")
 
+    # S232 — research_topic_title() on a REPLY subject. A reply subject is
+    # OUR words echoed back (the digest's own title), never the client's, so
+    # it must never win even though it is long enough to dodge the old
+    # bare-keyword check. Confirmed live: Alyssa's "Can you show me picture
+    # examples of a mind-map...?" was titled with the digest's subject line
+    # until this fix, and the brief built from that title had no idea what
+    # she'd actually asked.
+    _reply_subj = "Re: Literacy Research Digest — 2026-09-10"
+    _reply_body = ("Can you show me picture examples of a mind-map or an "
+                   "interactive mind-map? Get Outlook for iOS<https://aka.ms/o0ukef> "
+                   "________________________________ From: CUMULUS <cumulus@cumulustask.com> "
+                   "Sent: Thursday, 10 September 2026 06:04:00")
+    check("research_topic_title: a REPLY subject never wins, even though it "
+          "is long enough to dodge the bare-keyword check",
+          research_topic_title(_reply_subj, _reply_body)
+          == "Can you show me picture examples of a mind-map or an interactive mind-map?")
+    check("research_topic_title: a FRESH (non-reply) subject the client "
+          "chose is still used as-is",
+          research_topic_title("phonics small groups", "body text here") == "phonics small groups")
+    check("research_topic_title: a bare keyword subject still falls back to "
+          "the body (unchanged pre-S232 behavior)",
+          research_topic_title("RESEARCH", "morphology instruction for 4th grade.") == "morphology instruction for 4th grade.")
+
     # classification: normal request = buildable tier, NEVER pattern refused
     rec = classify("bill", ["snow"], "REQUEST: add per-inch column to bids", "please")
     check("normal request backlogged", rec["status"] == "backlogged")

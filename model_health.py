@@ -1656,6 +1656,26 @@ def selftest():
         nonlocal fails
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
+
+    # S232 — node_name() now delegates to node_info.node_name() instead of
+    # keeping its own copy of the TARGET_ENV lookup (a second copy of that
+    # exact lookup, out of sync with its own service's env var, is what
+    # mislabelled a real client email as CIRRUS this session). Verify the
+    # delegation actually resolves both ways, not just that it doesn't crash.
+    _orig_target_env = os.environ.get("TARGET_ENV")
+    try:
+        os.environ["TARGET_ENV"] = "beta"
+        ck("node_name(): TARGET_ENV=beta resolves to CUMULUS via node_info",
+           node_name() == "CUMULUS")
+        os.environ.pop("TARGET_ENV", None)
+        ck("node_name(): unset TARGET_ENV falls back to CIRRUS",
+           node_name() == "CIRRUS")
+    finally:
+        if _orig_target_env is None:
+            os.environ.pop("TARGET_ENV", None)
+        else:
+            os.environ["TARGET_ENV"] = _orig_target_env
+
     _selftest_runtime(ck)
     _selftest_local_load(ck)     # S137: does the configured local model LOAD?
     _selftest_fallback(ck)       # S141: is the WORK actually going there?

@@ -46,6 +46,13 @@ def _safe_in_project(rel: str) -> Path:
     return p
 
 
+def _parse_attach_list(attach_rel: str) -> list:
+    """Comma-separated attachment paths -> a clean list (empty if none).
+    Pulled out of main() (S232) so the multi-attachment parsing has
+    something to test without a network or real credentials."""
+    return [a.strip() for a in (attach_rel or "").split(",") if a.strip()]
+
+
 def main() -> int:
     if len([a for a in sys.argv[1:] if a != "--dry-run"]) < 2:
         print("usage: client_mail.py <sender_name> <body_file> [attachment] [--dry-run]")
@@ -58,7 +65,7 @@ def main() -> int:
     # S232: comma-separated so a single send can carry more than one
     # attachment (e.g. two alternative diagrams) -- mailer.send() already
     # accepts a list, this CLI just never exposed more than one slot.
-    attach_rels = [a.strip() for a in attach_rel.split(",") if a.strip()]
+    attach_rels = _parse_attach_list(attach_rel)
 
     senders = json.loads((PROJECT_DIR / "config/intake_senders.json").read_text())
     entry = senders.get(name)
@@ -108,5 +115,66 @@ def main() -> int:
     return 0
 
 
+def selftest() -> int:
+    """Offline: no network, no credentials, no real send. Covers the S232
+    multi-attachment parsing and the path-traversal guard it now runs
+    per-segment instead of once."""
+    import tempfile
+    fails = 0
+
+    def check(name, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
+        fails += 0 if cond else 1
+
+    check("_parse_attach_list: a single path",
+          _parse_attach_list("mail/a.png") == ["mail/a.png"])
+    check("_parse_attach_list: two paths, comma-separated",
+          _parse_attach_list("mail/a.png,mail/b.png") == ["mail/a.png", "mail/b.png"])
+    check("_parse_attach_list: whitespace around commas is stripped",
+          _parse_attach_list("mail/a.png, mail/b.png , mail/c.png")
+          == ["mail/a.png", "mail/b.png", "mail/c.png"])
+    check("_parse_attach_list: empty string -> [] (not ['']), so "
+          "attach=None downstream, not attach=[Path('')]",
+          _parse_attach_list("") == [])
+    check("_parse_attach_list: None -> []", _parse_attach_list(None) == [])
+    check("_parse_attach_list: a trailing comma adds no blank entry",
+          _parse_attach_list("mail/a.png,") == ["mail/a.png"])
+
+    # _safe_in_project must still refuse an escape attempt and a missing
+    # file even now that it's called once per comma-separated segment
+    # instead of once total (S232's actual new risk: a list comprehension
+    # silently dropping a bad segment instead of refusing the whole send).
+    global PROJECT_DIR
+    _orig_project_dir = PROJECT_DIR
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "mail").mkdir()
+    (tmp / "mail" / "ok.png").write_bytes(b"fake-image-bytes")
+    try:
+        PROJECT_DIR = tmp
+        check("_safe_in_project: a real in-project file resolves",
+              _safe_in_project("mail/ok.png").exists())
+        try:
+            _safe_in_project("../../etc/passwd")
+            escaped = True
+        except SystemExit:
+            escaped = False
+        check("_safe_in_project: a path that escapes the project dir is refused",
+              not escaped)
+        try:
+            _safe_in_project("mail/does-not-exist.png")
+            missing_ok = True
+        except SystemExit:
+            missing_ok = False
+        check("_safe_in_project: a missing file is refused, not silently skipped",
+              not missing_ok)
+    finally:
+        PROJECT_DIR = _orig_project_dir
+
+    return 0 if fails == 0 else 1
+
+
 if __name__ == "__main__":
+    if "selftest" in sys.argv[1:]:
+        sys.exit(selftest())
     sys.exit(main())
