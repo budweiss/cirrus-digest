@@ -113,10 +113,82 @@ def check_all(config_dir, required_account=None):
     return main
 
 
+def selftest():
+    """Exercise decision-making functions with explicit inputs/expected outputs.
+
+    Returns True on success, raises AssertionError on failure.
+    """
+    # runtime_path: pedagogy sources get a distinct overlay filename
+    assert runtime_path(Path('/x/sources-pedagogy.json')).name == 'runtime-pedagogy.local.json'
+    assert runtime_path(Path('/x/sources.json')).name == 'runtime.local.json'
+
+    # merge: digest overlay only allows output_dir/log_dir
+    base = {'digest': {'output_dir': '/a', 'log_dir': '/b'}, 'email': {'accounts': [{'label': 'x', 'enabled': True}]}}
+    overlay = {'digest': {'output_dir': '/c'}}
+    merged = merge(base, overlay)
+    assert merged['digest']['output_dir'] == '/c'
+    assert merged['digest']['log_dir'] == '/b'
+    assert base['digest']['output_dir'] == '/a', 'merge must not mutate base'
+
+    try:
+        merge(base, {'digest': {'bogus_key': '/z'}})
+        raise AssertionError('merge should reject unsupported digest overlay keys')
+    except ValueError:
+        pass
+
+    # merge: email accounts overlay replaces by label, requires a label
+    overlay2 = {'email': {'accounts': [{'label': 'x', 'enabled': False}, {'label': 'y', 'enabled': True}]}}
+    merged2 = merge(base, overlay2)
+    labels = {a['label']: a for a in merged2['email']['accounts']}
+    assert labels['x']['enabled'] is False
+    assert labels['y']['enabled'] is True
+    assert len(merged2['email']['accounts']) == 2
+
+    try:
+        merge(base, {'email': {'accounts': [{'enabled': True}]}})
+        raise AssertionError('merge should reject accounts missing a label')
+    except ValueError:
+        pass
+
+    # validate: requires absolute paths
+    try:
+        validate({'digest': {'output_dir': 'relative/path', 'log_dir': '/b'}}, system='Darwin')
+        raise AssertionError('validate should reject relative output_dir')
+    except ValueError:
+        pass
+
+    validate({'digest': {'output_dir': '/a', 'log_dir': '/b'}}, system='Darwin')
+
+    # validate: require_log=False skips log_dir check
+    validate({'digest': {'output_dir': '/a'}}, system='Darwin', require_log=False)
+
+    # validate: rejects macOS paths on Linux
+    try:
+        validate({'digest': {'output_dir': '/Users/me/x', 'log_dir': '/b'}}, system='Linux')
+        raise AssertionError('validate should reject /Users/ paths on Linux')
+    except ValueError:
+        pass
+
+    # same macOS path is fine on Darwin
+    validate({'digest': {'output_dir': '/Users/me/x', 'log_dir': '/b'}}, system='Darwin')
+
+    return True
+
+
 if __name__ == '__main__':
     import argparse
+    import sys
     p = argparse.ArgumentParser()
     p.add_argument('--account')
+    p.add_argument('--selftest', action='store_true')
     args = p.parse_args()
+    if args.selftest:
+        try:
+            selftest()
+        except AssertionError as e:
+            print(f'selftest failed: {e}')
+            sys.exit(1)
+        print('selftest ok')
+        sys.exit(0)
     check_all(Path(__file__).resolve().parent / 'config', args.account)
     print('runtime configuration valid')
