@@ -127,10 +127,29 @@ def classify_risk(ptype: str, detail: str, source_line: str = ""):
 
 def _guess_files(ptype: str, detail: str):
     """Best-effort guess of which files a proposal would touch — a hint for the
-    (future) dev agent, not a contract. Conservative: empty when unsure."""
+    (future) dev agent, not a contract. Conservative: empty when unsure.
+
+    S233: 'monitor'/'track'/'watch'/'alert' added to the source-ish group, and
+    a new install/package/dependency group, both mapping to config/sources.json
+    -- not because that file is where a new dependency belongs (it never is;
+    rule 5 forbids new deps outright), but because ANY non-empty guess here is
+    what lets the request reach the builder at all instead of being refused
+    pre-model with a generic "no files_to_change" message. The builder already
+    gives the clear, correct answer ("this needs a new dependency, which this
+    architecture forbids") when it gets that far -- prop-2026-09-12-1 (Reducto)
+    proves it, because "model" already routed it to config/sources.json. Two
+    proposals with the exact same shape of ask -- prop-2026-07-29-1 ("add
+    monitoring for AI policy updates") and prop-2026-08-30-1 ("install Python
+    package requests-html") -- matched NONE of the old patterns, got an empty
+    files_to_change, and were refused before ever reaching the builder for that
+    same clear answer. A guess that is technically "wrong" but still reaches
+    the builder beats a correct-looking empty list that dead-ends the request
+    before anyone -- human or model -- explains why."""
     b = detail.lower()
     files = []
-    if ptype == "ADD_SOURCE" or re.search(r'\b(rss|feed|source)\b', b):
+    if (ptype == "ADD_SOURCE"
+            or re.search(r'\b(rss|feed|source)\b', b)
+            or re.search(r'monitor|track|watch|alert', b)):
         files.append("config/sources.local.json")
     if re.search(r'\bdigest|summar|dedupe|article\b', b):
         files.append("cirrus_daily.py")
@@ -141,6 +160,8 @@ def _guess_files(ptype: str, detail: str):
     if re.search(r'\btelegram|bot|/approve|command\b', b):
         files.append("cirrus_bot.py")
     if re.search(r'\bmodel|qwen|ollama|pull\b', b):
+        files.append("config/sources.json")
+    if re.search(r'install.*(package|library|dependency)|pip install|\bpypi\b', b):
         files.append("config/sources.json")
     return sorted(set(files))
 
@@ -403,6 +424,39 @@ def _selftest():
         print(f"  [{status}] want={TIER_NAME[want]:<26} got={TIER_NAME[got]:<26} "
               f":: {item['detail'][:45]}  ({reason})")
     print(f"\nclassify_risk: {ok}/{len(cases)} passed")
+
+    # S233 — _guess_files(): two real proposals (prop-2026-07-29-1,
+    # prop-2026-08-30-1) got an empty files_to_change and were refused BEFORE
+    # ever reaching the builder, even though a third with the identical shape
+    # of ask (prop-2026-09-12-1, "install the Reducto parsing model") matched
+    # the pre-existing 'model' keyword and got a clear, correct "this needs a
+    # new dependency, forbidden" answer. Same underlying ask, different luck
+    # of phrasing. These are the actual two proposals, not paraphrases.
+    assert "config/sources.local.json" in _guess_files(
+        "CIRRUS_NOTE",
+        "Add monitoring for updates on AI pacing regulations from OpenAI and Anthropic")
+    assert "config/sources.json" in _guess_files(
+        "CAPABILITY_REQUEST",
+        "Install Python package `requests-html` to improve website content "
+        "extraction from paywalled or problematic HTTP responses")
+    # unchanged: a proposal that already worked must keep working
+    assert "config/sources.json" in _guess_files(
+        "CIRRUS_NOTE",
+        "Install the Reducto parsing model (r-1) and integrate it into the "
+        "existing workflow scripts.")
+    # unchanged: a Skywarden repair ticket (type USER_REQUEST) must NOT start
+    # looking auto-buildable -- these are diagnoses for a human to read and
+    # act on, and guessing a file for one would be worse than the honest
+    # "cannot-build" it gets today (see prop-2026-09-16-100136's own S233
+    # resolution note for why guessing wrong here is the failure mode, not
+    # the fix).
+    assert _guess_files(
+        "USER_REQUEST",
+        "Unit: cumulus-intake.service\n\ncumulus-intake is a KeepAlive wrapper "
+        "that stays \"active (running)\" no matter what, so check_service_status "
+        "reports healthy even while intake.py fails every poll.") == []
+    print("_guess_files: monitoring/package-install gap closed, "
+          "Reducto unaffected, Skywarden tickets still not auto-guessed")
 
     # make_spec shape
     spec = make_spec({"type": "CIRRUS_NOTE", "detail": "improve digest dedupe"}, 1, "2026-07-14")
