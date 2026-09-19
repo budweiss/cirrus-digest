@@ -38,6 +38,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import llm_providers as L   # noqa: E402
+import node_info            # S232: was a second copy of the same TARGET_ENV
+                             # lookup as intake.py's -- one copy diverging from
+                             # its service config (cumulus-intake.service,
+                             # fixed this session) already mislabelled a real
+                             # client email as CIRRUS. This copy's own service
+                             # happens to be configured correctly, but two
+                             # copies of one fragile lookup is the landmine,
+                             # not just the one that already went off.
 
 CREDS_PATH = HERE / "config" / "credentials.json"
 DRY = "--dry-run" in sys.argv
@@ -239,12 +247,7 @@ def tg(msg):
 
 
 def node_name():
-    try:
-        env = os.environ.get("TARGET_ENV", "dev")
-        prof = json.loads((HERE / "config" / "node_profiles.json").read_text())
-        return prof.get(env, {}).get("node", "CIRRUS")
-    except Exception:
-        return "CIRRUS"
+    return node_info.node_name()
 
 
 # ── Local runtime drift (S91) ─────────────────────────────────────────────────
