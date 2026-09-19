@@ -246,6 +246,31 @@ def body_text(msg) -> str:
             f"args.from=<sender> args.limit=20000]")
 
 
+def attachment_names(msg) -> list:
+    """Filenames of any real file attachments (not the text/plain or
+    text/html body parts). S236: intake has never extracted or even
+    DETECTED attachments -- a PDF a client attaches sits invisible in the
+    mailbox forever, with nothing to say a live session is needed rather
+    than the automated pipeline (confirmed live: Alyssa's curriculum-review
+    PDF got queued as a bare topic title with zero reference to the file
+    it was entirely about). This does not extract content -- that still
+    needs a human/session with the actual mailbox -- it only says an
+    attachment EXISTS, so that can be surfaced immediately instead of
+    waiting for someone to notice."""
+    names = []
+    if not msg.is_multipart():
+        return names
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype in ("text/plain", "text/html", "multipart/mixed",
+                     "multipart/alternative", "multipart/related"):
+            continue
+        fname = part.get_filename()
+        if fname or str(part.get("Content-Disposition", "")).lower().startswith("attachment"):
+            names.append(decode_hdr(fname) if fname else f"({ctype})")
+    return names
+
+
 def parse_request_title(subject: str) -> str:
     """'REQUEST: faster bids' → 'faster bids'; otherwise the subject as-is.
     Prefix match is case-insensitive and the colon is optional
@@ -475,10 +500,18 @@ def find_account(config: dict):
 
 
 def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
-               rescan: bool = False):
+               rescan: bool = False, creds: dict = None):
     """Yields (uid, from_addr, subject, body, message_id) for new mail from
     allowlisted senders. Uses BODY.PEEK (no \\Seen flag) and its own UID
-    cursor so the digest pipeline is untouched."""
+    cursor so the digest pipeline is untouched.
+
+    creds (S236, optional): when given, an allowlisted message carrying a
+    real attachment fires an immediate Telegram alert -- the automated
+    pipeline cannot read an attachment (see attachment_names()), so the
+    only way to act sooner than "someone happens to check" is to say so
+    the moment it arrives, not after it's already been silently queued as
+    a bare topic title. Diagnostic callers (--peek etc.) omit creds and
+    stay silent, matching their existing no-side-effects contract."""
     mail = imaplib.IMAP4_SSL(account["imap_server"],
                              account.get("imap_port", 993), timeout=60)
     mail.login(account["address"], password)
@@ -545,8 +578,20 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                     f"{from_addr} — '{decode_hdr(msg.get('Subject', ''))[:60]}'")
                 continue
             seen_ids.add(mid)
-            out.append((uid, from_addr, decode_hdr(msg.get("Subject", "")),
-                        body_text(msg), mid))
+            subj = decode_hdr(msg.get("Subject", ""))
+            names = attachment_names(msg)
+            if names and creds:
+                try:
+                    sender_name = (allowlist.get(from_addr) or {}).get("name", from_addr)
+                    telegram(
+                        f"📎 {sender_name} sent "
+                        f"'{subj[:80]}' with attachment(s): "
+                        f"{', '.join(names)[:200]} — the automated pipeline "
+                        f"cannot read these; needs a live session, not just "
+                        f"the digest queue.", creds)
+                except Exception as e:
+                    log(f"  attachment alert failed (continuing): {e}")
+            out.append((uid, from_addr, subj, body_text(msg), mid))
         except Exception as e:
             log(f"uid {uid}: parse error, skipping ({e})")
     try:
@@ -685,7 +730,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     for attempt in range(1, SCAN_ATTEMPTS + 1):
         try:
             messages, bounces = scan_inbox(account, password, allowlist, state,
-                                           rescan=rescan)
+                                           rescan=rescan,
+                                           creds=None if dry_run else creds)
             last_err = None
             break
         except OSError as e:
@@ -1214,6 +1260,35 @@ def selftest() -> int:
                     "From: cirrustask@gmail.com")
     check("bounce rcpt via body (skips own address)",
           extract_bounced_recipient(bm2, "cirrustask@gmail.com") == "teacher@school.org")
+
+    # S236 — attachment_names(): the only detection this pipeline has ever
+    # had for "this needs a human, not the digest queue." Confirmed live:
+    # Alyssa's 14MB curriculum PDF sat invisible in a queued topic title
+    # until a session happened to notice.
+    plain_msg = EmailMessage()
+    plain_msg["From"] = "alyssa@example.com"
+    plain_msg["Subject"] = "just a question"
+    plain_msg.set_content("Can you show me examples of a mind-map?")
+    check("attachment_names: a plain text message has none",
+          attachment_names(plain_msg) == [])
+
+    pdf_msg = EmailMessage()
+    pdf_msg["From"] = "alyssa@example.com"
+    pdf_msg["Subject"] = "REQUEST: Arts and Letters Lesson Plan Review"
+    pdf_msg.set_content("Use the attached PDF to evaluate the curriculum.")
+    pdf_msg.add_attachment(b"%PDF-fake-bytes", maintype="application",
+                           subtype="pdf", filename="Module1TeachBook.pdf")
+    check("attachment_names: a real PDF attachment is detected",
+          attachment_names(pdf_msg) == ["Module1TeachBook.pdf"])
+
+    html_msg = EmailMessage()
+    html_msg["From"] = "bill@example.com"
+    html_msg["Subject"] = "Re: digest"
+    html_msg.set_content("plain part")
+    html_msg.add_alternative("<p>html part</p>", subtype="html")
+    check("attachment_names: multipart/alternative (plain+html only) has "
+          "no false positive",
+          attachment_names(html_msg) == [])
 
     # rate limiting
     st = {}
