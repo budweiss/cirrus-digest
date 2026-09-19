@@ -790,8 +790,14 @@ def _topic_brief(topic, cfg, creds):
     prompt = TOPIC_PROMPT.format(topic=topic)
     if ensemble is not None and creds and creds.get("pedagogy_council", True):
         try:
+            # S232: 1400 was too tight for a THINKING gemini model on a real
+            # 450-word brief -- thinking tokens draw from the same budget
+            # (llm_providers._gemini's S91 comment), so generation hit
+            # MAX_TOKENS mid-sentence twice in a row (confirmed live,
+            # Alyssa's mind-map question). 4000 matches DISCOVERY_SYSTEM's
+            # budget above for a similarly substantial task.
             meta, text = ensemble.best_answer(_TOPIC_COUNCIL_SYSTEM, prompt, creds,
-                                              max_tokens=1400, task="pedagogy-topic",
+                                              max_tokens=4000, task="pedagogy-topic",
                                               mode="council")
             if text and text.strip() and not text.startswith("[Summarization"):
                 log(f"  topic brief via council "

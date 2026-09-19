@@ -428,16 +428,24 @@ def _gemini(creds, system, user, max_tokens):
                    "output": (usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)) if usage else None}
     _LAST.model = resp.get("modelVersion")
     cand = (resp.get("candidates") or [{}])[0]
-    _note_finish("length" if cand.get("finishReason") == "MAX_TOKENS" else cand.get("finishReason"), _LAST.model)
+    finish = cand.get("finishReason")
+    _note_finish("length" if finish == "MAX_TOKENS" else finish, _LAST.model)
     parts = ((cand.get("content") or {}).get("parts")) or []
-    if not parts:
+    # S232: MAX_TOKENS with non-empty parts used to return silently -- the
+    # thinking preamble ate most of the budget, generation stopped mid-
+    # sentence, and the caller (ensemble/pedagogy_daily's topic brief) logged
+    # it as a normal success and shipped the fragment to a real client
+    # (Alyssa, 2026-09-19). Same root cause as the empty-parts case below,
+    # just caught one token later -- a cut-off answer is never a completed
+    # one, so both shapes of MAX_TOKENS must fail the same way.
+    if not parts or finish == "MAX_TOKENS":
         usage = resp.get("usageMetadata") or {}
         raise ProviderError(
-            f"gemini returned no content: finishReason="
-            f"{cand.get('finishReason')!r}, "
+            f"gemini returned {'no' if not parts else 'TRUNCATED'} content: "
+            f"finishReason={finish!r}, "
             f"{usage.get('thoughtsTokenCount', 0)} thinking token(s) of a "
             f"{max_tokens}-token budget. If this is MAX_TOKENS the budget is "
-            f"below the model's thinking preamble — raise max_tokens.")
+            f"below what the model needed to finish — raise max_tokens.")
     return "".join(p.get("text", "") for p in parts)
 
 
@@ -1157,6 +1165,25 @@ def selftest():
               "must never reach a field that gets written to a KB",
               last_model() == "gemini-9"
               and _fake_key not in (last_model() or ""))
+
+        # S232 — a THINKING model can hit MAX_TOKENS AFTER emitting some real
+        # text, not just before any. That non-empty-but-cut-off case used to
+        # return silently as if it were a complete answer (confirmed live:
+        # Alyssa's pedagogy topic brief stopped mid-sentence and still logged
+        # as a success). Both shapes of MAX_TOKENS must raise the same way.
+        globals()["_http_post"] = lambda *a, **k: {
+            "modelVersion": "gemini-9", "usageMetadata": {"thoughtsTokenCount": 1200},
+            "candidates": [{"finishReason": "MAX_TOKENS",
+                             "content": {"parts": [{"text": "Alyssa, here is the sta"}]}}]}
+        try:
+            call("gemini", "s", "u",
+                 {"gemini_api_key": _fake_key, "gemini_model": "gemini-9"})
+            _truncated_raised = False
+        except ProviderError:
+            _truncated_raised = True
+        check("gemini: MAX_TOKENS with PARTIAL text still raises -- a "
+              "cut-off answer must never look like a completed one",
+              _truncated_raised)
 
         # The inverse that matters: a FAILED call must not leave the previous
         # call's model standing in for an answer it never gave.
