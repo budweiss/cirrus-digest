@@ -63,6 +63,11 @@ try:
 except Exception:
     ensemble = None
 
+try:
+    import llm_providers            # S232: generate_image(), for a topic that explicitly asks to SEE something
+except Exception:
+    llm_providers = None
+
 
 def _jrec(ok, note, dry):
     """Best-effort pedagogy run-status record (skipped on dry-run). Never raises."""
@@ -812,6 +817,48 @@ def _topic_brief(topic, cfg, creds):
     return ollama(prompt, cfg, timeout=240)
 
 
+# S232 — words that mean "I want to SEE this," not just be told about it.
+# Deliberately a plain substring match on the topic's own words, not an LLM
+# intent classifier: image generation is a real per-call cost, so it should
+# fire on an explicit visual ask (this list came from Alyssa's actual
+# question) and nothing broader.
+_PICTURE_WORDS = ("picture", "pictures", "image", "images", "photo", "photos",
+                  "diagram", "diagrams", "illustration", "illustrate",
+                  "visual", "visuals", "screenshot", "screenshots")
+
+
+def _wants_picture(topic: str) -> bool:
+    t = (topic or "").lower()
+    return any(w in t for w in _PICTURE_WORDS)
+
+
+def _topic_image(topic: str, cfg, creds):
+    """Best-effort illustrative image for a topic that explicitly asked to
+    see one. Any failure (no key, quota, no image in the response) is logged
+    and returns None -- a picture request must never block the text brief
+    that already answers the question on its own."""
+    if llm_providers is None or not creds:
+        return None
+    prompt = ("Create a clean, colorful educational diagram or illustration "
+              "for a 4th-grade classroom, answering this teacher's request "
+              "as literally as possible: " + topic + ". Friendly hand-drawn "
+              "look, warm colors, legible text if any, white background, "
+              "suitable to print as a classroom handout.")
+    try:
+        img_bytes = llm_providers.generate_image(prompt, creds)
+    except Exception as e:
+        log(f"  topic image failed, brief still sent without it: "
+            f"{type(e).__name__}: {e}")
+        return None
+    outdir = Path(cfg["digest"]["output_dir"]) / "images"
+    outdir.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60] or "topic"
+    path = outdir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slug}.png"
+    path.write_bytes(img_bytes)
+    log(f"  topic image saved: {path.name}")
+    return path
+
+
 def cover_focus_topics(cfg, dry_run, creds=None):
     data = load_json(TOPICS_PATH, {"topics": []})
     covered = []
@@ -822,8 +869,10 @@ def cover_focus_topics(cfg, dry_run, creds=None):
         brief = _topic_brief(t["topic"], cfg, creds)
         if brief.startswith("[Summarization error"):
             continue
+        image_path = _topic_image(t["topic"], cfg, creds) if _wants_picture(t["topic"]) else None
         covered.append({"topic": t["topic"], "requested_by":
-                        t.get("requested_by", ""), "brief": brief})
+                        t.get("requested_by", ""), "brief": brief,
+                        "image_path": str(image_path) if image_path else None})
         t["status"] = "covered"
         t["covered"] = datetime.now().strftime("%Y-%m-%d")
     if covered and not dry_run:
@@ -856,6 +905,8 @@ def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
         lines.append("## Your requested topics\n")
         for t in topics:
             lines.append(f"### {t['topic']}\n\n{t['brief']}\n")
+            if t.get("image_path"):
+                lines.append("*A picture for this topic is attached to this email.*\n")
     if mbrief:
         mb_name, mb_text = mbrief
         lines.append(
@@ -896,7 +947,7 @@ def build_digest(date_str, summaries, pod_summaries, spotlight, topics, cfg,
 
 # ── Email + Telegram ──────────────────────────────────────────────────────────
 
-def send_email(subject, body_md, cfg, creds):
+def send_email(subject, body_md, cfg, creds, attachments=None):
     import mailer
     d = cfg["digest"]
     to_addr = d["recipient"]
@@ -905,8 +956,10 @@ def send_email(subject, body_md, cfg, creds):
     # watch_promises=False (S78): recurring generated digest, same reasoning as
     # entity_kb_weekly_digest -- a templated phrase would open a promise daily.
     mailer.send(from_email, creds["outlook_password"], to_addr, subject,
-                body_md, cc=cc, creds=creds, log=log, watch_promises=False)
-    log(f"emailed digest to {to_addr}" + (f" cc {cc}" if cc else ""))
+                body_md, cc=cc, creds=creds, log=log, watch_promises=False,
+                attachments=attachments)
+    log(f"emailed digest to {to_addr}" + (f" cc {cc}" if cc else "")
+        + (f" with {len(attachments)} image(s)" if attachments else ""))
 
 
 def telegram(text, creds):
@@ -1067,7 +1120,9 @@ def main(dry_run=False, force=False):
         return 0
 
     try:
-        send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds)
+        image_paths = [t["image_path"] for t in topics if t.get("image_path")]
+        send_email(f"Literacy Research Digest — {date_str}", digest, cfg, creds,
+                   attachments=image_paths or None)
     except Exception as e:
         _jrec(False, build_note({"error": str(e)}), dry_run)
         raise
@@ -1101,6 +1156,17 @@ def selftest():
     check("topic prompt honest", "not invent" in TOPIC_PROMPT)
     check("model-brief prompt honest", "invent" in MODEL_BRIEF_SYSTEM)
 
+    # S232 — picture-request detection (image generation costs real money per
+    # call, so this must fire on an explicit visual ask and nothing broader)
+    check("_wants_picture: Alyssa's actual question fires",
+          _wants_picture("Can you show me picture examples of a mind-map "
+                         "or an interactive mind-map?"))
+    check("_wants_picture: a plain research question does NOT fire",
+          not _wants_picture("What's the evidence behind phonics instruction?"))
+    check("_wants_picture: case-insensitive", _wants_picture("Show me a DIAGRAM"))
+    check("_wants_picture: empty/None topic does not raise",
+          _wants_picture("") is False and _wants_picture(None) is False)
+
     # digest assembly with all sections
     cfg = {"digest": {"output_dir": tempfile.mkdtemp()}}
     d = build_digest("2026-07-16",
@@ -1117,6 +1183,17 @@ def selftest():
            "REQUEST:"]))
     d2 = build_digest("2026-07-17", [], [], None, [], cfg, is_friday=True)
     check("friday roundup renders", "This week" in d2)
+
+    # S232 — a topic WITH an image says so; one without stays silent about it
+    d_img = build_digest("2026-07-16", [], [], None,
+                         [{"topic": "picture examples of a mind-map",
+                           "requested_by": "alyssa", "brief": "brief",
+                           "image_path": "/tmp/fake.png"}],
+                         cfg, is_friday=False)
+    check("digest: notes an attached picture when image_path is set",
+          "attached to this email" in d_img)
+    check("digest: says nothing about a picture when image_path is None",
+          "attached to this email" not in d)
 
     # dry-day model brief: renders its own labeled section and makes a dry day sendable
     dmb = build_digest("2026-07-18", [], [], None, [], cfg, is_friday=False,

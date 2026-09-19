@@ -36,6 +36,7 @@ Public API
     escalate(system, user, creds, ...)       -> (provider, str) | [(provider, str),...]
 """
 
+import base64
 import json
 import os
 import sys
@@ -447,6 +448,42 @@ def _gemini(creds, system, user, max_tokens):
             f"{max_tokens}-token budget. If this is MAX_TOKENS the budget is "
             f"below what the model needed to finish — raise max_tokens.")
     return "".join(p.get("text", "") for p in parts)
+
+
+def generate_image(prompt: str, creds: dict, model: str = None) -> bytes:
+    """Generate one image via a Gemini image-output model. Returns raw PNG
+    bytes. Raises ProviderError on any failure (no key, no image in the
+    response, transport error) -- NOT the same contract as the text call()
+    dispatch, because image generation is its own modality with its own
+    failure shape (a text-only reply where an image was expected, e.g.).
+
+    S232: built to answer Alyssa's "picture examples" ask for real, after the
+    pedagogy digest told her (correctly, for that one text-only call) that it
+    couldn't show an image -- gemini-2.5-flash-image is a real, keyed,
+    confirmed-working model on the account already paying for gemini_api_key,
+    it had just never been called for images anywhere in this codebase.
+
+    Callers that can send a text-only fallback should catch ProviderError
+    and do that, rather than let a picture request block content that would
+    otherwise have gone out fine.
+    """
+    key = creds.get("gemini_api_key")
+    if not key:
+        raise ProviderError("no gemini_api_key")
+    model = model or creds.get("gemini_image_model") or "gemini-2.5-flash-image"
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={key}")
+    resp = _http_post(url, {"Content-Type": "application/json"},
+                       {"contents": [{"parts": [{"text": prompt}]}]})
+    cand = (resp.get("candidates") or [{}])[0]
+    parts = ((cand.get("content") or {}).get("parts")) or []
+    for p in parts:
+        data = (p.get("inlineData") or {}).get("data")
+        if data:
+            return base64.b64decode(data)
+    raise ProviderError(
+        f"gemini image model returned no image: finishReason="
+        f"{cand.get('finishReason')!r}, model={model!r}")
 
 
 def _grok(creds, system, user, max_tokens):
@@ -1184,6 +1221,39 @@ def selftest():
         check("gemini: MAX_TOKENS with PARTIAL text still raises -- a "
               "cut-off answer must never look like a completed one",
               _truncated_raised)
+
+        # S232 — generate_image(): its own code path (not the call() dispatch),
+        # own tests. Real bytes out of a mocked inlineData response, and a
+        # missing key refuses the same way every other provider does.
+        _fake_png = b"\x89PNG\r\n\x1a\nFAKE-IMAGE-BYTES"
+        globals()["_http_post"] = lambda *a, **k: {
+            "candidates": [{"finishReason": "STOP", "content": {"parts": [
+                {"text": "Here you go"},
+                {"inlineData": {"mimeType": "image/png",
+                                 "data": base64.b64encode(_fake_png).decode()}}]}}]}
+        _img = generate_image("draw a mind-map", {"gemini_api_key": _fake_key})
+        check("generate_image: returns the decoded image bytes from inlineData",
+              _img == _fake_png)
+
+        try:
+            generate_image("draw a mind-map", {})
+            _no_key_raised = False
+        except ProviderError:
+            _no_key_raised = True
+        check("generate_image: no gemini_api_key raises, same as every other provider",
+              _no_key_raised)
+
+        globals()["_http_post"] = lambda *a, **k: {
+            "candidates": [{"finishReason": "STOP",
+                             "content": {"parts": [{"text": "no image today"}]}}]}
+        try:
+            generate_image("draw a mind-map", {"gemini_api_key": _fake_key})
+            _no_image_raised = False
+        except ProviderError:
+            _no_image_raised = True
+        check("generate_image: a text-only reply (no inlineData) raises rather "
+              "than silently returning nothing to attach",
+              _no_image_raised)
 
         # The inverse that matters: a FAILED call must not leave the previous
         # call's model standing in for an answer it never gave.
