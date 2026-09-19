@@ -260,13 +260,24 @@ def research_topic_title(subject: str, body: str) -> str:
     research sender often mails a bare keyword subject (e.g. 'RESEARCH') with
     the real ask in the body — in that case derive the topic from the first
     meaningful line/sentence of the body so the focus-topic queue isn't
-    polluted with junk titles like 'RESEARCH'."""
+    polluted with junk titles like 'RESEARCH'.
+
+    S232: a REPLY subject ("Re: Literacy Research Digest — ...") is OUR words
+    echoed back, not the client's — same principle as S78's entity-search fix
+    (task_solver.strip_quoted_reply / is_reply_subject) — so it is never usable
+    as a topic title even when it is long enough to pass the bare-keyword
+    check below. Confirmed live: Alyssa's "Can you show me picture examples of
+    a mind-map...?" was titled with the digest's own subject line, and the
+    resulting brief had no idea what she'd asked."""
     if REQUEST_RX.match(subject or ""):
         return parse_request_title(subject)
     cleaned = (subject or "").strip()
-    # Bare/short/keyword subject → prefer the body's first sentence.
-    if len(cleaned) < 12 or cleaned.lower() in ("research", "request", "topic", "(no subject)"):
-        first = re.split(r"(?<=[.!?])\s+|\n", (body or "").strip())[0].strip()
+    is_reply = task_solver.is_reply_subject(cleaned)
+    # Bare/short/keyword subject, or a reply subject (ours, not theirs) →
+    # prefer the body's first sentence, read from the client's own new text.
+    if is_reply or len(cleaned) < 12 or cleaned.lower() in ("research", "request", "topic", "(no subject)"):
+        source = task_solver.strip_quoted_reply(body or "") if is_reply else (body or "")
+        first = re.split(r"(?<=[.!?])\s+|\n", source.strip())[0].strip()
         if len(first) >= 8:
             return first[:140]
     return cleaned or "(no subject)"
