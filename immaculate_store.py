@@ -139,6 +139,48 @@ def answers(db_path=None):
     return [f for _, f in sorted(out)]
 
 
+def record_result(num, actual, note="", db_path=None):
+    """Mark question NUM resolved against what actually happened (Buddy,
+    S241, 2026-09-20: "can we monitor our picks after each week").
+
+    Ledgers a `record_outcome` event (append-only, so re-recording the same
+    question a second time adds a second event rather than silently
+    overwriting -- callers that want to avoid duplicates should check
+    `answers()`'s status first) and flips the entity's `status` field to
+    "resolved" via `upsert_entity`, so `answers()`/`tally()` see it without
+    having to replay the event log.
+
+    Returns {slug, answer, actual, correct, status}, or None if NUM is not
+    one of the 24 questions.
+    """
+    slug = f"q{num:02d}"
+    e = entity_kb.get_entity(PROJECT, slug, db_path=db_path)
+    if not e:
+        return None
+    answer = e.get("state", {}).get("answer")
+    correct = (answer == actual)
+    entity_kb.record_outcome(PROJECT, slug, "correct" if correct else "incorrect",
+                              note=note or f"actual={actual}", db_path=db_path)
+    entity_kb.upsert_entity(PROJECT, slug, e.get("name", f"Q{num}"),
+                            fields={"status": "resolved", "actual": actual},
+                            db_path=db_path)
+    return {"slug": slug, "answer": answer, "actual": actual,
+            "correct": correct, "status": "resolved"}
+
+
+def tally(db_path=None):
+    """Running score: how many resolved questions we got right, out of how
+    many total, and whether the perfect-24 is still alive. Unresolved
+    questions count toward neither -- this reports what has actually
+    happened, not a projection of what has not."""
+    rows = answers(db_path=db_path)
+    resolved = [r for r in rows if r.get("status") == "resolved"]
+    correct = [r for r in resolved if r.get("actual") == r.get("answer")]
+    missed = [int(r["number"]) for r in resolved if r.get("actual") != r.get("answer")]
+    return {"resolved": len(resolved), "correct": len(correct), "total": len(rows),
+            "perfect_alive": len(missed) == 0, "missed": sorted(missed)}
+
+
 def selftest() -> int:
     import tempfile
     fails = 0
@@ -204,6 +246,25 @@ def selftest() -> int:
         got = answers(db_path=tmp)
         ck("answers() returns all 24 in question order",
            len(got) == 24 and [int(f["number"]) for f in got] == list(range(1, 25)))
+
+        # q02's seeded answer is "Yes"; q03's is "PIT" -- record one hit, one miss.
+        r_hit = record_result(2, "Yes", note="test", db_path=tmp)
+        ck("record_result reports a correct pick", r_hit is not None and r_hit["correct"] is True)
+        q2 = next(f for f in answers(db_path=tmp) if int(f["number"]) == 2)
+        ck("...and flips status to resolved", q2.get("status") == "resolved")
+        ck("...and stores the actual value", q2.get("actual") == "Yes")
+
+        r_miss = record_result(3, "CIN", note="test", db_path=tmp)
+        ck("record_result reports an incorrect pick", r_miss is not None and r_miss["correct"] is False)
+
+        ck("record_result on a question that does not exist returns None",
+           record_result(99, "x", db_path=tmp) is None)
+
+        t = tally(db_path=tmp)
+        ck("tally counts exactly the resolved questions", t["resolved"] == 2)
+        ck("tally counts exactly the correct ones", t["correct"] == 1)
+        ck("tally flags the perfect score as gone once one miss is resolved",
+           t["perfect_alive"] is False and t["missed"] == [3])
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -219,6 +280,21 @@ if __name__ == "__main__":
             print(f"  Q{f['number']:>2} {f['when']:16s} {f['answer']:14s} "
                   f"{float(f['confidence'])*100:4.1f}%  {f['question'][:44]}")
         sys.exit(0)
+    if "tally" in sys.argv:
+        t = tally()
+        print(f"  {t['correct']}/{t['resolved']} resolved correct "
+              f"({t['total']} total questions), "
+              f"perfect score {'ALIVE' if t['perfect_alive'] else 'GONE'}"
+              + (f" -- missed: {t['missed']}" if t['missed'] else ""))
+        sys.exit(0)
+    if "record" in sys.argv:
+        # record NUM ACTUAL ["note text"]
+        i = sys.argv.index("record")
+        num, actual = int(sys.argv[i + 1]), sys.argv[i + 2]
+        note = sys.argv[i + 3] if len(sys.argv) > i + 3 else ""
+        res = record_result(num, actual, note=note)
+        print(res if res else f"Q{num} not found")
+        sys.exit(0 if res else 1)
     created, changed = seed()
     print(f"immaculate CRM: {created} created, {changed} changed, "
           f"{len(QUESTIONS)} total. Locks {DEADLINE}.")
