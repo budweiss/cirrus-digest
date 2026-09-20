@@ -98,7 +98,30 @@ def report(now=None):
                      + ", ".join(f"Q{r['number']} {r['answer']} "
                                  f"({float(r['confidence'])*100:.0f}%)"
                                  for r in weak))
+
+    # S241, 2026-09-20 (Buddy: "can we monitor our picks after each week").
+    # Only meaningful once games have actually been played (all resolve after
+    # the 09-13 lock), but harmless to report at 0/0 before then.
+    try:
+        lines.extend(_tally_lines(store.tally()))
+    except Exception as e:
+        lines.append(f"[UNCHECKED] could not compute the tally: {e}")
     return lines, state
+
+
+def _tally_lines(t):
+    """Pure formatting over a tally dict (see immaculate_store.tally) --
+    split out from report() so this can be tested without a live CRM or
+    network call."""
+    if not t["resolved"]:
+        return []
+    if t["perfect_alive"]:
+        return [f"[OK] tally: {t['correct']}/{t['resolved']} "
+                f"resolved correct, perfect score still ALIVE"]
+    return [f"[MISS] tally: {t['correct']}/{t['resolved']} "
+            f"resolved correct — the $100k perfect score is GONE "
+            f"(missed Q{t['missed']}). Say so plainly; this is not bad "
+            f"news to soften, it is the actual state of the entry."]
 
 
 def selftest() -> int:
@@ -131,6 +154,18 @@ def selftest() -> int:
         ck("the known-good hash reports OK", st == "OK")
     finally:
         g["fetch_sha"] = saved
+
+    ck("no resolved questions yet -> no tally line at all",
+       _tally_lines({"resolved": 0, "correct": 0, "total": 24,
+                     "perfect_alive": True, "missed": []}) == [])
+    perfect = _tally_lines({"resolved": 3, "correct": 3, "total": 24,
+                            "perfect_alive": True, "missed": []})
+    ck("a perfect run so far reports OK, not MISS",
+       len(perfect) == 1 and perfect[0].startswith("[OK]") and "3/3" in perfect[0])
+    broken = _tally_lines({"resolved": 3, "correct": 2, "total": 24,
+                           "perfect_alive": False, "missed": [2]})
+    ck("a broken run reports MISS loudly, names the missed question",
+       len(broken) == 1 and broken[0].startswith("[MISS]") and "Q[2]" in broken[0])
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAILURE(S)'}")
     return 1 if fails else 0
 
