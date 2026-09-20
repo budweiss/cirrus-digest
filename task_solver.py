@@ -77,6 +77,7 @@ import ensemble
 import entity_kb
 import llm_providers
 import promise_detect
+import switchboard
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 SOURCES_OVERLAY = PROJECT_DIR / "config/sources.local.json"
@@ -512,6 +513,18 @@ def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) ->
     password = creds.get("outlook_password", "")
     subj = orig_subject or rec.get("title", "your request")
     subj = subj if subj.lower().startswith("re:") else f"Re: {subj}"
+    # S243, SHADOW MODE ONLY (Switchboard first slice): logs what
+    # classify_reply_risk() + the turn-count gate WOULD have decided about
+    # this exact reply. Does not gate, delay, or alter the send below in any
+    # way -- this is solve_and_answer's only live client-reply auto-send
+    # hook today (Bill's request_kind=="answer" path; Aggie/Alyssa/Justin
+    # default to "build" and never reach this function, so they generate no
+    # shadow data yet). Never let an observation failure touch the real
+    # send, same discipline as _record_promise below.
+    try:
+        switchboard.decide(rec.get("requester") or "", subj, text, creds=creds)
+    except Exception:
+        pass
     sent = _send_mail(from_email, password, to_addr, CC_ADDR, subj, text)
     if not sent:
         result["reason"] = "answer generated but send failed"
