@@ -104,18 +104,31 @@ DEADLINE = "2026-09-13 13:00 ET"
 def seed(db_path=None):
     """Write all 24 into the CRM. Idempotent — a re-run with the same answers
     changes nothing and ledgers nothing; a CHANGED answer ledgers a
-    field_change, which is the audit trail this exists for."""
+    field_change, which is the audit trail this exists for.
+
+    Never sends `status` for an entity that already exists. Bug found S242
+    (2026-09-21): seed() used to send status="pending" unconditionally, so
+    ANY later call -- including the bare no-subcommand fallback this file's
+    __main__ used to have, which a stray `--help` would fall into -- silently
+    un-resolved every already-resolved question. Confirmed live: it wiped
+    Q1's resolved status the day after S241 recorded it. status/actual belong
+    to record_result() once a question resolves; seed() only owns the
+    re-derivable prediction fields (answer/confidence/basis/etc)."""
     created = changed = 0
     for num, when, q, opts, ans, conf, basis, volatile in QUESTIONS:
         slug = f"q{num:02d}"
+        exists = entity_kb.get_entity(PROJECT, slug, db_path=db_path) is not None
+        fields = {"number": str(num), "when": when, "question": q,
+                  "options": opts, "answer": ans,
+                  "confidence": f"{conf:.3f}", "basis": basis,
+                  "volatile": "yes" if volatile else "no",
+                  "deadline": DEADLINE}
+        if not exists:
+            fields["status"] = "pending"
         res = entity_kb.upsert_entity(
             PROJECT, slug, f"Q{num}: {q}",
             entity_type="contest question",
-            fields={"number": str(num), "when": when, "question": q,
-                    "options": opts, "answer": ans,
-                    "confidence": f"{conf:.3f}", "basis": basis,
-                    "volatile": "yes" if volatile else "no",
-                    "deadline": DEADLINE, "status": "pending"},
+            fields=fields,
             db_path=db_path)
         if res.get("created"):
             created += 1
@@ -260,6 +273,16 @@ def selftest() -> int:
         ck("record_result on a question that does not exist returns None",
            record_result(99, "x", db_path=tmp) is None)
 
+        # S242 regression: re-seeding after a question resolves must NOT
+        # touch its status/actual. This is the exact bug that silently wiped
+        # Q1's resolved status live on 2026-09-21.
+        seed(db_path=tmp)
+        q2_after_reseed = next(f for f in answers(db_path=tmp) if int(f["number"]) == 2)
+        ck("S242: re-seeding after resolve leaves status alone",
+           q2_after_reseed.get("status") == "resolved")
+        ck("S242: re-seeding after resolve leaves actual alone",
+           q2_after_reseed.get("actual") == "Yes")
+
         t = tally(db_path=tmp)
         ck("tally counts exactly the resolved questions", t["resolved"] == 2)
         ck("tally counts exactly the correct ones", t["correct"] == 1)
@@ -295,6 +318,12 @@ if __name__ == "__main__":
         res = record_result(num, actual, note=note)
         print(res if res else f"Q{num} not found")
         sys.exit(0 if res else 1)
-    created, changed = seed()
-    print(f"immaculate CRM: {created} created, {changed} changed, "
-          f"{len(QUESTIONS)} total. Locks {DEADLINE}.")
+    if "seed" in sys.argv:
+        created, changed = seed()
+        print(f"immaculate CRM: {created} created, {changed} changed, "
+              f"{len(QUESTIONS)} total. Locks {DEADLINE}.")
+        sys.exit(0)
+    # S242: no more silent seed() on an unrecognized/missing argument (a
+    # stray `--help` triggered exactly this and wiped Q1's resolved status).
+    print("usage: immaculate_store.py {selftest|show|tally|record NUM ACTUAL [NOTE]|seed}")
+    sys.exit(1)
