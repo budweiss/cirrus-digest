@@ -214,23 +214,21 @@ def selftest():
     # _existing_keys: nonexistent playbook file -> empty set (no crash).
     global PLAYBOOK
     orig_playbook = PLAYBOOK
-    try:
-        PLAYBOOK = Path("/tmp/__routing_watch_selftest_nonexistent__.md")
-        if PLAYBOOK.exists():
-            failures.append("_existing_keys: test path unexpectedly exists")
-        check("_existing_keys missing file", _existing_keys(), set())
-
-        # _existing_keys: only lines starting with '-' are counted, and normalized.
-        PLAYBOOK.write_text("# header\n- Use Claude for long context\nnot a bullet\n- USE GPT-4 for coding\n")
-        expected = {_norm("- Use Claude for long context"), _norm("- USE GPT-4 for coding")}
-        check("_existing_keys parses bullets", _existing_keys(), expected)
-    finally:
+    # T32 (S246): a FIXED name under /tmp is not a tempfile -- this selftest
+    # both wrote and unlinked it, so a collision would delete somebody else's
+    # file. A real temp directory is unique and cleans itself up.
+    import tempfile
+    with tempfile.TemporaryDirectory() as _td:
         try:
-            if PLAYBOOK.exists():
-                PLAYBOOK.unlink()
-        except Exception:
-            pass
-        PLAYBOOK = orig_playbook
+            PLAYBOOK = Path(_td) / "playbook.md"
+            check("_existing_keys missing file", _existing_keys(), set())
+
+            # _existing_keys: only lines starting with '-' are counted, and normalized.
+            PLAYBOOK.write_text("# header\n- Use Claude for long context\nnot a bullet\n- USE GPT-4 for coding\n")
+            expected = {_norm("- Use Claude for long context"), _norm("- USE GPT-4 for coding")}
+            check("_existing_keys parses bullets", _existing_keys(), expected)
+        finally:
+            PLAYBOOK = orig_playbook
 
     if failures:
         for f in failures:

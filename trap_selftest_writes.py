@@ -86,6 +86,60 @@ def _safe_names(fn, seeds=()) -> set:
     return names
 
 
+def _class_temp_attrs(tree) -> set:
+    """S246: `self.<attr>` values assigned in setUp() from tempfile.
+
+    unittest-style tests build their temp root once in setUp (self.tmp =
+    TemporaryDirectory(); self.root = Path(self.tmp.name)) and every test
+    method writes under it. The per-function walk cannot see setUp, so those
+    writes read as live -- five false hits on supervisor/test_alert_policy.py
+    the day this was added. Attribute names, not variable names, because they
+    are reached as self.<name>."""
+    attrs = set()
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for fn in cls.body:
+            if isinstance(fn, ast.FunctionDef) and fn.name == "setUp":
+                safe = _safe_names(fn)
+                for node in ast.walk(fn):
+                    if not isinstance(node, ast.Assign):
+                        continue
+                    src = ast.dump(node.value)
+                    tainted = (any(m in src for m in TEMP_MARKERS)
+                               or any(f"attr='{a}'" in src for a in attrs)
+                               or any(f"id='{n}'" in src for n in safe))
+                    if not tainted:
+                        continue
+                    for t in node.targets:
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) \
+                                and t.value.id == "self":
+                            attrs.add(t.attr)
+    return attrs
+
+
+def _patched_safe_attrs(fn, safe_names, safe_attrs) -> set:
+    """S246: `patch.object(mod, 'NAME', <temp-derived>)` makes mod.NAME safe.
+
+    The honest way to redirect a module's path constant in a test is to patch
+    it to a temp path for the duration of a `with`; the write then targets
+    `mod.NAME`, which is textually a live module attribute. Only the patched
+    NAME becomes safe, and only when the replacement value is itself
+    temp-derived -- patching to a literal live path still counts as a hit."""
+    out = set()
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "object" and getattr(node.func.value, "id", "") == "patch"
+                and len(node.args) >= 3 and isinstance(node.args[1], ast.Constant)):
+            continue
+        src = ast.dump(node.args[2])
+        if (any(m in src for m in TEMP_MARKERS)
+                or any(f"id='{n}'" in src for n in safe_names)
+                or any(f"attr='{a}'" in src for a in safe_attrs)):
+            out.add(str(node.args[1].value))
+    return out
+
+
 def _target_src(call) -> str:
     if isinstance(call.func, ast.Attribute):
         return ast.dump(call.func.value)
@@ -98,6 +152,7 @@ def check_file(path: Path) -> list:
     except Exception:
         return []
     hits = []
+    temp_attrs = _class_temp_attrs(tree)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -110,6 +165,7 @@ def check_file(path: Path) -> list:
         # Without that propagation this check flagged the very habit it exists
         # to encourage, which would have made it worse than nothing.
         safe = _safe_names(fn, {a.arg for a in fn.args.args + fn.args.kwonlyargs})
+        safe_attrs = set(temp_attrs) | _patched_safe_attrs(fn, safe, temp_attrs)
         for node in ast.walk(fn):
             if not isinstance(node, ast.Call):
                 continue
@@ -135,13 +191,51 @@ def check_file(path: Path) -> list:
                 continue
             if any(f"id='{n}'" in src for n in safe):
                 continue
+            if any(f"attr='{a}'" in src for a in safe_attrs):
+                continue
             hits.append((node.lineno,
                          f"{name}() inside {fn.name}() writes a path that is not "
                          f"tempfile-derived and was not passed in"))
     return hits
 
 
+def selftest() -> bool:
+    """Each shape with its inverse, on fixtures under a real temp dir (T32)."""
+    import tempfile
+    ok = True
+
+    def ck(label, cond):
+        nonlocal ok
+        print("  [%s] %s" % ("OK " if cond else "FAIL", label)); ok = ok and cond
+
+    def hits_for(src):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "t.py"; f.write_text(src)
+            return check_file(f)
+
+    ck("a fixed name under /tmp inside selftest() IS a hit",
+       hits_for("from pathlib import Path\ndef selftest():\n    p = Path('/tmp/fixed.md')\n    p.write_text('x')\n"))
+    ck("a TemporaryDirectory path is not",
+       not hits_for("import tempfile\nfrom pathlib import Path\ndef selftest():\n    with tempfile.TemporaryDirectory() as td:\n        (Path(td)/'x').write_text('x')\n"))
+    unit = ("import tempfile\nfrom pathlib import Path\nfrom unittest.mock import patch\nimport mod\n"
+            "class T:\n    def setUp(self):\n        self.tmp = tempfile.TemporaryDirectory()\n        self.root = Path(self.tmp.name)\n"
+            "    def test_a(self):\n        (self.root/'a').write_text('x')\n"
+            "    def test_b(self):\n        with patch.object(mod, 'REQUEST_FILE', self.root/'r.json'):\n            mod.REQUEST_FILE.write_text('x')\n"
+            "    def test_c(self):\n        with patch.object(mod, 'REQUEST_FILE', Path('/etc/live.json')):\n            mod.REQUEST_FILE.write_text('x')\n"
+            "    def test_d(self):\n        mod.OTHER_FILE.write_text('x')\n")
+    h = hits_for(unit)
+    lines = sorted(x[0] for x in h)
+    ck("self.root from a tempfile setUp() is safe in a test method", 10 not in lines)
+    ck("mod.NAME patched to a temp path is safe inside the with", 13 not in lines)
+    ck("...but patched to a LITERAL live path is still a hit", 16 in lines)
+    ck("an unpatched module attribute write is still a hit", 18 in lines)
+    print("\n%s" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return 0 if selftest() else 1
     root = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / "Documents/Cowork")
     for py in sorted(root.rglob("*.py")):
         p = str(py)
