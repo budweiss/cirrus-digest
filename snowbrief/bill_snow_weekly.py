@@ -373,7 +373,21 @@ def build_note(info):
     elif info.get("sent"):
         base = "sent material update"
     else:
-        base = str(info.get("reason") or "no material change")[:120]
+        # S245: was `str(reason or "no material change")[:120]` -- the trigger
+        # phrase completeness.py's Rule looks for (zero_phrases=("no material
+        # change", ...)) only survived truncation if the model's OWN wording
+        # happened to say it in the first 120 chars. With the anthropic_effort
+        # fix restoring real judge reasoning, the judge now writes long,
+        # substantive "why this isn't material" explanations (~470 chars on
+        # 2026-09-21) that lead with evidence, not the verdict -- truncation cut
+        # the phrase off entirely, and T93 (runner/rule_note_lint.py) caught the
+        # Rule reading that live note as UNREADABLE, the exact S81 failure mode
+        # ("a check that fires on correct behaviour is one you teach yourself to
+        # ignore") on a job that was actually working. Putting the fixed phrase
+        # FIRST guarantees it survives truncation regardless of how the model
+        # phrases or orders its reasoning.
+        reason = str(info.get("reason") or "").strip()
+        base = (f"no material change: {reason}" if reason else "no material change")[:120]
     d = info.get("draft") or ""
     return f"{base}; {d}" if d else base
 
@@ -392,6 +406,17 @@ def note_samples():
         ("quiet, with a degraded local draft",
          build_note({"reason": "no material change",
                      "draft": "draft=ollama DEGRADED (vllm down)"}), "zero"),
+        # S245 regression case: a REAL judge reason from 2026-09-21, long
+        # enough that the trigger phrase would be truncated away if it were not
+        # forced to the front (see build_note's else-branch comment). Without
+        # the fix this reads UNREADABLE to completeness.py's Rule, not "zero".
+        ("a long, substantive judge explanation for why this ISN'T material",
+         build_note({"reason": "NOAA's latest ENSO data (weekly Nino-3.4 now "
+                     "+2.7C, >90% odds of a very strong event, a new 75% "
+                     "chance of a historic/record event) confirms further "
+                     "intensification, but the 7/27 baseline had already "
+                     "anchored to a very strong El Nino with wide variance."}),
+         "zero"),
         # Productive, not zero: the week's brief DID go out, this run just
         # refused to send it twice. Same call already asserted for billnewdev.
         ("a duplicate run was suppressed",
@@ -551,6 +576,26 @@ def selftest() -> int:
         _draft_state.update(by="ollama", error="x" * 400)
         ck("a huge error is truncated, so the status row stays a row",
            len(_draft_note()) < 100)
+
+        # S245: completeness.py's Rule for this job matches on the literal
+        # phrase "no material change" (its zero_phrases). It read a REAL
+        # 2026-09-21 judge note as UNREADABLE because that phrase only
+        # survived build_note's 120-char truncation by luck of wording -- a
+        # long, substantive "why this isn't material" explanation (which the
+        # anthropic_effort fix makes routine now) pushed it past the cutoff.
+        # These two assertions are the actual regression test for that: the
+        # phrase must be present in the built note NO MATTER how the model
+        # orders or lengthens its reasoning.
+        long_reason = ("NOAA's latest ENSO data confirms further intensification, "
+                       "but the baseline already anchored to a very strong El Nino "
+                       "with wide variance and boom-or-bust framing, so scenario "
+                       "odds and the central estimate are unchanged and this does "
+                       "not meet the bar for a client-facing update this week.")
+        assert len(long_reason) > 120, "test fixture must exceed the truncation length"
+        ck("a long judge reason still reads as a quiet week to completeness.py",
+           "no material change" in build_note({"reason": long_reason}))
+        ck("...even though the reason alone would have pushed the phrase past 120 chars",
+           "no material change" not in long_reason[:120])
     finally:
         _draft_state.clear()
         _draft_state.update(saved)
