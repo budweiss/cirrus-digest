@@ -249,7 +249,15 @@ def decide():
         # S141: keep the hint, so a hint we could not BUILD is reported as our
         # own missing config rather than as "this caller wanted no draft".
         _hint = _local_hint()
-        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=8000,
+        # S245: was max_tokens=8000. On 2026-09-21 both Anthropic and Gemini hit
+        # stop_reason=max_tokens with ZERO usable text -- adaptive thinking (S177's
+        # anthropic_effort=max, {"type":"adaptive"} with no explicit budget_tokens)
+        # drew from the same max_tokens ceiling as the answer and consumed all of
+        # it, leaving nothing for the JSON reply. 16384 matches dev_agent.py's
+        # dev-agent-repair, the other council+judge caller synthesizing a
+        # comparably long answer, and gives thinking room to run without
+        # starving the text. Confirmed clear of the $10/call budget cap either way.
+        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=16384,
                                           task="billsnow", local=_hint, session_id=budget_session,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
