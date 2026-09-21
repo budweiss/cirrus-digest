@@ -253,11 +253,24 @@ def decide():
         # stop_reason=max_tokens with ZERO usable text -- adaptive thinking (S177's
         # anthropic_effort=max, {"type":"adaptive"} with no explicit budget_tokens)
         # drew from the same max_tokens ceiling as the answer and consumed all of
-        # it, leaving nothing for the JSON reply. 16384 matches dev_agent.py's
-        # dev-agent-repair, the other council+judge caller synthesizing a
-        # comparably long answer, and gives thinking room to run without
-        # starving the text. Confirmed clear of the $10/call budget cap either way.
-        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=16384,
+        # it, leaving nothing for the JSON reply.
+        #
+        # First attempt raised this to 16384 (dev_agent.py's dev-agent-repair
+        # precedent) -- that CLEARED the truncation but pushed the council+judge
+        # cost estimate (ensemble._estimate_cost sums max_tokens across all 5
+        # members + the judge) over CUMULUS's live per-call budget cap ($1.00,
+        # not the $10 default in config/llm_pricing.json -- only found by reading
+        # the dry-run's own "budget: ... using baseline" line). That silently
+        # degraded every week to a single-provider fallback, quietly discarding
+        # the whole point of the 5-way cross-check.
+        #
+        # 12000 is sized from two REAL measured (max_tokens, est_cost) points on
+        # this exact prompt -- \$0.6294 at 8000, \$1.1434 at 16384 -- solved for
+        # ~\$0.87, comfortably under the \$1.00 cap with margin for the prompt
+        # growing further. 50% more headroom than the original 8000; verify with
+        # `cumulus-billsnow-council-dryrun` after any future change here, since
+        # both the truncation risk AND the budget cap move if the prompt grows.
+        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=12000,
                                           task="billsnow", local=_hint, session_id=budget_session,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
