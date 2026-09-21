@@ -270,7 +270,20 @@ def decide():
         # growing further. 50% more headroom than the original 8000; verify with
         # `cumulus-billsnow-council-dryrun` after any future change here, since
         # both the truncation risk AND the budget cap move if the prompt grows.
-        meta, text = ensemble.best_answer(SYSTEM, prompt, creds, max_tokens=12000,
+        #
+        # S245: even 12000 wasn't enough -- a direct timing probe gave Anthropic
+        # 300s (2.5x the normal 120s ceiling) and it still burned the ENTIRE
+        # 12000-token budget on adaptive thinking (anthropic_effort=max) and
+        # returned 0 chars of text. Confirmed at 8000, 12000 AND 16384: this
+        # prompt makes "max" effort think without bound, so no max_tokens ceiling
+        # we'd reasonably set leaves room for an answer. Stripping anthropic_effort
+        # for just this call turns off adaptive thinking (no budget for it to
+        # consume) so Anthropic can actually contribute to the council/judge steps
+        # again -- a copy, so the rest of decide() (budget_session, send_bid_email)
+        # keeps using the real creds unchanged.
+        council_creds = dict(creds)
+        council_creds.pop("anthropic_effort", None)
+        meta, text = ensemble.best_answer(SYSTEM, prompt, council_creds, max_tokens=12000,
                                           task="billsnow", local=_hint, session_id=budget_session,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
