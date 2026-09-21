@@ -181,6 +181,32 @@ def record_result(num, actual, note="", db_path=None):
             "correct": correct, "status": "resolved"}
 
 
+def snapshot_leader(num, current_leader, current_value="", note="", db_path=None):
+    """Record a NON-authoritative running snapshot for a season-long question
+    (Q18-Q24) that cannot resolve until the season ends. Buddy, S242,
+    2026-09-21: "we can keep track of leaders for these questions." Writes
+    `leader_snapshot`/`leader_value`/`leader_snapshot_at` -- deliberately
+    separate fields from `status`/`actual`, which stay reserved for the real
+    end-of-season result via record_result(). Safe to call every week; each
+    change is still ledgered by upsert_entity's normal diff, so the history
+    of who was "currently leading" over the season is preserved too.
+
+    Returns {slug, leader, value} or None if NUM is not one of the 24
+    questions.
+    """
+    slug = f"q{num:02d}"
+    e = entity_kb.get_entity(PROJECT, slug, db_path=db_path)
+    if not e:
+        return None
+    entity_kb.upsert_entity(
+        PROJECT, slug, e.get("name", f"Q{num}"),
+        fields={"leader_snapshot": current_leader,
+                "leader_value": str(current_value),
+                "leader_snapshot_note": note},
+        db_path=db_path)
+    return {"slug": slug, "leader": current_leader, "value": current_value}
+
+
 def tally(db_path=None):
     """Running score: how many resolved questions we got right, out of how
     many total, and whether the perfect-24 is still alive. Unresolved
@@ -288,6 +314,17 @@ def selftest() -> int:
         ck("tally counts exactly the correct ones", t["correct"] == 1)
         ck("tally flags the perfect score as gone once one miss is resolved",
            t["perfect_alive"] is False and t["missed"] == [3])
+
+        snap = snapshot_leader(20, "T.J. Watt", 8.5, note="test", db_path=tmp)
+        ck("snapshot_leader reports the slug and leader",
+           snap is not None and snap["slug"] == "q20" and snap["leader"] == "T.J. Watt")
+        q20 = next(f for f in answers(db_path=tmp) if int(f["number"]) == 20)
+        ck("...and it lands in the CRM as leader_snapshot",
+           q20.get("leader_snapshot") == "T.J. Watt" and q20.get("leader_value") == "8.5")
+        ck("...without touching status (still pending -- not a real resolution)",
+           q20.get("status") == "pending")
+        ck("snapshot_leader on a question that does not exist returns None",
+           snapshot_leader(99, "x", db_path=tmp) is None)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -323,7 +360,17 @@ if __name__ == "__main__":
         print(f"immaculate CRM: {created} created, {changed} changed, "
               f"{len(QUESTIONS)} total. Locks {DEADLINE}.")
         sys.exit(0)
+    if "snapshot-leader" in sys.argv:
+        # snapshot-leader NUM "current leader" [value] ["note"]
+        i = sys.argv.index("snapshot-leader")
+        num, leader = int(sys.argv[i + 1]), sys.argv[i + 2]
+        value = sys.argv[i + 3] if len(sys.argv) > i + 3 else ""
+        note = sys.argv[i + 4] if len(sys.argv) > i + 4 else ""
+        res = snapshot_leader(num, leader, value, note=note)
+        print(res if res else f"Q{num} not found")
+        sys.exit(0 if res else 1)
     # S242: no more silent seed() on an unrecognized/missing argument (a
     # stray `--help` triggered exactly this and wiped Q1's resolved status).
-    print("usage: immaculate_store.py {selftest|show|tally|record NUM ACTUAL [NOTE]|seed}")
+    print("usage: immaculate_store.py {selftest|show|tally|record NUM ACTUAL [NOTE]"
+          "|seed|snapshot-leader NUM LEADER [VALUE] [NOTE]}")
     sys.exit(1)

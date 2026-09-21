@@ -45,6 +45,11 @@ CADENCE_H = {
     # 2026-09-12, ran the check, and never reached the send, silently. Weekly
     # beat, records "no active contest" off-season; 192h = a week + grace.
     "immaculatesaturdayfinal": 192,
+    # S242. The deterministic Wednesday recap email (systemd timer on
+    # CUMULUS, Wed 09:05) — season tally + weekly-contest comparison, same
+    # split as the Saturday sender above and for the same reason. Weekly
+    # beat; 192h = a week + grace.
+    "immaculatewednesdayreport": 192,
     # S148. Daily 01:00 on CIRRUS. Watched from the day it was created, for the
     # reason at the top of this table -- and with extra force here, because this
     # job's ENTIRE purpose is noticing silence. One that stopped silently would
@@ -170,6 +175,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
                  "immaculatecheck",                       # S141, runs on CUMULUS
+                 "immaculatewednesdayreport",              # S242, runs on CUMULUS
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
                  # "no run recorded yet" every time -- neutrally, so it never

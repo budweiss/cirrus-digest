@@ -1,0 +1,29 @@
+[Unit]
+Description=Immaculate Wednesday recap email — Wed 09:05 (S242)
+
+# WHY THIS TIMER EXISTS. Same lesson as immaculate-saturday-final.timer
+# (S169): a must-happen send does not belong at the end of a session
+# prompt. `immaculate-wednesday-resolve` (a Mac scheduled task, ~08:00 ET
+# Wednesdays) does the judgment/research work — resolving last week's
+# season questions, grading the weekly mini-contest against reality,
+# snapshotting the season-long leader questions, and researching a new
+# weekly contest if one has opened. This timer runs the sender directly an
+# hour later, reading whatever's already in the CRM. If the resolve step
+# hangs or runs long, this still sends the week's recap with whatever was
+# recorded rather than silently skipping it — the exact failure mode T102
+# already cost 5 days once.
+#
+# Wednesday has no busy-window rule (weekdays 08:00-16:00 only restricts
+# bandwidth-heavy work, not a single email); 09:05 sits an hour after the
+# resolve task so the recap reflects it, and mirrors Saturday's own 09:05
+# slot for consistency.
+#
+# Retiming is `cumulus-schedule`, never a bare restart — Persistent=true
+# means a restart holding an old stamp FIRES the job (T39). The install
+# stamps it elapsed for the same reason.
+[Timer]
+OnCalendar=Wed *-*-* 09:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
