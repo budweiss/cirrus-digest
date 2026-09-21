@@ -31,6 +31,18 @@ TO = "Buddy.Weiss@outlook.com"
 SENT_MARKER = HERE / "logs/immaculate-wednesday-sent.json"
 WINDOW = timedelta(hours=6)   # Wed 09:05 fire; window just guards re-fires
 
+# S250, Buddy 2026-09-21: "keep the Wednesday email sending for the football
+# season. normally ends in Feb sometime." September through February; the timer
+# keeps firing all year and records a quiet no-op off-season, so the weekly
+# cadence check stays green and the send resumes by itself each September.
+SEASON_MONTHS = {9, 10, 11, 12, 1, 2}
+OFF_SEASON_NOTE = "off-season — no Wednesday recap (sends September through February)"
+
+
+def _in_season(now=None):
+    now = now or datetime.now(timezone.utc)
+    return now.month in SEASON_MONTHS
+
 
 def _already_sent_today(now=None):
     now = now or datetime.now(timezone.utc)
@@ -156,6 +168,10 @@ def compose(rows, t, now=None):
 def main():
     dry = "--dry-run" in sys.argv
     windowed = "--window" in sys.argv
+    if windowed and not _in_season():
+        print(OFF_SEASON_NOTE)
+        _record(True, OFF_SEASON_NOTE)
+        return 0
     if windowed and _already_sent_today():
         print("already sent today — duplicate send suppressed")
         _record(True, "already sent today — duplicate send suppressed")
@@ -214,8 +230,17 @@ def selftest() -> int:
     ck("body includes both major sections",
        "SEASON ENTRY" in body and "WEEKLY CONTEST" in body)
 
+    def _d(y, m, d):
+        return datetime(y, m, d, 13, 5, tzinfo=timezone.utc)
+    ck("in season on the first of September", _in_season(_d(2026, 9, 1)) is True)
+    ck("...and through the end of February", _in_season(_d(2027, 2, 28)) is True)
+    ck("...and over New Year", _in_season(_d(2027, 1, 6)) is True)
+    ck("off-season from the first of March", _in_season(_d(2027, 3, 1)) is False)
+    ck("...through the end of August", _in_season(_d(2027, 8, 31)) is False)
+
     import tempfile, os
-    _saved = (globals()["SENT_MARKER"],)
+    _saved = (globals()["SENT_MARKER"], globals()["_record"],
+              globals()["_in_season"], store.answers)
     try:
         with tempfile.TemporaryDirectory() as td:
             globals()["SENT_MARKER"] = Path(td) / "sent.json"
@@ -224,8 +249,40 @@ def selftest() -> int:
             _stamp_sent()
             ck("...and after stamping it means sent today",
                _already_sent_today() is True)
+
+            # Guard ORDER: off-season, main() must return before the dedup
+            # check and before touching the CRM, and must record a quiet
+            # success -- the weekly cadence check reads a missing row as a
+            # dead job.
+            recorded = []
+            globals()["_record"] = lambda ok, note: recorded.append((ok, note))
+            globals()["_in_season"] = lambda now=None: False
+            store.answers = lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("CRM must not be read off-season"))
+            _argv, sys.argv = sys.argv, ["x", "--window"]
+            try:
+                rc = main()
+            finally:
+                sys.argv = _argv
+            ck("off-season timer run exits 0 without touching the CRM", rc == 0)
+            ck("...and records a quiet no-op, not a failure",
+               recorded == [(True, OFF_SEASON_NOTE)])
+
+            # In season, the gate lets the run through to the next guard:
+            # today's send is already stamped, so it is suppressed as a dup.
+            recorded.clear()
+            globals()["_in_season"] = lambda now=None: True
+            _argv, sys.argv = sys.argv, ["x", "--window"]
+            try:
+                rc = main()
+            finally:
+                sys.argv = _argv
+            ck("in season, the timer run passes the gate to the dedup guard",
+               rc == 0 and recorded ==
+               [(True, "already sent today — duplicate send suppressed")])
     finally:
-        (globals()["SENT_MARKER"],) = _saved
+        (globals()["SENT_MARKER"], globals()["_record"],
+         globals()["_in_season"], store.answers) = _saved
 
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAILURE(S)'}")
     return 1 if fails else 0
