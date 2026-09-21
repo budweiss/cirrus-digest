@@ -69,7 +69,14 @@ def parse(text):
     if not text:
         return {}
     out = {}
-    m = re.search(r"(PITTSBURGH STEELERS[^.]{0,120}OFFICIAL RULES)", text)
+    # Non-greedy .{0,120}? rather than [^.]{0,120} -- the excluded-period
+    # form breaks on any contest title containing a period, e.g. the real
+    # "T.J. Watt Autographed Replica Jersey Giveaway" contest (found live,
+    # S242, 2026-09-21): it matched nothing, so title came back blank and a
+    # NEW/CHANGED alert would have said "(untitled)" instead of naming the
+    # contest. The non-greedy form already stops at the first "OFFICIAL
+    # RULES" without needing to exclude any character class.
+    m = re.search(r"(PITTSBURGH STEELERS.{0,120}?OFFICIAL RULES)", text)
     if m:
         out["title"] = m.group(1).strip()[:120]
     m = re.search(r"will begin on ([A-Z][a-z]+ \d+, \d{4}[^ ]* at [\d:]+ [AP]M \w+)"
@@ -188,6 +195,16 @@ def selftest() -> int:
        and p.get("ends", "").startswith("September 13"))
     ck("...and the published questions URL",
        p.get("questions_url", "").endswith("wkvr9j26n5nxzpbxhbha"))
+
+    # S242 regression: a contest title containing a period (found live, the
+    # real "T.J. Watt" weekly contest) used to match nothing at all.
+    WATT = ("PITTSBURGH STEELERS IMMACULATE PREDICTION 2026 T.J. WATT "
+            "AUTOGRAPHED REPLICA JERSEY GIVEAWAY CONTEST OFFICIAL RULES ... "
+            "will begin on September 17, 2026 at 3:01 AM EDST and end on "
+            "September 20, 2026 at 1:00 PM EDST ...")
+    w = parse(WATT)
+    ck("S242: a title containing a period (T.J. Watt) still parses",
+       "T.J. WATT" in w.get("title", "") and w.get("title", "").endswith("OFFICIAL RULES"))
 
     DRAFT = ("PITTSBURGH STEELERS IMMACULATE PREDICTION 2026 NFL DRAFT GIVEAWAY "
              "CONTEST OFFICIAL RULES ... will begin on April 17, 2026 at 3:01 AM "
