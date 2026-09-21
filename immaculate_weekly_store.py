@@ -60,7 +60,8 @@ def record_week(week, questions, db_path=None):
 def week_answers(week, db_path=None):
     """All questions for one week, in question-number order."""
     out = []
-    for e in entity_kb.list_entities(PROJECT, db_path=db_path):
+    for e in entity_kb.list_entities(PROJECT, entity_type="weekly contest question",
+                                     db_path=db_path):
         f = e.get("state") or {}
         if str(f.get("week", "")) != str(week):
             continue
@@ -103,7 +104,8 @@ def week_tally(week, db_path=None):
 def weeks_seeded(db_path=None):
     """Which week numbers have any questions on file, sorted."""
     weeks = set()
-    for e in entity_kb.list_entities(PROJECT, db_path=db_path):
+    for e in entity_kb.list_entities(PROJECT, entity_type="weekly contest question",
+                                     db_path=db_path):
         f = e.get("state") or {}
         w = f.get("week")
         if w:

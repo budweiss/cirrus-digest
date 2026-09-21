@@ -140,9 +140,17 @@ def seed(db_path=None):
 
 
 def answers(db_path=None):
-    """The current entry, straight from the CRM."""
+    """The current entry, straight from the CRM.
+
+    entity_type filter is load-bearing, not decorative: immaculate_weekly_
+    store.py shares this same entity_kb project and its "number" field
+    values collide with ours (both start at 1) -- without the filter,
+    sorted() sees two entities with the same number and tries to compare
+    their dicts as a tiebreaker, which raises TypeError. Found live, S242.
+    """
     out = []
-    for e in entity_kb.list_entities(PROJECT, db_path=db_path):
+    for e in entity_kb.list_entities(PROJECT, entity_type="contest question",
+                                     db_path=db_path):
         # entity_kb returns the field dict under "state", not "fields"
         f = e.get("state") or {}
         try:
@@ -285,6 +293,21 @@ def selftest() -> int:
         got = answers(db_path=tmp)
         ck("answers() returns all 24 in question order",
            len(got) == 24 and [int(f["number"]) for f in got] == list(range(1, 25)))
+
+        # S242 regression: immaculate_weekly_store.py shares this SAME
+        # entity_kb project and its "number" field values collide with ours
+        # (both start at 1). A weekly-contest entity sitting alongside the
+        # season ones used to crash answers() (sorted() tried to compare two
+        # entities' dicts as a number tiebreaker). The entity_type filter in
+        # answers() is what prevents this -- verify it actually holds.
+        entity_kb.upsert_entity(
+            PROJECT, "w02q01", "W2 Q1: fixture",
+            entity_type="weekly contest question",
+            fields={"number": "1", "week": "2", "answer": "X"}, db_path=tmp)
+        got2 = answers(db_path=tmp)
+        ck("S242: a same-numbered weekly-contest entity does not crash "
+           "answers() or leak into the season's 24",
+           len(got2) == 24 and [int(f["number"]) for f in got2] == list(range(1, 25)))
 
         # q02's seeded answer is "Yes"; q03's is "PIT" -- record one hit, one miss.
         r_hit = record_result(2, "Yes", note="test", db_path=tmp)
