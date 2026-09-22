@@ -115,38 +115,49 @@ def permitted(mode, dry_run, command):
     return False, f"{argv[1]}: allowed here only as {sorted(subs)}"
 
 
-def names_allowed(mode, dry_run, command):
-    """Did a REFUSED command name an allowed script + subcommand? Then the model
-    was trying to do its job and a read or write it meant to make did not
-    happen -- a lost step, not a probe. Used to fail the run (see main)."""
+def _cut(command):
+    """Quote-aware tokens up to the first operator: the command as it was
+    meant, minus any `| head` or `2>&1` the model bolted on."""
     try:
-        argv = shlex.split(command)
+        toks = _tokens(command)
     except ValueError:
-        argv = command.split()
-    table = command_table(mode, dry_run)
-    if len(argv) < 2 or argv[0] != PY or argv[1] not in table:
-        return False
-    subs = table[argv[1]]
-    return subs is None or (len(argv) >= 3 and argv[2] in subs)
+        toks = command.split()
+    out = []
+    for t in toks:
+        if t and set(t) <= OPERATOR_CHARS:
+            break
+        out.append(t)
+    return out
 
 
 def _step(command):
-    """What a command DOES, ignoring its note: script, subcommand, target
+    """What a write DOES, ignoring its note: script, subcommand, target
     (question N; week + number for a weekly resolve)."""
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        argv = command.split()
+    argv = _cut(command)
     n = 5 if len(argv) > 2 and argv[2] == "resolve" else 4
     return tuple(argv[1:n])
 
 
+def is_write(mode, command):
+    """Does this command name one of the mode's WRITES? Only a lost write
+    matters: a refused read leaves the stores exactly as they were."""
+    argv = _cut(command)
+    writes = COMMANDS[mode]["writes"]
+    if len(argv) < 2 or argv[0] != PY or argv[1] not in writes:
+        return False
+    subs = writes[argv[1]]
+    return subs is None or (len(argv) >= 3 and argv[2] in subs)
+
+
 def lost_steps(mode, dry_run, refused, ran):
-    """Refused commands the run needed and never recovered: well-named (see
-    names_allowed) and with no permitted command doing the same step after a
-    fix. A refusal the model corrected and retried is not a loss."""
+    """Writes the run needed and never made: refused, and not recovered by a
+    permitted retry of the same step. A dry run makes no writes, so loses none.
+    S253, found live: counting refused READS here fired a false FAILED alert
+    when the model poked at `show 2>&1 | cat -A`, which the gate rightly refused."""
+    if dry_run:
+        return []
     done = {_step(c) for c in ran}
-    return [c for c in refused if names_allowed(mode, dry_run, c) and _step(c) not in done]
+    return [c for c in refused if is_write(mode, c) and _step(c) not in done]
 
 
 def allowed_tools(mode, dry_run):
@@ -320,7 +331,14 @@ def selftest():
     ck("gate: $ inside double quotes is refused (bash still expands it)",
        not allowed(f'{PY} immaculate_store.py record 3 PIT "$HOME"'))
     ck("lost step: a refused but well-named write counts as lost",
-       names_allowed("postgame", False, f'{PY} immaculate_store.py record 3 PIT "x $y"'))
+       is_write("postgame", f'{PY} immaculate_store.py record 3 PIT "x $y"'))
+    probe = f"{PY} immaculate_store.py show 2>&1 | cat -A | head -5"
+    ck("lost step: a refused READ is never lost (the S253 false alarm)",
+       lost_steps("postgame", False, [probe], []) == [])
+    piped = f'{PY} immaculate_store.py record 3 PIT "x" | cat'
+    ck("lost step: a piped write retried plainly is recovered",
+       lost_steps("postgame", False, [piped], [f'{PY} immaculate_store.py record 3 PIT "x"']) == [])
+    ck("lost step: a dry run loses nothing", lost_steps("postgame", True, [piped], []) == [])
     bad = f'{PY} immaculate_store.py snapshot-leader 18 "Pat" "1" "a $x"'
     fixed = f'{PY} immaculate_store.py snapshot-leader 18 "Pat" "1" "a x"'
     ck("lost step: refused and never retried -> lost",
@@ -330,8 +348,8 @@ def selftest():
     ck("lost step: a DIFFERENT question's success does not cover it",
        lost_steps("postgame", False, [bad], [fixed.replace(" 18 ", " 19 ")]) == [bad])
     ck("lost step: a probe (--help, hostname) does not",
-       not names_allowed("postgame", False, f"{PY} immaculate_store.py --help")
-       and not names_allowed("postgame", False, "hostname"))
+       not is_write("postgame", f"{PY} immaculate_store.py --help")
+       and not is_write("postgame", "hostname"))
     ck("gate: weekly resolve passes live", allowed(f"{PY} immaculate_weekly_store.py resolve 2 1 Patriots x"))
     ck("gate: dry run refuses a write", not allowed(f"{PY} immaculate_store.py record 3 PIT x", dry=True))
 
