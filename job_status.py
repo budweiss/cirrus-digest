@@ -173,6 +173,10 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
                  "immaculatetick",                         # S253, runs on CUMULUS
+                 # S254: runs on CUMULUS since S169 but was never listed here,
+                 # so CIRRUS reported it "DECLARED BUT NEVER RAN" and every
+                 # summary all_ok=False -- while CUMULUS's own row said ok.
+                 "immaculatesaturdayfinal",
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
                  # "no run recorded yet" every time -- neutrally, so it never
@@ -877,6 +881,7 @@ def selftest():
     # privacy/, stratus/). Same shape as T44 itself: the GLOB of a check is its
     # scope, and a scope narrower than reality gives a confident wrong answer.
     _SKIP = {"__pycache__", ".git", ".venv", "venv", "node_modules", "build"}
+    _by_file = {}   # script basename -> watched names it records (S254)
     # S100: *.sh TOO. cumulus_state_pull.sh records from bash (it shells out to
     # python3 -c "import job_status; job_status.record(...)"), which is a
     # legitimate pattern -- and this check reported it as an orphan because it
@@ -902,6 +907,7 @@ def selftest():
             for k in CADENCE_H:
                 if f'"{k}"' in window or f"'{k}'" in window:
                     writers.add(k)
+                    _by_file.setdefault(f.name, set()).add(k)
     # jobscheck/watchdog-style keys would go here if any were read-only; today
     # every watched job is expected to write its own row.
     orphaned = sorted(set(CADENCE_H) - writers)
@@ -916,6 +922,33 @@ def selftest():
        "cumulusstatepull" in writers)
     ck(f"every watched job has a record() call somewhere (missing: {orphaned})",
        not orphaned)
+
+    # S254 -- the REMOTE_JOBS omission, made a THIRD time. S102 (accesscheck)
+    # and S169 (immaculatesaturdayfinal) each added a CUMULUS job to CADENCE_H
+    # but not to REMOTE_JOBS, so CIRRUS looked for its row locally, never found
+    # it, and the summary went all_ok=False for a job that was fine. The
+    # warning comment above REMOTE_JOBS did not stop the second one. The rule
+    # it needs: a script run by a systemd .service unit runs on CUMULUS (CIRRUS
+    # is launchd plists), so every watched name that script records is remote.
+    _on_cumulus = set()
+    for unit in here.rglob("*.service"):
+        if _SKIP & set(unit.parts):
+            continue
+        for line in unit.read_text(errors="ignore").splitlines():
+            if line.startswith("ExecStart="):
+                for arg in line.split():
+                    base = arg.rsplit("/", 1)[-1]
+                    _on_cumulus |= _by_file.get(base, set())
+    _not_remote = sorted(_on_cumulus - REMOTE_JOBS)
+    # SCOPE: unit FILES in this repo. The cirrus-* units (billsnow, hoaleads,
+    # ...) are written by runner install commands, not stored here, so this
+    # scan cannot see them -- they are listed in REMOTE_JOBS by hand today. The
+    # check below proves the scan sees what it should, so an empty result can
+    # never mean "looked at nothing" (T8).
+    ck("the .service scan finds repo-unit CUMULUS jobs (tick, saturday, alopecia agent)",
+       {"immaculatetick", "immaculatesaturdayfinal", "alopeciaagent"} <= _on_cumulus)
+    ck(f"every watched job a CUMULUS .service runs is in REMOTE_JOBS (missing: {_not_remote})",
+       not _not_remote)
 
     # And a daily job that stopped yesterday must actually trip.
     _, g = _row("hoaleads", CADENCE_H["hoaleads"],
