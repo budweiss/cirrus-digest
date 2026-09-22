@@ -10,19 +10,19 @@ question can turn on (the raw summary payload is ~600 KB).
     python3 immaculate_espn.py summary <EVENT_ID>  # one game: team stats, player lines, scoring plays, drives
     python3 immaculate_espn.py selftest
 
-Found live S253: ESPN answers a browser User-Agent with 403 and a plain one with
-200, so the UA below is deliberately NOT a browser string.
+Found live S253: ESPN 403s BOTH a browser User-Agent and a made-up one
+("cowork-immaculate/1.0"), and answers 200 to urllib's own default, curl's and
+python-requests'. So no User-Agent is set: urllib's default is the one proven.
 """
 import json
 import sys
 import urllib.request
 
 API = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
-UA = "cowork-immaculate/1.0"
 
 
 def _get(path):
-    req = urllib.request.Request(f"{API}/{path}", headers={"User-Agent": UA})
+    req = urllib.request.Request(f"{API}/{path}")  # default UA -- see docstring
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -116,7 +116,6 @@ def selftest() -> int:
     ck("summary: first drive result readable", v["drives"][0]["result"] == "Punt")
     ck("summary: scoring play team + type", (v["scoring_plays"][0]["team"], v["scoring_plays"][0]["type"])
        == ("NE", "Rushing Touchdown"))
-    ck("UA is not a browser string (ESPN 403s those)", "Mozilla" not in UA)
     print("selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -126,10 +125,10 @@ if __name__ == "__main__":
     if args[:1] == ["selftest"]:
         sys.exit(selftest())
     if args[:1] == ["schedule"]:
-        print(json.dumps(schedule_rows(_get("teams/pit/schedule")), indent=1))
+        print("\n".join(json.dumps(r) for r in schedule_rows(_get("teams/pit/schedule"))))
         sys.exit(0)
     if args[:1] == ["summary"] and len(args) == 2 and args[1].isdigit():
-        print(json.dumps(summary_view(_get(f"summary?event={args[1]}")), indent=1))
+        print(json.dumps(summary_view(_get(f"summary?event={args[1]}"))))
         sys.exit(0)
     print("usage: immaculate_espn.py {schedule|summary EVENT_ID|selftest}")
     sys.exit(1)
