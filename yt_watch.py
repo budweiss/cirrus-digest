@@ -292,6 +292,21 @@ FETCH_PAUSE = 4.0    # seconds between transcript fetches. The first backlog run
                      # the box. Normal daily volume is 0-4 videos, so this costs
                      # nothing in steady state and is the whole difference between
                      # a working monitor and a blocked one.
+FEED_PAUSE = 5.0     # S252, 2026-09-22: FETCH_PAUSE above only covers the
+                     # per-video transcript loop -- the per-CHANNEL feed-list
+                     # fetch had no pause at all, so all 5 channels' feeds were
+                     # requested back to back with zero spacing every night at
+                     # 00:30. ytwatch-error.log shows this failing with
+                     # HTTPError 404 on some or all channels nightly since at
+                     # least 2026-09-12, worsening to all 5 by 09-19; manually
+                     # replaying the exact same request hours later (outside
+                     # the 00:30 burst) returns 200 every time, consistent with
+                     # a transient per-burst block rather than a dead feed or
+                     # wrong channel ID. Spacing the channel requests out the
+                     # same way transcript requests already are is the same
+                     # fix TRANSIENT/FETCH_PAUSE above already applies one
+                     # level up -- give it until the next few nightly runs
+                     # before assuming it isn't enough.
 
 # A transcript failure is either PERMANENT (this video has no captions and never
 # will) or TRANSIENT (we were blocked, throttled, or the network blipped). The
@@ -334,7 +349,7 @@ def _fetch_feed_retried(feed_fn, channel_id, attempts=3, backoff=4.0,
 
 def run(dry_run=False, limit=None, channels=None, feed_fn=None,
         transcript_fn=None, extract_fn=None, seen_path=None, out_dir=None,
-        pause=0.0, feed_attempts=3, feed_backoff=4.0):
+        pause=0.0, feed_attempts=3, feed_backoff=4.0, feed_pause=0.0):
     """Injectable throughout so the selftest touches no network and no live file (T32)."""
     channels = channels if channels is not None else load_channels()
     feed_fn = feed_fn or fetch_feed
@@ -347,7 +362,9 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
     results, errors, processed = [], [], 0
     transient_stop = ""
 
-    for ch in channels:
+    for i, ch in enumerate(channels):
+        if i and feed_pause:
+            time.sleep(feed_pause)
         try:
             vids = _fetch_feed_retried(feed_fn, ch["channel_id"],
                                        feed_attempts, feed_backoff)
@@ -779,7 +796,7 @@ def main():
             pass
     stats = run(dry_run="--dry-run" in args,
                 limit=DEFAULT_LIMIT if limit is None else limit,
-                pause=FETCH_PAUSE)
+                pause=FETCH_PAUSE, feed_pause=FEED_PAUSE)
     if stats.get("transient_stop"):
         log("STOPPED EARLY — transient failure: %s. Nothing was marked seen for it; "
             "the next run retries." % stats["transient_stop"][:80])
