@@ -43,8 +43,9 @@ VENV_PY = str(HERE / ".venv" / "bin" / "python")
 AGENT_PY = str(Path.home() / ".venvs" / "alopecia-agent" / "bin" / "python")
 ET = ZoneInfo("America/New_York")
 HEADS_UP = timedelta(hours=36)
-RELAY = ("The questions are only in the Steelers app — send them (screenshot or "
-         "typed) to any Cowork session and it will research and email you answers.")
+RELAY = ("The questions appear only in the Steelers app once it opens — send them "
+         "(screenshot or typed) to any Cowork session and it will research and "
+         "email you answers.")
 
 
 def kickoff(row):
@@ -188,8 +189,13 @@ def main(dry=False):
             state.setdefault("found", {})[t["event_id"]] = {
                 "slug": slug, "title": r.get("title"), "ends": r.get("ends"),
                 "found_utc": now.isoformat()}
-            tell(f"Immaculate: new contest open — {r.get('title') or slug}. "
-                 f"Entry closes {r.get('ends') or '(see the app)'}. "
+            # S255: say when it OPENS, not just when it closes. Buddy: for a
+            # Sunday game "you may not see the questions until Thursday" --
+            # Week 2's rules page went up Wed 9/16 for a Thu 9/17 open, so this
+            # can fire a day before the questions are in the app.
+            tell(f"Immaculate: new contest posted — {r.get('title') or slug}. "
+                 f"Opens {r.get('begins') or '(see the app)'}; entry closes "
+                 f"{r.get('ends') or '(see the app)'}. "
                  f"This week's game: {game_label(t)}. {RELAY}")
             notes.append(f"contest FOUND for {game_label(t)}; no more checks until it is played")
         else:
