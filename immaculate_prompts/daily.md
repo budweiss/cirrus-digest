@@ -32,15 +32,32 @@ final summary and move on. Do not retry the step.
 
 ## 1. New-contest watch: always first
 
-Run the watch. Exit code 2 means it found a weekly contest opening or changing,
-or a questions document being published. Exit code 1 means some pages could
-not be reached; say so in your summary, because that is not the same as
-"nothing new".
+First run `schedule` to find **this week's game**: the first game whose status
+is not Final. Note its matchup and kickoff, converting the UTC time to Eastern.
+A weekly contest closes at or before that kickoff. Games can fall on a
+Thursday, Saturday, Sunday or Monday, so read the actual date and never assume
+Sunday.
 
-On exit code 2, call notify_buddy **immediately**. Include what changed and the
-contest's entry deadline, taken from the watch output. End with this line:
-"The questions are only in the Steelers app — send them (screenshot or typed)
-to any Cowork session and it will research and email you answers."
+Then run the watch. Exit code 2 means it found a weekly contest opening or
+changing, or a questions document being published. Exit code 1 means some
+pages could not be reached; say so in your summary, because that is not the
+same as "nothing new".
+
+On exit code 2, call notify_buddy **immediately**. Include:
+- what changed
+- the contest's entry deadline, taken from the watch output
+- this week's game and its kickoff
+
+End with this line: "The questions are only in the Steelers app — send them
+(screenshot or typed) to any Cowork session and it will research and email you
+answers."
+
+**If the watch finds nothing new**, check the live contest pages it lists. If
+none of them has a period that covers this week's kickoff, and kickoff is less
+than 36 hours away, send one notify_buddy: "No weekly contest found yet for
+<game> (kickoff <day, time ET>). If the Steelers app shows one, the watch
+missed it — send its questions to a Cowork session." Otherwise stay quiet; the
+watch runs again tomorrow.
 
 A Week 3 contest is expected around 2026-09-23 to 09-24.
 
@@ -99,6 +116,7 @@ ends, so there is nothing to do for them here.
 ## Finish
 
 End with a short, plain summary, which is saved as this run's transcript:
+- this week's game and its kickoff
 - what the watch found
 - the state of the season check
 - anything you recorded

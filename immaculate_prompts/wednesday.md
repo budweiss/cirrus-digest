@@ -119,7 +119,9 @@ Never use `record` for Q18–Q24.
 Run the watch. It saves what it has seen, so if you are the one who catches a
 new contest, nobody else will. On exit code 2 (a contest opened or changed, or
 a questions document was published), call notify_buddy **immediately**. Include
-what changed and the contest's entry deadline. End with this line: "The
+what changed, the contest's entry deadline, and this week's game and kickoff.
+This week's game is the first game `schedule` does not show as Final; convert
+its UTC kickoff to Eastern, and never assume Sunday. End with this line: "The
 questions are only in the Steelers app — send them (screenshot or typed) to any
 Cowork session and it will research and email you answers."
 
