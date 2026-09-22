@@ -115,6 +115,29 @@ def parse(page: str) -> list:
     return out
 
 
+ROW_FIELDS = ("name", "contact", "address", "phone", "email", "website")
+
+
+def load_file(path: str) -> list:
+    """S256: the county site refuses automated fetches (Cloudflare, since
+    2026-09-20) but still serves a real browser, so the refresh is manual:
+      * a page saved from a browser (File > Save Page As, .html) -> parse()
+      * rows extracted in the browser pane (.json): parse()'s own dicts (the
+        -o output) or 6-field arrays in ROW_FIELDS order.
+    Returns parse()'s shape, the contact classified by the same rule."""
+    text = open(path, encoding="utf-8").read()
+    if not path.endswith(".json"):
+        return parse(text)
+    out = []
+    for r in json.loads(text):
+        r = dict(zip(ROW_FIELDS, r)) if isinstance(r, list) else r
+        managed, basis = _classify_contact(r.get("contact", ""))
+        out.append({"name": r.get("name", ""), "contact": r.get("contact", ""),
+                    "managed": managed, "managed_basis": basis,
+                    **{f: r.get(f, "") for f in ROW_FIELDS[2:]}})
+    return out
+
+
 SOURCE_URL = URL
 CAVEAT = (
     "New Castle County publishes this directory with an explicit disclaimer "
@@ -497,6 +520,27 @@ def selftest() -> int:
           _free_slug("Hunters Ridge", taken | {"hunters-ridge-new-castle"})
           == "hunters-ridge-new-castle-2")
 
+    # S256: the manual refresh paths must load exactly what the fetch did.
+    import os, tempfile
+    row = '<span style="font-weight: bold;">X Place</span><br>Jane Doe, President' \
+          '<br>1 Main St<br>Newark, DE 19711<br></div>'
+    with tempfile.TemporaryDirectory() as td:
+        h, j = os.path.join(td, "saved.html"), os.path.join(td, "rows.json")
+        open(h, "w").write(row)
+        open(j, "w").write(json.dumps([["X Place", "Jane Doe, President",
+                                        "1 Main St, Newark, DE 19711", "", "", ""]]))
+        from_html, from_rows = load_file(h), load_file(j)
+        check("a browser-saved page loads through parse()",
+              [r["address"] for r in from_html] == ["1 Main St, Newark, DE 19711"])
+        check("browser-extracted rows load identically to the saved page",
+              from_rows == from_html)
+        open(j, "w").write(json.dumps(from_html))
+        check("parse()'s own -o output loads back unchanged", load_file(j) == from_html)
+        open(j, "w").write(json.dumps([["Y", "Acme Property Management, MC",
+                                        "", "", "", ""]]))
+        check("a managed contact is classified on the JSON path too",
+              load_file(j)[0]["managed"] is True)
+
     print("\nALL PASS" if not bad else f"\n{bad} FAILED")
     return 1 if bad else 0
 
@@ -515,13 +559,20 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true",
                     help="with --enrich: actually write (default is a dry run)")
     ap.add_argument("--url", default=URL)
+    ap.add_argument("--from-file", metavar="PATH", dest="from_file",
+                    help="read a browser-saved page (.html) or browser-extracted "
+                         "rows (.json) instead of fetching -- see load_file()")
     a = ap.parse_args()
     if not a.out and not a.enrich and not a.import_new and not a.workbook:
         a.out = "out/nccde_associations.json"
 
-    page = fetch(a.url)
+    if a.from_file:
+        page = open(a.from_file, encoding="utf-8").read()
+        recs = load_file(a.from_file)
+    else:
+        page = fetch(a.url)
+        recs = parse(page)
     expected = re.search(r"of (\d+) Listing", page)
-    recs = parse(page)
 
     # Do not let a silent parser regression look like a small county. If the
     # page says 224 and we parsed 12, that is a broken scrape, not a shrunken
