@@ -189,6 +189,21 @@ if __name__ == "__main__":
             print(f"  Q{f['number']:>2} {f['answer']:<16s} "
                   f"{f.get('status', 'pending'):10s} {f['question'][:44]}")
         sys.exit(0)
+    # S253: the two reads immaculate_agent.py needs. It has no general shell,
+    # so it cannot call weeks_seeded() via `python -c`, and `show` cuts the
+    # question at 44 chars with no options -- not enough to resolve against.
+    if "weeks" in sys.argv:
+        print(weeks_seeded())
+        sys.exit(0)
+    if "detail" in sys.argv:
+        i = sys.argv.index("detail")
+        week = int(sys.argv[i + 1])
+        for f in week_answers(week):
+            print(f"  Q{f['number']}: {f['question']}\n"
+                  f"      options: {f.get('options') or '(none recorded)'}\n"
+                  f"      our answer: {f['answer']}   status: {f.get('status', 'pending')}"
+                  + (f"   actual: {f['actual']}" if f.get("actual") else ""))
+        sys.exit(0)
     if "resolve" in sys.argv:
         i = sys.argv.index("resolve")
         week, num, actual = int(sys.argv[i + 1]), int(sys.argv[i + 2]), sys.argv[i + 3]
@@ -197,5 +212,5 @@ if __name__ == "__main__":
         print(res if res else f"W{week}Q{num} not found")
         sys.exit(0 if res else 1)
     print("usage: immaculate_weekly_store.py "
-          "{selftest|show WEEK|tally WEEK|resolve WEEK NUM ACTUAL [NOTE]}")
+          "{selftest|weeks|show WEEK|detail WEEK|tally WEEK|resolve WEEK NUM ACTUAL [NOTE]}")
     sys.exit(1)

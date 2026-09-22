@@ -1,0 +1,21 @@
+[Unit]
+Description=Immaculate — daily check: new-contest watch, season check, record finished games (S253, Agent SDK)
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+Environment=TZ=America/New_York
+ExecStart=/home/buddy/.venvs/alopecia-agent/bin/python /home/buddy/cirrus-digest/immaculate_agent.py daily
+# Hard stop above the script's own wall clock. A oneshot has NO start timeout
+# by default, and a run that never ends is the T102 failure: every later run
+# is blocked behind it, silently. Killed, it fails loudly and tomorrow fires.
+TimeoutStartSec=25min
+
+[Install]
+WantedBy=multi-user.target

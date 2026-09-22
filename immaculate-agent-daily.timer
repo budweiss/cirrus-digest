@@ -1,0 +1,21 @@
+[Unit]
+Description=Immaculate daily check — 07:15 (S253)
+
+# WHY THIS MOVED HERE (S253, 2026-09-22). This was the desktop-app scheduled
+# task `immaculate-daily-check` on Buddy's MacBook. Those fire only while the
+# laptop is awake; with the lid closed on battery they are skipped. Three runs
+# had also hung on ssh calls back to THIS box (T102). Every script and store
+# it touches lives here, so it runs here now, with no ssh at all.
+#
+# 07:15 is the slot it always had: before the 07:30 morning brief, which must
+# fire after every producer it reports on, and outside the 08:00-16:00
+# weekday window. It needs no other window: a few web searches and ESPN reads.
+#
+# Persistent=true so a box that was down catches up the same day. Retiming is
+# `cumulus-schedule`, never a bare restart (T39); the install stamps it elapsed.
+[Timer]
+OnCalendar=*-*-* 07:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

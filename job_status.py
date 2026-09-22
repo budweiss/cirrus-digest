@@ -37,9 +37,15 @@ CADENCE_H = {
     # written at the top of this table. It guards a HARD DEADLINE -- the
     # contest entry locks Sun 2026-09-13 13:00 ET and cannot be entered late --
     # so a silent stop between now and then is the one failure that cannot be
-    # recovered from afterwards. Daily 07:15, run by a scheduled task that
-    # ssh's to cumulus1; 26h leaves the usual 2h of grace.
+    # recovered from afterwards. Daily 07:15; 26h leaves the usual 2h of grace.
+    # S253: now immaculate-agent-daily.timer on cumulus1 (was a Mac scheduled
+    # task that ssh'd in, and skipped whenever the laptop slept).
     "immaculatecheck": 26,
+    # S253. The Wednesday resolve pass (immaculate-agent-wednesday.timer, Wed
+    # 06:50 on cumulus1) -- the research that feeds the 09:05 recap below. As
+    # a Mac scheduled task it had no status row at all; only the Mac stall
+    # watchdog could see it stop. Weekly beat; 192h = a week + grace.
+    "immaculatewednesdayresolve": 192,
     # S169. The deterministic Saturday final-recap email (systemd timer on
     # CUMULUS, Sat 09:05) — after the session-task version fired at 09:00 on
     # 2026-09-12, ran the check, and never reached the send, silently. Weekly
@@ -176,6 +182,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciaagent",                         # S177, runs on CUMULUS
                  "immaculatecheck",                       # S141, runs on CUMULUS
                  "immaculatewednesdayreport",              # S242, runs on CUMULUS
+                 "immaculatewednesdayresolve",             # S253, runs on CUMULUS
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
                  # "no run recorded yet" every time -- neutrally, so it never
