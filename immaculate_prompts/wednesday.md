@@ -20,6 +20,9 @@ delivery. The only time you call notify_buddy is in step 4.
 
 Run each of these commands exactly as written, one per Bash call. Do not use
 pipes, redirects, `&&` or `cd`. Any other command is refused by design.
+Wrap each note in double quotes, and keep these characters out of notes:
+`; & | < > $` backtick and backslash. A command containing any of them is
+refused. For example, write "over 250" rather than ">250".
 - `./.venv/bin/python immaculate_store.py show`: our 24 season answers and their status
 - `./.venv/bin/python immaculate_store.py tally`: the season score
 - `./.venv/bin/python immaculate_store.py record` N ACTUAL "note": resolve one season question
