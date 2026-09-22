@@ -95,8 +95,13 @@ first TD scorer, total points, total yards, the tackle leader, rushing yards
 over/under, a sack bucket, the receiving-yards leader, time of possession, and
 passing TDs over/under. The box score answers all of these.
 
-If a result is genuinely ambiguous, leave it pending and say why rather than
-guessing. Afterwards, run `tally` for that week.
+Leave a question pending only when **our pick might actually be right** and
+you cannot tell. If our pick is clearly wrong whichever way the options are
+read, resolve it with the real result written plainly. That records a miss,
+which is the truth. For example, write "No offensive TD" when we picked a
+scorer and the Steelers scored no offensive touchdown, or write "32:47" when
+we picked "~27" minutes of possession. Buddy wants to see how we did, and a
+clear miss left pending hides it. Afterwards, run `tally` for that week.
 
 ## 3. Current leaders for Q18–Q24 (informational only, not a resolution)
 
