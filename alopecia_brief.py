@@ -338,15 +338,28 @@ def assemble(body, items, meta, full, since_day, today, number, cause_section=""
     body = strip_model_title(body)
     parts = ["\n".join(head), body.strip(), ""]
 
-    if not DISAGREE_RX.search(body):
+    if not body.strip():
+        # S256: brief #4 (2026-09-18) went out with NO synthesis -- the model
+        # spent its whole max_tokens on thinking and returned empty text -- and
+        # the only trace was a disagreement note under a blank page.
+        parts += ["## Synthesis missing", "",
+                  "**The council returned no text for this brief.** The items "
+                  "below were collected but not reviewed; the next brief "
+                  "covers them again. This is a failure of this run, not a "
+                  "quiet week.", ""]
+    elif not DISAGREE_RX.search(body):
         # Detection, not a silent pass: the judge dropped the section, so the
         # brief says that rather than letting its absence read as agreement.
+        # S256: name the answers file only when one is written -- a
+        # single-model run keeps none, and brief #4 pointed at a missing file.
+        where = ("The raw per-model answers are on the box next to this brief "
+                 "(`alopecia/briefs/%s-council.json`) and can be compared "
+                 "directly." % today if meta.get("answers") else
+                 "No per-model answers were kept for this run, so there is "
+                 "nothing to compare against.")
         parts += ["## Council disagreements", "",
                   "**The judge did not return this section.** That is a gap in "
-                  "this brief, not evidence that the council agreed. The raw "
-                  "per-model answers are on the box next to this brief "
-                  "(`alopecia/briefs/%s-council.json`) and can be compared "
-                  "directly." % today, ""]
+                  "this brief, not evidence that the council agreed. " + where, ""]
 
     if cause_section:
         parts += [cause_section]
@@ -440,7 +453,12 @@ def build(full=None, now=None, daily_dir=None, state_path=None, creds=None):
                   cause_section=cause_section)
     subject = "Alopecia areata — weekly brief #%d%s" % (
         number, " (full review to date)" if full else "")
-    return subject, md, meta, items, {"count": number, "last_brief_day": today}
+    # S256: an empty synthesis reviewed nothing, so the window does not move --
+    # the next brief covers these items again rather than skipping them.
+    meta["synthesis_empty"] = not strip_model_title(body or "").strip()
+    meta["brief_day"] = today
+    last_day = state.get("last_brief_day", "") if meta["synthesis_empty"] else today
+    return subject, md, meta, items, {"count": number, "last_brief_day": last_day}
 
 
 def _creds(path=None):
@@ -472,6 +490,8 @@ def build_note(info):
         ",".join(info.get("members") or []) or "none")
     if info.get("degraded"):
         note += " [DEGRADED: %s]" % info.get("reason")
+    if info.get("synthesis_empty"):
+        note += " [SYNTHESIS EMPTY: items carried to next brief]"
     return note
 
 
@@ -488,6 +508,9 @@ def note_samples():
          "productive"),
         ("a brief with no items at all",
          build_note({**full, "items": 0}), "zero"),
+        # S256: the item count still parses; ok=False is what makes it red.
+        ("a brief whose synthesis came back EMPTY",
+         build_note({**full, "synthesis_empty": True}), "productive"),
     ]
 
 
@@ -499,7 +522,10 @@ def main(argv):
     full = True if "--full" in args else None
 
     subject, md, meta, items, state_update = build(full=full)
-    _write_outputs(state_update["last_brief_day"], md, meta, state_update["count"])
+    # S256: the file is named for the day the brief was BUILT -- last_brief_day
+    # stays put after an empty synthesis, and would overwrite last week's file.
+    _write_outputs(meta.get("brief_day") or state_update["last_brief_day"],
+                   md, meta, state_update["count"])
 
     if dry:
         log("DRY RUN — not sending, not advancing state")
@@ -534,10 +560,14 @@ def main(argv):
     # belongs -- as a banner in the brief itself, and in this note -- rather
     # than as a red job for a brief that was delivered. A check that cries wolf
     # stops being read.
+    # S256: an EMPTY synthesis is not a degraded council -- nothing was reviewed,
+    # so it is red. Brief #4 recorded "sent, 8 item(s)" ok=True over a blank page.
     _record(build_note({"count": state_update["count"], "items": len(items),
                         "members": meta.get("members"),
                         "degraded": meta.get("degraded"),
-                        "reason": meta.get("reason")}))
+                        "reason": meta.get("reason"),
+                        "synthesis_empty": meta.get("synthesis_empty")}),
+            ok=not meta.get("synthesis_empty"))
     return 0
 
 
@@ -676,6 +706,24 @@ def selftest():
                                "degraded": True, "reason": "one keyed provider"},
                               True, "", "2026-09-01", 1))
     ck("not-medical-advice footer is present", "not medical advice" in md.lower())
+    # S256: brief #4 went out with an EMPTY synthesis under a false pointer
+    # to a council file that a single-model run never writes.
+    hollow = assemble("", items, {"members": ["anthropic"], "judge": "anthropic",
+                                  "degraded": True, "reason": "x"},
+                      False, "2026-09-11", "2026-09-18", 4)
+    ck("an EMPTY synthesis is announced, not a blank page",
+       "## Synthesis missing" in hollow)
+    ck("an empty synthesis still carries the sources", "u1" in hollow)
+    ck("no council-file pointer when no answers were kept",
+       "council.json" not in assemble(body, items, meta, True, "", "2026-09-01", 1))
+    ck("council-file pointer when answers WERE kept",
+       "2026-09-01-council.json" in assemble(
+           body, items, {**meta, "answers": [("a", "x"), ("b", "y")]},
+           True, "", "2026-09-01", 1))
+    ck("an empty-synthesis note says so",
+       "SYNTHESIS EMPTY" in build_note({"count": 4, "items": 8,
+                                        "synthesis_empty": True}))
+
     ck("empty period does not pretend to be news",
        "Nothing new was collected" in empty_brief("2026-09-01", "2026-08-25", 2))
     ck("empty brief still holds the standing questions open",
@@ -747,6 +795,38 @@ def selftest():
            "viral triggers" in empty_brief(
                "2026-09-15", "2026-09-08", 1,
                cause_section="## Cause research\n\nviral triggers here"))
+
+    # ── S256: an empty synthesis holds the window (stubbed council, temp files) ──
+    import types
+    global CAUSE_RESEARCH_DRAFT_PATH
+    saved_draft, saved_ens = CAUSE_RESEARCH_DRAFT_PATH, sys.modules.get("ensemble")
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "daily"
+        d.mkdir()
+        (d / "alopecia-2026-09-15.json").write_text(json.dumps([
+            {"key": "k", "title": "T", "source": "pubmed", "rank": 1, "label": "x"}]))
+        sp = Path(td) / "state.json"
+        CAUSE_RESEARCH_DRAFT_PATH = Path(td) / "draft.md"
+        try:
+            for reply, want_day in (("", "2026-09-11"),
+                                    ("## What changed\n\nx [1].", "2026-09-18")):
+                save_state({"count": 3, "last_brief_day": "2026-09-11"}, sp)
+                sys.modules["ensemble"] = types.SimpleNamespace(
+                    best_answer=lambda *a, _r=reply, **k: (
+                        {"members": ["anthropic"], "judge": "anthropic"}, _r))
+                _, _, m, _, st = build(now=datetime(2026, 9, 18, 7), daily_dir=d,
+                                       state_path=sp, creds={})
+                ck("build: %s synthesis -> window %s, file day 2026-09-18" % (
+                       "EMPTY" if not reply else "real", want_day),
+                   st["last_brief_day"] == want_day and st["count"] == 4
+                   and m["brief_day"] == "2026-09-18"
+                   and m["synthesis_empty"] == (not reply))
+        finally:
+            CAUSE_RESEARCH_DRAFT_PATH = saved_draft
+            if saved_ens is None:
+                sys.modules.pop("ensemble", None)
+            else:
+                sys.modules["ensemble"] = saved_ens
 
     print("\n%s" % ("ALL PASS" if ok[0] else "FAILURES ABOVE"))
     return ok[0]
