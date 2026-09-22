@@ -47,6 +47,10 @@ def schedule_rows(data):
     return rows
 
 
+def schedule():
+    return schedule_rows(_get("teams/pit/schedule"))
+
+
 def summary_view(data):
     box = data.get("boxscore", {})
     comp = data.get("header", {}).get("competitions", [{}])[0]
@@ -125,7 +129,7 @@ if __name__ == "__main__":
     if args[:1] == ["selftest"]:
         sys.exit(selftest())
     if args[:1] == ["schedule"]:
-        print("\n".join(json.dumps(r) for r in schedule_rows(_get("teams/pit/schedule"))))
+        print("\n".join(json.dumps(r) for r in schedule()))
         sys.exit(0)
     if args[:1] == ["summary"] and len(args) == 2 and args[1].isdigit():
         print(json.dumps(summary_view(_get(f"summary?event={args[1]}"))))

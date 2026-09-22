@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""immaculate_agent.py -- Project Immaculate's two judgment passes, on CUMULUS (S253).
+"""immaculate_agent.py -- Project Immaculate's post-game resolve pass, on CUMULUS (S253).
 
-These were desktop-app scheduled tasks on Buddy's MacBook until 2026-09-22.
-Those only fire while the laptop is awake -- lid closed on battery, they are
-skipped -- and three runs had already hung on ssh calls back to this box
-(T102). Everything they touch lives here, so they now run here, on timers:
+After each Steelers game, immaculate_tick.py (09:00 / 21:00) runs this to
+record what actually happened: the season question for that game (Q1-Q17),
+the week's mini-contest questions, and the current leaders for the
+season-long Q18-Q24. The tick then emails Buddy the comparison. This is the
+only step that needs judgment -- mapping a box score onto a question's exact
+options -- so it is the only one that calls a model.
 
-    daily      07:15      new-contest watch, season-PDF check, record any
-                          finished game's season question
-    wednesday  Wed 06:50  resolve last week's season + weekly-contest
-                          questions, snapshot Q18-24 leaders -- feeds the
-                          09:05 immaculate-wednesday-report email
+It began S253 as two Mac desktop-app scheduled tasks (daily + Wednesday),
+moved here because those skip whenever the laptop sleeps; the same day Buddy
+reshaped the schedule around games instead of weekdays.
 
-The instructions are immaculate_prompts/<mode>.md. The model gets NO general
+The instructions are immaculate_prompts/postgame.md. The model gets NO general
 shell and NO permission classifier to fall back on, so it gets an allow-list
-instead: Bash only for the exact immaculate_* commands below, WebSearch, and
-one outbound channel, notify_buddy (Telegram to Buddy). A web page it reads
-therefore cannot talk it into reading or sending anything more.
+instead: Bash only for the exact immaculate_* commands in COMMANDS, and
+WebSearch. A web page it reads therefore cannot talk it into reading or
+running anything more. It has no outbound channel at all: the tick's email
+is the delivery.
 
 The gate is a PreToolUse hook (`permitted`), not the permission rules alone.
 Found live S253 on the first boundary test: with permission_mode "dontAsk" and
 an exact allow-list, `hostname` and `tally && hostname` still RAN -- Claude
 Code auto-approves commands it judges read-only, so `cat` on the credentials
-file would have too. The hook sees every Bash call before it runs and denies
-anything that is not one exact script + subcommand from COMMANDS.
+file would have too (TOOLING-TRAPS T105). The hook sees every Bash call before
+it runs and denies anything that is not one exact script + subcommand.
 
-    python3 immaculate_agent.py daily|wednesday [--dry-run]
+    python3 immaculate_agent.py postgame [--dry-run]
     python3 immaculate_agent.py selftest
 """
 import asyncio
@@ -46,34 +47,24 @@ PROMPTS = HERE / "immaculate_prompts"
 TRANSCRIPTS = HERE / "logs" / "immaculate-agent"
 PY = "./.venv/bin/python"
 
-# per mode: (budget USD, max turns, wall-clock seconds). The unit's
-# TimeoutStartSec sits above the wall clock as the hard backstop -- a hang
-# ends the run instead of blocking every run after it (the T102 failure).
-LIMITS = {"daily": (1.50, 40, 15 * 60), "wednesday": (4.00, 80, 20 * 60)}
+# per mode: (budget USD, max turns, wall-clock seconds). The tick's own
+# subprocess timeout and the unit's TimeoutStartSec sit above the wall clock:
+# a hang ends the run instead of blocking every run after it (T102).
+LIMITS = {"postgame": (4.00, 80, 20 * 60)}
 
 # script -> the subcommands allowed (None = the script runs with no arguments).
-# "reads" are safe in a dry run; "writes" are not. The watch is a write: it saves
-# what it has seen, so a dry run must not run it -- it would consume a real
-# finding and the scheduled run would never report it.
+# "reads" are safe in a dry run; "writes" are not.
 COMMANDS = {
-    "daily": {
-        "reads": {"immaculate_check.py": None,
-                  "immaculate_store.py": {"show", "tally"},
-                  "immaculate_espn.py": {"schedule", "summary"}},
-        "writes": {"immaculate_watch.py": None,
-                   "immaculate_store.py": {"record"}},
-    },
-    "wednesday": {
+    "postgame": {
         "reads": {"immaculate_store.py": {"show", "tally"},
                   "immaculate_espn.py": {"schedule", "summary"},
                   "immaculate_weekly_store.py": {"weeks", "detail", "tally"}},
-        "writes": {"immaculate_watch.py": None,
-                   "immaculate_store.py": {"record", "snapshot-leader"},
+        "writes": {"immaculate_store.py": {"record", "snapshot-leader"},
                    "immaculate_weekly_store.py": {"resolve"}},
     },
 }
 # Anything that lets one command become two, redirect, substitute or escape.
-# Refused even inside quotes; the prompts tell the model to keep notes free of
+# Refused even inside quotes; the prompt tells the model to keep notes free of
 # them rather than trying to parse bash's quoting rules correctly here.
 BANNED = set(";&|<>$`\\\n\r")
 
@@ -114,8 +105,6 @@ def allowed_tools(mode, dry_run):
              for script, subs in command_table(mode, dry_run).items()
              for sub in (subs or [None])]
     tools.append("WebSearch")
-    if not dry_run:
-        tools.append("mcp__immaculate__notify_buddy")
     return tools
 
 
@@ -125,7 +114,7 @@ def _load_creds():
 
 def send_telegram(message):
     """To Buddy only. Returns "sent" or "FAILED: ..." -- never raises, so a
-    failed alert cannot take the run down with it."""
+    failed alert cannot take the run down with it. Also used by the tick."""
     creds = _load_creds()
     token, chat = creds.get("telegram_bot_token", ""), creds.get("telegram_user_id", "")
     if not token or not chat:
@@ -144,18 +133,9 @@ def send_telegram(message):
 
 async def run_pass(mode, dry_run):
     from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, HookMatcher,
-                                  ResultMessage, TextBlock, create_sdk_mcp_server,
-                                  query, tool)
+                                  ResultMessage, TextBlock, query)
     creds = _load_creds()
     budget_usd, max_turns, _ = LIMITS[mode]
-    sent = []
-
-    @tool("notify_buddy", "Send Buddy a short Telegram message (his phone).", {"message": str})
-    async def notify_buddy(args):
-        result = send_telegram(f"Immaculate: {args['message']}")
-        sent.append((args["message"], result))
-        return {"content": [{"type": "text", "text": result}]}
-
     refused = []
 
     async def gate(input_data, tool_use_id, context):
@@ -171,8 +151,7 @@ async def run_pass(mode, dry_run):
     options = ClaudeAgentOptions(
         hooks={"PreToolUse": [HookMatcher(matcher="Bash", hooks=[gate])]},
         tools=["Bash", "WebSearch"],
-        mcp_servers={} if dry_run else {
-            "immaculate": create_sdk_mcp_server(name="immaculate", tools=[notify_buddy])},
+        mcp_servers={},
         strict_mcp_config=True,
         allowed_tools=allowed_tools(mode, dry_run),
         permission_mode="dontAsk",
@@ -183,11 +162,10 @@ async def run_pass(mode, dry_run):
         env={"ANTHROPIC_API_KEY": creds["anthropic_api_key"]},
         cwd=str(HERE),
     )
-    prompt = f"Scheduled {mode} run. Now: {datetime.now():%A %Y-%m-%d %H:%M} (America/New_York)."
+    prompt = f"Post-game run. Now: {datetime.now():%A %Y-%m-%d %H:%M} (America/New_York)."
     if dry_run:
-        prompt += (" THIS IS A DRY RUN: the watch, every record/resolve/snapshot command and "
-                   "notify_buddy are unavailable. Skip the watch; for everything else, do the "
-                   "research and write out the exact command or message you WOULD run or send.")
+        prompt += (" THIS IS A DRY RUN: every record/resolve/snapshot command is unavailable. "
+                   "Do the research and write out the exact command you WOULD run.")
 
     narrative, result, cost, error = [], "", None, None
     async for msg in query(prompt=prompt, options=options):
@@ -198,7 +176,7 @@ async def run_pass(mode, dry_run):
             cost, result = msg.total_cost_usd, msg.result or ""
             if msg.is_error:
                 error = f"SDK run ended with {msg.subtype}"
-    return narrative, result, cost, error, sent, refused
+    return narrative, result, cost, error, refused
 
 
 def _record_cost(cost, mode, stamp):
@@ -210,30 +188,17 @@ def _record_cost(cost, mode, stamp):
         print(f"llm_budget.record_sdk_cost failed: {e}")
 
 
-def _job_status(mode, ok, note):
-    # daily is already watched through immaculatecheck, which
-    # immaculate_check.py records; only wednesday needs its own row.
-    if mode != "wednesday":
-        return
-    try:
-        import job_status
-        job_status.record("immaculatewednesdayresolve", ok, note[:200])
-    except Exception as e:
-        print(f"job_status.record failed: {e}")
-
-
 def main(mode, dry_run=False):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     wall = LIMITS[mode][2]
     try:
-        narrative, result, cost, error, sent, refused = asyncio.run(
+        narrative, result, cost, error, refused = asyncio.run(
             asyncio.wait_for(run_pass(mode, dry_run), timeout=wall))
     except asyncio.TimeoutError:
-        narrative, result, cost, error, sent, refused = (
-            [], "", None, f"no result after {wall // 60} min -- stopped", [], [])
+        narrative, result, cost, error, refused = (
+            [], "", None, f"no result after {wall // 60} min -- stopped", [])
     except Exception as e:
-        narrative, result, cost, error, sent, refused = (
-            [], "", None, f"{type(e).__name__}: {e}", [], [])
+        narrative, result, cost, error, refused = [], "", None, f"{type(e).__name__}: {e}", []
 
     if cost is not None:
         _record_cost(cost, mode, stamp)
@@ -242,7 +207,6 @@ def main(mode, dry_run=False):
     path.write_text("\n\n".join(
         [f"# Immaculate {mode} run {stamp}", f"Dry run: {dry_run}",
          f"Cost: {'unknown' if cost is None else f'${cost:.4f}'}", f"Error: {error or 'none'}",
-         "## Telegram sent", *([f"- {m} -> {r}" for m, r in sent] or ["(none)"]),
          "## Refused by the gate", *([f"- `{c}` -- {w}" for c, w in refused] or ["(none)"]),
          "## Narrative", *(narrative or ["(none)"]),
          "## Final summary", result or "(none)"]) + "\n")
@@ -252,17 +216,15 @@ def main(mode, dry_run=False):
         print(f"FAILED: {error}")
         if not dry_run:
             print("alert:", send_telegram(
-                f"Immaculate {mode} run FAILED on cumulus1: {error}. Transcript: {path.name}"))
-            _job_status(mode, False, error)
+                f"Immaculate {mode} run FAILED on cumulus1: {error}. Transcript: {path.name}. "
+                f"The 9am/9pm check will retry it."))
         return 1
-    if not dry_run:
-        _job_status(mode, True, f"ran, cost=${cost or 0:.2f}")
     return 0
 
 
 # ── selftest ──────────────────────────────────────────────────────────────────
 def selftest():
-    """Offline (T32): no SDK call, no Telegram, no job_status."""
+    """Offline (T32): no SDK call, no Telegram."""
     ok = True
 
     def ck(label, cond):
@@ -270,8 +232,8 @@ def selftest():
         print(f"  [{'OK ' if cond else 'FAIL'}] {label}")
         ok = ok and cond
 
-    def allowed(cmd, mode="daily", dry=False):
-        return permitted(mode, dry, cmd)[0]
+    def allowed(cmd, dry=False):
+        return permitted("postgame", dry, cmd)[0]
 
     # the S253 boundary test, as a regression: these RAN before the gate existed
     ck("gate: `hostname` refused", not allowed("hostname"))
@@ -286,25 +248,20 @@ def selftest():
     ck("gate: a different interpreter is refused", not allowed("python3 immaculate_store.py show"))
     ck("gate: a subcommand not on the list is refused (seed)",
        not allowed(f"{PY} immaculate_store.py seed"))
-    ck("gate: a no-argument script given arguments is refused",
-       not allowed(f"{PY} immaculate_watch.py --reset"))
+    ck("gate: the contest watch is not this agent's (the tick runs it)",
+       not allowed(f"{PY} immaculate_watch.py"))
     ck("gate: allowed read passes", allowed(f"{PY} immaculate_store.py tally"))
     ck("gate: quoted note with spaces and parentheses passes",
        allowed(f'{PY} immaculate_store.py record 3 PIT "Final 24-17 (ESPN summary)"'))
+    ck("gate: weekly resolve passes live", allowed(f"{PY} immaculate_weekly_store.py resolve 2 1 Patriots x"))
     ck("gate: dry run refuses a write", not allowed(f"{PY} immaculate_store.py record 3 PIT x", dry=True))
-    ck("gate: dry run refuses the watch", not allowed(f"{PY} immaculate_watch.py", dry=True))
-    ck("gate: daily cannot resolve weekly questions",
-       not allowed(f"{PY} immaculate_weekly_store.py resolve 2 1 Patriots x"))
-    ck("gate: wednesday can", allowed(f"{PY} immaculate_weekly_store.py resolve 2 1 Patriots x",
-                                      mode="wednesday"))
 
     for mode in COMMANDS:
-        live, dry = allowed_tools(mode, False), allowed_tools(mode, True)
-        ck(f"{mode}: dry-run rules have no write and no notify_buddy",
-           not any(w in t for t in dry for w in ("record", "resolve", "snapshot",
-                                                 "watch", "notify")))
-        ck(f"{mode}: live rules can notify and run the watch",
-           "mcp__immaculate__notify_buddy" in live and f"Bash({PY} immaculate_watch.py)" in live)
+        dry = allowed_tools(mode, True)
+        ck(f"{mode}: dry-run rules have no write",
+           not any(w in t for t in dry for w in ("record", "resolve", "snapshot")))
+        ck(f"{mode}: no outbound tool at all -- the tick's email is the delivery",
+           not any(t.startswith("mcp__") for t in allowed_tools(mode, False)))
         # the prompt and the gate drift apart silently otherwise: a command the
         # prompt tells the model to run but the gate refuses is a step that
         # never happens, visible only as a refusal mid-transcript.
@@ -317,6 +274,8 @@ def selftest():
                                   (len(c.split()) > 2 and c.split()[2] in table[c.split()[1]]))))
         ck(f"{mode}: every command its prompt names passes the gate"
            + (f" -- missing {missing}" if missing else ""), bool(named) and not missing)
+        ck(f"{mode}: prompt never mentions notify_buddy (it has no such tool)",
+           "notify_buddy" not in text)
         ck(f"{mode}: hard limits set (budget, turns, wall clock)", all(LIMITS[mode]))
     print("selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
@@ -328,5 +287,5 @@ if __name__ == "__main__":
         sys.exit(selftest())
     if a[:1] and a[0] in COMMANDS:
         sys.exit(main(a[0], dry_run="--dry-run" in a))
-    print("usage: immaculate_agent.py {daily|wednesday} [--dry-run] | selftest")
+    print("usage: immaculate_agent.py postgame [--dry-run] | selftest")
     sys.exit(2)

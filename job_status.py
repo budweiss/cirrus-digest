@@ -33,29 +33,21 @@ CADENCE_H = {
                                 # three boxes at BOTH layers and is the only thing
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
-    # S141. Added the session Project Immaculate was created, for the reason
-    # written at the top of this table. It guards a HARD DEADLINE -- the
-    # contest entry locks Sun 2026-09-13 13:00 ET and cannot be entered late --
-    # so a silent stop between now and then is the one failure that cannot be
-    # recovered from afterwards. Daily 07:15; 26h leaves the usual 2h of grace.
-    # S253: now immaculate-agent-daily.timer on cumulus1 (was a Mac scheduled
-    # task that ssh'd in, and skipped whenever the laptop slept).
-    "immaculatecheck": 26,
-    # S253. The Wednesday resolve pass (immaculate-agent-wednesday.timer, Wed
-    # 06:50 on cumulus1) -- the research that feeds the 09:05 recap below. As
-    # a Mac scheduled task it had no status row at all; only the Mac stall
-    # watchdog could see it stop. Weekly beat; 192h = a week + grace.
-    "immaculatewednesdayresolve": 192,
+    # S141 -> S253. Project Immaculate guards deadlines that cannot be
+    # re-opened. Since S253 one twice-daily tick (immaculate-tick.timer, 09:00
+    # and 21:00 on cumulus1) watches for each week's contest and, after each
+    # game, runs the resolve pass and sends the recap -- so its row is the one
+    # Immaculate heartbeat, and a failed step inside it sets ok=False here.
+    # 12h between runs + 2h grace. Retired S253 as separate rows because they
+    # no longer run on a fixed beat: immaculatecheck (the daily check),
+    # immaculatewednesdayreport (the recap, now sent after each game) and
+    # immaculatewednesdayresolve.
+    "immaculatetick": 14,
     # S169. The deterministic Saturday final-recap email (systemd timer on
     # CUMULUS, Sat 09:05) — after the session-task version fired at 09:00 on
     # 2026-09-12, ran the check, and never reached the send, silently. Weekly
     # beat, records "no active contest" off-season; 192h = a week + grace.
     "immaculatesaturdayfinal": 192,
-    # S242. The deterministic Wednesday recap email (systemd timer on
-    # CUMULUS, Wed 09:05) — season tally + weekly-contest comparison, same
-    # split as the Saturday sender above and for the same reason. Weekly
-    # beat; 192h = a week + grace.
-    "immaculatewednesdayreport": 192,
     # S148. Daily 01:00 on CIRRUS. Watched from the day it was created, for the
     # reason at the top of this table -- and with extra force here, because this
     # job's ENTIRE purpose is noticing silence. One that stopped silently would
@@ -180,9 +172,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciacollect",                       # S82, runs on CUMULUS
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
-                 "immaculatecheck",                       # S141, runs on CUMULUS
-                 "immaculatewednesdayreport",              # S242, runs on CUMULUS
-                 "immaculatewednesdayresolve",             # S253, runs on CUMULUS
+                 "immaculatetick",                         # S253, runs on CUMULUS
                  # S102: accesscheck was added in S101 and NOT listed here, so
                  # CIRRUS looked for it locally, never found it, and printed
                  # "no run recorded yet" every time -- neutrally, so it never

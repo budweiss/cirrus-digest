@@ -138,12 +138,27 @@ JOB = {
     # unprofiled default of 15 minutes a job parked at 23:00 would have looked
     # clear of a sweep that is still running at midnight.
     "halftime-catalogue.timer":      ("heavy", 15, 50, "12+ search angles, nightly research"),
+    # S253. Buddy chose 09:00 + 21:00. Most ticks are 2-3 small HTTP reads;
+    # once per game it runs one resolve pass and sends one email.
+    "immaculate-tick.timer":         ("light", 1, 2, "ESPN + contest-page reads; one model pass per game"),
+    # S169. One email, Saturdays. Unregistered until S253, so it was assumed
+    # heavy and window-audit exited 1 on it every run (T9).
+    "immaculate-saturday-final.timer": ("light", 1, 1, "composes + sends one email"),
     "halftime-routing.timer":        ("heavy", 150, 120,
                                       "8 games x 7 metros, each a search + "
                                       "fetches + a model call; 2 games measured "
                                       "at 24 min on 2026-08-26"),
 }
 _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
+
+# Jobs that fire after the 07:30 brief ON PURPOSE, each with the reason. The
+# rule exists so the brief reports producers' same-morning results; these are
+# not same-morning producers for it, and flagging them forever trains everyone
+# to skip the audit (T9) -- the same reasoning as the reboot exemption below.
+AFTER_BRIEF_OK = {
+    "immaculate-tick.timer": "Buddy's 09:00/21:00 (S253); reports into the next brief",
+    "immaculate-saturday-final.timer": "a Saturday email the brief does not report on",
+}
 
 
 def profile(job: str):
@@ -388,7 +403,7 @@ def audit(jobs):
             # work finishes, not before — so a bad reboot has a whole day to be
             # noticed instead of surfacing when the 03:30 chain has failed.
             # Flagging it forever would train us to ignore the rule (T9).
-            if "reboot" in j["job"]:
+            if "reboot" in j["job"] or j["job"] in AFTER_BRIEF_OK:
                 continue
             start = j["hour"] * 60 + j["minute"]
             if 0 <= start - bt < 240:

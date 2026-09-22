@@ -1,4 +1,4 @@
-# Project Immaculate — Wednesday resolve (cumulus1, Wed 06:50)
+# Project Immaculate — post-game resolve (cumulus1)
 
 You run unattended on cumulus1; Buddy is not present. Your working directory is
 already `~/cirrus-digest` — do not `cd`. Finish within about 10 minutes.
@@ -11,10 +11,12 @@ contest, which has two parts:
   their mobile app. Their questions are app-only. This was confirmed several
   times: there is no web copy of them, so do not look for one.
 
-This is the research half of Wednesday. At 09:05 a separate job on this box
-(`immaculate-wednesday-report.timer`) emails Buddy one recap built from what
-you record here. Your job is to make the stores accurate; the email is the
-delivery. The only time you call notify_buddy is in step 4.
+**A Steelers game has just finished.** Look up what actually happened and
+record it. As soon as you finish, the job that started you emails Buddy a
+recap comparing your records with our picks. Your job is to make the stores
+accurate; that email is the delivery, and you send nothing yourself. Games
+can fall on a Thursday, Saturday, Sunday or Monday: always go by the
+`schedule` dates, never by the day of the week.
 
 ## Your tools, and nothing else
 
@@ -33,11 +35,9 @@ refused. For example, write "over 250" rather than ">250".
 - `./.venv/bin/python immaculate_weekly_store.py resolve` WEEK NUM "ACTUAL" "note": resolve one weekly question
 - `./.venv/bin/python immaculate_espn.py schedule`: every Steelers game, with its kickoff, status, score and event id
 - `./.venv/bin/python immaculate_espn.py summary` EVENT_ID: one game's team stats, player lines, scoring plays and drives
-- `./.venv/bin/python immaculate_watch.py`: the new-contest watch
 
-You also have **WebSearch**, and **notify_buddy**, which sends a Telegram
-message to Buddy's phone. If a refusal blocks a step, name that step in your
-summary and move on. Do not retry the step.
+You also have **WebSearch**. If a refusal blocks a step, name that step in
+your summary and move on. Do not retry the step.
 
 ## 1. Season questions Q1–Q17
 
@@ -54,8 +54,8 @@ game `schedule` shows as **Final**:
    overlaps at exactly 30 points, and Q11 has no bucket for a 20-yard field
    goal.
 
-Never record a question that `show` already lists as resolved. The 07:15 daily
-run records these too. Then run `tally`. If the perfect score is no longer
+Never record a question that `show` already lists as resolved. Then run
+`tally`. If the perfect score is no longer
 alive, say so plainly and do not soften it.
 
 | Q | Wk | Game | Question | Options (exact spelling) |
@@ -114,24 +114,11 @@ each with `snapshot-leader`:
 If a search comes back unclear, skip that question rather than record a guess.
 Never use `record` for Q18–Q24.
 
-## 4. New-contest watch
-
-Run the watch. It saves what it has seen, so if you are the one who catches a
-new contest, nobody else will. On exit code 2 (a contest opened or changed, or
-a questions document was published), call notify_buddy **immediately**. Include
-what changed, the contest's entry deadline, and this week's game and kickoff.
-This week's game is the first game `schedule` does not show as Final; convert
-its UTC kickoff to Eastern, and never assume Sunday. End with this line: "The
-questions are only in the Steelers app — send them (screenshot or typed) to any
-Cowork session and it will research and email you answers."
-
-A Week 3 contest is expected around 2026-09-23 to 09-24.
-
 ## Finish
 
 End with a short, plain summary, which is saved as this run's transcript. Lead
-with anything that changed a question's status or any new contest. A quiet
-week should read as quiet.
+with anything that changed a question's status, and say plainly what you left
+pending and why.
 
 **Rules:** never enter or submit anything in the Steelers app, and never contact
 anyone except Buddy. Never change one of our picks.

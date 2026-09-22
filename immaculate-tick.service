@@ -1,0 +1,21 @@
+[Unit]
+Description=Immaculate — 9am/9pm tick: contest watch until found, post-game results + recap (S253)
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+Environment=TZ=America/New_York
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/immaculate_tick.py
+# Hard stop above everything the tick can wait on (resolve pass 25 min, recap
+# email 5, watch 5). A oneshot has NO start timeout by default, and a run that
+# never ends blocks every later run silently -- the T102 failure.
+TimeoutStartSec=45min
+
+[Install]
+WantedBy=multi-user.target

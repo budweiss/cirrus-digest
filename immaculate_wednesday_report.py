@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Weekly Wednesday recap for Project Immaculate — Buddy's ask, S242
+"""Recap email for Project Immaculate — Buddy's ask, S242. Since S253 it is
+sent right after each game by immaculate_tick.py (`--window --game LABEL`),
+not on a Wednesday timer: "When the game is over, we should look up the
+results and compare how we did." (Buddy, 2026-09-22.) Original S242 text:
+
+Weekly Wednesday recap for Project Immaculate — Buddy's ask, S242
 (2026-09-21): "on Wednesday can you... email how well we did."
 
 Reads whatever is already recorded in the CRM (both stores) and sends ONE
@@ -153,10 +158,17 @@ def weekly_section():
     return L
 
 
-def compose(rows, t, now=None):
+def compose(rows, t, now=None, game=None):
+    """S253: `game` (e.g. "Week 3 CIN @ PIT (final PIT 24, CIN 17)") is set
+    when immaculate_tick.py sends this right after a game, which is when it
+    runs now; without it the old Wednesday wording is kept."""
     now = now or datetime.now(timezone.utc)
-    subject = f"Immaculate Prediction — Wednesday recap ({now:%Y-%m-%d})"
-    L = ["IMMACULATE PREDICTION — WEDNESDAY RECAP", ""]
+    if game:
+        subject = f"Immaculate Prediction — how we did: {game}"
+        L = [f"IMMACULATE PREDICTION — POST-GAME RECAP: {game}", ""]
+    else:
+        subject = f"Immaculate Prediction — Wednesday recap ({now:%Y-%m-%d})"
+        L = ["IMMACULATE PREDICTION — WEDNESDAY RECAP", ""]
     L.extend(season_section(rows, t))
     L.extend(weekly_section())
     L.append("Full working: ~/Documents/Cowork/immaculate/")
@@ -179,7 +191,8 @@ def main():
 
     rows = store.answers()
     t = store.tally()
-    subject, body = compose(rows, t)
+    game = sys.argv[sys.argv.index("--game") + 1] if "--game" in sys.argv[:-1] else None
+    subject, body = compose(rows, t, game=game)
 
     if dry:
         print("=== DRY RUN — nothing sent ===")
@@ -227,6 +240,9 @@ def selftest() -> int:
 
     subj, body = compose(rows, t)
     ck("subject carries a date", "Wednesday recap" in subj)
+    gs, gb = compose(rows, t, game="Week 3 CIN @ PIT (final PIT 24, CIN 17)")
+    ck("post-game: subject and header name the game",
+       "CIN @ PIT" in gs and "POST-GAME RECAP: Week 3" in gb)
     ck("body includes both major sections",
        "SEASON ENTRY" in body and "WEEKLY CONTEST" in body)
 

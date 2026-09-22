@@ -1,0 +1,27 @@
+[Unit]
+Description=Immaculate tick — 09:00 and 21:00 daily (S253)
+
+# Buddy, 2026-09-22: "check for the contest in the beginning of the day and at
+# the end of the day. like 9am and 9pm... Once found, we don't need to check
+# again for the rest of the week. When the game is over, we should look up the
+# results and compare how we did." The TIMES are Buddy's. The tick itself
+# decides what to do each run (immaculate_tick.py): most runs are two or three
+# small HTTP reads; the only model call is once per game, after it is Final.
+#
+# Replaces, all S253: immaculate-agent-daily (07:15), immaculate-agent-
+# wednesday (Wed 06:50) and immaculate-wednesday-report (Wed 09:05) -- results
+# now follow the game, whatever day it falls on, not a fixed weekday.
+#
+# 09:00 is inside the Mon-Fri 08:00-16:00 window and after the 07:30 brief;
+# runtime_window profiles this timer light and exempts it from the after-brief
+# rule, with the reason, rather than leaving a permanent false violation (T9).
+# Persistent=true: a box that was down catches up. To retime, edit this file
+# and re-run runner immaculate-tick-install -- NOT cumulus-schedule, which
+# rewrites every OnCalendar line to one time and would drop the 21:00 run.
+[Timer]
+OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 21:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
