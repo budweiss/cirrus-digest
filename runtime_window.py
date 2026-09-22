@@ -570,6 +570,23 @@ def selftest() -> bool:
     ck("job overlapping the brief flagged",
        any("still running at" in x for x in lv), True)
 
+    # S253: AFTER_BRIEF_OK exempts a named job from the after-brief rule --
+    # and ONLY that job. The same slot, unnamed, must still be flagged, or the
+    # exemption has quietly switched the rule off for everyone.
+    ab = parse_schedule("===== CIRRUS (launchd) =====\n"
+                        "  com.cirrus.morningbrief            07:30\n"
+                        "===== CUMULUS (systemd timers) =====\n"
+                        "  immaculate-tick.timer              *-*-* 09:00:00\n"
+                        "  immaculate-tick.timer              *-*-* 21:00:00\n"
+                        "  some-new-job.timer                 *-*-* 09:00:00\n")
+    abv, _ = audit(ab)
+    ck("AFTER_BRIEF_OK job at 09:00 not flagged after the brief",
+       any("immaculate-tick" in x for x in abv), False)
+    ck("...an unnamed job in the same slot still is",
+       any("some-new-job" in x and "AFTER the brief" in x for x in abv), True)
+    ck("a two-OnCalendar timer parses as two rows",
+       sum(1 for j in ab if j["job"] == "immaculate-tick.timer"), 2)
+
     # CUMULUS timers come through as OnCalendar lines, a different shape.
     cum = parse_schedule(
         "===== CUMULUS (systemd timers) =====\n"
