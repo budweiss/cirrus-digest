@@ -22,9 +22,8 @@ can fall on a Thursday, Saturday, Sunday or Monday: always go by the
 
 Run each of these commands exactly as written, one per Bash call. Do not use
 pipes, redirects, `&&` or `cd`. Any other command is refused by design.
-Wrap each note in double quotes, and keep these characters out of notes:
-`; & | < > $` backtick and backslash. A command containing any of them is
-refused. For example, write "over 250" rather than ">250".
+Wrap each note in double quotes. Inside the quotes, any text is fine except
+`$`, backtick and backslash; a command containing one of those is refused.
 - `./.venv/bin/python immaculate_store.py show`: our 24 season answers and their status
 - `./.venv/bin/python immaculate_store.py tally`: the season score
 - `./.venv/bin/python immaculate_store.py record` N ACTUAL "note": resolve one season question
@@ -36,8 +35,11 @@ refused. For example, write "over 250" rather than ">250".
 - `./.venv/bin/python immaculate_espn.py schedule`: every Steelers game, with its kickoff, status, score and event id
 - `./.venv/bin/python immaculate_espn.py summary` EVENT_ID: one game's team stats, player lines, scoring plays and drives
 
-You also have **WebSearch**. If a refusal blocks a step, name that step in
-your summary and move on. Do not retry the step.
+You also have **WebSearch**. If the gate refuses a command, read its reason.
+If it is a character or format problem, fix the command and retry it once.
+Otherwise name the step in your summary and move on. Your summary must list
+every refused command. The run is checked against the gate's own log, and a
+refusal you leave out fails the run.
 
 ## 1. Season questions Q1–Q17
 

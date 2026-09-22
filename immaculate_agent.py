@@ -63,10 +63,14 @@ COMMANDS = {
                    "immaculate_weekly_store.py": {"resolve"}},
     },
 }
-# Anything that lets one command become two, redirect, substitute or escape.
-# Refused even inside quotes; the prompt tells the model to keep notes free of
-# them rather than trying to parse bash's quoting rules correctly here.
-BANNED = set(";&|<>$`\\\n\r")
+# Interpreted by bash even inside double quotes ($ and backtick substitute,
+# backslash escapes) or able to end the command line: refused ANYWHERE.
+BANNED = set("$`\\\n\r")
+# Operators that chain, pipe, redirect or group commands. Refused only OUTSIDE
+# quotes: inside "..." they are literal text. S253, found live: banning ";"
+# everywhere refused 4 of 7 leader snapshots whose quoted notes contained a
+# semicolon -- and the model's own summary said nothing had been refused.
+OPERATOR_CHARS = set("();<>|&")
 
 
 def command_table(mode, dry_run):
@@ -78,14 +82,26 @@ def command_table(mode, dry_run):
     return table
 
 
+def _tokens(command):
+    """Split like bash would at the top level: quotes respected, and any
+    operator OUTSIDE quotes becomes its own token (see OPERATOR_CHARS)."""
+    lx = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    lx.commenters = ""
+    return list(lx)
+
+
 def permitted(mode, dry_run, command):
     """(ok, reason) for one Bash command. The only gate that counts."""
     if any(ch in BANNED for ch in command):
-        return False, "shell metacharacters are not allowed (; & | < > $ ` \\ newline)"
+        return False, "these characters are not allowed anywhere, even in quotes: $ ` \\ newline"
     try:
-        argv = shlex.split(command)
+        argv = _tokens(command)
     except ValueError:
-        return False, "could not parse the command"
+        return False, "could not parse the command (unbalanced quotes?)"
+    if any(t and set(t) <= OPERATOR_CHARS for t in argv):
+        return False, ("one command only: no ; & | < > ( ) outside quotes "
+                       "(inside double quotes they are fine)")
     if len(argv) < 2 or argv[0] != PY:
         return False, f"only `{PY} immaculate_*.py ...` commands are allowed"
     table = command_table(mode, dry_run)
@@ -97,6 +113,40 @@ def permitted(mode, dry_run, command):
     if len(argv) >= 3 and argv[2] in subs:
         return True, ""
     return False, f"{argv[1]}: allowed here only as {sorted(subs)}"
+
+
+def names_allowed(mode, dry_run, command):
+    """Did a REFUSED command name an allowed script + subcommand? Then the model
+    was trying to do its job and a read or write it meant to make did not
+    happen -- a lost step, not a probe. Used to fail the run (see main)."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        argv = command.split()
+    table = command_table(mode, dry_run)
+    if len(argv) < 2 or argv[0] != PY or argv[1] not in table:
+        return False
+    subs = table[argv[1]]
+    return subs is None or (len(argv) >= 3 and argv[2] in subs)
+
+
+def _step(command):
+    """What a command DOES, ignoring its note: script, subcommand, target
+    (question N; week + number for a weekly resolve)."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        argv = command.split()
+    n = 5 if len(argv) > 2 and argv[2] == "resolve" else 4
+    return tuple(argv[1:n])
+
+
+def lost_steps(mode, dry_run, refused, ran):
+    """Refused commands the run needed and never recovered: well-named (see
+    names_allowed) and with no permitted command doing the same step after a
+    fix. A refusal the model corrected and retried is not a loss."""
+    done = {_step(c) for c in ran}
+    return [c for c in refused if names_allowed(mode, dry_run, c) and _step(c) not in done]
 
 
 def allowed_tools(mode, dry_run):
@@ -136,12 +186,13 @@ async def run_pass(mode, dry_run):
                                   ResultMessage, TextBlock, query)
     creds = _load_creds()
     budget_usd, max_turns, _ = LIMITS[mode]
-    refused = []
+    refused, ran = [], []
 
     async def gate(input_data, tool_use_id, context):
         command = (input_data.get("tool_input") or {}).get("command", "")
         ok, why = permitted(mode, dry_run, command)
         if ok:
+            ran.append(command)
             return {}
         refused.append((command, why))
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -176,7 +227,7 @@ async def run_pass(mode, dry_run):
             cost, result = msg.total_cost_usd, msg.result or ""
             if msg.is_error:
                 error = f"SDK run ended with {msg.subtype}"
-    return narrative, result, cost, error, refused
+    return narrative, result, cost, error, refused, ran
 
 
 def _record_cost(cost, mode, stamp):
@@ -192,16 +243,23 @@ def main(mode, dry_run=False):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     wall = LIMITS[mode][2]
     try:
-        narrative, result, cost, error, refused = asyncio.run(
+        narrative, result, cost, error, refused, ran = asyncio.run(
             asyncio.wait_for(run_pass(mode, dry_run), timeout=wall))
     except asyncio.TimeoutError:
-        narrative, result, cost, error, refused = (
-            [], "", None, f"no result after {wall // 60} min -- stopped", [])
+        narrative, result, cost, error, refused, ran = (
+            [], "", None, f"no result after {wall // 60} min -- stopped", [], [])
     except Exception as e:
-        narrative, result, cost, error, refused = [], "", None, f"{type(e).__name__}: {e}", []
+        narrative, result, cost, error, refused, ran = (
+            [], "", None, f"{type(e).__name__}: {e}", [], [])
 
     if cost is not None:
         _record_cost(cost, mode, stamp)
+    # S253: the model's own summary is not evidence. On the first live run it
+    # reported "no steps were blocked" while the gate had refused 4 writes.
+    lost = lost_steps(mode, dry_run, [c for c, _ in refused], ran)
+    if lost and not error:
+        error = (f"the gate refused {len(lost)} command(s) the run needed, so those "
+                 f"steps did not happen (see 'Refused by the gate')")
     TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
     path = TRANSCRIPTS / f"{mode}{'-dryrun' if dry_run else ''}-{stamp}.md"
     path.write_text("\n\n".join(
@@ -253,6 +311,27 @@ def selftest():
     ck("gate: allowed read passes", allowed(f"{PY} immaculate_store.py tally"))
     ck("gate: quoted note with spaces and parentheses passes",
        allowed(f'{PY} immaculate_store.py record 3 PIT "Final 24-17 (ESPN summary)"'))
+    ck("gate: a semicolon INSIDE a quoted note passes (the S253 live miss)",
+       allowed(f'{PY} immaculate_store.py snapshot-leader 18 "Pat" "1 TD" "vs ATL Wk1; DK has 0"'))
+    ck("gate: > | & inside quotes pass", allowed(f'{PY} immaculate_store.py record 3 PIT "a > b | c & d"'))
+    ck("gate: an unspaced chain is refused", not allowed(f"{PY} immaculate_store.py tally&&hostname"))
+    ck("gate: an unquoted semicolon is refused", not allowed(f"{PY} immaculate_store.py tally;hostname"))
+    ck("gate: unquoted parentheses are refused", not allowed(f"{PY} immaculate_store.py record 3 PIT (x)"))
+    ck("gate: $ inside double quotes is refused (bash still expands it)",
+       not allowed(f'{PY} immaculate_store.py record 3 PIT "$HOME"'))
+    ck("lost step: a refused but well-named write counts as lost",
+       names_allowed("postgame", False, f'{PY} immaculate_store.py record 3 PIT "x $y"'))
+    bad = f'{PY} immaculate_store.py snapshot-leader 18 "Pat" "1" "a $x"'
+    fixed = f'{PY} immaculate_store.py snapshot-leader 18 "Pat" "1" "a x"'
+    ck("lost step: refused and never retried -> lost",
+       lost_steps("postgame", False, [bad], []) == [bad])
+    ck("lost step: refused, then fixed and run -> not lost",
+       lost_steps("postgame", False, [bad], [fixed]) == [])
+    ck("lost step: a DIFFERENT question's success does not cover it",
+       lost_steps("postgame", False, [bad], [fixed.replace(" 18 ", " 19 ")]) == [bad])
+    ck("lost step: a probe (--help, hostname) does not",
+       not names_allowed("postgame", False, f"{PY} immaculate_store.py --help")
+       and not names_allowed("postgame", False, "hostname"))
     ck("gate: weekly resolve passes live", allowed(f"{PY} immaculate_weekly_store.py resolve 2 1 Patriots x"))
     ck("gate: dry run refuses a write", not allowed(f"{PY} immaculate_store.py record 3 PIT x", dry=True))
 
