@@ -551,6 +551,12 @@ NO_ZERO_STATE = {
         "job (off-season, a quiet no-op IS the correct run). A failed or "
         "refused send sets ok=False and is heartbeat's. There is no third "
         "state for a zero-run rule to detect.",
+    # S253 — the Wednesday resolve pass (immaculate_agent.py wednesday).
+    "immaculatewednesdayresolve":
+        "Its note is 'ran, cost=$X' on success; any SDK error, refusal-stopped "
+        "run or timeout sets ok=False (and Telegrams Buddy). A week with "
+        "nothing new to resolve is a correct quiet run, not a zero to count — "
+        "there is no third state for a zero-run rule to detect.",
 }
 
 
