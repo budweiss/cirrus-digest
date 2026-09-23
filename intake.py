@@ -119,16 +119,17 @@ RESEARCH_PROJECTS = {"pedagogy"}
 
 
 def reply_is_feedback(kind: str, projects, subject: str) -> bool:
-    """A REPLY (Re:, no REQUEST:) from a research sender is feedback, not a
-    focus topic. A sender on a RESEARCH_PROJECTS project counts as a research
-    sender whatever their static request_kind (S258): Alyssa is 'build' in
+    """A REPLY (Re:) from a research sender is feedback, not a focus topic.
+    A sender on a RESEARCH_PROJECTS project counts as a research sender
+    whatever their static request_kind (S258): Alyssa is 'build' in
     CUMULUS's allowlist, so this check used to skip her and the safety net
     below then forced every reply of hers into the digest topic queue --
-    "This update looks good ..." was researched and sent back to her."""
+    "This update looks good ..." was researched and sent back to her.
+    S259: a "Re: REQUEST: ..." reply is feedback too. REQUEST: has meant
+    nothing since S232 (the allowlist is the only gate), and a reply on an
+    old REQUEST: thread was still being researched as a new topic."""
     research = kind == "research" or any(p in RESEARCH_PROJECTS for p in (projects or []))
-    return (research
-            and (subject or "").lower().lstrip().startswith("re:")
-            and not REQUEST_RX.match(subject or ""))
+    return research and (subject or "").lower().lstrip().startswith("re:")
 
 
 BOUNCE_FROM_RX = re.compile(r"^(mailer-daemon|postmaster)@", re.IGNORECASE)
@@ -420,10 +421,9 @@ def ack_body(rec: dict) -> str:
                 f"will follow up with you directly.\n\n— {node}")
     if rec.get("kind") == "feedback":
         return (f"Hi {name},\n\nThanks for the note — Buddy and I have it "
-                "and will review. If you'd like a specific subject researched, "
-                "send a fresh email with the subject line "
-                "\"REQUEST: your topic\" and it goes straight into the "
-                f"research queue.\n\n— {node}")
+                "and will review. If you'd like a new subject researched, "
+                "send it as a fresh email (not a reply) and it goes straight "
+                f"into the research queue.\n\n— {node}")
     if rec.get("kind") == "research":
         return (f"Hi {name},\n\nGot it — your topic has been added to the "
                 f"research queue:\n\n    {rec['title']}\n\n"
@@ -1175,13 +1175,16 @@ def selftest() -> int:
     def _route_kind(kind, subject):
         return "feedback" if reply_is_feedback(kind, [], subject) else kind
     check("reply → feedback", _route_kind("research", "Re: Introducing your literacy research assistant") == "feedback")
-    check("Re: REQUEST: stays research", _route_kind("research", "Re: REQUEST: fluency ideas") == "research")
+    check("Re: REQUEST: reply → feedback (S259: REQUEST: carries no meaning)",
+          _route_kind("research", "Re: REQUEST: fluency ideas") == "feedback")
+    check("fresh REQUEST: subject stays research", _route_kind("research", "REQUEST: fluency ideas") == "research")
     check("fresh subject stays research", _route_kind("research", "phonics small groups") == "research")
     check("build kind unaffected by Re:", _route_kind("build", "Re: bid spreadsheet") == "build")
     rec_f = classify("alyssa", ["pedagogy"], "Re: Introducing your literacy research assistant", "looks great!")
     rec_f["kind"] = "feedback"
-    check("feedback ack thanks, offers REQUEST:", "Thanks for the note" in ack_body(rec_f)
-          and "REQUEST:" in ack_body(rec_f))
+    check("feedback ack thanks, says a fresh email gets researched", "Thanks for the note" in ack_body(rec_f)
+          and "fresh email" in ack_body(rec_f))
+    check("feedback ack no longer tells clients to use REQUEST: (S259)", "REQUEST:" not in ack_body(rec_f))
 
     # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
     import tempfile as _tf
