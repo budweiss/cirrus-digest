@@ -116,6 +116,21 @@ def prefix_skip_alert_lines(prefix_skipped: list) -> list:
 # This is a safety net: even if a sender's request_kind is mis-set to 'build'
 # in intake_senders.json, their requests still reach the research topic queue.
 RESEARCH_PROJECTS = {"pedagogy"}
+
+
+def reply_is_feedback(kind: str, projects, subject: str) -> bool:
+    """A REPLY (Re:, no REQUEST:) from a research sender is feedback, not a
+    focus topic. A sender on a RESEARCH_PROJECTS project counts as a research
+    sender whatever their static request_kind (S258): Alyssa is 'build' in
+    CUMULUS's allowlist, so this check used to skip her and the safety net
+    below then forced every reply of hers into the digest topic queue --
+    "This update looks good ..." was researched and sent back to her."""
+    research = kind == "research" or any(p in RESEARCH_PROJECTS for p in (projects or []))
+    return (research
+            and (subject or "").lower().lstrip().startswith("re:")
+            and not REQUEST_RX.match(subject or ""))
+
+
 BOUNCE_FROM_RX = re.compile(r"^(mailer-daemon|postmaster)@", re.IGNORECASE)
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -797,9 +812,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # Research senders: a REPLY without an explicit REQUEST: subject is
         # feedback (e.g. Alyssa answering the intro email), not a topic —
         # don't pollute the topic queue with "Re: ..." subjects.
-        if (rec["kind"] == "research"
-                and (subject or "").lower().lstrip().startswith("re:")
-                and not REQUEST_RX.match(subject or "")):
+        if reply_is_feedback(rec["kind"], entry["projects"], subject):
             rec["kind"] = "feedback"
         # S63: capability triage — a request can match a known, already-built
         # capability (resend, source-add) regardless of the sender's static
@@ -1160,10 +1173,7 @@ def selftest() -> int:
 
     # reply-as-feedback routing (research senders)
     def _route_kind(kind, subject):
-        if (kind == "research" and (subject or "").lower().lstrip().startswith("re:")
-                and not REQUEST_RX.match(subject or "")):
-            return "feedback"
-        return kind
+        return "feedback" if reply_is_feedback(kind, [], subject) else kind
     check("reply → feedback", _route_kind("research", "Re: Introducing your literacy research assistant") == "feedback")
     check("Re: REQUEST: stays research", _route_kind("research", "Re: REQUEST: fluency ideas") == "research")
     check("fresh subject stays research", _route_kind("research", "phonics small groups") == "research")
@@ -1355,8 +1365,7 @@ def selftest() -> int:
     # net — this was a real bug this session's change fixes.
     def _route(entry_kind, projects, subject, body):
         kind = entry_kind
-        if (kind == "research" and (subject or "").lower().lstrip().startswith("re:")
-                and not REQUEST_RX.match(subject or "")):
+        if reply_is_feedback(kind, projects, subject):
             kind = "feedback"
         rec = {"title": subject, "body_head": body}
         if kind != "feedback" and TS.classify_capability(rec) == "resend":
@@ -1371,6 +1380,16 @@ def selftest() -> int:
           _route("research", ["pedagogy"], "REQUEST: phonics", "small group ideas") == "research")
     check("pedagogy sender reply-feedback still routes to feedback (resend check skipped)",
           _route("research", ["pedagogy"], "Re: intro", "looks great!") == "feedback")
+    # S258: the real CUMULUS case -- Alyssa's allowlist kind is 'build', and
+    # her replies were force-routed into the digest topic queue.
+    check("pedagogy sender with kind=build: reply routes to feedback, not a topic",
+          _route("build", ["pedagogy"],
+                 "Re: Arts and Letters Lesson Plan Review — revised sections + broader district search",
+                 "Can you rerun arc 1 and combine all the lesson components into one email") == "feedback")
+    check("pedagogy sender with kind=build: fresh request still routes to research",
+          _route("build", ["pedagogy"], "REQUEST: fluency centers", "ideas please") == "research")
+    check("non-research build sender: Re: reply stays build",
+          _route("build", ["property"], "Re: bid spreadsheet", "thanks") == "build")
 
     # try_auto_resend: no send creds configured -> clean failure + fallback,
     # no network attempted (offline-safe unit test)
