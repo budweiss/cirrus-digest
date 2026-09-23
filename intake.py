@@ -341,12 +341,18 @@ def extract_bounced_recipient(msg, own_address: str) -> str:
 
 # ── Classification (wraps dev_loop) ───────────────────────────────────────────
 
-# Kinds whose only effect is a research topic or a backlog note: nothing they
-# trigger deletes, pays or grants anything, so the NEVER gate reads them for
-# instructions, not vocabulary (dev_loop read_only). Not build, confirmation or
-# resend -- those queue work or send mail. Not answer either (Buddy, S264): an
-# answer auto-sends a council reply, so a refusal is the safer mistake there.
-READ_ONLY_KINDS = ("research", "feedback")
+# Every intake sender is on Buddy's hand-kept allowlist, and he knows them
+# (Buddy, S264: "The current clients we have can be trusted"). So their mail is
+# gated for instructions, not vocabulary (dev_loop read_only): "who is in charge
+# of the HOA" goes through; "please delete my data", "pay the invoice" or a
+# password is HELD for Buddy to double-check with them, not bounced.
+_HOLD_WHY = {
+    "credential/secret": "it mentions a password, login or other credential",
+    "auth/send path": "it touches a login or security setting",
+    "deletion/destruction": "it asks us to delete something",
+    "financial": "it asks us to handle money or buy something",
+    "access-control": "it asks us to change who can see or use something",
+}
 
 
 def _risk_inputs(subject: str, body: str):
@@ -356,8 +362,7 @@ def _risk_inputs(subject: str, body: str):
 
 
 def gate(rec: dict, subject: str, body: str, read_only: bool = False) -> dict:
-    """Set rec's tier/status from the NEVER gate. run() calls it again with
-    read_only=True once the final kind is known -- classify() runs first."""
+    """Set rec's tier/status from the NEVER gate ("refused" = held for Buddy)."""
     tier, reason = dev_loop.classify_risk("USER_REQUEST", *_risk_inputs(subject, body),
                                           read_only=read_only)
     rec.update(tier=tier, tier_name=dev_loop.TIER_NAME.get(tier, str(tier)),
@@ -386,7 +391,7 @@ def classify(sender_name: str, projects, subject: str, body: str):
         "body_head": body[:400],
         "dev_spec": spec,
         "received": datetime.now().isoformat(timespec="seconds"),
-    }, subject, body)
+    }, subject, body, read_only=True)
 
 
 # ── Outputs: backlog, ledger, ack email, telegram ────────────────────────────
@@ -433,12 +438,11 @@ def ack_body(rec: dict) -> str:
     name = rec["requester"].capitalize()
     node = node_info.node_name()                    # S56: sign as the running box
     if rec["status"] == "refused":
-        return (f"Hi {name},\n\nThanks for your request:\n\n"
-                f"    {rec['title']}\n\n"
-                "This one falls in a category that needs a human decision "
-                "(things like credentials, deletions, purchases, or access "
-                "changes are never automated). Buddy has been notified and "
-                f"will follow up with you directly.\n\n— {node}")
+        why = _HOLD_WHY.get(rec.get("tier_reason", "").rpartition(": ")[2],
+                            "it needs a quick check first")
+        return (f"Hi {name},\n\nGot it:\n\n    {rec['title']}\n\n"
+                f"Because {why}, Buddy will double-check it with you before "
+                f"anything is done.\n\n— {node}")
     if rec.get("kind") == "feedback":
         return (f"Hi {name},\n\nThanks for the note — Buddy and I have it "
                 "and will review. If you'd like a new subject researched, "
@@ -865,8 +869,6 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 log(f"  routing override: {entry['name']} is on a research-only "
                     f"project → treating as research (was '{rec['kind']}')")
             rec["kind"] = "research"
-        if rec["kind"] in READ_ONLY_KINDS:
-            gate(rec, subject, body, read_only=True)
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -1023,7 +1025,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
         for r in processed:
             if r["status"] == "refused":
-                flag = "🚫 REFUSED (never-auto)"
+                flag = (f"✋ HELD for your double-check "
+                        f"({r['tier_reason'].rpartition(': ')[2]})")
             elif r.get("kind") == "feedback":
                 flag = "💬 FEEDBACK reply — review in logs/intake/"
             else:
@@ -1279,8 +1282,8 @@ def selftest() -> int:
     check("'format the list in excel' is not a destructive request",
           rec4["status"] != "refused")
 
-    # Read-only kinds (research/feedback) are gated for instructions,
-    # not vocabulary. Real past client mail must stay unrefused both ways.
+    # Every sender is gated for instructions, not vocabulary (Buddy, S264).
+    # Real past client mail must stay unrefused both ways.
     _bill_0824 = ("Please provide the information you have on back creek in "
                   "Middletown Delaware. I need the contact information for the "
                   "HOA board of directors and president.")
@@ -1300,7 +1303,7 @@ def selftest() -> int:
     # full gate refuses (the defect), the read-only gate does not.
     _asked = "Who is in charge of Back Creek? " + _bill_0824
     _subj = "Re: New Delaware development leads this week research"
-    check("full gate refuses 'in charge' (kept for build kind)",
+    check("the dev-loop (full) gate still refuses 'in charge'",
           gate({}, _subj, _asked)["status"] == "refused")
     check("read-only gate passes 'in charge'",
           gate({}, _subj, _asked, read_only=True)["status"] != "refused")
@@ -1310,14 +1313,15 @@ def selftest() -> int:
     check("read-only still refuses a credential",
           gate({}, "REQUEST: share my login password", "",
                read_only=True)["status"] == "refused")
-    check("kinds that queue work or send mail keep the full gate",
-          not {"build", "confirmation", "resend", "answer"} & set(READ_ONLY_KINDS))
-    import inspect
-    check("run() re-gates read-only kinds once the kind is final",
-          "gate(rec, subject, body, read_only=True)" in inspect.getsource(run))
+    check("classify() lets 'in charge' through for every sender",
+          classify("justin", ["halftime"], _subj, _asked)["status"] != "refused")
 
     # ack copy
-    check("refused ack mentions human", "human decision" in ack_body(rec2))
+    check("held ack says Buddy will double-check, and why",
+          "double-check" in ack_body(rec2) and "delete" in ack_body(rec2))
+    check("held ack no longer says 'never automated'",
+          "never automated" not in ack_body(rec2))
+    check("a credential hold says so", "password" in ack_body(rec3))
     check("minor ack mentions build",
           "build cycle" in ack_body(rec) or "scheduled" in ack_body(rec))
 

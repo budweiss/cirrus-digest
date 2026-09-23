@@ -70,7 +70,7 @@ _NEVER_PATTERNS = [
                             r'2fa|mfa|recovery\s+(email|contact))\b'),
 ]
 
-# read_only=True (a client request that is only researched or filed): a
+# read_only=True (mail from intake's allowlisted clients): a
 # deletion, financial or access-control word refuses only when the request
 # ALSO asks us to do that thing. "Which banks finance HOAs" or "who is in charge
 # of the HOA" names a thing; "please pay the invoice" asks for an act. These
@@ -477,7 +477,7 @@ def _selftest():
               f":: {item['detail'][:45]}  ({reason})")
     print(f"\nclassify_risk: {ok}/{len(cases)} passed")
 
-    # read_only (intake kinds research/feedback): a noun in a question
+    # read_only (every intake request): a noun in a question
     # passes; an instruction to act, a credential or a command still refuses;
     # and read_only never refuses what the full gate lets through.
     ro_cases = [
