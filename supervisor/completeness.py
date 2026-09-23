@@ -473,7 +473,10 @@ RULES = {
         why="ZERO LLM providers healthy — every paid model is unreachable. "
             "Check credentials and provider funding immediately.",
         evidence=("healed", "broken", "needs-funding", "err", "provider",
-                  "current", "model", "models"),   # status counters; `ok` is the signal
+                  "current", "model", "models",
+                  # S263: "1 unchecked" -- a model with no public version to
+                  # compare against (medgemma-text, built locally in S258).
+                  "unchecked"),   # status counters; `ok` is the signal
     ),
     # Vendor/account mail watcher (S67). Genuinely quiet most days — zero new
     # items is the NORMAL case, so this is only about the scan itself dying.
