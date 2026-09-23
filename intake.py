@@ -1245,6 +1245,17 @@ def selftest() -> int:
           and rec2["tier"] == dev_loop.TIER_NEVER)
     rec3 = classify("aggie", ["realestate"], "REQUEST: share my login password", "")
     check("credential pattern refused", rec3["status"] == "refused")
+    # S264: Bill's real 2026-09-23 request, refused because "Format the list"
+    # matched the disk-format rule.
+    rec4 = classify("bill", ["property-management"],
+                    "Re: Delaware development leads - nothing new this week (Sep 21) research",
+                    "I need the name, address and point of contact of every new home "
+                    "builder in the state of Delaware. Separate the list by builders "
+                    "currently building communities and builder that are not. Format "
+                    "the list in an excel spread sheet so it can be used to print "
+                    "mailing labels.")
+    check("'format the list in excel' is not a destructive request",
+          rec4["status"] != "refused")
 
     # ack copy
     check("refused ack mentions human", "human decision" in ack_body(rec2))

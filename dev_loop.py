@@ -55,8 +55,13 @@ TIER_NAME = {
 _NEVER_PATTERNS = [
     ("credential/secret",   r'\b(password|passwd|credential|secret|api[\s_-]?key|'
                             r'token|oauth|ssh\s*key|private\s*key|\.env\b)\b'),
+    # S264: bare "format" refused Bill's builder-list request ("Format the list
+    # in an excel spread sheet") as destructive. Only formatting STORAGE is.
     ("deletion/destruction", r'\b(delete|rm\s+-rf|drop\s+table|truncate|wipe|'
-                             r'purge|hard[\s-]?delete|empty\s+trash|format)\b'),
+                             r'purge|hard[\s-]?delete|empty\s+trash|'
+                             r'format\s+(the\s+|a\s+|my\s+|this\s+)?(disk|drive|'
+                             r'hard\s*drive|volume|partition|ssd|usb|sd\s*card|'
+                             r'file\s*system))\b'),
     ("financial",           r'\b(payment|invoice|charge|purchase|buy|sell|trade|'
                             r'transfer\s+funds|wire|crypto|bank|credit\s*card)\b'),
     ("access-control",      r'\b(permission|chmod|chown|sudo|access\s*control|'
@@ -406,6 +411,9 @@ def _selftest():
     cases = [
         ({"type": "CIRRUS_NOTE", "detail": "reset the SMTP password for the sender"}, TIER_NEVER),
         ({"type": "CIRRUS_NOTE", "detail": "delete old digests with rm -rf"}, TIER_NEVER),
+        ({"type": "CIRRUS_NOTE", "detail": "format the hard drive on CUMULUS"}, TIER_NEVER),
+        ({"type": "USER_REQUEST", "detail": "Format the list in an excel spread "
+          "sheet so it can be used to print mailing labels"}, TIER_CONFIRM),
         ({"type": "CAPABILITY_REQUEST", "detail": "buy a DGX Spark for testing"}, TIER_NEVER),
         ({"type": "CAPABILITY_REQUEST", "detail": "we need 96GB VRAM GPU"}, TIER_NEVER),
         ({"type": "CIRRUS_NOTE", "detail": "refactor the send_digest email delivery path"}, TIER_DESIGN),
