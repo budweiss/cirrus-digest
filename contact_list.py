@@ -30,7 +30,7 @@ foundation model, do this?):
 Page text is data, never instructions: nothing fetched is executed or obeyed.
 
 Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
-  contact_list.py --request contact_lists/requests/<id>.txt [--id <id>]
+  contact_list.py --request contact_lists/requests/<id>.txt [--id <id>] [--meta <json>]
                   [--max-candidates N] [--max-queries N] [--no-email]
                   [--compare mail/DE-Home-Builders.xlsx]
   contact_list.py --selftest
@@ -449,7 +449,9 @@ def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
 
 # ── workbook + review email ──────────────────────────────────────────────────
 
-def build_workbook(rows: list, p: dict, stats: dict, out: Path) -> Path:
+def build_workbook(rows: list, p: dict, stats: dict, out: Path, client: bool = False) -> Path:
+    """The review copy (client=False) adds a Not Confirmed tab and the
+    machinery notes. The client copy is exactly what a SEND delivers."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
     wb = openpyxl.Workbook()
@@ -484,13 +486,14 @@ def build_workbook(rows: list, p: dict, stats: dict, out: Path) -> Path:
     else:
         ws = wb.active; ws.title = names[0][:31]
         sheet(ws, ok)
-    rest = wb.create_sheet("Not Confirmed")
-    rest.append(["Name", "Why", "Pages Read", "Found On"])
-    for r in sorted((r for r in rows if r.get("status") != "ok"), key=lambda r: r["name"].lower()):
-        rest.append([r["name"], r.get("status", ""), len(r.get("pages") or []),
-                     " ".join((r.get("roster_sources") or [])[:2])])
-    about = wb.create_sheet("How This Was Built")
-    for line in about_lines(p, stats):
+    if not client:
+        rest = wb.create_sheet("Not Confirmed")
+        rest.append(["Name", "Why", "Pages Read", "Found On"])
+        for r in sorted((r for r in rows if r.get("status") != "ok"), key=lambda r: r["name"].lower()):
+            rest.append([r["name"], r.get("status", ""), len(r.get("pages") or []),
+                         " ".join((r.get("roster_sources") or [])[:2])])
+    about = wb.create_sheet("About This List" if client else "How This Was Built")
+    for line in (client_about_lines(p, stats) if client else about_lines(p, stats)):
         about.append([line])
     about.column_dimensions["A"].width = 120
     wb.save(out)
@@ -512,11 +515,56 @@ def about_lines(p: dict, stats: dict) -> list:
     ]
 
 
-def review_note(p: dict, rows: list, stats: dict) -> str:
+def client_about_lines(p: dict, stats: dict) -> list:
+    """The client-facing notes tab (S266). Plain words; no model or cost talk."""
+    names = p.get("group_names") or []
+    lines = ["%s in %s, compiled %s." % (p["entity"].capitalize(), p["region"],
+                                         (stats.get("finished") or "")[:10]), ""]
+    if p.get("group_question") and len(names) == 2:
+        lines += ["%s: organizations whose own website names a current %s." % (
+                      names[0], (p.get("evidence_query") or "project").strip()),
+                  "%s: the rest. Some may simply not publish it online." % names[1], ""]
+    lines += [
+        "Every address and contact was checked against the web page it came from; that "
+        "page is in the last two columns.",
+        "Where no contact is published, the label reads 'Attn: Owner' or the person's role.",
+        "Public listings go out of date. A quick call before a large mailing is worth it.",
+        "",
+        "Printing mailing labels: in Word, Mailings > Start Mail Merge > Labels > Select "
+        "Recipients > Use an Existing List, pick this file and a tab, then insert Company, "
+        "Attention, Address, City, State and ZIP.",
+    ]
+    return lines
+
+
+def summary(p: dict, rows: list) -> dict:
+    """What list_delivery needs for its cover note."""
+    ok = [r for r in rows if r.get("status") == "ok"]
+    names = p.get("group_names") or []
+    groups = []
+    if p.get("group_question") and len(names) == 2:
+        yes = sum(1 for r in ok if r.get("evidence"))
+        groups = [[names[0], yes], [names[1], len(ok) - yes]]
+    return {"entity": p["entity"], "region": p["region"], "rows": len(ok), "groups": groups}
+
+
+def review_note(p: dict, rows: list, stats: dict, run_id: str = "", meta: dict = None) -> str:
     ok = [r for r in rows if r.get("status") == "ok"]
     grp = [r for r in ok if r.get("evidence")]
+    meta = meta or {}
+    if meta.get("client"):
+        send_line = ("To deliver it to %s (on \"%s\"), reply to this email with just: SEND\n"
+                     "Any other reply, or none, and it stays here." % (
+                         meta["client"].capitalize(), meta.get("thread_subject") or "their thread"))
+    else:
+        send_line = "No client is attached to this run, so SEND does nothing."
     return "\n".join([
         "A contact list is ready for your review. Nothing has been sent to the client.",
+        "",
+        send_line,
+        "",
+        "Attached: contact-list-%s-client.xlsx is exactly what SEND delivers; "
+        "contact-list-%s.xlsx adds the names that could not be confirmed." % (run_id, run_id),
         "",
         "Request: %s in %s" % (p["entity"], p["region"]),
         "Confirmed: %d (%s: %d)" % (len(ok), (p.get("group_names") or ["with evidence"])[0], len(grp)),
@@ -575,10 +623,13 @@ def compare(rows: list, ref_xlsx: Path, group_names: list) -> dict:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
-        max_queries=MAX_ROSTER_QUERIES, log=print) -> dict:
+        max_queries=MAX_ROSTER_QUERIES, log=print, meta: dict = None) -> dict:
     t0 = time.time()
     out_dir = RUNS_DIR / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    if meta:
+        # Who asked, on which thread: list_delivery reads it when Buddy replies SEND.
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     budget, cache = Budget(), {}
     p = plan(request, creds)
     p["roster_queries"] = p["roster_queries"][:max_queries]
@@ -603,9 +654,12 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
              "finished": datetime.now().strftime("%Y-%m-%d %H:%M")}
     (out_dir / "rows.json").write_text(json.dumps(rows, indent=1))
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=1))
+    (out_dir / "summary.json").write_text(json.dumps(summary(p, rows), indent=1))
     xlsx = build_workbook(rows, p, stats, out_dir / ("contact-list-%s.xlsx" % run_id))
+    client_xlsx = build_workbook(rows, p, stats, out_dir / ("contact-list-%s-client.xlsx" % run_id),
+                                 client=True)
     log("done: %s  %s" % (xlsx, json.dumps(stats)))
-    return {"plan": p, "rows": rows, "stats": stats, "xlsx": xlsx}
+    return {"plan": p, "rows": rows, "stats": stats, "xlsx": xlsx, "client_xlsx": client_xlsx}
 
 
 def main(argv):
@@ -628,8 +682,9 @@ def main(argv):
     request = (PROJECT_DIR / req_path).read_text().strip()
     run_id = opt("--id") or "%s-%s" % (Path(req_path).stem, datetime.now().strftime("%Y%m%d-%H%M"))
     creds = json.loads(CREDS_PATH.read_text())
+    meta = json.loads((PROJECT_DIR / opt("--meta")).read_text()) if opt("--meta") else None
     result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)),
-                 int(opt("--max-queries", MAX_ROSTER_QUERIES)))
+                 int(opt("--max-queries", MAX_ROSTER_QUERIES)), meta=meta)
     if opt("--compare"):
         score = compare(result["rows"], PROJECT_DIR / opt("--compare"),
                         result["plan"].get("group_names") or [])
@@ -638,11 +693,15 @@ def main(argv):
     if "--no-email" in args:
         return 0
     import mailer
+    import list_delivery
     p = result["plan"]
+    # The [CL:<run id>] tag is how Buddy's SEND reply finds this run again.
     mailer.send(creds["outlook_email"], creds["outlook_password"], TO_EMAIL,
-                "Contact list ready for review: %s in %s" % (p["entity"], p["region"]),
-                review_note(p, result["rows"], result["stats"]),
-                attachments=[str(result["xlsx"])], creds=creds, watch_promises=False)
+                "%s %s: %s in %s" % (list_delivery.REVIEW_SUBJECT, list_delivery.run_tag(run_id),
+                                     p["entity"], p["region"]),
+                review_note(p, result["rows"], result["stats"], run_id, meta),
+                attachments=[str(result["client_xlsx"]), str(result["xlsx"])],
+                creds=creds, watch_promises=False)
     return 0
 
 
@@ -785,6 +844,19 @@ def selftest() -> bool:
             check("workbook: header in row 1 for mail merge; row lands on the split tab",
                   first[0][0] == "Company" and first[1][0] == "Garrison Homes"
                   and first[1][1] == "Attn: Owner")
+            xc = build_workbook(rows, p, stats, Path(td) / "c.xlsx", client=True)
+            cw = openpyxl.load_workbook(xc)
+            check("client copy: no Not Confirmed tab, a plain About tab",
+                  "Not Confirmed" not in cw.sheetnames and "About This List" in cw.sheetnames
+                  and not any("model" in (r[0] or "") for r in cw["About This List"].iter_rows(values_only=True)))
+            sm = summary(p, rows)
+            check("summary counts the split for the cover note",
+                  sm["groups"] == [["Building Communities", 1], ["Not Building Communities", 0]])
+            note = review_note(p, rows, stats, "cl-1", {"client": "bill", "thread_subject": "Delaware leads"})
+            check("review note tells Buddy to reply SEND, and names the client",
+                  "reply to this email with just: SEND" in note and "Bill" in note)
+            check("a run with no client says SEND does nothing",
+                  "SEND does nothing" in review_note(p, rows, stats, "cl-1", None))
             check("workbook: unconfirmed names get their own tab",
                   [r[0] for r in wb["Not Confirmed"].iter_rows(min_row=2, values_only=True)] == ["Nobody LLC"])
             ref = Path(td) / "ref.xlsx"

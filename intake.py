@@ -48,6 +48,7 @@ from pathlib import Path
 
 import client_promises
 import dev_loop
+import list_delivery
 import mailer
 import task_solver
 
@@ -116,6 +117,8 @@ def prefix_skip_alert_lines(prefix_skipped: list) -> list:
 # This is a safety net: even if a sender's request_kind is mis-set to 'build'
 # in intake_senders.json, their requests still reach the research topic queue.
 RESEARCH_PROJECTS = {"pedagogy"}
+# S266: the allowlist key whose replies can approve a contact-list delivery.
+OWNER = "buddy"
 
 
 def reply_is_feedback(kind: str, projects, subject: str) -> bool:
@@ -829,6 +832,25 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 f"{entry['name']} — '{(subject or '')[:60]}'")
             prefix_skipped.append((entry["name"], subject))
             continue
+        # S266: Buddy's reply to a contact-list review email ([CL:<run>] in the
+        # subject) is an approval step, not a request. list_delivery delivers on
+        # a plain SEND and holds anything else, telling Buddy why. It never gets
+        # an ack or a ticket, which is what it would otherwise have become.
+        if entry["name"] == OWNER and list_delivery.TAG_RX.search(subject or ""):
+            if dry_run:
+                log(f"  DRY RUN: would handle a contact-list reply: '{(subject or '')[:70]}'")
+                continue
+            try:
+                res = list_delivery.handle_send_reply(
+                    subject, task_solver.strip_quoted_reply(body or ""), creds, log=log)
+            except Exception as e:
+                res = {"sent": False, "reason": f"error: {e}"}
+                telegram(f"⚠️ contact-list SEND failed, nothing sent: {e}", creds)
+            dev_loop.ledger_append({"event": "list-send-reply", "subject": (subject or "")[:120],
+                                    "sent": bool(res and res.get("sent")),
+                                    "reason": (res or {}).get("reason", "")}, PROJECT_DIR)
+            intake_maintenance.complete(PROJECT_DIR, from_addr, mid)
+            continue
         if not under_limit(state, entry["name"], entry["limit"]):
             limited.append((entry["name"], subject))
             log(f"rate-limited: {entry['name']} over {entry['limit']}/day — skipping '{subject}'")
@@ -955,6 +977,22 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         log(f"  → list/file request — ticket {ticket['id']} queued")
                     except Exception as e:
                         log(f"  ⚠️ TICKET FAILED for list/file request: {e}")
+                    # S266 (Buddy's decision): a list of organizations with
+                    # contact details is researched unattended; the review email
+                    # goes to Buddy, and nothing reaches the client until he
+                    # replies SEND. Other files stay a ticket.
+                    own = task_solver.strip_quoted_reply(body or "")
+                    ask_subject = "" if task_solver.is_reply_subject(subject) else subject
+                    if list_delivery.wants_contact_list(ask_subject, own):
+                        try:
+                            rec["contact_list_run"] = list_delivery.start_job(
+                                entry["name"], own, subject, mid)
+                            log(f"  → contact-list job {rec['contact_list_run']} started; "
+                                f"the review email goes to Buddy")
+                        except list_delivery.DailyCap as e:
+                            log(f"  → contact-list job NOT started ({e}); the ticket stands")
+                        except Exception as e:
+                            log(f"  ⚠️ contact-list job did not start ({e}); the ticket stands")
                 elif rec["kind"] == "answer":
                     log("  → answer request — solving live after ack (below)")
                 elif rec["kind"] == "resend":
@@ -1053,6 +1091,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         f"({r['tier_reason'].rpartition(': ')[2]})")
             elif r.get("kind") == "feedback":
                 flag = "💬 FEEDBACK reply — review in logs/intake/"
+            elif r.get("kind") == "deliverable" and r.get("contact_list_run"):
+                flag = (f"📋 LIST request — research job {r['contact_list_run']} running; "
+                        f"its review email comes to you, reply SEND to deliver")
             elif r.get("kind") == "deliverable":
                 flag = (f"📋 LIST/FILE request — needs building, ticket "
                         f"{r.get('ticket_id') or '⚠️ NOT created'}")
@@ -1542,6 +1583,36 @@ def selftest() -> int:
     check("  ...and a deliverable gets a ticket carrying client, thread and message id",
           'origin="client-deliverable"' in _run_src
           and '"thread_subject": subject' in _run_src and '"message_id": mid' in _run_src)
+    # S266: Buddy's SEND reply is handled before rate-limit and classify, so it
+    # can never become an ack'd build ticket; the job starts only inside the
+    # deliverable branch, only for a contact list.
+    _send = _run_src.find("list_delivery.handle_send_reply(")
+    check("run() hands Buddy's reply to a review email to list_delivery, before classify()",
+          0 < _run_src.find("list_delivery.TAG_RX.search") < _send
+          < _run_src.find("rec = classify(") and 'entry["name"] == OWNER' in _run_src)
+    _job = _run_src.find("list_delivery.start_job(")
+    check("  ...and starts the research job only in the deliverable branch, for a contact list",
+          _run_src.find('origin="client-deliverable"') < _job
+          and 0 < _run_src.find("list_delivery.wants_contact_list(ask_subject, own)") < _job)
+    # Behaviour, not source: Bill's real 2026-09-23 email, quoted reply
+    # included, as intake would pass it.
+    _bill_body = ("I need the name, address and point of contact of every new home builder "
+                  "in the state of Delaware. Separate the list by builders currently building "
+                  "communities and builder that are not. Format the list in an excel spread "
+                  "sheet so it can be used to print mailing labels. William Hutchins President "
+                  "Knight Property Services > On Sep 21, 2026, at 4:30 AM, CUMULUS "
+                  "<cumulus@cumulustask.com> wrote: > > Hi Bill, > > Weekly check on new "
+                  "Delaware residential developments.")
+    _bill_subj = "Re: Delaware development leads - nothing new this week (Sep 21) research"
+    check("Bill's real email is a deliverable AND a contact list (so the job would start)",
+          task_solver.wants_deliverable(_bill_subj, _bill_body)
+          and list_delivery.wants_contact_list(
+              "" if task_solver.is_reply_subject(_bill_subj) else _bill_subj,
+              task_solver.strip_quoted_reply(_bill_body)))
+    check("the deliverable ack stays true once the job exists (Buddy reviews first)",
+          "Buddy reviews every list before it goes out"
+          in ack_body({"requester": "bill", "kind": "deliverable", "status": "backlogged",
+                       "title": "t", "tier": 1, "tier_name": "x"}))
 
     import job_status as _js
     check("job_status carries a cadence for intake (nothing watched it before S102)",
