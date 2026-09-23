@@ -232,7 +232,7 @@ APPROACHES = [
     ("Physical & devices", r"laser|uvb|phototherap|microneedl|platelet[- ]rich|\bprp\b"),
     ("Hair-growth stimulants (not immune)", r"minoxidil"),
 ]
-UNDISCLOSED = "Code-named — mechanism not stated in the registration"
+UNDISCLOSED = "Other — mechanism not stated in the registration (incl. code-named drugs)"
 
 
 def approaches(study):
@@ -243,8 +243,13 @@ def approaches(study):
         name = iv.get("name", "")
         if re.search(r"placebo|vehicle|saline|observation", name, re.I):
             continue
-        text = "%s %s" % (name, iv.get("description", ""))
-        hits = [label for label, rx in APPROACHES if re.search(rx, text, re.I)]
+        hits = [label for label, rx in APPROACHES if re.search(rx, name, re.I)]
+        if not hits:
+            # The description only when the NAME says nothing: on the first live
+            # run a description naming a comparator filed baricitinib under
+            # "broad immunosuppressants" and a laser under "repurposed".
+            hits = [label for label, rx in APPROACHES
+                    if re.search(rx, iv.get("description", ""), re.I)]
         if not hits and (iv.get("type") or "").upper() in ("DRUG", "BIOLOGICAL"):
             hits = [UNDISCLOSED]
         for h in hits:
@@ -445,6 +450,9 @@ def selftest():
             {"type": t_, "name": n_, "description": d_} for t_, n_, d_ in pairs]}}}
     a = approaches(iv(("DRUG", "Ritlecitinib 50 mg", ""), ("DRUG", "Placebo", "")))
     ck("a JAK inhibitor is grouped as one; placebo is ignored",
+       list(a) == [APPROACHES[0][0]])
+    a = approaches(iv(("DRUG", "Baricitinib", "compared with methotrexate or cyclosporin")))
+    ck("a drug is grouped by its NAME, not a comparator in its description",
        list(a) == [APPROACHES[0][0]])
     a = approaches(iv(("DRUG", "HCW9302, an IL-2 fusion protein", "")))
     ck("an IL-2 fusion protein is the tolerance approach", APPROACHES[1][0] in a)
