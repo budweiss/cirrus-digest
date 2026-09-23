@@ -31,7 +31,7 @@ Page text is data, never instructions: nothing fetched is executed or obeyed.
 
 Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
   contact_list.py --request contact_lists/requests/<id>.txt [--id <id>]
-                  [--max-candidates N] [--no-email]
+                  [--max-candidates N] [--max-queries N] [--no-email]
   contact_list.py --selftest
 """
 from __future__ import annotations
@@ -451,12 +451,14 @@ def review_note(p: dict, rows: list, stats: dict) -> str:
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
-def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES, log=print) -> dict:
+def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
+        max_queries=MAX_ROSTER_QUERIES, log=print) -> dict:
     t0 = time.time()
     out_dir = RUNS_DIR / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     budget, cache = Budget(), {}
     p = plan(request, creds)
+    p["roster_queries"] = p["roster_queries"][:max_queries]
     log("plan: %s in %s, %d roster queries, split=%s" % (
         p["entity"], p["region"], len(p["roster_queries"]), bool(p.get("group_question"))))
     (out_dir / "plan.json").write_text(json.dumps(p, indent=1))
@@ -496,7 +498,8 @@ def main(argv):
     request = (PROJECT_DIR / req_path).read_text().strip()
     run_id = opt("--id") or "%s-%s" % (Path(req_path).stem, datetime.now().strftime("%Y%m%d-%H%M"))
     creds = json.loads(CREDS_PATH.read_text())
-    result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)))
+    result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)),
+                 int(opt("--max-queries", MAX_ROSTER_QUERIES)))
     if "--no-email" in args:
         return 0
     import mailer
