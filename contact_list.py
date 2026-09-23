@@ -183,6 +183,7 @@ class Budget:
         self.local = 0
         self.fetched = 0
         self.fetch_failed = 0
+        self.model_failed = 0
 
 
 def page_text(url: str, cache: dict, budget: Budget) -> str:
@@ -232,6 +233,8 @@ def ask_local(system: str, user: str, creds: dict, budget: Budget, max_tokens=40
             system, user, creds, max_tokens=max_tokens, task=TASK, parse=parse_json,
             local_provider="vllm" if local_only else None)
     except Exception:
+        # Counted, not swallowed: a dead endpoint must not read as a quiet run.
+        budget.model_failed += 1
         return None
     if tier in ("vllm", "ollama"):
         budget.local += 1
@@ -315,8 +318,8 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
     with ThreadPoolExecutor(WORKERS) as ex:
         for i, (url, orgs) in enumerate(ex.map(one, urls), 1):
             if i % 10 == 0:
-                log("roster: read %d/%d pages (local %d, cloud %d)" % (
-                    i, len(urls), budget.local, budget.cloud))
+                log("roster: read %d/%d pages (local %d, cloud %d, model failed %d)" % (
+                    i, len(urls), budget.local, budget.cloud, budget.model_failed))
             for o in orgs:
                 k = name_key(o["name"])
                 if not k:
@@ -447,8 +450,8 @@ def about_lines(p: dict, stats: dict) -> list:
         "on the page it cites and must contain the value. Values that failed were removed.",
         "Rows with no verified address or contact are kept; those fields are blank.",
         "Searches %(searches)d, pages fetched %(fetched)d (failed %(fetch_failed)d), local "
-        "extractions %(local)d, cloud escalations %(cloud)d, values removed by the check "
-        "%(dropped)d." % stats,
+        "extractions %(local)d, cloud escalations %(cloud)d, failed model calls "
+        "%(model_failed)d, values removed by the check %(dropped)d." % stats,
     ]
 
 
@@ -533,9 +536,11 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
         for i, row in enumerate(ex.map(lambda c: enrich(c, p, creds, budget, cache), ranked), 1):
             rows.append(row)
             if i % 10 == 0:
-                log("enrich: %d/%d (searches %d, cloud %d)" % (i, len(ranked), budget.searches, budget.cloud))
+                log("enrich: %d/%d (searches %d, cloud %d, model failed %d)" % (
+                    i, len(ranked), budget.searches, budget.cloud, budget.model_failed))
     stats = {"searches": budget.searches, "fetched": budget.fetched,
              "fetch_failed": budget.fetch_failed, "local": budget.local, "cloud": budget.cloud,
+             "model_failed": budget.model_failed,
              "dropped": sum(len(r.get("dropped") or []) for r in rows),
              "candidates": len(cands), "enriched": len(ranked),
              "minutes": round((time.time() - t0) / 60, 1),
@@ -669,7 +674,8 @@ def selftest() -> bool:
             p = {"entity": "home builder", "region": "Delaware", "group_question": "building?",
                  "group_names": ["Building Communities", "Not Building Communities"]}
             rows = [dict(row, status="ok"), {"name": "Nobody LLC", "status": "no pages fetched"}]
-            stats = dict(searches=1, fetched=1, fetch_failed=0, local=1, cloud=0, dropped=2)
+            stats = dict(searches=1, fetched=1, fetch_failed=0, local=1, cloud=0,
+                         model_failed=0, dropped=2)
             x = build_workbook(rows, p, stats, Path(td) / "t.xlsx")
             wb = openpyxl.load_workbook(x)
             first = list(wb["Building Communities"].iter_rows(values_only=True))
