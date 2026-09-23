@@ -135,6 +135,19 @@ def duplicate_answers(path=None, hours: int = 168) -> list:
 
 # ── Check 3b: did a client write and get nothing back? ───────────────────────
 
+# What counts as a substantive reply on a thread (never an ack):
+#   auto-answered     intake's live answer (task_solver)
+#   list-delivered    a contact list Buddy released with SEND (list_delivery, S268)
+#   client-mail-sent  mail a session staged and sent by hand (client_mail, S268)
+# Before S268 only the first counted, so a list delivered on SEND, or Bill's
+# hand-sent builder list, would have read as never answered.
+REPLY_EVENTS = ("auto-answered", "list-delivered", "client-mail-sent")
+# Kinds whose ack promised the client something back. 'deliverable' joined in
+# S268: its ack says "you'll have it after that quick review", so a list Buddy
+# never releases is a broken promise, not queued work.
+EXPECTS_REPLY = ("answer", "confirmation", "resend", "deliverable")
+
+
 def stalled_threads(path=None, hours: int = 48) -> list:
     """Inbound client messages with no substantive outbound reply since.
 
@@ -157,7 +170,7 @@ def stalled_threads(path=None, hours: int = 48) -> list:
             cur = inbound.get(thread)
             if not cur or r["_ts"] > cur["_ts"]:
                 inbound[thread] = r
-        elif r.get("event") == "auto-answered":
+        elif r.get("event") in REPLY_EVENTS:
             cur = outbound.get(thread)
             if not cur or r["_ts"] > cur["_ts"]:
                 outbound[thread] = r
@@ -181,7 +194,7 @@ def stalled_threads(path=None, hours: int = 48) -> list:
             # rather than an instant reply, so say which it was and let the
             # reader judge. Reporting it as a fault would be wrong; hiding it
             # would recreate the blind spot this whole file exists to close.
-            "expected_reply": r.get("kind") in ("answer", "confirmation", "resend"),
+            "expected_reply": r.get("kind") in EXPECTS_REPLY,
         })
     return sorted(stalls, key=lambda s: s["age_hours"], reverse=True)
 
@@ -453,6 +466,26 @@ def selftest() -> int:
         write([{"ts": ts(4), "event": "user-intake", "requester": "bill",
                 "thread": "t", "kind": "answer"}])
         check("a fresh inbound is not yet a stall",
+              stalled_threads(led, hours=48) == [])
+
+        # S268: a list request's ack promises the list, so it expects a reply;
+        # the delivery (Buddy's SEND) or a hand-sent reply closes it.
+        write([{"ts": ts(72), "event": "user-intake", "requester": "bill",
+                "thread": "builders", "kind": "deliverable"}])
+        st = stalled_threads(led, hours=48)
+        check("a list request nobody released is a stall that EXPECTS a reply",
+              len(st) == 1 and st[0]["expected_reply"] is True)
+        write([{"ts": ts(72), "event": "user-intake", "requester": "bill",
+                "thread": "builders", "kind": "deliverable"},
+               {"ts": ts(60), "event": "list-delivered", "requester": "bill",
+                "thread": "builders"}])
+        check("...and a list-delivered row after it closes the thread",
+              stalled_threads(led, hours=48) == [])
+        write([{"ts": ts(72), "event": "user-intake", "requester": "bill",
+                "thread": "builders", "kind": "answer"},
+               {"ts": ts(66), "event": "client-mail-sent", "requester": "bill",
+                "thread": "builders"}])
+        check("...as does mail a session sent by hand (client-mail-sent)",
               stalled_threads(led, hours=48) == [])
 
         write([{"ts": ts(72), "event": "user-intake", "requester": "bill",

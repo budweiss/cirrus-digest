@@ -46,6 +46,20 @@ def _safe_in_project(rel: str) -> Path:
     return p
 
 
+def _record_sent(name: str, subject: str, body_rel: str, project_dir: Path = None) -> None:
+    """S268: the self-changes ledger row client_watch.stalled_threads counts as
+    a substantive reply. Before this, a reply a session staged and sent by hand
+    left no row, so the thread read as unanswered (Bill's 2026-09-23 builder
+    list would have been flagged REPLY EXPECTED two days after he got it).
+    Keyed by thread_key(subject), so a staged reply closes the client's thread
+    only when it keeps the client's own subject."""
+    import client_promises
+    import dev_loop
+    dev_loop.ledger_append({"event": "client-mail-sent", "requester": name,
+                            "thread": client_promises.thread_key(subject),
+                            "file": body_rel}, project_dir or PROJECT_DIR)
+
+
 def _parse_attach_list(attach_rel: str) -> list:
     """Comma-separated attachment paths -> a clean list (empty if none).
     Pulled out of main() (S232) so the multi-attachment parsing has
@@ -109,6 +123,13 @@ def main() -> int:
                 creds=creds, client=name,
                 project=(entry.get("projects") or ["general"])[0])
 
+    try:
+        _record_sent(name, subject, body_rel)
+    except Exception as e:
+        # After the send: never blocks it, but said out loud, because a missing
+        # row makes the stall check call this thread unanswered.
+        print(f"WARNING: sent, but the reply row was not recorded ({e}); "
+              f"client_watch will call this thread unanswered")
     print(f"sent '{subject}' to {name} (cc Buddy)"
           + (f" with attachment(s) {', '.join(Path(a).name for a in attach_rels)}"
              if attach_rels else ""))
@@ -127,6 +148,12 @@ def selftest() -> int:
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
 
+    with tempfile.TemporaryDirectory() as td:
+        _record_sent("bill", "Re: Delaware development leads - nothing new", "mail/x.md", Path(td))
+        row = json.loads((Path(td) / "logs/self-changes/ledger.jsonl").read_text().splitlines()[-1])
+        check("_record_sent: a hand-sent reply writes the row client_watch counts, on the client's thread",
+              row["event"] == "client-mail-sent" and row["requester"] == "bill"
+              and row["thread"] == "delaware development leads nothing new")
     check("_parse_attach_list: a single path",
           _parse_attach_list("mail/a.png") == ["mail/a.png"])
     check("_parse_attach_list: two paths, comma-separated",

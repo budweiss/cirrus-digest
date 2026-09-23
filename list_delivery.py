@@ -125,8 +125,19 @@ def cover_note(client: str, meta: dict, summary: dict, box: str) -> tuple:
     return subj, "\n".join(lines)
 
 
+def _record_reply(client: str, thread_subject: str, run_id: str, project_dir: Path = PROJECT_DIR):
+    """The self-changes ledger row client_watch.stalled_threads counts as a
+    reply (S268). Keyed on the client's OWN subject, the same key intake wrote
+    for the request, so the thread closes."""
+    import client_promises
+    import dev_loop
+    dev_loop.ledger_append({"event": "list-delivered", "requester": client,
+                            "thread": client_promises.thread_key(thread_subject or ""),
+                            "run_id": run_id}, project_dir)
+
+
 def deliver(run_id: str, creds: dict, senders: dict, runs_dir: Path = RUNS_DIR,
-            send=None, now=None) -> dict:
+            send=None, now=None, record=None) -> dict:
     """Send run `run_id`'s client workbook to its client. Returns
     {"sent": bool, "reason": str, "client": str}. Never raises for a
     hold-worthy condition; those come back as sent=False with the reason."""
@@ -167,12 +178,18 @@ def deliver(run_id: str, creds: dict, senders: dict, runs_dir: Path = RUNS_DIR,
         f.write(json.dumps({"event": "delivered", "run_id": run_id, "client": client,
                             "subject": subj, "file": xlsx.name,
                             "ts": (now or datetime.now()).isoformat(timespec="seconds")}) + "\n")
+    try:
+        (record or _record_reply)(client, meta.get("thread_subject"), run_id)
+    except Exception as e:
+        # After the send, so it can never block a delivery; but loud, because a
+        # missing row makes the client_watch stall check call this unanswered.
+        res["record_error"] = str(e)
     res.update(sent=True, reason="delivered to %s" % client)
     return res
 
 
 def handle_send_reply(subject: str, own_words: str, creds: dict, senders: dict = None,
-                      runs_dir: Path = RUNS_DIR, send=None, log=print):
+                      runs_dir: Path = RUNS_DIR, send=None, log=print, record=None):
     """Intake's entry point for a message from BUDDY. Returns None when the
     message is not a reply to a review email (intake carries on as normal),
     else the deliver() result. A reply to a review email that is not a plain
@@ -188,8 +205,11 @@ def handle_send_reply(subject: str, own_words: str, creds: dict, senders: dict =
         res = {"sent": False, "client": "",
                "reason": "reply to %s was not a plain SEND, so nothing was sent" % run_tag(m.group(1))}
     else:
-        res = deliver(run_id, creds, senders, runs_dir, send=send)
+        res = deliver(run_id, creds, senders, runs_dir, send=send, record=record)
     log("  list_delivery %s: %s" % (m.group(1), res["reason"]))
+    if res.get("record_error"):
+        log("  ⚠️ list_delivery: delivered, but the ledger row failed (%s); "
+            "client_watch will call this thread unanswered" % res["record_error"])
     if not res["sent"]:
         send(creds.get("outlook_email", ""), creds.get("outlook_password", ""), CC_ADDR,
              "Held: %s %s" % (REVIEW_SUBJECT.lower(), run_tag(m.group(1))),
@@ -290,7 +310,12 @@ def selftest() -> bool:
                                                      "groups": [["Building Communities", 30],
                                                                 ["Not Building Communities", 29]]}))
         (rd / "contact-list-cl-20260923-1-client.xlsx").write_bytes(b"x")
-        r = handle_send_reply(subj, "SEND", creds, senders, runs, send=fake_send, log=lambda m: None)
+        recorded = []
+        rec = lambda c, t, r: recorded.append((c, t, r))
+        r = handle_send_reply(subj, "SEND", creds, senders, runs, send=fake_send, log=lambda m: None,
+                              record=rec)
+        check("a delivery writes the reply row client_watch counts, keyed on the client's subject",
+              recorded == [("bill", "Delaware development leads", "cl-20260923-1")])
         check("SEND delivers to the client on record, cc Buddy, with the workbook",
               r["sent"] and sent[-1]["to"] == "bill@example.com" and sent[-1]["kw"]["cc"] == CC_ADDR
               and sent[-1]["kw"]["attachments"][0].endswith("-client.xlsx"))
@@ -303,9 +328,10 @@ def selftest() -> bool:
               sent[-1]["subject"] == "Re: Delaware development leads"
               and "Building Communities (30)" in sent[-1]["body"] and "CUMULUS" in sent[-1]["body"])
         n = len(sent)
-        r2 = handle_send_reply(subj, "SEND", creds, senders, runs, send=fake_send, log=lambda m: None)
-        check("a second SEND does not send twice; Buddy is told instead",
-              not r2["sent"] and "already delivered" in r2["reason"]
+        r2 = handle_send_reply(subj, "SEND", creds, senders, runs, send=fake_send, log=lambda m: None,
+                               record=rec)
+        check("a second SEND does not send twice (or record twice); Buddy is told instead",
+              not r2["sent"] and "already delivered" in r2["reason"] and len(recorded) == 1
               and len(sent) == n + 1 and sent[-1]["to"] == CC_ADDR)
         r3 = handle_send_reply(subj.replace("cl-20260923-1", "cl-missing"), "SEND", creds, senders,
                                runs, send=fake_send, log=lambda m: None)
@@ -321,7 +347,7 @@ def selftest() -> bool:
         rd2.mkdir()
         (rd2 / "meta.json").write_text(json.dumps({"client": "mallory"}))
         (rd2 / "contact-list-cl-x-client.xlsx").write_bytes(b"x")
-        r5 = deliver("cl-x", creds, senders, runs, send=fake_send)
+        r5 = deliver("cl-x", creds, senders, runs, send=fake_send, record=rec)
         check("a client missing from the allowlist is held", not r5["sent"] and "not in intake_senders" in r5["reason"])
         launched = []
 
