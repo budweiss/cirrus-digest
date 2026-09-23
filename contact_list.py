@@ -54,7 +54,7 @@ TASK = "contact-list"
 
 # Hard caps. A runaway run fails safe rather than spending: Brave is $5 per
 # 1,000 searches against a $25/month cap shared with every other job.
-MAX_ROSTER_QUERIES = 20
+MAX_ROSTER_QUERIES = 30
 MAX_SEARCHES = 360
 MAX_CANDIDATES = 120
 MAX_CLOUD_ESCALATIONS = 40
@@ -79,6 +79,38 @@ _LEGAL = {"llc", "inc", "incorporated", "co", "corp", "corporation", "ltd", "the
 def name_key(name: str) -> str:
     """Dedupe key: 'Schell Brothers, LLC' and 'SCHELL BROTHERS' are one company."""
     return " ".join(w for w in _n(name).split() if w not in _LEGAL)
+
+
+_GENERIC = {"homes", "home", "builders", "builder", "construction", "custom", "delaware",
+            "division", "companies", "company", "group", "maryland", "and", "of", "at",
+            "by", "community", "communities", "residential", "properties", "development", "buildings",
+            "associates", "llc", "inc", "co", "corp", "ltd", "de", "the"}
+
+
+def company_tokens(name: str) -> list:
+    """The words that tell this company from others: 'K. Hovnanian Homes of
+    Delaware' -> ['hovnanian'], 'JS Homes' -> ['js']. Empty for a name made
+    only of generic words ('Community Home Builders'), which is a category,
+    not a company."""
+    return [w for w in _n(name).split() if len(w) >= 2 and w not in _GENERIC]
+
+
+def dedupe_key(name: str) -> str:
+    """S264 full run: 'K. Hovnanian' and 'K. Hovnanian Homes of Delaware' were
+    researched as two companies, and each held half the evidence."""
+    return " ".join(sorted(set(company_tokens(name))))
+
+
+def about_company(name: str, quote: str, url: str) -> bool:
+    """Is this quote about THIS company? Every distinctive word of its name must
+    be in the quote or the page address. S264 full run: 'Deric Parker, Owner'
+    was filed under Beach Concepts from an article about Bay to Beach Builders,
+    and a Schell community was credited to Toll Brothers from a listing page.
+    Both quotes were real text on a real page, so only this check catches them."""
+    toks = company_tokens(name)
+    u = (url or "").lower()
+    blob = " ".join((_n(quote), _n(u), re.sub(r"[^a-z0-9]", "", u)))
+    return all(t in blob for t in toks)
 
 
 def quote_on_page(quote: str, page: str) -> bool:
@@ -124,7 +156,7 @@ def in_region(text: str, region_terms: list) -> bool:
     return any(_n(r) and " %s " % _n(r) in t for r in region_terms or [])
 
 
-def evidence_ok(e: dict, pages: dict, region_terms: list = None) -> bool:
+def evidence_ok(e: dict, pages: dict, region_terms: list = None, company: str = None) -> bool:
     """On the cited page, naming the thing, AND located in the region as the
     page writes it. S264 smoke run: a builder active in two states was put in
     the Delaware 'building' group on the strength of a Pennsylvania community."""
@@ -133,6 +165,10 @@ def evidence_ok(e: dict, pages: dict, region_terms: list = None) -> bool:
     ok = quote_on_page(q, page) and value_in_quote(e.get("name"), q)
     if region_terms is not None:
         ok = ok and bool(loc) and value_in_quote(loc, page) and in_region(loc, region_terms)
+    if company is not None:
+        # A town is not a community (S264: 'Greenwood' counted as one).
+        town = _n(loc.split(",")[0])
+        ok = ok and about_company(company, q, e.get("url")) and _n(e.get("name")) != town
     return ok
 
 
@@ -253,7 +289,7 @@ PLAN_SYSTEM = (
     "way the client asked (null if no split), \"group_names\": [name when yes, name "
     "when no] (null if no split), \"evidence_kind\": what a YES looks like on a "
     "company's own website (for example a named community currently selling), "
-    "\"roster_queries\": 12 to 20 web searches that surface pages NAMING many such "
+    "\"roster_queries\": 20 to 30 web searches that surface pages NAMING many such "
     "organizations (directories, member lists, award lists, new-home listing pages, "
     "news roundups)}. Do not answer the request itself.")
 
@@ -312,7 +348,7 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
 
     urls = []
     for q in p["roster_queries"]:
-        urls += search(q, 6, budget)
+        urls += search(q, 8, budget)
     urls = list(dict.fromkeys(urls))
     log("roster: %d queries -> %d pages" % (len(p["roster_queries"]), len(urls)))
     with ThreadPoolExecutor(WORKERS) as ex:
@@ -321,7 +357,7 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
                 log("roster: read %d/%d pages (local %d, cloud %d, model failed %d)" % (
                     i, len(urls), budget.local, budget.cloud, budget.model_failed))
             for o in orgs:
-                k = name_key(o["name"])
+                k = dedupe_key(o["name"])
                 if not k:
                     continue
                 row = found.setdefault(k, {"name": o["name"].strip(), "sources": []})
@@ -367,7 +403,7 @@ def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
         else:
             dropped.append("address")
     if isinstance(c, dict) and c.get("name"):
-        if contact_ok(c, pages):
+        if contact_ok(c, pages) and about_company(row["name"], c.get("quote"), c.get("url")):
             row["contact"] = {"name": c["name"].strip(), "title": (c.get("title") or "").strip()}
             row["contact_src"] = c.get("url")
         else:
@@ -380,7 +416,8 @@ def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
         else:
             dropped.append("phone")
     ev = [e for e in (got.get("evidence") or []) if isinstance(e, dict)]
-    good = [e for e in ev if evidence_ok(e, pages, p.get("region_terms") or [p.get("region", "")])]
+    good = [e for e in ev if evidence_ok(e, pages, p.get("region_terms") or [p.get("region", "")],
+                                         company=row["name"])]
     if len(good) < len(ev):
         dropped.append("evidence x%d" % (len(ev) - len(good)))
     row["evidence"] = [{"name": e["name"].strip(), "url": e["url"]} for e in good][:6]
@@ -472,15 +509,6 @@ def review_note(p: dict, rows: list, stats: dict) -> str:
 
 # ── measurement against a hand-checked list ─────────────────────────────────
 
-_GENERIC = {"homes", "home", "builders", "builder", "construction", "custom", "delaware",
-            "division", "inc", "llc", "the", "companies", "company", "group", "maryland",
-            "and", "communities", "residential", "properties", "development", "buildings"}
-
-
-def _tokens(name: str) -> set:
-    return {w for w in _n(name).split() if len(w) >= 3 and w not in _GENERIC}
-
-
 def compare(rows: list, ref_xlsx: Path, group_names: list) -> dict:
     """Score a run against a hand-checked workbook (S264's DE-Home-Builders.xlsx):
     which reference companies were found, and on the overlap whether the
@@ -494,10 +522,16 @@ def compare(rows: list, ref_xlsx: Path, group_names: list) -> dict:
                 ref.append({"name": r[0], "attn": r[1] or "", "group": i == 0})
     ok = [r for r in rows if r.get("status") == "ok"]
     found, contact_same, contact_both, group_same = [], 0, 0, 0
+
+    def same(run_name, ref_name):
+        a, b = set(company_tokens(run_name)), set(company_tokens(ref_name))
+        return bool(a & b) if a and b else name_key(run_name) == name_key(ref_name)
+
     for rf in ref:
-        hit = next((r for r in ok if _tokens(r["name"]) & _tokens(rf["name"])), None)
-        if not hit:
+        hits = [r for r in ok if same(r["name"], rf["name"])]
+        if not hits:
             continue
+        hit = max(hits, key=lambda r: (bool(r.get("evidence")), bool(r.get("contact"))))
         found.append((rf["name"], hit["name"]))
         if bool(hit.get("evidence")) == rf["group"]:
             group_same += 1
@@ -650,18 +684,45 @@ def selftest() -> bool:
     long = "Header\n" + ("filler line\n" * 800) + "Contact: 20184 Phillips St, Rehoboth Beach, DE 19971\n"
     check("trim_page keeps a footer address from a long page", "20184 Phillips St" in trim_page(long))
 
-    got = {"is_match": True, "match_quote": "Now selling at Olde Town at Lewes.", "match_url": "u",
-           "contact": {"name": "Jeff Parker", "title": "Owner", "url": "u",
+    # Real failures from full run cl-full-1 (S264).
+    check("a real name+role about ANOTHER company is rejected (Deric Parker filed under Beach Concepts)",
+          not about_company("Beach Concepts", "Deric Parker, owner of Bay to Beach Builders",
+                            "https://thequietresorts.com/bay-to-beach-builders-break-ground-for-new-model-home"))
+    check("the same quote is accepted for the right company",
+          about_company("Bay to Beach Builders", "Deric Parker, owner of Bay to Beach Builders",
+                        "https://thequietresorts.com/bay-to-beach-builders-break-ground-for-new-model-home"))
+    check("a concatenated domain names the company (schellbrothers.com)",
+          about_company("Schell Brothers, LLC", "Now selling at Walden", "https://schellbrothers.com/communities"))
+    sch = {"u": "Red Cedar Farms by Schell Brothers - Milton, DE. Now selling."}
+    check("a community on another builder's page is not evidence (Red Cedar Farms credited to Toll)",
+          not evidence_ok({"name": "Red Cedar Farms", "location": "Milton, DE", "url": "u",
+                           "quote": "Red Cedar Farms by Schell Brothers - Milton, DE"},
+                          sch, ["Delaware", "DE"], company="Toll Brothers"))
+    twn = {"https://baytobeachbuilders.com/location-greenwood": "Custom homes in Greenwood, DE by Bay to Beach Builders"}
+    check("a town is not a community (Greenwood)",
+          not evidence_ok({"name": "Greenwood", "location": "Greenwood, DE",
+                           "url": "https://baytobeachbuilders.com/location-greenwood",
+                           "quote": "Custom homes in Greenwood, DE by Bay to Beach Builders"},
+                          twn, ["Delaware", "DE"], company="Bay to Beach Builders"))
+    check("dedupe_key merges 'K. Hovnanian' with 'K. Hovnanian Homes of Delaware'",
+          dedupe_key("K. Hovnanian") == dedupe_key("K. Hovnanian Homes of Delaware") == "hovnanian")
+    check("a name of only generic words is not a company ('Community Home Builders')",
+          dedupe_key("Community Home Builders") == "")
+    check("short names keep their distinctive token ('JS Homes')", dedupe_key("JS Homes") == "js")
+    G = "https://www.garrisonhomes.com/about"
+    gpages = {G: page}
+    got = {"is_match": True, "match_quote": "Now selling at Olde Town at Lewes.", "match_url": G,
+           "contact": {"name": "Jeff Parker", "title": "Owner", "url": G,
                        "quote": "\"Jeff Parker was honest and fair,\" said a happy homeowner."},
            "address": {"street": "19413 Jingle Shell Way, Unit 5", "city": "Lewes", "state": "DE",
-                       "zip": "19958", "url": "u",
+                       "zip": "19958", "url": G,
                        "quote": "Office: 19413 Jingle Shell Way, Unit 5, Lewes, DE 19958"},
-           "phone": {"value": "(302) 226-4663", "url": "u"},
-           "evidence": [{"name": "Olde Town at Lewes", "location": "Lewes, DE", "url": "u",
+           "phone": {"value": "(302) 226-4663", "url": G},
+           "evidence": [{"name": "Olde Town at Lewes", "location": "Lewes, DE", "url": G,
                          "quote": "Now selling at Olde Town at Lewes."},
-                        {"name": "Made Up Meadows", "location": "Lewes, DE", "url": "u",
+                        {"name": "Made Up Meadows", "location": "Lewes, DE", "url": G,
                          "quote": "Now selling at Made Up Meadows."}]}
-    row = verify({"name": "Garrison Homes"}, got, pages, {"region_terms": ["Delaware", "DE"]})
+    row = verify({"name": "Garrison Homes"}, got, gpages, {"region_terms": ["Delaware", "DE"]})
     check("verify: invented contact removed, real address and phone kept",
           "contact" not in row and row["address"]["zip"] == "19958" and row["phone"] == "302-226-4663")
     check("verify: invented community removed, real one kept, drops counted",
@@ -690,11 +751,17 @@ def selftest() -> bool:
             a1.append(["NVR Inc. (Ryan Homes / NVHomes)", "Owen F. Thomas III"])
             b1 = rb.create_sheet("B"); b1.append(["Company", "Attention"]); b1.append(["Lane Builders", "Jeff Burton"])
             rb.save(ref)
+            ref_js = Path(td) / "ref_js.xlsx"
+            jb = openpyxl.Workbook(); jb.active.append(["Company", "Attention"])
+            jb.active.append(["JS Homes", "Jeffrey Schwartz"]); jb.create_sheet("B").append(["Company"])
+            jb.save(ref_js)
             run_rows = [dict(row, status="ok", contact={"name": "Jeffrey Garrison", "title": "President"}),
                         {"name": "Ryan Homes", "status": "ok", "evidence": []}]
             sc = compare(run_rows, ref, [])
+            js = compare([{"name": "JS Homes", "status": "ok", "evidence": []}], ref_js, [])
             check("compare: 'Ryan Homes' matches the NVR row; Lane Builders counted missed",
                   sc["found"] == 2 and sc["missed"] == ["Lane Builders"])
+            check("compare: a short name (JS Homes) is matched, not reported missed", js["found"] == 1)
             check("compare: surname agreement and split agreement counted",
                   sc["contact_both"] == 1 and sc["contact_same"] == 1 and sc["group_same"] == 1)
     except ImportError:
