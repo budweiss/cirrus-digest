@@ -1,0 +1,488 @@
+{
+ "_about": "Alopecia research watchlist v1 (S262, 2026-09-23). Sources the team keeps feeding into its knowledge, built from alopecia/research/EP290-CLAIM-LEDGER.md s7 and LABS-REGISTER.md. NOT WIRED YET: Phase C teaches the collector to read this file. Every entry was run against its live source on the date in 'validated'. Researcher and company names here are public work, not patients (plan s9). Outbound queries built from this file must still pass the privacy guard described in alopecia/research/TEAM.md s5: verbatim entries only, and a run-time refusal of any term from the on-box profile.",
+ "_kinds": {
+  "pubmed": "E-utilities esearch on 'query'; new PMIDs go through the normal dual screen",
+  "ct_study": "one ClinicalTrials.gov study; alert on status change or results posted",
+  "ct_sponsor": "all studies of one sponsor; alert on a NEW study",
+  "ct_silence": "completed AA trials with no posted results >12 months after completion: the 'look for the no' signal (METHODS.md s1 row 7)",
+  "reporter": "NIH RePORTER text search, FY current+previous; monthly",
+  "youtube": "channel RSS feed; only titles matching title_filter are fetched; NEEDS a new 'alopecia' lane in yt_watch (its existing lanes extract infrastructure ideas, not medical claims)",
+  "press_page": "company press-release page; manual or scraped monthly",
+  "patent_manual": "no free patent API wired; manual monthly check"
+ },
+ "entries": [
+  {
+   "id": "pm-thymus-aa",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q2",
+   "query": "\"alopecia areata\"[tiab] AND (thymus[tiab] OR thymic[tiab] OR thymoma[tiab] OR thymectomy[tiab] OR \"central tolerance\"[tiab] OR AIRE[tiab])",
+   "why": "direct thymus/central-tolerance links to AA (ledger s5)",
+   "lead_source": "EP290 ledger",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 50,
+    "since_2023": 14
+   }
+  },
+  {
+   "id": "pm-apeced-alopecia",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q2",
+   "query": "(APECED[tiab] OR \"autoimmune polyendocrine syndrome type 1\"[tiab] OR \"autoimmune polyendocrinopathy\"[tiab]) AND alopecia[tiab]",
+   "why": "AIRE loss produces AA: the strongest human thymus-AA link",
+   "lead_source": "EP290 ledger",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 49,
+    "since_2023": 8
+   }
+  },
+  {
+   "id": "pm-cultured-thymus",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q2",
+   "query": "\"cultured thymus tissue\"[tiab] OR \"thymus tissue implantation\"[tiab]",
+   "why": "the only approved thymus therapy; alopecia among later autoimmune events (Markert 2022)",
+   "lead_source": "EP290 ledger (Duke)",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 21,
+    "since_2023": 8
+   }
+  },
+  {
+   "id": "pm-treg-aa",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q1,Q5",
+   "query": "\"alopecia areata\"[tiab] AND (treg*[tiab] OR \"regulatory T\"[tiab] OR \"interleukin-2\"[tiab] OR \"IL-2\"[tiab] OR rezpegaldesleukin[tiab])",
+   "why": "rebuild-tolerance cure direction (T-cell review s3)",
+   "lead_source": "TCELL-ANSWER + register s2b",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 142,
+    "since_2023": 40
+   }
+  },
+  {
+   "id": "pm-memory-t-aa",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q1,Q3",
+   "query": "\"alopecia areata\"[tiab] AND (\"resident memory\"[tiab] OR \"memory T\"[tiab] OR TRM[tiab] OR CD122[tiab] OR \"IL-15\"[tiab] OR \"IL-7\"[tiab])",
+   "why": "memory T cells: why long-standing disease persists and relapses",
+   "lead_source": "register s2b (Ohyama, Honda)",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 56,
+    "since_2023": 33
+   }
+  },
+  {
+   "id": "pm-immune-privilege",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q1",
+   "query": "\"immune privilege\"[tiab] AND (\"hair follicle\"[tiab] OR \"hair follicles\"[tiab])",
+   "why": "restore-the-shield cure direction",
+   "lead_source": "register s2b (Paus, Bertolini)",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 202,
+    "since_2023": 83
+   }
+  },
+  {
+   "id": "pm-gd-treg-cell-therapy",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q5",
+   "query": "\"alopecia areata\"[tiab] AND (\"cell therapy\"[tiab] OR \"cell-based therapy\"[tiab] OR \"CAR-T\"[tiab] OR \"CAR Treg\"[tiab] OR gammadelta[tiab] OR \"gamma delta\"[tiab] OR \"γδ\"[tiab] OR \"adoptive transfer\"[tiab])",
+   "why": "cell-therapy routes to tolerance (Gilhar gamma-delta Treg)",
+   "lead_source": "register s2b",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 35,
+    "since_2023": 17,
+    "note": "narrowed: the first version (hair follicle OR AA) pulled 175 records, mostly hair-regeneration stem-cell work"
+   }
+  },
+  {
+   "id": "pm-thymic-regeneration-autoimmune",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q2",
+   "query": "(thymus[ti] OR thymic[ti]) AND (regenerat*[tiab] OR \"induced pluripotent\"[tiab] OR iPSC[tiab] OR FOXN1[tiab]) AND autoimmun*[tiab]",
+   "why": "thymus-rebuilding work that touches autoimmunity (the THY-100 question)",
+   "lead_source": "EP290 ledger (Thymmune, Blackburn, Zandstra)",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 71,
+    "since_2023": 22
+   }
+  },
+  {
+   "id": "pm-thymmune",
+   "kind": "pubmed",
+   "lane": "L3",
+   "question": "Q2",
+   "query": "Thymmune[ad] OR \"THY-100\"[tiab]",
+   "why": "any peer-reviewed THY-100 data would appear here first",
+   "lead_source": "EP290 ledger C12",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 1,
+    "since_2023": 1
+   }
+  },
+  {
+   "id": "pm-sykes-thymus",
+   "kind": "pubmed",
+   "lane": "L3",
+   "question": "Q2",
+   "query": "Sykes M[au] AND (thymus[tiab] OR thymic[tiab] OR tolerance[tiab])",
+   "why": "thymus-induced tolerance, Columbia",
+   "lead_source": "EP290 ledger",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 276,
+    "since_2023": 17
+   }
+  },
+  {
+   "id": "pm-manley-thymus",
+   "kind": "pubmed",
+   "lane": "L3",
+   "question": "Q2",
+   "query": "Manley NR[au] AND (thymus[tiab] OR thymic[tiab])",
+   "why": "thymus organogenesis, ASU; United Therapeutics partner",
+   "lead_source": "EP290 ledger C7",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 66,
+    "since_2023": 10
+   }
+  },
+  {
+   "id": "pm-zandstra-thymic",
+   "kind": "pubmed",
+   "lane": "L3",
+   "question": "Q2",
+   "query": "Zandstra PW[au] AND (thymus[tiab] OR thymic[tiab] OR \"T cell\"[tiab] OR \"T-cell\"[tiab])",
+   "why": "engineered thymic niche, UBC; United Therapeutics partner",
+   "lead_source": "EP290 ledger C7",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 14,
+    "since_2023": 8
+   }
+  },
+  {
+   "id": "pm-lionakis-apeced",
+   "kind": "pubmed",
+   "lane": "L3",
+   "question": "Q2",
+   "query": "Lionakis MS[au] AND (APECED[tiab] OR AIRE[tiab] OR \"autoimmune polyendocrine\"[tiab])",
+   "why": "largest US APECED cohort, NIAID",
+   "lead_source": "EP290 ledger s5",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 52,
+    "since_2023": 21
+   }
+  },
+  {
+   "id": "ct-thymokidney-ut",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q2",
+   "nct": "NCT07224763",
+   "why": "does a transplanted thymus induce tolerance in humans?",
+   "lead_source": "EP290 ledger C11",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "United Therapeutics",
+    "title": "Study to Evaluate the Safety and Efficacy of the GGTA1 KO Thymokidney in Patients With ESR"
+   }
+  },
+  {
+   "id": "ct-thymokidney-choironex",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q2",
+   "nct": "NCT07696962",
+   "why": "second thymokidney programme",
+   "lead_source": "EP290 ledger C11",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "NOT_YET_RECRUITING",
+    "has_results": false,
+    "sponsor": "Xeno Holdings (US), LLC dba ChoironeX",
+    "title": "Study of ChoironeX GalKO Porcine Thymokidney Xenotransplantation in End-Stage Renal Diseas"
+   }
+  },
+  {
+   "id": "ct-hcw9302",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q1,Q5",
+   "nct": "NCT07049328",
+   "why": "IL-2 fusion protein: the only recruiting Treg/tolerance AA trial",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "HCW Biologics",
+    "title": "HCW9302 (Interleukin-2 Fusion Protein) for Alopecia Areata"
+   }
+  },
+  {
+   "id": "ct-ibi3013",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q1,Q3",
+   "nct": "NCT07554222",
+   "why": "IL-7/IL-15/CD122: against memory T cells",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Innovent Biologics (Suzhou) Co. Ltd.",
+    "title": "Study to Evaluate the Safety, Tolerability and How IBI3013 is Taken up and Processed by th"
+   }
+  },
+  {
+   "id": "ct-ly4005130",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT07533006",
+   "why": "code-named drug (Lilly)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Eli Lilly and Company",
+    "title": "A Study of LY4005130 in Adult Participants With Severe Alopecia Areata (Hair Loss)"
+   }
+  },
+  {
+   "id": "ct-fb102",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT07205159",
+   "why": "code-named drug (Forte)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Forte Biosciences, Inc.",
+    "title": "A Study to Evaluate the Safety and Efficacy of FB102 in Patients With Severe to Very Sever"
+   }
+  },
+  {
+   "id": "ct-ald102",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT06826196",
+   "why": "code-named drug (Aldena)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Aldena Therapeutics",
+    "title": "A Clinical Study to Evaluate the Safety, Tolerability, Pharmacokinetics and Preliminary Ef"
+   }
+  },
+  {
+   "id": "ct-lad603",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT07311564",
+   "why": "code-named drug (Almirall)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Almirall, S.A.",
+    "title": "A Study of LAD603 in Adults With Alopecia Areata"
+   }
+  },
+  {
+   "id": "ct-vc005",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT07749716",
+   "why": "code-named drug (Jiangsu Vcare)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "Jiangsu vcare pharmaceutical technology co., LTD",
+    "title": "Phase II Clinical Study of VC005 Tablets in Subjects With Severe Alopecia Areata"
+   }
+  },
+  {
+   "id": "ct-nxc736",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q4",
+   "nct": "NCT06104839",
+   "why": "code-named drug (NEXTGEN)",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "NEXTGEN Bioscience",
+    "title": "Safety and Efficacy of Oral NXC-736 in Adult Participants With Moderate and Severe Alopeci"
+   }
+  },
+  {
+   "id": "ct-mtt-minnesota",
+   "kind": "ct_study",
+   "lane": "L1",
+   "question": "Q6",
+   "nct": "NCT06747611",
+   "why": "microbiota transplant therapy, Phase 2",
+   "lead_source": "register s3",
+   "validated": {
+    "date": "2026-09-23",
+    "status": "RECRUITING",
+    "has_results": false,
+    "sponsor": "University of Minnesota",
+    "title": "Evaluation of Microbiota Transplant Therapy in Patients With Alopecia Areata"
+   }
+  },
+  {
+   "id": "ct-sponsor-united-therapeutics",
+   "kind": "ct_sponsor",
+   "lane": "L1",
+   "question": "Q2",
+   "sponsor": "United Therapeutics",
+   "why": "a THY-100 or autoimmune study would appear under the parent",
+   "lead_source": "EP290 ledger C12",
+   "validated": {
+    "date": "2026-09-23",
+    "studies_all_pages": 165,
+    "note": "one page returns 100; Phase C must paginate. Alert on a NEW NCT ID, filter by condition (autoimmune, alopecia, athymia) before alerting"
+   }
+  },
+  {
+   "id": "ct-silence-aa",
+   "kind": "ct_silence",
+   "lane": "L1",
+   "question": "all",
+   "why": "trials completed without results: likely negative (Hopewell 2009)",
+   "lead_source": "METHODS.md s1 row 7",
+   "validated": {
+    "date": "2026-09-23",
+    "completed_all_alopecia": 325,
+    "completed_aa": 95,
+    "aa_no_posted_results": 57,
+    "aa_no_results_completed_by_2025-09": 54,
+    "of_those_with_a_US_site": 13,
+    "note": "baseline backlog. Many non-US trials never post results legitimately; the signal needs a PubMed check for the NCT ID too. US-site trials are the stronger signal"
+   }
+  },
+  {
+   "id": "rep-aa",
+   "kind": "reporter",
+   "lane": "L3",
+   "question": "all",
+   "query": "\"alopecia areata\"",
+   "why": "the register's base query, monthly",
+   "lead_source": "LABS-REGISTER.md",
+   "validated": {
+    "date": "2026-09-23",
+    "award_year_rows": 19
+   }
+  },
+  {
+   "id": "rep-follicle-privilege",
+   "kind": "reporter",
+   "lane": "L3",
+   "question": "Q1",
+   "query": "\"immune privilege\" AND \"hair follicle\"",
+   "why": "funded work on the follicle shield that may not say AA",
+   "lead_source": "METHODS.md",
+   "validated": {
+    "date": "2026-09-23",
+    "award_year_rows": 1
+   }
+  },
+  {
+   "id": "yt-moonshots",
+   "kind": "youtube",
+   "lane": "L4",
+   "question": "all",
+   "channel_id": "UCvxm0qTrGN_1LMYgUaftWyQ",
+   "channel": "Peter H. Diamandis (Moonshots)",
+   "title_filter": "thymus|thymic|t[- ]cell|autoimmun|immune|alopecia|hair loss|rothblatt",
+   "why": "source of the EP290 lead; future episodes traced with the claim-ledger method",
+   "lead_source": "EP290",
+   "validated": {
+    "date": "2026-09-23",
+    "feed_entries": 15,
+    "feed_window_days": 6,
+    "filter_hits_in_feed": 0,
+    "note": "the RSS feed holds only ~6 days (about 2-3 uploads a day): poll DAILY or episodes are missed; EP290 (09-16) had already dropped out"
+   },
+   "match_on": "title + media:description (EP290's TITLE never says thymus; only its description did)"
+  },
+  {
+   "id": "press-united-therapeutics",
+   "kind": "press_page",
+   "lane": "L3",
+   "question": "Q2",
+   "url": "https://ir.unither.com/press-releases",
+   "keywords": [
+    "Thymmune",
+    "THY-100",
+    "autoimmune",
+    "thymus"
+   ],
+   "why": "IND or autoimmune indication for THY-100",
+   "lead_source": "EP290 ledger C12",
+   "validated": {
+    "date": "2026-09-23",
+    "note": "not machine-checked: page fetched by hand in S261"
+   }
+  },
+  {
+   "id": "patent-thymmune",
+   "kind": "patent_manual",
+   "lane": "L3",
+   "question": "Q2,Q4",
+   "assignees": [
+    "Thymmune Therapeutics",
+    "Forte Biosciences",
+    "Aldena Therapeutics",
+    "NEXTGEN Bioscience",
+    "Jiangsu Vcare"
+   ],
+   "why": "patents disclose mechanisms before papers do (horizon scanning, METHODS.md row 11)",
+   "lead_source": "METHODS.md",
+   "validated": {
+    "date": "2026-09-23",
+    "note": "not machine-checked: manual monthly check"
+   }
+  }
+ ]
+}
