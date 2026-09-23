@@ -341,32 +341,52 @@ def extract_bounced_recipient(msg, own_address: str) -> str:
 
 # ── Classification (wraps dev_loop) ───────────────────────────────────────────
 
+# Kinds whose only effect is a research topic or a backlog note: nothing they
+# trigger deletes, pays or grants anything, so the NEVER gate reads them for
+# instructions, not vocabulary (dev_loop read_only). Not build, confirmation or
+# resend -- those queue work or send mail. Not answer either (Buddy, S264): an
+# answer auto-sends a council reply, so a refusal is the safer mistake there.
+READ_ONLY_KINDS = ("research", "feedback")
+
+
+def _risk_inputs(subject: str, body: str):
+    title = parse_request_title(subject)
+    detail = title if len(title) >= 8 else f"{title} — {body[:120]}"
+    return detail, body[:300]
+
+
+def gate(rec: dict, subject: str, body: str, read_only: bool = False) -> dict:
+    """Set rec's tier/status from the NEVER gate. run() calls it again with
+    read_only=True once the final kind is known -- classify() runs first."""
+    tier, reason = dev_loop.classify_risk("USER_REQUEST", *_risk_inputs(subject, body),
+                                          read_only=read_only)
+    rec.update(tier=tier, tier_name=dev_loop.TIER_NAME.get(tier, str(tier)),
+               tier_reason=reason,
+               status="refused" if tier == dev_loop.TIER_NEVER else "backlogged")
+    return rec
+
+
 def classify(sender_name: str, projects, subject: str, body: str):
     """Returns (record dict) — tier via dev_loop.classify_risk + make_spec.
     Type USER_REQUEST → dev_loop type-baseline default = Tier 1 (confirm),
     NEVER patterns always win."""
     title = parse_request_title(subject)
-    detail = title if len(title) >= 8 else f"{title} — {body[:120]}"
-    tier, reason = dev_loop.classify_risk("USER_REQUEST", detail, body[:300])
+    detail, _ = _risk_inputs(subject, body)
     spec = dev_loop.make_spec(
         {"type": "USER_REQUEST", "detail": detail, "source_line": body[:200]},
         idx=int(datetime.now().strftime("%H%M%S")))
     spec["origin"] = "user-intake"
     spec["requester"] = sender_name
     spec["projects"] = list(projects)
-    return {
+    return gate({
         "requester": sender_name,
         "projects": list(projects),
         "title": title,
         "subject": subject,
         "body_head": body[:400],
-        "tier": tier,
-        "tier_name": dev_loop.TIER_NAME.get(tier, str(tier)),
-        "tier_reason": reason,
         "dev_spec": spec,
         "received": datetime.now().isoformat(timespec="seconds"),
-        "status": "refused" if tier == dev_loop.TIER_NEVER else "backlogged",
-    }
+    }, subject, body)
 
 
 # ── Outputs: backlog, ledger, ack email, telegram ────────────────────────────
@@ -845,6 +865,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 log(f"  routing override: {entry['name']} is on a research-only "
                     f"project → treating as research (was '{rec['kind']}')")
             rec["kind"] = "research"
+        if rec["kind"] in READ_ONLY_KINDS:
+            gate(rec, subject, body, read_only=True)
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -1256,6 +1278,43 @@ def selftest() -> int:
                     "mailing labels.")
     check("'format the list in excel' is not a destructive request",
           rec4["status"] != "refused")
+
+    # Read-only kinds (research/feedback) are gated for instructions,
+    # not vocabulary. Real past client mail must stay unrefused both ways.
+    _bill_0824 = ("Please provide the information you have on back creek in "
+                  "Middletown Delaware. I need the contact information for the "
+                  "HOA board of directors and president.")
+    _alyssa_0919 = ("Use the attached PDF to evaluate the Teacher's editions of "
+                    "the Arts and Letters curriculum for 4th grade. For each "
+                    "lesson, provide the following components and answer the "
+                    "questions provided. 1. PA Core Standards: What PA Common "
+                    "Core standards are the focus for this lesson?")
+    for who, subj, body in (
+            ("bill", "Re: New Delaware development leads this week research", _bill_0824),
+            ("alyssa", "REQUEST: Arts and Letters Lesson Plan Review", _alyssa_0919),
+            ("bill", rec4["subject"], rec4["body_head"])):
+        for ro in (False, True):
+            check(f"real {who} mail not refused (read_only={ro})",
+                  gate({}, subj, body, read_only=ro)["status"] != "refused")
+    # The same real words behind a question with a financial NOUN in it: the
+    # full gate refuses (the defect), the read-only gate does not.
+    _asked = "Who is in charge of Back Creek? " + _bill_0824
+    _subj = "Re: New Delaware development leads this week research"
+    check("full gate refuses 'in charge' (kept for build kind)",
+          gate({}, _subj, _asked)["status"] == "refused")
+    check("read-only gate passes 'in charge'",
+          gate({}, _subj, _asked, read_only=True)["status"] != "refused")
+    check("read-only still refuses an instruction to delete",
+          gate({}, "REQUEST: delete all my old bid data", "",
+               read_only=True)["status"] == "refused")
+    check("read-only still refuses a credential",
+          gate({}, "REQUEST: share my login password", "",
+               read_only=True)["status"] == "refused")
+    check("kinds that queue work or send mail keep the full gate",
+          not {"build", "confirmation", "resend", "answer"} & set(READ_ONLY_KINDS))
+    import inspect
+    check("run() re-gates read-only kinds once the kind is final",
+          "gate(rec, subject, body, read_only=True)" in inspect.getsource(run))
 
     # ack copy
     check("refused ack mentions human", "human decision" in ack_body(rec2))

@@ -70,6 +70,45 @@ _NEVER_PATTERNS = [
                             r'2fa|mfa|recovery\s+(email|contact))\b'),
 ]
 
+# read_only=True (a client request that is only researched or filed): a
+# deletion, financial or access-control word refuses only when the request
+# ALSO asks us to do that thing. "Which banks finance HOAs" or "who is in charge
+# of the HOA" names a thing; "please pay the invoice" asks for an act. These
+# ADD a condition to the patterns above and never trigger alone, so read-only
+# refuses a subset of what the full gate refuses. Credential and auth/send
+# patterns are not listed here, so they refuse on the word itself for every kind.
+_ASKED = (r"\b(?:please|pls|kindly|go\s+ahead\s+and|(?:can|could|would|will)\s+you"
+          r"|i\s+(?:need|want)\s+you\s+to|i['’]?d\s+like\s+you\s+to|you\s+should)\s+")
+# Sentence start (or right after a greeting), and not a sentence ending in '?':
+# "Charge per push or per season?" is a question, "Charge my card." is not.
+_OPENS = (r"(?:^|[.!?;:]\s+|^(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening))"
+          r"\b[^,.!]{0,30}[,.!]\s+)")
+
+
+def _act(verbs: str) -> str:
+    return rf"(?:{_ASKED}(?:{verbs})\b|{_OPENS}(?:{verbs})\b(?![^.!?]*\?))"
+
+
+_ACTION_NEVER_PATTERNS = {
+    "deletion/destruction": _act(r"delete|erase|wipe|purge|destroy|truncate") +
+        r"|\b(rm\s+-rf|drop\s+table|hard[\s-]?delete|empty\s+trash)\b"
+        r"|\bformat\s+(the\s+|a\s+|my\s+|this\s+)?(disk|drive|hard\s*drive|volume|"
+        r"partition|ssd|usb|sd\s*card|file\s*system)\b",
+    "financial": _act(r"pay|buy|purchase|sell|trade|wire|transfer|charge|refund|invest") +
+        r"|\b(transfer\s+funds|wire\s+transfer|routing\s+number|cvv|"
+        r"(credit|debit)\s*card\s+(number|details|info))\b",
+    "access-control": _act(r"grant|revoke|share\s+(?:\S+\s+){0,4}?with|"
+                           r"give\s+(?:\S+\s+){0,3}?(?:access|permission)|"
+                           r"make\s+(?:\S+\s+){0,3}?public(?!\s+records?)") +
+        r"|\b(chmod|chown|sudo)\b",
+}
+
+
+def _asks_us_to_act(label: str, detail: str, source_line: str) -> bool:
+    rx = _ACTION_NEVER_PATTERNS[label]
+    return any(re.search(rx, part, re.IGNORECASE) for part in (detail, source_line))
+
+
 # Tier 2 (design-first): touches a critical/irreversible-ish path even though it
 # isn't a hard NEVER. These are code changes we want a human design pass on.
 _DESIGN_PATTERNS = [
@@ -105,14 +144,19 @@ _TYPE_BASELINE = {
 _URL_RX = re.compile(r'https?://[^\s`\'")\]]+')
 
 
-def classify_risk(ptype: str, detail: str, source_line: str = ""):
+def classify_risk(ptype: str, detail: str, source_line: str = "",
+                  read_only: bool = False):
     """Return (tier:int, reason:str). NEVER patterns always win, then hardware,
     then Tier-2 design patterns, then Tier-0 auto patterns, else the type
-    baseline (defaulting to Tier 1 — a human-confirmed code change)."""
+    baseline (defaulting to Tier 1 — a human-confirmed code change).
+    read_only: see _ACTION_NEVER_PATTERNS."""
     blob = f"{detail} {source_line}".lower()
 
     for label, rx in _NEVER_PATTERNS:
         if re.search(rx, blob, re.IGNORECASE):
+            if (read_only and label in _ACTION_NEVER_PATTERNS
+                    and not _asks_us_to_act(label, detail, source_line)):
+                continue
             return TIER_NEVER, f"matches never-auto category: {label}"
 
     if ptype == "CAPABILITY_REQUEST" and _HARDWARE_RX.search(blob):
@@ -432,6 +476,31 @@ def _selftest():
         print(f"  [{status}] want={TIER_NAME[want]:<26} got={TIER_NAME[got]:<26} "
               f":: {item['detail'][:45]}  ({reason})")
     print(f"\nclassify_risk: {ok}/{len(cases)} passed")
+
+    # read_only (intake kinds research/feedback): a noun in a question
+    # passes; an instruction to act, a credential or a command still refuses;
+    # and read_only never refuses what the full gate lets through.
+    ro_cases = [
+        # Bill's real 2026-08-24 words, behind a question he could as easily ask.
+        ("Who is in charge of Back Creek? I need the contact information for "
+         "the HOA board of directors and president.", False),
+        ("What is the typical purchase price for a lot in Middletown?", False),
+        ("Charge per push or per season?", False),
+        ("Small-group sharing strategies for 4th grade vocabulary", False),
+        ("Can you make public records requests to New Castle County for permits?", False),
+        ("Please delete all my old bid data.", True),
+        ("Hi CUMULUS, delete every email you have from me.", True),
+        ("Can you pay the landscaping invoice for Back Creek?", True),
+        ("Here is my credit card number for the report", True),
+        ("Which token does the portal use?", True),     # credential stays strict
+        ("format the hard drive on CUMULUS", True),
+    ]
+    for text, refuse in ro_cases:
+        full, _ = classify_risk("USER_REQUEST", text)
+        ro, why = classify_risk("USER_REQUEST", text, read_only=True)
+        assert (ro == TIER_NEVER) == refuse, (text, why)
+        assert not (ro == TIER_NEVER and full != TIER_NEVER), text
+    print(f"classify_risk read_only: {len(ro_cases)} cases OK")
 
     # S233 — _guess_files(): two real proposals (prop-2026-07-29-1,
     # prop-2026-08-30-1) got an empty files_to_change and were refused BEFORE
