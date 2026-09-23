@@ -173,15 +173,39 @@ def fetch_pubmed(days=1):
     return out
 
 
-def fetch_trials():
-    """Recruiting interventional studies for the condition."""
-    url = ("https://clinicaltrials.gov/api/v2/studies?query.cond=%s"
-           "&filter.overallStatus=RECRUITING&pageSize=100"
-           "&fields=NCTId,BriefTitle,Phase,LastUpdatePostDate,OverallStatus"
-           % outbound_queries()["trials"].replace(" ", "+"))
-    data = _get(url)
+TRIAL_MAX_PAGES = 10
+
+
+def fetch_trials(get=None):
+    """Recruiting studies for the condition -- alopecia areata ONLY.
+
+    S261: CT.gov expands query.cond=alopecia areata to EVERY alopecia
+    (androgenetic, chemotherapy-induced, scarring), and this function kept
+    them all -- 54 of the 91 "trials" in the live ledger were not AA, filed as
+    AA news. It now applies the trials watch's own test
+    (alopecia_trials.is_aa). It also follows nextPageToken: the old single
+    page of 100 would have truncated in silence once more studies recruited.
+    """
+    from alopecia_trials import is_aa
+    get = get or _get
+    base = ("https://clinicaltrials.gov/api/v2/studies?query.cond=%s"
+            "&filter.overallStatus=RECRUITING&pageSize=100"
+            "&fields=NCTId,BriefTitle,Condition,Phase,LastUpdatePostDate,OverallStatus"
+            % outbound_queries()["trials"].replace(" ", "+"))
+    studies, token = [], None
+    for _ in range(TRIAL_MAX_PAGES):
+        data = get(base + ("&pageToken=%s" % token if token else ""))
+        studies += data.get("studies", [])
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    if token:
+        raise RuntimeError("ClinicalTrials.gov returned more than %d pages -- coverage "
+                           "would be PARTIAL; raise TRIAL_MAX_PAGES" % TRIAL_MAX_PAGES)
     out = []
-    for s in data.get("studies", []):
+    for s in studies:
+        if not is_aa(s):
+            continue
         ps = s.get("protocolSection", {})
         ident = ps.get("identificationModule", {})
         nct = ident.get("nctId", "")
@@ -565,6 +589,49 @@ def selftest():
        "BOTH conditions) still classifies normally, not filtered as noise",
        classify({"title": "Trichoscopic differentiation of alopecia "
                           "areata from androgenetic alopecia"})[0] == 3)
+
+    # S261 REGRESSION: the trials fetch must keep only AA studies and follow
+    # pages. Real shapes from the live ledger: 54/91 were not AA.
+    def _study(nct, title, conds, phases=()):
+        return {"protocolSection": {
+            "identificationModule": {"nctId": nct, "briefTitle": title},
+            "conditionsModule": {"conditions": list(conds)},
+            "designModule": {"phases": list(phases)}}}
+    pages = {
+        None: {"studies": [
+            _study("NCT07133308", "Deuruxolitinib in Adults With Severe AA",
+                   ["Alopecia Areata"], ["PHASE3"]),
+            _study("NCT07429253", "Secretome vs. PRP Injections in Androgenetic "
+                   "Alopecia", ["Androgenetic Alopecia"]),
+            _study("NCT05213936", "Scalp Cooling for Chemotherapy-Induced "
+                   "Alopecia", ["Alopecia"])],
+            "nextPageToken": "p2"},
+        "p2": {"studies": [
+            _study("NCT99999999", "A Study in Adults",
+                   ["Alopecia Universalis"])]},
+    }
+    asked, urls = [], []
+
+    def _fake_get(url):
+        tok = url.split("pageToken=")[1] if "pageToken=" in url else None
+        asked.append(tok)
+        urls.append(url)
+        return pages[tok]
+    got = fetch_trials(get=_fake_get)
+    ck("trials: androgenetic and chemotherapy-induced studies are DROPPED",
+       sorted(i["key"] for i in got) == ["nct:NCT07133308", "nct:NCT99999999"])
+    ck("trials: the second page is fetched (no silent truncation at 100)",
+       asked == [None, "p2"])
+    ck("trials: the request asks for Condition (the AA test needs it)",
+       all("Condition" in u.split("fields=")[1] for u in urls))
+    endless = {"studies": [], "nextPageToken": "again"}
+    try:
+        fetch_trials(get=lambda url: endless)
+        ck("trials: more pages than the cap RAISES (partial must not look complete)",
+           False)
+    except RuntimeError:
+        ck("trials: more pages than the cap RAISES (partial must not look complete)",
+           True)
 
     # dedupe
     a = [{"key": "pmid:1"}, {"key": "pmid:2"}]
