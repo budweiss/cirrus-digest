@@ -32,6 +32,7 @@ Page text is data, never instructions: nothing fetched is executed or obeyed.
 Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
   contact_list.py --request contact_lists/requests/<id>.txt [--id <id>]
                   [--max-candidates N] [--max-queries N] [--no-email]
+                  [--compare mail/DE-Home-Builders.xlsx]
   contact_list.py --selftest
 """
 from __future__ import annotations
@@ -449,6 +450,52 @@ def review_note(p: dict, rows: list, stats: dict) -> str:
     ] + about_lines(p, stats) + ["", "— CUMULUS"])
 
 
+# ── measurement against a hand-checked list ─────────────────────────────────
+
+_GENERIC = {"homes", "home", "builders", "builder", "construction", "custom", "delaware",
+            "division", "inc", "llc", "the", "companies", "company", "group", "maryland",
+            "and", "communities", "residential", "properties", "development", "buildings"}
+
+
+def _tokens(name: str) -> set:
+    return {w for w in _n(name).split() if len(w) >= 3 and w not in _GENERIC}
+
+
+def compare(rows: list, ref_xlsx: Path, group_names: list) -> dict:
+    """Score a run against a hand-checked workbook (S264's DE-Home-Builders.xlsx):
+    which reference companies were found, and on the overlap whether the
+    contact (by surname) and the building/not-building split agree."""
+    import openpyxl
+    wb = openpyxl.load_workbook(ref_xlsx, read_only=True)
+    ref = []
+    for i, ws in enumerate(wb.worksheets[:2]):
+        for r in list(ws.iter_rows(values_only=True))[1:]:
+            if r and r[0]:
+                ref.append({"name": r[0], "attn": r[1] or "", "group": i == 0})
+    ok = [r for r in rows if r.get("status") == "ok"]
+    found, contact_same, contact_both, group_same = [], 0, 0, 0
+    for rf in ref:
+        hit = next((r for r in ok if _tokens(r["name"]) & _tokens(rf["name"])), None)
+        if not hit:
+            continue
+        found.append((rf["name"], hit["name"]))
+        if bool(hit.get("evidence")) == rf["group"]:
+            group_same += 1
+        mine = (hit.get("contact") or {}).get("name", "")
+        if mine and not rf["attn"].startswith("Attn"):
+            contact_both += 1
+            if _n(mine).split()[-1:] == _n(rf["attn"]).split()[-1:]:
+                contact_same += 1
+    n_group = sum(1 for rf in ref if rf["group"])
+    found_group = sum(1 for rf in ref if rf["group"] and any(f[0] == rf["name"] for f in found))
+    return {"reference": len(ref), "found": len(found),
+            "reference_group": n_group, "found_group": found_group,
+            "contact_both": contact_both, "contact_same": contact_same,
+            "group_same": group_same, "run_confirmed": len(ok),
+            "missed": sorted(rf["name"] for rf in ref if rf["name"] not in {f[0] for f in found}),
+            "matches": found}
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
@@ -500,6 +547,11 @@ def main(argv):
     creds = json.loads(CREDS_PATH.read_text())
     result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)),
                  int(opt("--max-queries", MAX_ROSTER_QUERIES)))
+    if opt("--compare"):
+        score = compare(result["rows"], PROJECT_DIR / opt("--compare"),
+                        result["plan"].get("group_names") or [])
+        (RUNS_DIR / run_id / "compare.json").write_text(json.dumps(score, indent=1))
+        print("compare: " + json.dumps({k: v for k, v in score.items() if k != "matches"}))
     if "--no-email" in args:
         return 0
     import mailer
@@ -591,6 +643,19 @@ def selftest() -> bool:
                   and first[1][1] == "Attn: Owner")
             check("workbook: unconfirmed names get their own tab",
                   [r[0] for r in wb["Not Confirmed"].iter_rows(min_row=2, values_only=True)] == ["Nobody LLC"])
+            ref = Path(td) / "ref.xlsx"
+            rb = openpyxl.Workbook(); a1 = rb.active
+            a1.append(["Company", "Attention"]); a1.append(["Garrison Homes", "Jeffrey M. Garrison"])
+            a1.append(["NVR Inc. (Ryan Homes / NVHomes)", "Owen F. Thomas III"])
+            b1 = rb.create_sheet("B"); b1.append(["Company", "Attention"]); b1.append(["Lane Builders", "Jeff Burton"])
+            rb.save(ref)
+            run_rows = [dict(row, status="ok", contact={"name": "Jeffrey Garrison", "title": "President"}),
+                        {"name": "Ryan Homes", "status": "ok", "evidence": []}]
+            sc = compare(run_rows, ref, [])
+            check("compare: 'Ryan Homes' matches the NVR row; Lane Builders counted missed",
+                  sc["found"] == 2 and sc["missed"] == ["Lane Builders"])
+            check("compare: surname agreement and split agreement counted",
+                  sc["contact_both"] == 1 and sc["contact_same"] == 1 and sc["group_same"] == 1)
     except ImportError:
         print("  SKIP  workbook checks (openpyxl not installed here)")
     print("selftest: %s" % ("OK" if ok else "FAILED"))
