@@ -1,0 +1,1 @@
+I need the name, address and point of contact of every new home builder in the state of Delaware. Separate the list by builders currently building communities and builder that are not. Format the list in an excel spread sheet so it can be used to print mailing labels.

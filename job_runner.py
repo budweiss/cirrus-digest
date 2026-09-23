@@ -58,6 +58,7 @@ ALLOWED_SCRIPTS = {
     "alopecia_brief.py",
     "hoa_daily_research.py",
     "entity_kb.py",
+    "contact_list.py",   # S264: unattended contact-list research (review email to Buddy only)
 }
 
 _ID_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
