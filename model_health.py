@@ -495,6 +495,36 @@ def truncation_verdict(rows):
             f"({detail}) -- each one likely bought a PAID call", True)
 
 
+def paid_empty_verdict(rows):
+    """(line, should_notify) for PAID replies cut off with NO text. PURE.
+
+    S257. truncation_verdict leaves paid cut-offs alone on purpose -- a long
+    answer trimmed at the cap is a quality call. An EMPTY one is not: the whole
+    budget went to thinking, the call was billed, and nothing came back. S256
+    found ~240 of these (anthropic at effort=max, 09-15 -> 09-22) that nobody
+    saw, because every council quietly fell back to a member answer. Any one
+    notifies. Rows written before S257 carry no `empty` flag and never match,
+    so the historical backlog cannot fire this.
+    """
+    empty = [r for r in rows if r.get("empty") is True
+             and (r.get("provider") or "") not in LOCAL_PROVIDERS]
+    if not empty:
+        return ("empty replies: no paid reply came back empty in the last 24h", False)
+    by = {}
+    for r in empty:
+        k = f"{r.get('task') or '(untagged)'} [{r.get('provider') or '?'}]"
+        by[k] = by.get(k, 0) + 1
+    detail = ", ".join(f"{t} x{n}" for t, n in sorted(by.items()))
+    return (f"empty replies: {len(empty)} PAID repl(ies) returned NO text -- "
+            f"all max_tokens spent thinking ({detail})", True)
+
+
+def check_paid_empty(creds=None, ledger=None, now=None):
+    """(line, should_notify). Same ledger as check_local_truncation. Never raises."""
+    path = ledger or (HERE / "logs" / "llm_truncations.jsonl")
+    return paid_empty_verdict(_ledger_rows(path, now=now))
+
+
 def check_local_truncation(creds=None, ledger=None, now=None):
     """(line, should_notify). Reads this box's truncation ledger. Never raises."""
     path = ledger or (HERE / "logs" / "llm_truncations.jsonl")
@@ -1257,6 +1287,7 @@ def main():
     local_line, local_notify = check_local_model_loads(creds)     # S137
     fb_line, fb_notify = check_local_fallback_rate(creds)         # S141
     tr_line, tr_notify = check_local_truncation(creds)            # S141
+    pe_line, pe_notify = check_paid_empty(creds)                  # S257
     ep_line, ep_notify = check_endpoint_config(creds)             # S141
     dj_line, dj_notify = check_detached_jobs(creds)               # S141
     tn_line, tn_notify = check_tailnet(creds)                     # S173
@@ -1266,6 +1297,7 @@ def main():
     print(f"  local:   {local_line}")
     print(f"  spend:   {fb_line}")
     print(f"  cutoff:  {tr_line}")
+    print(f"  empty:   {pe_line}")
     print(f"  engine:  {ep_line}")
     print(f"  detach:  {dj_line}")
     print(f"  tailnet: {tn_line}")
@@ -1281,7 +1313,7 @@ def main():
 
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
-            or cloud_notify or local_notify or fb_notify or tr_notify
+            or cloud_notify or local_notify or fb_notify or tr_notify or pe_notify
             or ep_notify or dj_notify or dl_notify or tn_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
@@ -1308,6 +1340,13 @@ def main():
                       "escalates and PAYS for the same question. Raise that "
                       "call's max_tokens -- a reasoning model spends its budget "
                       "thinking before it writes anything (S141, 44b31fe)._"]
+        if pe_notify:
+            lines += ["*A PAID MODEL RETURNED NOTHING (billed, empty):*",
+                      f"• {pe_line}",
+                      "_Its reasoning used the whole max_tokens before writing a "
+                      "word. Councils hide this by falling back to one member. "
+                      "Check `anthropic_effort` (S256: max -> high fixed it) or "
+                      "raise that task's max_tokens._"]
         if ep_notify:
             lines += ["*THE ENGINE IS NOT RUNNING WHAT WE ASKED FOR:*",
                       f"• {ep_line}",
@@ -1534,6 +1573,21 @@ def _selftest_truncation(ck):
        n is True and "halftime_catalogue" in line)
     line, n = truncation_verdict([r("anthropic"), r("openai")])
     ck("truncation: a PAID model hitting its cap is NOT this alert's business",
+       n is False)
+    # S257 -- the paid EMPTY reply: the case the rule above deliberately skips.
+    def e(prov, empty, task="alopecia-brief"):
+        return {"provider": prov, "task": task, "at": "x", "empty": empty}
+    line, n = paid_empty_verdict([])
+    ck("empty: a day with no empty paid replies is quiet", n is False)
+    line, n = paid_empty_verdict([e("anthropic", True)])
+    ck("empty: ONE empty paid reply alerts and names task + provider",
+       n is True and "alopecia-brief [anthropic]" in line)
+    line, n = paid_empty_verdict([e("anthropic", False), r("openai")])
+    ck("empty: a trimmed-but-not-empty paid reply does NOT alert", n is False)
+    line, n = paid_empty_verdict([r("anthropic"), r("anthropic")])
+    ck("empty: pre-S257 rows (no flag) never fire -- no backlog alarm", n is False)
+    line, n = paid_empty_verdict([e("vllm", True)])
+    ck("empty: a LOCAL empty reply is truncation_verdict's job, not this one",
        n is False)
 
 

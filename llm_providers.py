@@ -150,20 +150,28 @@ _LAST = threading.local()
 _TRUNC_LEDGER = Path(__file__).resolve().parent / "logs" / "llm_truncations.jsonl"
 
 
-def _note_finish(reason, model):
-    """Record a cut-off reply. NEVER raises -- instrumentation on a hot path."""
+def _note_finish(reason, model, empty=None):
+    """Record a cut-off reply. NEVER raises -- instrumentation on a hot path.
+
+    S257: `empty` marks a reply cut off before ANY text -- the whole budget
+    went to thinking. S256 found ~240 of those from anthropic at effort=max,
+    invisible because councils fell back to a member answer; model_health's
+    paid_empty_verdict alerts on them. Only adapters that know pass it."""
     _LAST.finish_reason = reason
     if reason != "length":
         return
     try:
         _TRUNC_LEDGER.parent.mkdir(parents=True, exist_ok=True)
         with open(_TRUNC_LEDGER, "a") as f:
-            f.write(json.dumps({
+            row = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "provider": getattr(_LAST, "provider", "") or "",
                 "model": model,
                 "task": getattr(_LAST, "task", "") or "",
-            }) + "\n")
+            }
+            if empty is not None:
+                row["empty"] = bool(empty)
+            f.write(json.dumps(row) + "\n")
     except Exception:
         pass
 
@@ -389,10 +397,12 @@ def _anthropic(creds, system, user, max_tokens):
     _LAST.usage = {"input": (usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
                             + usage.get("cache_read_input_tokens", 0)) if usage else None,
                    "output": usage.get("output_tokens")}
-    _note_finish("length" if resp.get("stop_reason") == "max_tokens" else resp.get("stop_reason"), model)
-    _record_usage("anthropic", model, usage, want_cache)
-    return "".join(b.get("text", "") for b in resp.get("content", [])
+    text = "".join(b.get("text", "") for b in resp.get("content", [])
                    if b.get("type") == "text")
+    _note_finish("length" if resp.get("stop_reason") == "max_tokens" else resp.get("stop_reason"),
+                 model, empty=not text.strip())
+    _record_usage("anthropic", model, usage, want_cache)
+    return text
 
 
 def _gemini(creds, system, user, max_tokens):
@@ -968,7 +978,17 @@ def selftest():
     # otherwise append to the REAL out/ ledger on the box running it.
     _rec_guard = recording(False)
     _rec_guard.__enter__()
+    # S257: the cache-usage and truncation ledgers were NOT covered by the
+    # guard above -- every stubbed anthropic call appended an all-null row to
+    # the LIVE logs/llm_cache_usage.jsonl on the box running the suite (T32).
+    import tempfile as _tf0, shutil as _sh0
+    _td0 = _tf0.mkdtemp(prefix="llmp-selftest-")
+    _live_ledgers = {k: globals()[k] for k in ("_CACHE_LEDGER", "_TRUNC_LEDGER")}
+    for _k in _live_ledgers:
+        globals()[_k] = Path(_td0) / (_k.lower() + ".jsonl")
     try:
+        check("selftest: cache + truncation ledgers point at a temp dir, not live logs",
+              all(str(globals()[k]).startswith(_td0) for k in _live_ledgers))
         # retry-on-empty: provider returns '' then '  ' then a real reply
         _seq = iter(["", "  ", "real answer"])
         _PROVIDERS["anthropic"] = lambda c, s, u, m: next(_seq)
@@ -1169,6 +1189,22 @@ def selftest():
               "is left alone -- this raises a floor, it never lowers a "
               "caller's own larger request",
               _seen_body["b"]["max_tokens"] == 16000)
+
+        # ── S257: a cut-off reply is marked empty / not-empty for the alert ──
+        # Called on the adapter directly: call() retries an empty reply, which
+        # would log two rows and blur which case produced which.
+        _trunc_suite = _TRUNC_LEDGER
+        globals()["_TRUNC_LEDGER"] = Path(_td0) / "s257-trunc.jsonl"
+        for _content in ([], [{"type": "text", "text": "partial"}]):
+            globals()["_http_post"] = lambda *a, _c=_content, **k: {
+                "content": _c, "stop_reason": "max_tokens"}
+            _anthropic({"anthropic_api_key": "k"}, "s", "u", 200)
+        _rows = [json.loads(l) for l in _TRUNC_LEDGER.read_text().splitlines()]
+        check("a reply cut off with NO text is logged empty=True",
+              len(_rows) == 2 and _rows[0].get("empty") is True)
+        check("a cut-off reply WITH text is logged empty=False",
+              len(_rows) == 2 and _rows[1].get("empty") is False)
+        globals()["_TRUNC_LEDGER"] = _trunc_suite
 
         # ── S103: last_model() — the model that actually went on the wire ──
         # Driven through the REAL adapters with only the HTTP layer stubbed, so
@@ -1497,6 +1533,8 @@ def selftest():
         _PROVIDERS.clear()
         _PROVIDERS.update(_real_providers)
         _rec_guard.__exit__(None, None, None)   # recording back to its pre-suite state
+        globals().update(_live_ledgers)         # S257: live ledger paths restored
+        _sh0.rmtree(_td0, ignore_errors=True)
 
     return _ok
 
