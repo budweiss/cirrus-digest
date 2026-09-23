@@ -479,6 +479,10 @@ def build_workbook(rows: list, p: dict, stats: dict, out: Path, client: bool = F
             row[9].alignment = Alignment(wrap_text=True, vertical="top")
 
     ok = [r for r in rows if r.get("status") == "ok"]
+    # S266 trial: 2 of 10 marinas had no verified address and would print as
+    # blank labels. In the client copy the label tabs hold mailable rows only.
+    no_addr = [r for r in ok if client and not r.get("address")]
+    ok = [r for r in ok if r not in no_addr]
     if p.get("group_question") and len(names) == 2:
         ws = wb.active; ws.title = names[0][:31]
         sheet(ws, [r for r in ok if r.get("evidence")])
@@ -486,6 +490,8 @@ def build_workbook(rows: list, p: dict, stats: dict, out: Path, client: bool = F
     else:
         ws = wb.active; ws.title = names[0][:31]
         sheet(ws, ok)
+    if no_addr:
+        sheet(wb.create_sheet("No Address Found"), no_addr)
     if not client:
         rest = wb.create_sheet("Not Confirmed")
         rest.append(["Name", "Why", "Pages Read", "Found On"])
@@ -528,6 +534,8 @@ def client_about_lines(p: dict, stats: dict) -> list:
         "Every address and contact was checked against the web page it came from; that "
         "page is in the last two columns.",
         "Where no contact is published, the label reads 'Attn: Owner' or the person's role.",
+        "Organizations with no published mailing address are on the 'No Address Found' tab, "
+        "so the label tabs print cleanly.",
         "Public listings go out of date. A quick call before a large mailing is worth it.",
         "",
         "Printing mailing labels: in Word, Mailings > Start Mail Merge > Labels > Select "
@@ -846,6 +854,12 @@ def selftest() -> bool:
                   and first[1][1] == "Attn: Owner")
             xc = build_workbook(rows, p, stats, Path(td) / "c.xlsx", client=True)
             cw = openpyxl.load_workbook(xc)
+            xn = build_workbook(rows + [{"name": "Nowhere Marina", "status": "ok", "evidence": []}],
+                                p, stats, Path(td) / "n.xlsx", client=True)
+            nw = openpyxl.load_workbook(xn)
+            check("client copy: a row with no address goes to 'No Address Found', not a label tab",
+                  [r[0] for r in nw["No Address Found"].iter_rows(min_row=2, values_only=True)] == ["Nowhere Marina"]
+                  and "Nowhere Marina" not in [r[0] for r in nw["Not Building Communities"].iter_rows(values_only=True)])
             check("client copy: no Not Confirmed tab, a plain About tab",
                   "Not Confirmed" not in cw.sheetnames and "About This List" in cw.sheetnames
                   and not any("model" in (r[0] or "") for r in cw["About This List"].iter_rows(values_only=True)))
