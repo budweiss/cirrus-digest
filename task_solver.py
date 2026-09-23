@@ -606,6 +606,32 @@ def classify_capability(rec: dict) -> str:
     return "none"
 
 
+# S264 (Buddy) — a request for a LIST or a FILE is not a question. Bill's
+# 2026-09-23 email asked for every Delaware home builder, "in an excel spread
+# sheet so it can be used to print mailing labels"; his 08-25 reply asked for
+# "the whole 224 as a workbook". The council answers from model memory in
+# plain text, and nothing checks a list of names and phones for invented
+# entries before it is sent. 2 of his 4 answer-kind emails were this shape.
+# intake routes a match to a ticket; the contact-list job will hook here too.
+_DELIVERABLE_RX = re.compile(
+    r"\bexcel\b(?!\s+(?:at|in)\b)"            # not "builders who excel at"
+    r"|\bspread\s*sheets?\b|\bworkbooks?\b|\bcsv\b|\bxlsx?\b|\bgoogle\s+sheets?\b"
+    r"|\bmailing\s+labels?\b"
+    r"|\blists?\s+of\s+(?:every|all)\b"
+    r"|\bnames?\b[^.?!\n]{0,20}\baddress(?:es)?\b[^.?!\n]{0,40}\b(?:contacts?|phones?|emails?)\b",
+    re.IGNORECASE)
+
+
+def wants_deliverable(subject: str, body: str) -> bool:
+    """True when the client's OWN words ask for a list or a file. Pure. Reads
+    the body with our quoted email cut off, and the subject only on a fresh
+    email: a reply's subject is ours echoed back (see S78 above)."""
+    own = strip_quoted_reply(body or "")
+    if not is_reply_subject(subject):
+        own = f"{subject or ''} {own}"
+    return bool(_DELIVERABLE_RX.search(own))
+
+
 # ── Resend: find + redeliver our own past sent mail ──────────────────────────
 
 IMAP_SERVER = "imap.gmail.com"          # same Gmail infra the outbound side
@@ -870,6 +896,40 @@ def selftest() -> int:
                                  "word bank; see unit_4__draft.")
               == "Students fill in ________________ from the word bank; "
                  "see unit_4__draft.")
+
+        # S264 — list/file requests, on Bill's real words.
+        bill_0923 = ("I need the name, address and point of contact of every new home "
+                     "builder in the state of Delaware. Separate the list by builders "
+                     "currently building communities and builder that are not. Format "
+                     "the list in an excel spread sheet so it can be used to print "
+                     "mailing labels. William Hutchins President Knight Property "
+                     "Services > On Sep 21, 2026, at 4:30 AM, CUMULUS wrote: > Hi Bill")
+        check("Bill 09-23 builder list wants a deliverable",
+              wants_deliverable("Re: Delaware development leads - nothing new this "
+                                "week (Sep 21)", bill_0923))
+        check("Bill 08-25 'the whole 224 as a workbook' wants a deliverable",
+              wants_deliverable("Re: Back Creek — the president, plus every HOA "
+                                "contact in New Castle County",
+                                "clean it up and send you the whole 224 as a workbook, "
+                                "sorted so the self-managed ones with an email are at "
+                                "the top > On Aug 25, 2026, at 10:00 AM, CUMULUS wrote:"))
+        check("Bill 08-24 Back Creek contact QUESTION is not a deliverable",
+              not wants_deliverable("Re: New Delaware development leads this week",
+                                    "Please provide the information you have on back "
+                                    "creek in Middletown Delaware. I need the contact "
+                                    "information for the HOA board of directors and "
+                                    "president. William Hutchins President > On Aug 24, "
+                                    "2026, at 4:30 AM, CUMULUS wrote: > Hi Bill"))
+        check("our OWN quoted 'workbook' does not count",
+              not wants_deliverable("Re: Back Creek", "Thanks, that answers it. > On "
+                                    "Aug 25, 2026, CUMULUS wrote: > send you the whole "
+                                    "224 as a workbook"))
+        check("a reply's subject is ours: 'spreadsheet' there does not count",
+              not wants_deliverable("Re: your bid spreadsheet", "Who owns Back Creek?"))
+        check("a fresh email's subject counts for list/file detection",
+              wants_deliverable("Spreadsheet of every HOA in Kent County", ""))
+        check("'excel at' is a verb, not the program",
+              not wants_deliverable("", "Which builders excel at townhomes?"))
 
         rec_reply = {"projects": ["property-management"], "title": "Re: New Delaware leads",
                      "body_head": ("There is a community just called back creek. It is in "

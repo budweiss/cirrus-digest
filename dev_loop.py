@@ -299,10 +299,12 @@ def _ticket_path(project_dir):
 
 
 def ticket_create(requester: str, projects, title: str, detail: str = "",
-                  origin: str = "ticket", project_dir=None):
+                  origin: str = "ticket", project_dir=None, meta: dict = None):
     """Classify + append one end-user ticket. Returns the ticket dict.
     status: queued (Tier 0/1 — awaits dev-agent pickup once P2 wiring lands),
-    session (Tier 2 — needs a working session), refused (NEVER pattern)."""
+    session (Tier 2 — needs a working session), refused (NEVER pattern).
+    meta (S264): stored as-is under "meta" for a later handler to read back
+    (client key, thread subject, message id); never classified."""
     detail = (detail or title or "").strip()
     title = (title or detail or "(untitled)").strip()
     tier, reason = classify_risk("USER_REQUEST", detail, title)
@@ -329,6 +331,8 @@ def ticket_create(requester: str, projects, title: str, detail: str = "",
         "dev_spec": spec,
         "status": status,
     }
+    if meta:
+        ticket["meta"] = dict(meta)
     pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
     with open(_ticket_path(pd), "a") as f:
         f.write(json.dumps(ticket) + "\n")
@@ -583,6 +587,11 @@ def _selftest():
         assert len(ticket_load(td)) == 2
         assert len(ticket_load(td, status="queued")) == 1
         assert ticket_load(td, status="queued")[0]["id"] == t1["id"]
+        # S264: meta round-trips for a later handler; absent unless given.
+        assert "meta" not in t1
+        m = {"client": "bill", "thread_subject": "Re: leads", "message_id": "<m1@x>"}
+        ticket_create("bill", ["pm"], "LIST/FILE for bill", project_dir=td, meta=m)
+        assert ticket_load(td)[-1]["meta"] == m
         print("ticket queue: OK")
 
     print("\nALL SELF-TESTS PASSED" if ok == len(cases) else "\nSOME CLASSIFIER CASES FAILED")

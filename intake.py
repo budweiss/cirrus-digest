@@ -453,6 +453,10 @@ def ack_body(rec: dict) -> str:
                 f"research queue:\n\n    {rec['title']}\n\n"
                 "It'll be covered in an upcoming digest. Send as many topics "
                 f"as you like — one email per topic works best.\n\n— {node}")
+    if rec.get("kind") == "deliverable":
+        return (f"Hi {name},\n\nGot it. We're putting this list together for "
+                "you. Buddy reviews every list before it goes out, so you'll "
+                f"have it after that quick review.\n\n— {node}")
     if rec.get("kind") == "answer":
         return (f"Hi {name},\n\nGot it — researching your question now:\n\n"
                 f"    {rec['title']}\n\n"
@@ -869,6 +873,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 log(f"  routing override: {entry['name']} is on a research-only "
                     f"project → treating as research (was '{rec['kind']}')")
             rec["kind"] = "research"
+        # S264 (Buddy): an answer-kind request for a LIST or a FILE (Bill's
+        # 09-23 Excel builder list) gets a ticket and an honest ack, never the
+        # council auto-answer: that answers from model memory, and nothing
+        # checks a list of names and phones for invented entries before it goes.
+        # Only 'answer' changes; a confirmation, resend or feedback is left be.
+        if rec["kind"] == "answer" and task_solver.wants_deliverable(subject, body):
+            rec["kind"] = "deliverable"
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -931,6 +942,19 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                             log(f"  ⚠️ TICKET FAILED for confirmed promise "
                                 f"{p['id']}: {e} — promise stays owed and will "
                                 f"be reported as overdue")
+                elif rec["kind"] == "deliverable":
+                    try:
+                        ticket = dev_loop.ticket_create(
+                            entry["name"], entry["projects"],
+                            f"LIST/FILE for {entry['name']}: {rec['title'][:120]}",
+                            rec["body_head"][:600], origin="client-deliverable",
+                            project_dir=PROJECT_DIR,
+                            meta={"client": entry["name"], "thread_subject": subject,
+                                  "message_id": mid})
+                        rec["ticket_id"] = ticket["id"]
+                        log(f"  → list/file request — ticket {ticket['id']} queued")
+                    except Exception as e:
+                        log(f"  ⚠️ TICKET FAILED for list/file request: {e}")
                 elif rec["kind"] == "answer":
                     log("  → answer request — solving live after ack (below)")
                 elif rec["kind"] == "resend":
@@ -1029,6 +1053,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         f"({r['tier_reason'].rpartition(': ')[2]})")
             elif r.get("kind") == "feedback":
                 flag = "💬 FEEDBACK reply — review in logs/intake/"
+            elif r.get("kind") == "deliverable":
+                flag = (f"📋 LIST/FILE request — needs building, ticket "
+                        f"{r.get('ticket_id') or '⚠️ NOT created'}")
             else:
                 flag = f"tier {r['tier']} ({r['tier_name']})"
             ack = "" if r.get("ack_sent", True) else " — ⚠️ ack FAILED"
@@ -1388,6 +1415,16 @@ def selftest() -> int:
     rec_a = classify("aggie", ["realestate"], "REQUEST: what's the average closing time?", "")
     rec_a["kind"] = "answer"
     check("answer ack mentions researching now", "researching your question" in ack_body(rec_a))
+    # S264: a list/file request's ack is honest about the human review and
+    # promises no time we cannot keep (a person builds it until the job does).
+    rec_d = dict(rec_a, kind="deliverable")
+    _ack_d = ack_body(rec_d)
+    check("list/file ack says the list is being put together, after review",
+          "putting this list together" in _ack_d and "review" in _ack_d)
+    check("  ...and promises no timeframe",
+          not re.search(r"shortly|today|tomorrow|hour|minute|\bsoon\b", _ack_d, re.I))
+    check("  ...and is not the 'researching your question' answer ack",
+          "researching your question" not in _ack_d)
     rec_auto = classify("bill", ["snow"], "REQUEST: monitor this weather blog", "")
     rec_auto["kind"] = "build"
     rec_auto["auto_applied"] = {"url": "https://example.com/feed", "name": "weather blog",
@@ -1493,6 +1530,18 @@ def selftest() -> int:
           and "one intake pass LOST" in _run_src)
     check("  ...and a recovered boot race is recorded too, so the race stays visible",
           "recovered from credential boot race" in _run_src)
+    # S264: the list/file override must stay wired, and must sit AFTER the
+    # confirmation and research overrides (a go-ahead stays a confirmation).
+    _ov = _run_src.find("task_solver.wants_deliverable(subject, body)")
+    check("run() routes an answer-kind list/file request away from the auto-answer",
+          _ov > 0 and 'rec["kind"] = "deliverable"' in _run_src
+          and 'rec["kind"] == "answer" and task_solver.wants_deliverable' in _run_src)
+    check("  ...after the confirmation and research-project overrides",
+          _ov > _run_src.find('rec["kind"] = "confirmation"') > 0
+          and _ov > _run_src.find('rec["kind"] = "research"') > 0)
+    check("  ...and a deliverable gets a ticket carrying client, thread and message id",
+          'origin="client-deliverable"' in _run_src
+          and '"thread_subject": subject' in _run_src and '"message_id": mid' in _run_src)
 
     import job_status as _js
     check("job_status carries a cadence for intake (nothing watched it before S102)",
