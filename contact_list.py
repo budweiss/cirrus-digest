@@ -38,6 +38,7 @@ Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -209,7 +210,7 @@ def search(query: str, n: int, budget: Budget) -> list:
     return [u for u in urls if not any(d in u for d in SKIP_DOMAINS)]
 
 
-def ask_local(system: str, user: str, creds: dict, budget: Budget, max_tokens=2500):
+def ask_local(system: str, user: str, creds: dict, budget: Budget, max_tokens=4000):
     """Local first; the cloud only when the local reply will not parse, and
     only up to MAX_CLOUD_ESCALATIONS per run."""
     import llm_providers
@@ -299,7 +300,10 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
     urls = list(dict.fromkeys(urls))
     log("roster: %d queries -> %d pages" % (len(p["roster_queries"]), len(urls)))
     with ThreadPoolExecutor(WORKERS) as ex:
-        for url, orgs in ex.map(one, urls):
+        for i, (url, orgs) in enumerate(ex.map(one, urls), 1):
+            if i % 10 == 0:
+                log("roster: read %d/%d pages (local %d, cloud %d)" % (
+                    i, len(urls), budget.local, budget.cloud))
             for o in orgs:
                 k = name_key(o["name"])
                 if not k:
@@ -326,7 +330,7 @@ def enrich(cand: dict, p: dict, creds: dict, budget: Budget, cache: dict) -> dic
     user = "\n\n".join("URL: %s\n%s" % (u, trim_page(t)) for u, t in pages.items())
     sysmsg = ENRICH_SYSTEM.format(name=name, entity=p["entity"], region=region,
                                   evidence_kind=p.get("evidence_kind") or "evidence")
-    got = ask_local(sysmsg, user[:24000], creds, budget, max_tokens=3000)
+    got = ask_local(sysmsg, user[:24000], creds, budget, max_tokens=6000)
     if not isinstance(got, dict):
         row["status"] = "extraction failed"
         return row
@@ -542,6 +546,11 @@ def main(argv):
     if not req_path:
         print("usage: contact_list.py --request <file> [--id ID] [--max-candidates N] [--no-email]")
         return 2
+    # Copying facts off a page needs little reasoning, and on this endpoint
+    # reasoning tokens count against max_tokens: at the server default
+    # (medium) replies ran slow and risked truncation, which escalates to a
+    # paid cloud call. This process only; other jobs keep their own setting.
+    os.environ.setdefault("VLLM_REASONING_EFFORT", "low")
     request = (PROJECT_DIR / req_path).read_text().strip()
     run_id = opt("--id") or "%s-%s" % (Path(req_path).stem, datetime.now().strftime("%Y%m%d-%H%M"))
     creds = json.loads(CREDS_PATH.read_text())
