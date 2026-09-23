@@ -524,7 +524,8 @@ def about_lines(p: dict, stats: dict) -> list:
 def client_about_lines(p: dict, stats: dict) -> list:
     """The client-facing notes tab (S266). Plain words; no model or cost talk."""
     names = p.get("group_names") or []
-    lines = ["%s in %s, compiled %s." % (p["entity"].capitalize(), p["region"],
+    from list_delivery import plural
+    lines = ["%s in %s, compiled %s." % (plural(p["entity"]).capitalize(), p["region"],
                                          (stats.get("finished") or "")[:10]), ""]
     if p.get("group_question") and len(names) == 2:
         lines += ["%s: organizations whose own website names a current %s." % (

@@ -93,6 +93,18 @@ def delivered(run_id: str, runs_dir: Path = RUNS_DIR):
     return None
 
 
+def plural(noun: str) -> str:
+    """The planner names the kind in the singular ('marina', 'new home
+    builder'); the note reads 'marinas'. S267 E2E: 'the list you asked for:
+    marina in Sussex County' went out to Buddy's test inbox."""
+    n = (noun or "").strip()
+    if not n or n.lower().endswith("s"):
+        return n
+    if n.endswith("y") and n[-2:-1].lower() not in "aeiou":
+        return n[:-1] + "ies"
+    return n + "s"
+
+
 def cover_note(client: str, meta: dict, summary: dict, box: str) -> tuple:
     """(subject, body) of the delivery email. New client-facing wording (S266):
     shown to Buddy with this build."""
@@ -100,7 +112,7 @@ def cover_note(client: str, meta: dict, summary: dict, box: str) -> tuple:
     subj = subj if subj.lower().startswith("re:") else "Re: " + subj
     lines = ["Hi %s," % client.capitalize(), "",
              "Here's the list you asked for: %s in %s. It's attached as an Excel "
-             "workbook." % (summary.get("entity", "organizations"), summary.get("region", "your area")),
+             "workbook." % (plural(summary.get("entity", "organization")), summary.get("region", "your area")),
              ""]
     groups = summary.get("groups") or []
     if groups:
@@ -282,6 +294,11 @@ def selftest() -> bool:
         check("SEND delivers to the client on record, cc Buddy, with the workbook",
               r["sent"] and sent[-1]["to"] == "bill@example.com" and sent[-1]["kw"]["cc"] == CC_ADDR
               and sent[-1]["kw"]["attachments"][0].endswith("-client.xlsx"))
+        check("the note says 'new home builders', not 'new home builder'",
+              "list you asked for: new home builders in Delaware" in sent[-1]["body"])
+        check("plural(): marina -> marinas, property company -> property companies, HOAs stays",
+              plural("marina") == "marinas" and plural("property company") == "property companies"
+              and plural("HOAs") == "HOAs" and plural("survey") == "surveys")
         check("the delivery threads on the client's subject and names the split",
               sent[-1]["subject"] == "Re: Delaware development leads"
               and "Building Communities (30)" in sent[-1]["body"] and "CUMULUS" in sent[-1]["body"])
