@@ -58,6 +58,8 @@ MAX_ROSTER_QUERIES = 30
 MAX_SEARCHES = 560
 MAX_CANDIDATES = 160
 MAX_CLOUD_ESCALATIONS = 40
+# Sibling pages read when a found page is one letter of an A-Z directory.
+MAX_EXPANSION_PAGES = 60
 PAGE_CHARS = 5000
 WORKERS = 4
 
@@ -221,6 +223,24 @@ def trim_page(text: str, keep=PAGE_CHARS) -> str:
     return out[:keep]
 
 
+_LETTER_RX = re.compile(r"([?&][A-Za-z_]+=)([A-Za-z])(?=&|#|$)")
+
+
+def alphabet_siblings(url: str) -> list:
+    """The other 25 letter pages of an alphabetical directory, when `url` is
+    one of them. S269: run 3 reached the Delaware builders' association
+    directory only as ...FindStartsWith?term=C and term=D (search found those
+    two), so 13 of its 15 misses were members listed under other letters. The
+    A-Z links are drawn by JavaScript, so they cannot be followed from the
+    page; the address pattern is the reliable part. Keeps the letter's case."""
+    m = _LETTER_RX.search(url or "")
+    if not m:
+        return []
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    letters = letters if m.group(2).isupper() else letters.lower()
+    return [url[:m.start(2)] + ch + url[m.end(2):] for ch in letters if ch != m.group(2)]
+
+
 # ── network (lazy imports: requests/bs4 exist only in the boxes' venvs) ─────
 
 class Budget:
@@ -351,33 +371,58 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
     page that the page really names."""
     found = {}
     sysmsg = ROSTER_SYSTEM.format(entity=p["entity"], region=p["region"])
+    by_text = {}   # the same directory served from two domains is read once
 
     def one(url):
         text = page_text(url, cache, budget)
         if not text:
             return url, []
+        key = hash(_n(text))
+        if key in by_text:
+            return url, by_text[key]
         got = ask_local(sysmsg, "URL: %s\n\n%s" % (url, trim_page(text, 9000)), creds, budget)
         orgs = (got or {}).get("orgs") if isinstance(got, dict) else None
-        return url, [o for o in (orgs or []) if isinstance(o, dict)
-                     and o.get("name") and _n(o["name"]) in _n(text)]
+        orgs = [o for o in (orgs or []) if isinstance(o, dict)
+                and o.get("name") and _n(o["name"]) in _n(text)]
+        by_text[key] = orgs
+        return url, orgs
 
     urls = []
     for q in p["roster_queries"]:
         urls += search(q, 8, budget)
     urls = list(dict.fromkeys(urls))
     log("roster: %d queries -> %d pages" % (len(p["roster_queries"]), len(urls)))
+    def absorb(url, orgs):
+        for o in orgs:
+            k = dedupe_key(o["name"])
+            if not k:
+                continue
+            row = found.setdefault(k, {"name": o["name"].strip(), "sources": []})
+            if url not in row["sources"]:
+                row["sources"].append(url)
+
+    directories = []
     with ThreadPoolExecutor(WORKERS) as ex:
         for i, (url, orgs) in enumerate(ex.map(one, urls), 1):
             if i % 10 == 0:
                 log("roster: read %d/%d pages (local %d, cloud %d, model failed %d)" % (
                     i, len(urls), budget.local, budget.cloud, budget.model_failed))
-            for o in orgs:
-                k = dedupe_key(o["name"])
-                if not k:
-                    continue
-                row = found.setdefault(k, {"name": o["name"].strip(), "sources": []})
-                if url not in row["sources"]:
-                    row["sources"].append(url)
+            absorb(url, orgs)
+            if len(orgs) >= 3 and alphabet_siblings(url):
+                directories.append(url)
+    # A page that named several organizations and is one letter of an A-Z
+    # directory: read the other letters too (no searches, local model only).
+    extra = []
+    for d in directories:
+        extra += [u for u in alphabet_siblings(d) if u not in urls and u not in extra]
+    extra = extra[:MAX_EXPANSION_PAGES]
+    if extra:
+        log("roster: %d directory page(s) -> %d sibling letter pages" % (len(directories), len(extra)))
+        before = len(found)
+        with ThreadPoolExecutor(WORKERS) as ex:
+            for url, orgs in ex.map(one, extra):
+                absorb(url, orgs)
+        log("roster: letter pages added %d organizations" % (len(found) - before))
     log("roster: %d distinct organizations named" % len(found))
     return found
 
@@ -814,6 +859,15 @@ def selftest() -> bool:
                            "url": "https://www.beachconcepts.com/",
                            "quote": "Dunbar St - Rehoboth Beach, DE"}, bc, ["Delaware", "DE"],
                           company="Beach Concepts"))
+    sib = alphabet_siblings("https://business.hbade.org/list/FindStartsWith?term=C")
+    check("alphabet_siblings: a letter page yields the other 25 letters (the S269 association directory)",
+          len(sib) == 25 and "https://business.hbade.org/list/FindStartsWith?term=A" in sib
+          and "https://business.hbade.org/list/FindStartsWith?term=C" not in sib)
+    check("alphabet_siblings: keeps lower case and other parameters",
+          "https://x.org/dir?letter=b&page=1" in alphabet_siblings("https://x.org/dir?letter=a&page=1"))
+    check("alphabet_siblings: an ordinary page is not a directory letter",
+          alphabet_siblings("https://www.ryanhomes.com/new-homes/communities/delaware") == []
+          and alphabet_siblings("https://x.org/search?q=builders") == [])
     check("dedupe_key merges 'K. Hovnanian' with 'K. Hovnanian Homes of Delaware'",
           dedupe_key("K. Hovnanian") == dedupe_key("K. Hovnanian Homes of Delaware") == "hovnanian")
     check("a name of only generic words is not a company ('Community Home Builders')",
