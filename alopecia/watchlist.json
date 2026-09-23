@@ -125,6 +125,20 @@
    }
   },
   {
+   "id": "pm-vitiligo-driver-control",
+   "kind": "pubmed",
+   "lane": "L2",
+   "question": "Q8",
+   "query": "vitiligo[tiab] AND (\"resident memory\"[tiab] OR CD122[tiab] OR \"IL-15\"[tiab] OR \"interleukin-15\"[tiab])",
+   "why": "vitiligo shares AA's attack machinery (CD8 T cells, resident memory, IL-15); blocking IL-15 signaling durably reversed it in mice (Richmond 2018, PMID 30021889) -- the model for controlling a driver, not suppressing the attack",
+   "lead_source": "Buddy's goal refinement 2026-09-23",
+   "validated": {
+    "date": "2026-09-23",
+    "all_time": 100,
+    "since_2023": 46
+   }
+  },
+  {
    "id": "pm-thymmune",
    "kind": "pubmed",
    "lane": "L3",
