@@ -119,9 +119,21 @@ def address_ok(a: dict, pages: dict) -> bool:
             and bool(re.fullmatch(r"\d{5}", zp)) and zp in q)
 
 
-def evidence_ok(e: dict, pages: dict) -> bool:
+def in_region(text: str, region_terms: list) -> bool:
+    t = " %s " % _n(text)
+    return any(_n(r) and " %s " % _n(r) in t for r in region_terms or [])
+
+
+def evidence_ok(e: dict, pages: dict, region_terms: list = None) -> bool:
+    """On the cited page, naming the thing, AND located in the region as the
+    page writes it. S264 smoke run: a builder active in two states was put in
+    the Delaware 'building' group on the strength of a Pennsylvania community."""
     page = pages.get(e.get("url") or "", "")
-    return quote_on_page(e.get("quote"), page) and value_in_quote(e.get("name"), e.get("quote"))
+    q, loc = e.get("quote") or "", e.get("location") or ""
+    ok = quote_on_page(q, page) and value_in_quote(e.get("name"), q)
+    if region_terms is not None:
+        ok = ok and bool(loc) and value_in_quote(loc, page) and in_region(loc, region_terms)
+    return ok
 
 
 def parse_json(raw: str):
@@ -263,7 +275,8 @@ ENRICH_SYSTEM = (
     "\"quote\":..., \"url\":...}} or null, \"contact\": {{\"name\":..., \"title\":..., "
     "\"quote\":..., \"url\":...}} or null, \"phone\": {{\"value\":..., \"url\":...}} or null, "
     "\"website\": the organization's own site or null, \"evidence\": [{{\"name\": "
-    "{evidence_kind}, \"quote\":..., \"url\":...}}] (empty if none)}}. Prefer an "
+    "{evidence_kind}, \"location\": its town and state exactly as the page writes "
+    "them, \"quote\":..., \"url\":...}}] (empty if none; only items in {region})}}. Prefer an "
     "office in {region}; the organization's own website over directories.")
 
 
@@ -364,7 +377,7 @@ def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
         else:
             dropped.append("phone")
     ev = [e for e in (got.get("evidence") or []) if isinstance(e, dict)]
-    good = [e for e in ev if evidence_ok(e, pages)]
+    good = [e for e in ev if evidence_ok(e, pages, p.get("region_terms") or [p.get("region", "")])]
     if len(good) < len(ev):
         dropped.append("evidence x%d" % (len(ev) - len(good)))
     row["evidence"] = [{"name": e["name"].strip(), "url": e["url"]} for e in good][:6]
@@ -611,6 +624,17 @@ def selftest() -> bool:
                           "quote": "Office: 19413 Jingle Shell Way, Unit 5, Lewes, DE 19958"}, pages))
     check("community evidence on the page survives",
           evidence_ok({"name": "Olde Town at Lewes", "url": "u", "quote": "Now selling at Olde Town at Lewes."}, pages))
+    check("evidence located in the region (as the page writes it) survives",
+          evidence_ok({"name": "Olde Town at Lewes", "location": "Lewes, DE", "url": "u",
+                       "quote": "Now selling at Olde Town at Lewes."}, pages, ["Delaware", "DE"]))
+    pa = {"u": "The Enclave at Longwood Preserve - Kennett Square, PA. Now selling."}
+    check("evidence outside the region is dropped (the S264 Montchanin case)",
+          not evidence_ok({"name": "The Enclave at Longwood Preserve", "location": "Kennett Square, PA",
+                           "url": "u", "quote": "The Enclave at Longwood Preserve - Kennett Square, PA"},
+                          pa, ["Delaware", "DE"]))
+    check("evidence with no stated location is dropped when a region is required",
+          not evidence_ok({"name": "Olde Town at Lewes", "url": "u",
+                           "quote": "Now selling at Olde Town at Lewes."}, pages, ["Delaware", "DE"]))
     check("an ellipsis-trimmed quote still matches",
           quote_on_page("Garrison Homes was started in 2000 ... Jeffrey M. Garrison, President", page))
     check("name_key merges legal-suffix variants",
@@ -628,9 +652,11 @@ def selftest() -> bool:
                        "zip": "19958", "url": "u",
                        "quote": "Office: 19413 Jingle Shell Way, Unit 5, Lewes, DE 19958"},
            "phone": {"value": "(302) 226-4663", "url": "u"},
-           "evidence": [{"name": "Olde Town at Lewes", "url": "u", "quote": "Now selling at Olde Town at Lewes."},
-                        {"name": "Made Up Meadows", "url": "u", "quote": "Now selling at Made Up Meadows."}]}
-    row = verify({"name": "Garrison Homes"}, got, pages, {})
+           "evidence": [{"name": "Olde Town at Lewes", "location": "Lewes, DE", "url": "u",
+                         "quote": "Now selling at Olde Town at Lewes."},
+                        {"name": "Made Up Meadows", "location": "Lewes, DE", "url": "u",
+                         "quote": "Now selling at Made Up Meadows."}]}
+    row = verify({"name": "Garrison Homes"}, got, pages, {"region_terms": ["Delaware", "DE"]})
     check("verify: invented contact removed, real address and phone kept",
           "contact" not in row and row["address"]["zip"] == "19958" and row["phone"] == "302-226-4663")
     check("verify: invented community removed, real one kept, drops counted",
