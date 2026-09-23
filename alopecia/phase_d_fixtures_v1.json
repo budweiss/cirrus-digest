@@ -1,0 +1,1236 @@
+{
+ "_about": "Phase D fixture set v1 (research plan Phase A, S261 2026-09-22): 37 PubMed items with hand-checked gold labels for testing local models (Qwen 3.8 27B vs MedGemma-text 27B) on screening + evidence-card extraction. Gold labels were set by reading each abstract; only PMIDs and labels are stored, the text is fetched at run time.",
+ "_input_rule": "Model input = PubMed title + abstract, fetched with efetch (retmode=xml). abstract = each AbstractText's itertext() stripped, prefixed 'Label: ' when it has a Label attribute, joined with newline. text_sha1 = sha1(title + newline + abstract). A mismatch means PubMed changed the record: re-check that item's gold labels before scoring it.",
+ "_scoring": "Every gold field is a LIST OF ACCEPTABLE ANSWERS (any match scores), except booleans. human_data may be 'unclear' where the abstract does not separate species. n_human null means the abstract does not state it -- any number is a fabrication. pipeline_flags (retracted, preprint, no_abstract) come from PubMed metadata and are deterministic checks, NOT model tasks.",
+ "_fields": {
+  "topic_aa": "the paper is about alopecia areata (any species); androgenetic, scarring, chemotherapy-induced alopecia = false",
+  "species": "species the data come from; 'none' for reviews/consensus",
+  "human_data": "original data from human participants or human tissue",
+  "study_type": "rct | nonrandomized_trial | cohort_prospective | cohort_retrospective | case_control | cross_sectional | case_series | case_report | preclinical_animal | ex_vivo | methods_protocol | mendelian_randomization | pooled_trial_analysis | narrative_review | consensus | unknown",
+  "n_human": "headline number of human participants with original data (patients + controls, or as stated)",
+  "subgroup_signal": "reports results specifically for totalis/universalis, long-standing (>=5 y) or refractory/treatment-resistant AA, or reports duration/severity as a response predictor",
+  "age_group": "adult | pediatric | adolescent_adult | mixed | unknown",
+  "approach": "jak | treg_il2 | treg_tolerance | cell_therapy | immunosuppressant_steroid | other_immunomodulator | diet_micronutrient | device_physical | hair_growth_non_immune | thymus_central_tolerance | surgery | genetics | epidemiology | mechanism_only | none",
+  "grade": "foundation scheme: A controlled trial, B cohort/large observational, C small or uncontrolled, D preclinical or case report; null for reviews/consensus/unknown"
+ },
+ "items": [
+  {
+   "pmid": "37019385",
+   "group": "clinical",
+   "title": "A randomized, double-blind, placebo-controlled phase II study to evaluate the efficacy and safety of ivarmacitinib (SHR0302) in adult patients with moderate-to-severe alopecia areata.",
+   "text_sha1": "94174565fddc9ad5332135b698b72b68cd24688d",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "rct"
+    ],
+    "n_human": [
+     94
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     "A"
+    ]
+   },
+   "tests": "baseline positive: clean RCT"
+  },
+  {
+   "pmid": "36884234",
+   "group": "clinical",
+   "title": "Efficacy of Methotrexate Alone vs Methotrexate Plus Low-Dose Prednisone in Patients With Alopecia Areata Totalis or Universalis: A 2-Step Double-Blind Randomized Clinical Trial.",
+   "text_sha1": "88406d9fae0a0e6e38552516794b2a0d3a7a2bba",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "rct"
+    ],
+    "n_human": [
+     89
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "immunosuppressant_steroid"
+    ],
+    "grade": [
+     "A"
+    ]
+   },
+   "tests": "AT/AU RCT; approach is methotrexate+prednisone, NOT jak, though JAK is named in the conclusion"
+  },
+  {
+   "pmid": "42377046",
+   "group": "clinical",
+   "title": "Treatment Response to JAK Inhibitors in Long-standing Alopecia Areata (≥8 Years): A Real-world Observational Study.",
+   "text_sha1": "ab827693dd8c6eae4d2c3639447c42686b7894e2",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective",
+     "observational"
+    ],
+    "n_human": [
+     31
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "adult",
+     "mixed"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     "C",
+     "B"
+    ]
+   },
+   "tests": "the subgroup study (episodes >=8 y); n is 31 included, not 41 screened"
+  },
+  {
+   "pmid": "41060634",
+   "group": "clinical",
+   "title": "Successful Treatment of Alopecia Areata With One JAK Inhibitor After Failure of Other JAK Inhibitors.",
+   "text_sha1": "d1d9aebbf6f101f38b40c424b634042b0bd78b6c",
+   "pipeline_flags": [
+    "no_abstract"
+   ],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "unknown",
+     "case_series",
+     "case_report"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     null,
+     "C",
+     "D"
+    ]
+   },
+   "tests": "NO ABSTRACT: title only; sample size must be null, never invented"
+  },
+  {
+   "pmid": "38831704",
+   "group": "clinical",
+   "title": "Real-world effectiveness and safety of tofacitinib for alopecia areata: A retrospective cohort study of 202 patients.",
+   "text_sha1": "c2d2fb18146e1c975fcab6806200d57e156fdf47",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective"
+    ],
+    "n_human": [
+     202
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "unknown",
+     "mixed",
+     "adult"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     "B"
+    ]
+   },
+   "tests": "reports disease duration as a negative predictor (subgroup signal)"
+  },
+  {
+   "pmid": "40774240",
+   "group": "clinical",
+   "title": "Efficacy and Safety of Baricitinib in the Treatment of Severe Alopecia Areata in Pediatric Patients: Data from Real-Clinical Practice.",
+   "text_sha1": "736fbc7d8c3e2988e55ed9f9d216b7264744a48b",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective",
+     "case_series"
+    ],
+    "n_human": [
+     33
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "pediatric"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "paediatric population: relevance to an adult case is low"
+  },
+  {
+   "pmid": "41002258",
+   "group": "clinical",
+   "title": "Sequential immunotherapy with tofacitinib and low-dose IL-2 induces sustained remission in alopecia areata: a proof-of-concept monocentric study.",
+   "text_sha1": "d11e8179733b8673fc7cff3ae4588945630af21a",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_series"
+    ],
+    "n_human": [
+     4
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "treg_il2",
+     "jak"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "title says 'sustained remission' with n=4: grade must stay C"
+  },
+  {
+   "pmid": "42684692",
+   "group": "clinical",
+   "title": "Delphi Consensus Statement on Treatment of Severe Alopecia Areata in US Adults.",
+   "text_sha1": "4843226709b85292e358a48aa67f099b59f967ff",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "none"
+    ],
+    "human_data": false,
+    "study_type": [
+     "consensus"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "jak",
+     "none"
+    ],
+    "grade": [
+     null
+    ]
+   },
+   "tests": "expert consensus; 31 experts are not study participants (n null)"
+  },
+  {
+   "pmid": "42327564",
+   "group": "clinical",
+   "title": "Alopecia Areata Is Associated with Increased Risk of Infertility in a Retrospective Cohort Study Using TriNetX.",
+   "text_sha1": "53d66d0542e8549bfcd92b7bc70b8d11b9806c59",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective"
+    ],
+    "n_human": [
+     62808,
+     31404
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "epidemiology"
+    ],
+    "grade": [
+     "B"
+    ]
+   },
+   "tests": "large database cohort; association only"
+  },
+  {
+   "pmid": "42481842",
+   "group": "clinical",
+   "title": "Updated Integrated Safety Analysis of Ritlecitinib up to ~ 5 Years in Patients with Alopecia Areata from the ALLEGRO Clinical Trial Program.",
+   "text_sha1": "e1fb0339875ee49f44faa53c442e861de9ac7a35",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "pooled_trial_analysis",
+     "cohort_prospective"
+    ],
+    "n_human": [
+     1294,
+     1228
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adolescent_adult",
+     "mixed"
+    ],
+    "approach": [
+     "jak"
+    ],
+    "grade": [
+     "B",
+     "A"
+    ]
+   },
+   "tests": "pooled safety of trials, descriptive"
+  },
+  {
+   "pmid": "40411272",
+   "group": "clinical",
+   "title": "The Role of T-Helper 17 Cells and Regulatory T Cells in Acute Diffuse and Total Alopecia: The Increased Function of Regulatory T Cells May Explain the Favorable Prognosis.",
+   "text_sha1": "3f28e7d85159446dd670cd1cce6b6b088840b74b",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control",
+     "cross_sectional"
+    ],
+    "n_human": [
+     36,
+     24
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "'total alopecia' in title is ADTA (acute, good prognosis), NOT alopecia totalis: subgroup must be false"
+  },
+  {
+   "pmid": "37787421",
+   "group": "clinical",
+   "title": "Serum Zinc Concentration in Patients with Alopecia Areata.",
+   "text_sha1": "b6ba1fc9f101c4d6dfda42ae26e6e67bbd4abbb1",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control"
+    ],
+    "n_human": [
+     64,
+     32
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "diet_micronutrient"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "association (low zinc); no supplementation data"
+  },
+  {
+   "pmid": "42397957",
+   "group": "mechanism",
+   "title": "Soluble CD83 reverses alopecia areata via IDO-mediated Treg cell activation.",
+   "text_sha1": "2ad64f585db830269d6e237334f897854d7812b9",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human",
+     "mouse"
+    ],
+    "human_data": true,
+    "study_type": [
+     "preclinical_animal",
+     "mixed"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "treg_tolerance"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "'reverses AA' is in mice; human part is observational, n not stated"
+  },
+  {
+   "pmid": "41579939",
+   "group": "mechanism",
+   "title": "Toward cell-based therapy of alopecia areata: Autologous human Vδ2+ Foxp3+ γδTreg cells restore hair-follicle immune privilege and promote hair regrowth in human alopecia areata models ex vivo and in vivo.",
+   "text_sha1": "4a1667524f7cee3e1fe57f66329f3c62c4fd8ab1",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human",
+     "mouse"
+    ],
+    "human_data": true,
+    "study_type": [
+     "preclinical_animal",
+     "ex_vivo"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "cell_therapy",
+     "treg_tolerance"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "regrowth is in human-scalp xenografts on mice, not patients"
+  },
+  {
+   "pmid": "42094041",
+   "group": "mechanism",
+   "title": "Pathogenic CD8+ T cells target K71+ Henle's layer by forming cytolytic immune synapses in Alopecia Areata.",
+   "text_sha1": "35d43e869931706c97451cb79ed3faa346c1ba39",
+   "pipeline_flags": [
+    "preprint"
+   ],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse",
+     "human"
+    ],
+    "human_data": "unclear",
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "PREPRINT; human vs mouse data not clearly separated in abstract"
+  },
+  {
+   "pmid": "42149454",
+   "group": "mechanism",
+   "title": "Collapse and Restoration of Hair Follicle Immune Privilege Ex Vivo: A Model for Alopecia Areata.",
+   "text_sha1": "79d1439732bd0ff19838f37f3156a59b875339e7",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "ex_vivo",
+     "methods_protocol"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "methods protocol on HEALTHY human follicles; no results, no patients"
+  },
+  {
+   "pmid": "37365384",
+   "group": "mechanism",
+   "title": "A virtual memory CD8+ T cell-originated subset causes alopecia areata through innate-like cytotoxicity.",
+   "text_sha1": "b4ba98e9e498c3188940bbfc2a092bdaf83d9058",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse",
+     "unclear"
+    ],
+    "human_data": false,
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "species never named in abstract (mouse markers): must not say human"
+  },
+  {
+   "pmid": "40654654",
+   "group": "mechanism",
+   "title": "Th1 effector CD4 T cells rely on IFN-γ production to induce alopecia areata.",
+   "text_sha1": "c823c751ecc65eb2a5120a376c1ebf0954f36b88",
+   "pipeline_flags": [
+    "preprint"
+   ],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse"
+    ],
+    "human_data": false,
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "PREPRINT; mouse only"
+  },
+  {
+   "pmid": "36270546",
+   "group": "mechanism",
+   "title": "AIRE Deficiency Leads to the Development of Alopecia Areata‒Like Lesions in Mice.",
+   "text_sha1": "d1a84b99e46514fc589c0f59f74d0fbfc45ede4f",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse"
+    ],
+    "human_data": false,
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "thymus_central_tolerance",
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "the '15 times' human statistic is background, not this study's data"
+  },
+  {
+   "pmid": "38221794",
+   "group": "mechanism",
+   "title": "Causal role of immune cells in alopecia areata: A two-sample Mendelian randomization study.",
+   "text_sha1": "0ae7b6348a7230936dabfeda582859d91edc1685",
+   "pipeline_flags": [
+    "retracted"
+   ],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "mendelian_randomization"
+    ],
+    "n_human": [
+     211428,
+     3757
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only",
+     "genetics"
+    ],
+    "grade": [
+     "B",
+     "C"
+    ]
+   },
+   "tests": "RETRACTED (PubMed publication type): the pipeline must drop it deterministically; the model cannot see this"
+  },
+  {
+   "pmid": "41555493",
+   "group": "mechanism",
+   "title": "Possible Involvement of Skin-Resident Memory T Cells in Refractory Chronic Alopecia Areata.",
+   "text_sha1": "4b3339a7a30d50c2b090c92026bbd15f1680fe40",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control",
+     "case_series",
+     "cross_sectional"
+    ],
+    "n_human": [
+     14,
+     9
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only",
+     "jak"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "resident memory T cells in refractory chronic AA (subgroup signal)"
+  },
+  {
+   "pmid": "41740930",
+   "group": "mechanism",
+   "title": "Comprehensive single-cell transcriptomic profiling of the scalp from patients with moderate-to-severe alopecia areata.",
+   "text_sha1": "34526a00549ea2ed4942e484463414515df7452e",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control",
+     "cross_sectional"
+    ],
+    "n_human": [
+     24,
+     13
+    ],
+    "subgroup_signal": true,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "includes 5 AT/AU and compares them with patchy AA"
+  },
+  {
+   "pmid": "40531623",
+   "group": "mechanism",
+   "title": "Single-cell analysis of temporal immune cell dynamics in alopecia areata reveals a causal role for clonally expanded CD8+ T cells in disease.",
+   "text_sha1": "eed045ce470ade957e4e03e1cdeec43476906a27",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse"
+    ],
+    "human_data": false,
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "mouse model: causal CD8 clonality"
+  },
+  {
+   "pmid": "34362576",
+   "group": "thymus",
+   "title": "Experience with cultured thymus tissue in 105 children.",
+   "text_sha1": "8a67f2c0b2b6191666ec8623c72b5f03684ecd4e",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "nonrandomized_trial",
+     "pooled_single_arm",
+     "cohort_prospective"
+    ],
+    "n_human": [
+     105,
+     95
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "pediatric"
+    ],
+    "approach": [
+     "thymus_central_tolerance"
+    ],
+    "grade": [
+     "C",
+     "B"
+    ]
+   },
+   "tests": "'alopecia' appears as an adverse event, type unstated: topic_aa false"
+  },
+  {
+   "pmid": "37530823",
+   "group": "thymus",
+   "title": "Health Consequences of Thymus Removal in Adults.",
+   "text_sha1": "8f5d30576e3f6fb9c7a12104c8a69c4609a8be13",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective"
+    ],
+    "n_human": [
+     7441,
+     1146,
+     1420,
+     2292
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "thymus_central_tolerance"
+    ],
+    "grade": [
+     "B"
+    ]
+   },
+   "tests": "not AA; autoimmunity signal only in a subgroup"
+  },
+  {
+   "pmid": "12376594",
+   "group": "thymus",
+   "title": "Projection of an immunological self shadow within the thymus by the aire protein.",
+   "text_sha1": "f4bc9eebabd54a18ee4823100d15f6416a2f3f6c",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "mouse"
+    ],
+    "human_data": false,
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "thymus_central_tolerance"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "not AA; mouse; foundational central tolerance"
+  },
+  {
+   "pmid": "25217160",
+   "group": "thymus",
+   "title": "Autoimmune predisposition in Down syndrome may result from a partial central tolerance failure due to insufficient intrathymic expression of AIRE and peripheral antigens.",
+   "text_sha1": "ace2bf10e6f113271b43eacf5b47d0a10ec74efb",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control"
+    ],
+    "n_human": [
+     40,
+     19
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "thymus_central_tolerance"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "not AA (thyroid autoimmunity measured, AA not)"
+  },
+  {
+   "pmid": "40867301",
+   "group": "thymus",
+   "title": "Clinicopathological Features and Pathogenesis of Thymoma Complicated with Alopecia Areata: A Multicenter, Matched Case Analysis.",
+   "text_sha1": "231805aa0c9576df5ec62403f5d02655c154a644",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_control",
+     "cohort_retrospective"
+    ],
+    "n_human": [
+     428,
+     54,
+     9
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown",
+     "adult"
+    ],
+    "approach": [
+     "thymus_central_tolerance"
+    ],
+    "grade": [
+     "C"
+    ]
+   },
+   "tests": "AA in thymoma: 9 of 428"
+  },
+  {
+   "pmid": "37133711",
+   "group": "thymus",
+   "title": "Autoimmune alopecia areata due to thymoma without myasthenia gravis: a case report.",
+   "text_sha1": "115d7375cf581719ae7460fffb9ef0a4550ffb9a",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "case_report"
+    ],
+    "n_human": [
+     1
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "thymus_central_tolerance",
+     "surgery"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "improvement confounded by continued topical steroids"
+  },
+  {
+   "pmid": "37495514",
+   "group": "thymus",
+   "title": "Alopecia areata and occurrence of vitiligo and hypothyroidism in autoimmune polyendocrinopathy-candidiasis-ectodermal dystrophy patients.",
+   "text_sha1": "b05cab4812f5e9bea9ffef934e92f65645b297c3",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective",
+     "cohort"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown",
+     "pediatric",
+     "mixed"
+    ],
+    "approach": [
+     "thymus_central_tolerance",
+     "epidemiology"
+    ],
+    "grade": [
+     "B",
+     "C"
+    ]
+   },
+   "tests": "cohort size NOT in abstract: n must be null"
+  },
+  {
+   "pmid": "40219647",
+   "group": "trap",
+   "title": "Feline immune-mediated skin disorders: Part 2.",
+   "text_sha1": "08758cc1a628969f89b4cade7b071d65f027152a",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "cat"
+    ],
+    "human_data": false,
+    "study_type": [
+     "narrative_review"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "none"
+    ],
+    "grade": [
+     null
+    ]
+   },
+   "tests": "FELINE alopecia areata: species cat, no human data"
+  },
+  {
+   "pmid": "39954138",
+   "group": "trap",
+   "title": "Analysing efficacy of low-dose oral minoxidil, topical minoxidil, and platelet-rich plasma with topical minoxidil combination in patients with androgenetic alopecia: a randomized controlled observer blinded trial.",
+   "text_sha1": "6e166c9459bad54834f7efb3dd4286c4c2a812b2",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "rct"
+    ],
+    "n_human": [
+     75
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown",
+     "adult"
+    ],
+    "approach": [
+     "hair_growth_non_immune"
+    ],
+    "grade": [
+     "A"
+    ]
+   },
+   "tests": "RCT but ANDROGENETIC alopecia: screening must reject"
+  },
+  {
+   "pmid": "40293264",
+   "group": "trap",
+   "title": "Systemic Treatments for Lichen Planopilaris and Frontal Fibrosing Alopecia: A Retrospective Study of 315 Patients.",
+   "text_sha1": "edc122485d00b95a311e78b3e6ccb8f2727ef3f3",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "cohort_retrospective"
+    ],
+    "n_human": [
+     315
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown",
+     "adult"
+    ],
+    "approach": [
+     "immunosuppressant_steroid"
+    ],
+    "grade": [
+     "B"
+    ]
+   },
+   "tests": "SCARRING alopecia (LPP/FFA): screening must reject"
+  },
+  {
+   "pmid": "38843479",
+   "group": "trap",
+   "title": "Scalp Cooling in Preventing Persistent Chemotherapy-Induced Alopecia: A Randomized Controlled Trial.",
+   "text_sha1": "6139bf51f3ee5f9512711b9e6587605198bc0cdb",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": false,
+    "species": [
+     "human"
+    ],
+    "human_data": true,
+    "study_type": [
+     "rct"
+    ],
+    "n_human": [
+     139
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "adult"
+    ],
+    "approach": [
+     "device_physical"
+    ],
+    "grade": [
+     "A"
+    ]
+   },
+   "tests": "CHEMOTHERAPY-induced alopecia: screening must reject; n=139 is derived (89 + 50 arm denominators), not stated as a total"
+  },
+  {
+   "pmid": "38338982",
+   "group": "trap",
+   "title": "CXCL12 Neutralizing Antibody Promotes Hair Growth in Androgenic Alopecia and Alopecia Areata.",
+   "text_sha1": "fdd4fb5dbc2d2473cfb5581d8dd51ae8ee475dda",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "mouse"
+    ],
+    "human_data": [
+     "unclear",
+     false
+    ],
+    "study_type": [
+     "preclinical_animal"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "other_immunomodulator",
+     "mechanism_only"
+    ],
+    "grade": [
+     "D"
+    ]
+   },
+   "tests": "mixed androgenetic + AA mouse models"
+  },
+  {
+   "pmid": "42706968",
+   "group": "trap",
+   "title": "Understanding Alopecia Areata: An Integrative Review of Causes, Mechanisms, and Management Strategies.",
+   "text_sha1": "763202f6512c20d11c445c6e7d584d6ab41630d5",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "none"
+    ],
+    "human_data": false,
+    "study_type": [
+     "narrative_review"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "none",
+     "mechanism_only"
+    ],
+    "grade": [
+     null
+    ]
+   },
+   "tests": "review: lists many 'factors', none are this paper's data"
+  },
+  {
+   "pmid": "40433551",
+   "group": "trap",
+   "title": "Vitamin D and Alopecia Areata: From Mechanism to Therapeutic Implications.",
+   "text_sha1": "2f496cf09784117fb9d5d7211a3de7f81e07221c",
+   "pipeline_flags": [],
+   "gold": {
+    "topic_aa": true,
+    "species": [
+     "none"
+    ],
+    "human_data": false,
+    "study_type": [
+     "narrative_review"
+    ],
+    "n_human": [
+     null
+    ],
+    "subgroup_signal": false,
+    "age_group": [
+     "unknown"
+    ],
+    "approach": [
+     "diet_micronutrient"
+    ],
+    "grade": [
+     null
+    ]
+   },
+   "tests": "review opinion ('primary treatment modality') is not evidence"
+  }
+ ]
+}
