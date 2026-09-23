@@ -290,7 +290,11 @@ def _record_question_attempt(kb_project: str, n_matches: int, recorded: bool,
 _QUOTE_CUT_RX = re.compile(
     r"(\s>\s)"                          # a quote marker, post whitespace-collapse
     r"|(\bOn\b.{0,120}?\bwrote:)"       # "On <date>, <someone> wrote:"
-    r"|(-{2,}\s*Original Message)",       # Outlook-style quote header
+    r"|(-{2,}\s*Original Message)"        # Outlook-style quote header
+    # S264 — Outlook web/iOS reply header: a rule of underscores, then From:.
+    # 5 of 22 intake records carried it and were read whole. Needs the From:
+    # so an ordinary run of underscores ("fill in ________") never cuts.
+    r"|(_{8,}\s*From:)",
     re.IGNORECASE | re.DOTALL)
 
 
@@ -852,6 +856,20 @@ def selftest() -> int:
         check("an unquoted body is left alone",
               strip_quoted_reply("It is in Middletown Delaware.")
               == "It is in Middletown Delaware.")
+        # S264 — the Outlook web/iOS header, as it reaches us after intake's
+        # whitespace collapse. Before this, the whole body came back.
+        check("an Outlook underscore-rule reply header is cut",
+              strip_quoted_reply(
+                  "This update looks good Get Outlook for iOS<https://aka.ms/o0ukef> "
+                  "________________________________ From: CUMULUS "
+                  "<cumulus@cumulustask.com> Sent: Sunday, 20 September 2026 "
+                  "10:37:43 To: Alyssa Subject: Re: Arc A lessons")
+              == "This update looks good Get Outlook for iOS<https://aka.ms/o0ukef>")
+        check("underscores with no From: after them are NOT a quote header",
+              strip_quoted_reply("Students fill in ________________ from the "
+                                 "word bank; see unit_4__draft.")
+              == "Students fill in ________________ from the word bank; "
+                 "see unit_4__draft.")
 
         rec_reply = {"projects": ["property-management"], "title": "Re: New Delaware leads",
                      "body_head": ("There is a community just called back creek. It is in "
