@@ -319,6 +319,17 @@ def consume_cause_research_section(path=None):
                       content, ""])
 
 
+def trials_section():
+    """S258: alopecia_trials' section, or a VISIBLE line saying it failed --
+    never a silent gap in the brief, and never a failed brief."""
+    try:
+        import alopecia_trials
+        return alopecia_trials.brief_section()
+    except Exception as e:
+        return ("## Trials watch — nearest sites and fit\n\n**Could not be built "
+                "this week** (%s: %s).\n" % (type(e).__name__, str(e)[:120]))
+
+
 def assemble(body, items, meta, full, since_day, today, number, cause_section=""):
     head = ["# Alopecia areata — weekly brief #%d" % number,
             "",
@@ -432,6 +443,9 @@ def build(full=None, now=None, daily_dir=None, state_path=None, creds=None):
     # etiology-agent update (it runs on its own daily cadence and may
     # refine a hypothesis with no NEW collector items at all).
     cause_section = consume_cause_research_section()
+    # S258: the P3 trials watch rides in the same appended slot, after the
+    # cause research, on quiet weeks too -- recruiting status moves on its own.
+    cause_section = "\n".join(x for x in (cause_section, trials_section()) if x)
 
     if not items:
         md = empty_brief(today, since_day, number, cause_section=cause_section)
@@ -800,6 +814,9 @@ def selftest():
     import types
     global CAUSE_RESEARCH_DRAFT_PATH
     saved_draft, saved_ens = CAUSE_RESEARCH_DRAFT_PATH, sys.modules.get("ensemble")
+    saved_trials = sys.modules.get("alopecia_trials")
+    sys.modules["alopecia_trials"] = types.SimpleNamespace(
+        brief_section=lambda: "## Trials watch — stub")
     with tempfile.TemporaryDirectory() as td:
         d = Path(td) / "daily"
         d.mkdir()
@@ -821,7 +838,21 @@ def selftest():
                    st["last_brief_day"] == want_day and st["count"] == 4
                    and m["brief_day"] == "2026-09-18"
                    and m["synthesis_empty"] == (not reply))
+            ck("build: the trials section rides in the brief",
+               "## Trials watch — stub" in build(now=datetime(2026, 9, 18, 7),
+                                                 daily_dir=d, state_path=sp, creds={})[1])
+
+            def _boom():
+                raise RuntimeError("clinicaltrials.gov timed out")
+            sys.modules["alopecia_trials"] = types.SimpleNamespace(brief_section=_boom)
+            ck("build: a failed trials fetch is VISIBLE in the brief, not a gap",
+               "Could not be built this week" in trials_section()
+               and "timed out" in trials_section())
         finally:
+            if saved_trials is None:
+                sys.modules.pop("alopecia_trials", None)
+            else:
+                sys.modules["alopecia_trials"] = saved_trials
             CAUSE_RESEARCH_DRAFT_PATH = saved_draft
             if saved_ens is None:
                 sys.modules.pop("ensemble", None)

@@ -129,3 +129,5 @@ config/runtime.local.json
 config/runtime-pedagogy.local.json
 config/sources-pedagogy.local.json
 config/sources-pedagogy.local.json.lock
+# S258: alopecia trials-watch reference point -- on-box only, chmod 600, never committed
+config/alopecia_profile.json
