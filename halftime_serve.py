@@ -291,6 +291,13 @@ def selftest() -> int:
                                  routing_path=Path(td) / "never.json",
                                  itinerary_path=Path(td) / "never-itin.json")
         SNAPSHOT.write_text(json.dumps(snap))
+        (Path(td) / "data").mkdir(exist_ok=True)
+        check("the start-up write check says yes for a writable log dir",
+              history_writable().startswith("yes"))
+        HISTORY = Path(td) / "no-such-dir" / "history.jsonl"
+        check("...and NO, with the reason, when it cannot write",
+              history_writable().startswith("NO"))
+        HISTORY = Path(td) / "data" / "history.jsonl"
         check("the log is NOT under out/ -- build output is rewritten nightly",
               "out" not in hd.HISTORY_PATH.relative_to(
                   hd.PROJECT_DIR).parts)
@@ -397,9 +404,26 @@ def selftest() -> int:
     return 0
 
 
+def history_writable() -> str:
+    """Can this process write the history log? Checked with a scratch file,
+    never the log itself, so a sandbox fault shows in the journal at START
+    rather than as a client's failed save (S274)."""
+    import os
+    import tempfile
+    d = Path(_history_path()).parent
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".write-check-", dir=str(d))
+        os.close(fd)
+        os.unlink(tmp)
+        return "yes (%s)" % d
+    except Exception as e:
+        return "NO -- %s (%s)" % (type(e).__name__, d)
+
+
 def main() -> int:
     if "selftest" in sys.argv[1:]:
         return selftest()
+    print("history log writable: %s" % history_writable(), flush=True)
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((HOST, PORT), Handler) as srv:
         print("halftime_serve on %s:%d serving %s" % (HOST, PORT, PAGE),
