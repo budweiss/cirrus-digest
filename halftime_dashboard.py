@@ -2073,6 +2073,14 @@ _BUDGET_JS = """<script id='budget-js'>
     document.querySelectorAll('.budget-note').forEach(function (n) {
       n.parentNode.removeChild(n);
     });
+    // A column's fitting acts are often in its folded "N more": open those
+    // while a budget is set, and close only the ones this opened.
+    document.querySelectorAll('.pool details.rest').forEach(function (d) {
+      if (b !== null && !d.open) { d.open = true; d.dataset.byBudget = '1'; }
+      else if (b === null && d.dataset.byBudget) {
+        d.open = false; delete d.dataset.byBudget;
+      }
+    });
     if (b !== null) {
       document.querySelectorAll('ul.acts, table.cost-table tbody')
         .forEach(function (list) {
