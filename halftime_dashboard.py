@@ -1222,7 +1222,10 @@ def _pool_panel(g: Dict, pool: str) -> str:
         parts.extend(_act_card(a) for a in shown)
         parts.append("</ul>")
         rest = acts[len(shown):]
-        if rest and pool == "for_hire":
+        # On a themed date the rest is a filtered SUBSET -- 11 more military
+        # acts on 11/1 -- and pointing at a 41-act list below loses them. Only
+        # an un-themed list is the same as the credit list.
+        if rest and pool == "for_hire" and not g.get("theme"):
             parts.append("<p class='more'>+{} more in the credit list below — "
                          "these {} rank highest for this game.</p>".format(
                              len(rest), len(shown)))
@@ -1993,6 +1996,16 @@ def selftest() -> int:
         # Everything before the set-aside lists: the 3 shown plus the rest of
         # the acts that fit, which open in place.
         _fans_main = _fans.split("<details class='aside")[0]
+        _fh8 = next(g for g in build_snapshot(
+            today=_T, db_path=db, routing_path=_rt8)["games"]
+            if g["week"] == 8)
+        _fh8["candidates"]["for_hire"] = [
+            dict(_fh8["candidates"]["for_hire"][0], name="Mil {}".format(i))
+            for i in range(5)]
+        _p8 = _pool_panel(_fh8, "for_hire")
+        check("themed for-hire: the rest of the fitting acts open in place",
+              "2 more for this date" in _p8 and "Mil 4" in _p8
+              and "in the credit list below" not in _p8)
         check("fans panel: every act that fits is listed, not three and a fold",
               "<details class='rest'>" not in _fans_main
               and _fans_main.count("<li class='act'>") == len(next(
