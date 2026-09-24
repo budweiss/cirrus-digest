@@ -477,6 +477,8 @@ def generate_image(prompt: str, creds: dict, model: str = None) -> bytes:
     and do that, rather than let a picture request block content that would
     otherwise have gone out fine.
     """
+    if creds.get('llm_privacy', 'CLOUD_ALLOWED') != 'CLOUD_ALLOWED':
+        raise ProviderError('cloud image generation blocked by privacy policy')
     key = creds.get("gemini_api_key")
     if not key:
         raise ProviderError("no gemini_api_key")

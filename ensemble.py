@@ -180,8 +180,12 @@ _JUDGE_SYSTEM = (
     "average or split differences — decide; NEVER invent facts not present in the "
     "members' answers or the task. Match the EXACT output format the members were "
     "asked to use (if they returned JSON, you return the same JSON schema and "
-    "nothing else). If the task allows a free-text field for notes, you may note a "
-    "material disagreement there, but do not add fields."
+    "nothing else). When members materially disagree about facts, evidence quality, "
+    "or recommended action, you MUST name the disagreement in an existing notes "
+    "field or required disagreement section, including when you reject one member "
+    "as unsupported. Rejecting a claim does not erase the disagreement. Never "
+    "claim consensus or 'No material disagreement' when such a conflict occurred. "
+    "The supplied source evidence outranks agreement between members. Do not add fields."
 )
 
 
@@ -215,6 +219,16 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
     from capability_health import observe, observe_cloud
     try:
         contract = contract_digest(route, root)
+        options = route.get('provider_options', {})
+        if (not isinstance(options, dict) or
+            any(k not in ('anthropic_effort', 'kimi_reasoning_effort') or
+                v not in ('low', 'high', 'max') for k, v in options.items())):
+            raise ValueError('invalid reviewed provider options')
+        creds = dict(creds, **options)
+        if route.get('validate_task_output'):
+            from foundation_contracts import valid
+            caller_validator = validate
+            validate = lambda text: valid(task, text, user) and (caller_validator is None or caller_validator(text))
         requested = route.get('privacy', 'CLOUD_ALLOWED')
         if privacy == 'LOCAL_ONLY':
             requested = privacy

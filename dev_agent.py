@@ -386,8 +386,11 @@ def _builder_model(creds: dict) -> str:
 
 def call_claude_build(system: str, user: str):
     """One-shot Claude API call. Returns raw text. Raises on transport error."""
-    import requests
     creds = _creds()
+    if creds.get('llm_privacy', 'CLOUD_ALLOWED') != 'CLOUD_ALLOWED':
+        from llm_providers import ProviderError
+        raise ProviderError('pinned cloud builder blocked by privacy policy')
+    import requests
     key = creds.get("anthropic_api_key", "")
     if not key:
         raise RuntimeError("no anthropic_api_key in credentials.json")

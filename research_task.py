@@ -215,6 +215,10 @@ def synthesise(question, requirements, findings, creds):
         "5. End with WHAT I DID NOT CHECK — angles with no sources retrieved, "
         "   claims you could not verify. Absence of a caveat must never be "
         "   mistaken for absence of risk.\n"
+        "6. Missing retrieval means UNCHECKED, never that no evidence, study, "
+        "or product exists. Say 'no evidence was supplied or retrieved', not "
+        "'no evidence exists'. Never infer undocumented product features or "
+        "limitations; distinguish source facts from your hypothetical risks.\n"
         "Markdown. No preamble."
     )
     usr = (f"BRIEF\n{question}\n\nREQUIREMENTS\n{reqs}\n\nEVIDENCE\n"

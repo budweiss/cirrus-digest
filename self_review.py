@@ -189,10 +189,16 @@ def _relevance(item: dict):
     available (all keyed models + Claude synthesis), else the local model.
     ALWAYS fail-open — a gate failure must never eat a real proposal."""
     creds = _creds()
+    from capability_registry import foundation_route
+    reviewed = foundation_route('self-review-gate', Path(__file__).resolve().parent)
+    if reviewed is not None and (ensemble is None or not creds.get('self_review_council', True)):
+        raise RuntimeError('qualified self-review route disabled; review required')
     if ensemble is not None and creds.get("self_review_council", True):
         try:
             return _relevance_council(item, creds)
         except Exception as e:
+            if reviewed is not None:
+                raise RuntimeError('qualified self-review unavailable; review required') from e
             B.log(f"self_review: council gate fell back to local ({e})")
     return _relevance_local(item)
 

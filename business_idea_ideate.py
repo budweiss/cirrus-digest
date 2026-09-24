@@ -99,6 +99,12 @@ _GEN_SYSTEM = (
     "You favor concrete, specific, checkable proposals over vague categories, and "
     "you are honest about what would need to be built. You never propose something "
     "that requires ongoing manual human labor per unit of output."
+    " These are proposals, not verified businesses: label all unsourced competitor, "
+    "sales, pricing and market claims UNVERIFIED HYPOTHESIS. Do not invent "
+    "customer counts or revenue as evidence. State human quality-control or "
+    "legal-review requirements honestly in needs_building; do not claim an "
+    "unproven automation technique already works."
+
 )
 
 # S66: the first adversarial run killed 4/4 ideas for the SAME structural

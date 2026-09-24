@@ -48,6 +48,79 @@ class FoundationTests(unittest.TestCase):
                     dev_agent.council_repair('sys', 'synthetic')
                 direct.assert_not_called()
 
+    def test_reviewed_provider_options_cannot_change_credentials_or_budget(self):
+        for options in ({'kimi_api_key':'changed'}, {'llm_privacy':'CLOUD_ALLOWED'}, {'kimi_reasoning_effort':'unknown'}):
+            with self.assertRaises(L.ProviderError):
+                self.invoke(self.route(provider_options=options))
+        self.assertFalse(self.calls)
+
+    def test_client_email_defaults_private_and_cannot_self_authorize_cloud(self):
+        from task_solver import intake_privacy
+        rec = {'from_email':'client@example.com', 'privacy':'CLOUD_ALLOWED'}
+        self.assertEqual(intake_privacy(rec, {}), 'LOCAL_ONLY')
+        creds = {'public_research_senders':['client@example.com']}
+        self.assertEqual(intake_privacy(rec, creds), 'CLOUD_ALLOWED')
+        for change in ({'privacy':'LOCAL_ONLY'}, {'sensitive':True}, {'data_classification':'financial'}):
+            self.assertEqual(intake_privacy(dict(rec, **change), creds), 'LOCAL_ONLY')
+
+    def test_private_image_request_has_no_network_side_effect(self):
+        with patch.object(L, '_http_post') as network:
+            with self.assertRaises(L.ProviderError):
+                L.generate_image('synthetic private request', dict(self.creds, llm_privacy='LOCAL_ONLY'))
+            network.assert_not_called()
+
+    def test_private_intake_skips_external_research_refresh(self):
+        import task_solver as T
+        rec = {'title':'Fresh research about Cedar Cove', 'body_head':'Please update Cedar Cove', 'projects':['snow']}
+        entity = {'name':'Cedar Cove', 'slug':'cedar-cove'}
+        with patch.dict(T.PROJECT_TO_KB, {'snow':'fixture'}), \
+             patch.object(T.entity_kb, 'search_entities', return_value=[entity]), \
+             patch.object(T.entity_kb, 'record_outcome', return_value=True), \
+             patch.object(T, '_record_question_attempt'), \
+             patch.object(T.entity_kb, 'recap_text', return_value='local recap'), \
+             patch.object(T, 'wants_fresh_research', return_value=True), \
+             patch.object(T.deep_research, 'deep_research_entity') as external:
+            self.assertEqual(T.try_entity_kb_answer(rec, creds={'configured':True}), 'local recap')
+            external.assert_not_called()
+
+    def test_private_ticket_does_not_copy_payload_into_cloud_build_queue(self):
+        import task_solver as T
+        with patch.object(T.dev_loop, 'ticket_create') as ticket:
+            T._fallback_to_ticket({'title':'PRIVATE TITLE', 'body_head':'PRIVATE FINANCIAL PAYLOAD', 'privacy':'LOCAL_ONLY'})
+            self.assertNotIn('PRIVATE TITLE', str(ticket.call_args))
+            self.assertNotIn('PRIVATE FINANCIAL PAYLOAD', str(ticket.call_args))
+
+    def test_patch_validator_rejects_protected_paths(self):
+        from foundation_contracts import valid
+        for path in ('config/credentials.json', '../outside.py', 'logs/output.py'):
+            text=json.dumps({'summary':'change', 'files':[{'path':path,'content':'x'}], 'edits':[], 'notes':''})
+            self.assertFalse(valid('dev-agent-repair', text))
+
+    def test_pinned_builder_honors_private_policy(self):
+        import dev_agent
+        with patch.object(dev_agent, '_creds', return_value={'llm_privacy':'LOCAL_ONLY'}), \
+             patch.dict('sys.modules', {'requests':None}):
+            with self.assertRaises(L.ProviderError):
+                dev_agent.call_claude_build('system', 'private')
+
+    def test_private_answer_keeps_downstream_consumers_local(self):
+        import task_solver as T
+        rec={'title':'Synthetic question', 'body_head':'Synthetic private content'}
+        original={'outlook_email':'fixture@example.com'}
+        with patch.object(T, 'try_entity_kb_answer', return_value=None), \
+             patch.object(ensemble, 'best_answer', return_value=({},'synthetic answer')) as answer, \
+             patch.object(T, '_quality_ok', return_value=True), \
+             patch.object(T.switchboard, 'decide') as board, \
+             patch.object(T, '_send_mail', return_value=True), \
+             patch.object(T, '_record_promise') as promise, \
+             patch.object(T.dev_loop, 'ledger_append'):
+            result=T.solve_and_answer(rec, original, 'fixture@example.com', 'Synthetic subject')
+            self.assertTrue(result['answered'])
+            self.assertEqual(answer.call_args.args[2]['llm_privacy'], 'LOCAL_ONLY')
+            self.assertEqual(board.call_args.kwargs['creds']['llm_privacy'], 'LOCAL_ONLY')
+            self.assertEqual(promise.call_args.args[2]['llm_privacy'], 'LOCAL_ONLY')
+            self.assertNotIn('llm_privacy', original)
+
     def test_default_single_best_specialist_not_provider_order(self):
         meta,text=self.invoke(self.route(),mode='council')
         self.assertEqual(meta['members'],['gemini']);self.assertEqual(text,'valid')

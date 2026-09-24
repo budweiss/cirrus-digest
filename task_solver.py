@@ -381,6 +381,27 @@ def decisive_match(matches: list, question: str) -> dict | None:
     return named[0] if len(named) == 1 else None
 
 
+def intake_privacy(rec, creds):
+    """Unclassified client email stays local, including quoted financial data.
+
+    Only a trusted server-side sender setting may declare a feed public. A
+    message's own CLOUD_ALLOWED value never authorizes disclosure. Explicit
+    private/sensitive metadata can always tighten that setting.
+    """
+    if (creds or {}).get('llm_privacy') == 'LOCAL_ONLY':
+        return 'LOCAL_ONLY'
+    if (rec.get('privacy') == 'LOCAL_ONLY' or rec.get('sensitive') or
+        rec.get('data_classification') in ('private', 'financial', 'sensitive')):
+        return 'LOCAL_ONLY'
+    # An allowlist of email addresses is application-owned, never read from
+    # an incoming body's instructions or model output.
+    allowed = (creds or {}).get('public_research_senders', [])
+    sender = str(rec.get('from_email') or '').strip().lower()
+    if isinstance(allowed, list) and sender and sender in [str(x).lower() for x in allowed]:
+        return 'CLOUD_ALLOWED'
+    return 'LOCAL_ONLY'
+
+
 def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> str | None:
     """If the question plausibly names something already researched (per
     the sender's project -> entity_kb project mapping above), answer from
@@ -441,7 +462,7 @@ def try_entity_kb_answer(rec: dict, creds: dict = None, db_path: str = None) -> 
             except Exception:
                 pass
             _record_question_attempt(kb_project, 1, recorded, question, db_path=db_path)
-            if creds and wants_fresh_research(question):
+            if creds and intake_privacy(rec, creds) == "CLOUD_ALLOWED" and wants_fresh_research(question):
                 try:
                     ctx = KB_RESEARCH_CONTEXT.get(kb_project, {})
                     recap, found = deep_research.deep_research_entity(
@@ -491,7 +512,11 @@ def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) ->
     question = rec.get("body_head", "") or rec.get("title", "")
     result = {"answered": False, "cost_usd": None, "reason": ""}
 
-    kb_text = try_entity_kb_answer(rec, creds=creds)
+    privacy = intake_privacy(rec, creds)
+    creds = dict(creds, llm_privacy=privacy)
+    rec = dict(rec, privacy=privacy)
+    financial = rec.get('data_classification') == 'financial'
+    kb_text = None if financial else try_entity_kb_answer(rec, creds=creds)
     if kb_text is not None:
         text = kb_text
         meta = {"est_cost_usd": 0.0, "reason": "entity_kb lookup",
@@ -499,9 +524,9 @@ def solve_and_answer(rec: dict, creds: dict, to_addr: str, orig_subject: str) ->
     else:
         try:
             meta, text = ensemble.best_answer(
-                _ANSWER_SYSTEM, question, creds, task="intake-answer",
+                _ANSWER_SYSTEM, question, creds, task="intake-answer:financial" if financial else "intake-answer",
                 session_id=f"intake-answer-{rec.get('message_id', datetime.now().isoformat())}",
-                app_dir=PROJECT_DIR, mode="council")
+                app_dir=PROJECT_DIR, mode="council", privacy=privacy)
         except Exception as e:
             result["reason"] = f"council call failed: {e}"
             _fallback_to_ticket(rec)
@@ -560,10 +585,13 @@ def _fallback_to_ticket(rec: dict):
     the request — queue it the normal way (same path build-kind requests
     already use)."""
     try:
+        private = rec.get('privacy') != 'CLOUD_ALLOWED'
+        title = 'Private intake request requires local review' if private else rec.get('title', '')
+        detail = ('Review the original request in the local intake backlog. Do not forward its contents to cloud models.'
+                  if private else (rec.get('body_head') or '')[:400])
         dev_loop.ticket_create(
-            rec.get("requester", ""), rec.get("projects", []), rec.get("title", ""),
-            (rec.get("body_head") or "")[:400], origin="user-intake-answer-fallback",
-            project_dir=PROJECT_DIR)
+            rec.get("requester", ""), rec.get("projects", []), title,
+            detail, origin="user-intake-answer-fallback", project_dir=PROJECT_DIR)
     except Exception:
         pass
 

@@ -783,7 +783,11 @@ _TOPIC_COUNCIL_SYSTEM = (
     "Alyssa, an experienced 4th-grade reading/writing/English teacher. Follow the "
     "user's instructions exactly (markdown, under 450 words, veteran-level, one "
     "concrete example). Be rigorously honest — NEVER invent citations, statistics, "
-    "study titles, or program names.")
+    "study titles, or program names. If a request says to use only supplied "
+    "material, do not add remembered research claims. Label fictional or "
+    "synthetic observations as such; never call them real classroom events. "
+    "A fabricated citation is unverified, not proof that no such study exists. "
+    "Distinguish proposed activities from observed results. Do not use top-level headings.")
 
 
 def _topic_brief(topic, cfg, creds):
@@ -793,6 +797,10 @@ def _topic_brief(topic, cfg, creds):
     on admission failure instead of using an unqualified local fallback.
     """
     prompt = TOPIC_PROMPT.format(topic=topic)
+    from capability_registry import foundation_route
+    reviewed = foundation_route('pedagogy-topic', Path(__file__).resolve().parent)
+    if reviewed is not None and (ensemble is None or not creds or not creds.get('pedagogy_council', True)):
+        return '[Summarization error: qualified topic route disabled]'
     if ensemble is not None and creds and creds.get("pedagogy_council", True):
         try:
             # S232: 1400 was too tight for a THINKING gemini model on a real
