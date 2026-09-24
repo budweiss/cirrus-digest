@@ -395,7 +395,10 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
 # leading service rank, nothing else. Over-merging would silently delete a real
 # act, which is the more expensive mistake: a duplicate is visible and
 # embarrassing, a wrongly-merged act is invisible and gone.
-_RANKS = ("first class", "staff sgt.", "staff sergeant", "sgt.", "sergeant",
+# "musician" first: the Navy rate is "Musician First Class", and the loop strips
+# in this order, so "musician" has to go before "first class" can match (S270 --
+# the same sailor was on the 11/1 card twice).
+_RANKS = ("musician", "first class", "staff sgt.", "staff sergeant", "sgt.", "sergeant",
           "master sgt.", "sfc", "mu1", "petty officer", "cpl.", "lt.",
           "the honorable")
 _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
@@ -1728,6 +1731,9 @@ def selftest() -> int:
         check("a service rank is the same person",
               canonical_name("First Class Nathaniel Buttram")
               == canonical_name("Nathaniel Buttram"))
+        check("the full Navy rate is the same person too",
+              canonical_name("Musician First Class Nathaniel Buttram")
+              == canonical_name("First Class Nathaniel Buttram"))
         check("a leading 'The' does not create a second act",
               canonical_name("The Roots") == canonical_name("Roots"))
         check("two genuinely different acts are NOT merged",
@@ -1819,6 +1825,145 @@ def selftest() -> int:
               "held by your rules" in rpage
               and "no Pittsburgh tie" in rpage)
 
+        # --- S270: Justin's 23 Sep brief --------------------------------
+        def _th(name, style="", cat="other music", home="", era=""):
+            a = {"name": name, "fields": {"style": style, "category": cat,
+                                          "home_base": home, "clients": "",
+                                          "era": era}}
+            a["badges"] = badges_for(a)
+            a["reach"] = reachability(a)
+            return a
+
+        check("brief: a military act fits Salute to Service",
+              theme_fit(_th("B", cat="military / patriotic"),
+                        "salute_to_service")[0] == FIT)
+        check("brief: ...and so does a country act (his words)",
+              theme_fit(_th("C", "country"), "salute_to_service")[0] == FIT)
+        check("brief: an unrelated pop act is NOT surfaced for it",
+              theme_fit(_th("P", "pop"), "salute_to_service")[0] == NO_FIT)
+        check("brief: Heritage keeps a Pittsburgh tie",
+              theme_fit(_th("L", home="Pittsburgh, PA"), "heritage")[0] == FIT)
+        check("brief: Heritage keeps his Steelers-connected list",
+              theme_fit(_th("The Clarks"), "heritage")[0] == FIT)
+        check("brief: Heritage sets aside an act with no local tie",
+              theme_fit(_th("Z", "rock", home="Nashville, TN"),
+                        "heritage")[0] == NO_FIT)
+        check("brief: a '90s act fits Alumni Weekend",
+              theme_fit(_th("H", era="1990s"), "alumni_90s")[0] == FIT)
+        check("brief: an '80s act does not",
+              theme_fit(_th("E", era="1980s"), "alumni_90s")[0] == NO_FIT)
+        check("brief: NO recorded era is unknown -- never 'not a 90s act'",
+              theme_fit(_th("U"), "alumni_90s")[0] == UNKNOWN_FIT)
+        check("brief: an un-themed date takes everyone",
+              theme_fit(_th("P", "pop"), None)[0] == FIT)
+
+        check("fans: 'Dan + Shay' is on his list",
+              fan_entry("Dan + Shay") is not None)
+        check("fans: ...and 'Dan & Shay' is the same act",
+              fan_entry("Dan & Shay") is not None)
+        check("fans: 'Train' reaches Pat Monahan through the aka",
+              (fan_entry("Train") or {}).get("name") == "Pat Monahan")
+        check("fans: a PART of a name is not a match",
+              fan_entry("Dan") is None and fan_entry("Root") is None)
+        check("fans: all 28 of his names are carried",
+              len(STEELERS_CONNECTED) == 28)
+        _fk = {b["kind"] for b in _th("Styx").get("badges", [])}
+        check("fans: a listed act carries the badge", "fan" in _fk)
+        _ft = _as_candidates([
+            {"artist": "Arena Act", "date": "2026-10-10",
+             "venue": "PPG Paints Arena", "city": "Pittsburgh, PA", "miles": 0,
+             "gap": -1},
+            {"artist": "Dan + Shay", "date": "2026-10-08",
+             "venue": "Schottenstein Center", "city": "Columbus, OH",
+             "miles": 185, "gap": -3}], set())
+        check("fans: his listed act LEADS the touring column (his Dan + Shay "
+              "example)", _ft[0]["name"] == "Dan + Shay")
+        check("fans: a listed hip-hop act is not held by his own rap rule",
+              rule_verdict(_th("GloRilla", "hip hop / rap"))["state"]
+              == "admitted")
+
+        _w15 = next(g for g in HOME_GAMES if g["week"] == 15)
+        _w3 = next(g for g in HOME_GAMES if g["week"] == 3)
+        _tso = _th("Trans-Siberian Orchestra")
+        _shown, _aside = split_for_game(_w15, [_tso, _th("Styx")])
+        check("notes: TSO is ruled out on 12/20, with HIS reason",
+              [a["name"] for a in _aside["ruled_out"]]
+              == ["Trans-Siberian Orchestra"]
+              and "performance schedule" in _aside["ruled_out"][0]
+              ["client_note"])
+        check("notes: Styx stays, carrying his 2027 note",
+              [a["name"] for a in _shown] == ["Styx"]
+              and "2027" in _shown[0]["client_note"])
+        check("notes: a note for 12/20 does not leak onto another date",
+              split_for_game(_w3, [_tso])[1]["ruled_out"] == [])
+
+        csnap = build_snapshot(today="2026-09-20", db_path=db,
+                               routing_path=no_routing)
+        _c1 = next(g for g in csnap["games"] if g["week"] == 1)
+        check("completed: a played game is marked, with no candidates",
+              _c1["completed"] and not any(_c1["candidates"].values()))
+        check("completed: a game on its own day is still upcoming",
+              not is_completed({"date": "2026-09-27"}, "2026-09-27"))
+        check("completed: an undated game never is",
+              not is_completed({"date": None}, "2030-01-01"))
+        cpage = render_html(csnap)
+        check("completed: it moves to the collapsed section at the foot",
+              "Completed games (1)" in cpage
+              and "id='wk01-falcons'" in cpage
+              and cpage.index("Completed games") > cpage.index("Wk 3"))
+        check("completed: ...and no longer has a full card in the main view",
+              "<section class='game' id='wk01-falcons'>" not in cpage)
+        check("no-act: Carolina renders its note and NO empty panels",
+              "No act needed" in cpage and cpage.count(
+                  "<div class='pool pool-touring'>") == sum(
+                      1 for g in csnap["games"] if not g["completed"]
+                      and g.get("mode") != "no_act"))
+        check("sweep: the default slate skips played and no-act games",
+              [g["week"] for g in upcoming_games("2026-09-20")]
+              == [3, 5, 8, 12, 13, 15])
+
+        # A themed date whose touring hits all miss the brief says so, and
+        # the set-aside acts are one click away rather than gone.
+        _gid8 = game_id(next(g for g in HOME_GAMES if g["week"] == 8))
+        _rt8 = Path(tmp) / "routing-8.json"
+        _rt8.write_text(json.dumps({"window_days": 3, "games": {_gid8: {
+            "events": [{"artist": "Club Pop", "date": "2026-11-01",
+                        "venue": "Rumba Cafe", "city": "Columbus, OH",
+                        "miles": 185, "gap": 0, "style": "pop"}],
+            "coverage": [{"metro": "Columbus, OH", "miles": 185,
+                          "sources": 1, "found": 1, "error": None,
+                          "swept_at": "2026-08-26T00:00:00Z"}]}}}))
+        t8 = render_html(build_snapshot(today=_T, db_path=db,
+                                        routing_path=_rt8))
+        _w8sec = t8[t8.index("id='wk08-browns'"):t8.index("id='wk12-broncos'")]
+        check("themed-empty: 11/1 says nothing fits the brief yet",
+              "Nothing here fits the brief yet" in _w8sec)
+        check("themed-empty: ...and the pop act is set aside WITH the reason",
+              "no tie to Salute to Service on record" in _w8sec
+              and "Club Pop" in _w8sec)
+        check("themed-empty: ...never as 'None available'",
+              "None available" not in _w8sec.split("pool-for_hire")[0])
+        _fans = _w8sec[_w8sec.index("pool-fans"):] if "pool-fans" in _w8sec \
+            else ""
+        # Everything before the set-aside lists: the 3 shown plus the rest of
+        # the acts that fit, which open in place.
+        _fans_main = _fans.split("<details class='aside")[0]
+        check("fans panel: a themed date shows his list, filtered to the brief",
+              "Trace Adkins" in _fans_main and "Snoop Dogg" not in _fans_main
+              and "Snoop Dogg" in _fans)
+
+        # S270 fix: touring overflow used to point at "the credit list below",
+        # which never holds a routing hit.
+        _over = json.loads(json.dumps(rsnap))
+        _g5 = next(g for g in _over["games"] if g["week"] == 5)
+        _g5["candidates"]["touring"] = [
+            dict(_g5["candidates"]["touring"][0], name="Tour {}".format(i))
+            for i in range(5)]
+        _op = render_html(_over)
+        check("overflow: extra routing hits open in place, not 'in the "
+              "credit list'",
+              "2 more for this date" in _op and "Tour 4" in _op)
+
         # --- R13 market analysis --------------------------------------
         mkt = market_analysis(snap)
         check("the analysis has findings, each with a stated basis",
@@ -1834,6 +1979,21 @@ def selftest() -> int:
         mpage = render_html(snap)
         check("the analysis reaches the page",
               "What does well in this market" in mpage)
+
+        # T107: an unknown argument must never reach build(). build is
+        # stubbed, so if this guard regresses the check fails instead of
+        # writing the live page.
+        _calls = []
+        _real_build = globals()["build"]
+        globals()["build"] = lambda *a, **k: _calls.append(1) or {}
+        try:
+            import io, contextlib
+            with contextlib.redirect_stderr(io.StringIO()):
+                _rc = main(["--selftest"])
+        finally:
+            globals()["build"] = _real_build
+        check("an unknown argument is refused, and does NOT build the page",
+              _rc == 2 and not _calls)
 
         check("build writes both the snapshot and the page",
               (Path(res["out"]) / "snapshot.json").exists()
@@ -1876,10 +2036,19 @@ def _snap_with_name(snap: Dict, name: str) -> Dict:
     return clone
 
 
-def main() -> int:
-    args = sys.argv[1:]
-    if "selftest" in args:
+USAGE = "usage: halftime_dashboard.py [selftest]   (no argument = build)"
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args == ["selftest"]:
         return selftest()
+    # S270 (T107 again): anything else used to fall through to build(), so a
+    # checker typing `--selftest` on CUMULUS rewrote Justin's live page with
+    # unreviewed code. The build is the no-argument path and nothing else.
+    if args:
+        print(USAGE, file=sys.stderr)
+        return 2
     res = build()
     print(json.dumps(res))
     return 0

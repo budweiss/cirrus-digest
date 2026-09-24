@@ -682,7 +682,12 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
     was untested, and two mutations that silently zeroed the escalation rate
     for good passed the entire suite."""
     import halftime_dashboard
-    games = games if games is not None else halftime_dashboard.HOME_GAMES
+    # S270 (Justin, 23 Sep): a played game or one needing no act is not swept
+    # -- it spends Brave calls and model time on an answer nobody reads.
+    # DEFAULT slate only: the selftests inject 2026-11 dates, and filtering an
+    # injected slate by the real calendar would empty them in November.
+    games = (games if games is not None
+             else halftime_dashboard.upcoming_games())
     creds = creds if creds is not None else json.loads(
         (PROJECT_DIR / "config/credentials.json").read_text())
 
