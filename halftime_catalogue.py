@@ -748,7 +748,7 @@ def _reviewed_cloud(system, user, creds, pool):
     if foundation_route(task, PROJECT_DIR) is not None:
         import ensemble
         meta, text = ensemble.best_answer(system, user, creds, task=task,
-            max_tokens=PAID_EXTRACT_MAX_TOKENS, app_dir=PROJECT_DIR,
+            max_tokens=1000, app_dir=PROJECT_DIR,
             validate=lambda raw: parse_acts(raw, pool) is not None)
         return meta['judge'], parse_acts(text, pool)
     records = load_project('halftime_catalogue', CAPABILITY_RECORDS)

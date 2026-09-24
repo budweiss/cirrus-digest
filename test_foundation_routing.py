@@ -54,6 +54,12 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(len(self.calls),2)
         self.assertEqual(text,meta['answers'][0][1])
 
+    def test_catalogue_reviewed_output_reservation_fits_existing_spend_contract(self):
+        import halftime_catalogue as H
+        with patch('capability_registry.foundation_route',return_value={'enabled':True}), patch.object(ensemble,'best_answer',return_value=({'judge':'kimi'},'[]')) as call:
+            self.assertEqual(H._reviewed_cloud('s','u',{},'variety'),('kimi',[]))
+            self.assertEqual(call.call_args.kwargs['max_tokens'],1000)
+
     def test_repair_deferral_never_calls_direct_cloud_fallback(self):
         import dev_agent
         for error in (L.ProviderError('admission rejected'), L.AccountingError('ledger failed')):
