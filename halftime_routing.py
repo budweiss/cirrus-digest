@@ -48,6 +48,8 @@ METROS = [
 # window an act could plausibly stay over or arrive early for.
 WINDOW_DAYS = 3
 MAX_SEARCH_RESULTS = 6
+# Bound each source separately: a long first page must not consume the other
+# pages' allowance. Ask the fetcher for one extra character to detect the cap.
 MAX_FETCH_CHARS = 12000
 
 _EXTRACT_SYSTEM = """You extract announced live music dates from concert
@@ -487,14 +489,22 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
         searcher = searcher or (
             lambda q: cirrus_daily.search_web(q, max_results=MAX_SEARCH_RESULTS,
                                               caller="halftime_routing"))
-        fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
+        fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(
+            u, max_chars=MAX_FETCH_CHARS + 1)[0])
     llm_stats = {} if llm_stats is None else llm_stats
     # Remembered before the default is built: an INJECTED extractor is used as
     # given and never gets a per-task stats dict, which preserves the documented
     # contract that injection reports no rate at all (see this function's
     # docstring) rather than a misleading 0%.
     _injected_extractor = extractor is not None
-    extractor = extractor or (lambda block: _extract(block, creds, llm_stats))
+    day = datetime.strptime(game["date"], "%Y-%m-%d")
+    lo = (day - timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+    hi = (day + timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+    # Limit OUTPUT to the window we actually use, not the text we can read.
+    # Whole-month calendars otherwise spend most of the answer on discarded dates.
+    prompt = _EXTRACT_SYSTEM + (
+        "\nOnly return shows from {} through {}, inclusive. "
+        "Read the whole source; skip dates outside this window.".format(lo, hi))
 
     todo = list(queries_for(game))
 
@@ -510,7 +520,7 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
         metro, miles, query = item
         stats = {}
         ex = extractor if _injected_extractor else (
-            lambda block: _extract(block, creds, stats))
+            lambda block: _extract(block, creds, stats, system=prompt))
         rec = {"metro": metro, "miles": miles, "query": query,
                "swept_at": _now(), "sources": 0, "found": 0, "error": None}
         try:
@@ -519,30 +529,53 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
             rec["error"] = "search failed: {}".format(e)[:200]
             return rec, [], stats, []
         blocks = []
-        for url in urls or []:
+        rec.update(chars_read=0, capped_sources=0, extraction_failed=0)
+        for url in dict.fromkeys(urls or []):
             try:
                 content = fetcher(url)
             except Exception:
                 continue
             if content:
-                blocks.append("SOURCE: {}\n{}".format(
-                    url, content[:MAX_FETCH_CHARS]))
+                rec["chars_read"] += min(len(content), MAX_FETCH_CHARS)
+                rec["capped_sources"] += int(len(content) > MAX_FETCH_CHARS)
+                blocks.append((url, "SOURCE: {}\n{}".format(
+                    url, content[:MAX_FETCH_CHARS])))
         rec["sources"] = len(blocks)
         if not blocks:
             rec["error"] = "no fetchable source"
             return rec, [], stats, []
-        with _extract_gate:          # the model is the serialised resource
-            found = ex("\n\n".join(blocks))
-        if found is None:
-            rec["error"] = "extraction unusable"
-            return rec, [], stats, []
+        found = {}
+        for url, block in blocks:
+            with _extract_gate:      # the cap still applies across all metros
+                got = ex(block)
+            if got is None:
+                rec["extraction_failed"] += 1
+                continue
+            for event in got:
+                # The same show may appear in several calendars. Keep distinct
+                # venues/cities; fill a missing style only from another listing.
+                key = (canonical_key(event["artist"]), event["date"],
+                       _norm_venue(event.get("venue", "")),
+                       " ".join(event.get("city", "").lower().split()))
+                if key not in found:
+                    found[key] = dict(event, source_url=url)
+                elif not found[key].get("style") and event.get("style"):
+                    found[key]["style"] = event["style"]
+        failed = rec["extraction_failed"]
+        rec["partial"] = 0 < failed < len(blocks)
+        if failed:
+            rec["error"] = ("extraction unusable" if failed == len(blocks) else
+                            "partial extraction unusable: {}/{} sources".format(
+                                failed, len(blocks)))
         near = [dict(e, metro=metro, miles=miles,
                      gap=gap_days(e["date"], game["date"]))
-                for e in found if near_game(e["date"], game["date"])]
+                for e in found.values() if near_game(e["date"], game["date"])]
         rec["found"] = len(near)
         return rec, near, stats, [
-            "  {} — {} source(s), {} of {} show(s) inside the window".format(
-                metro, len(blocks), len(near), len(found))]
+            "  {} — {} source(s), {} of {} show(s) inside the window; "
+            "{} chars read, {} capped, {} unusable source(s)".format(
+                metro, len(blocks), len(near), len(found), rec["chars_read"],
+                rec["capped_sources"], failed)]
 
     # One gate for the whole sweep, so the cap is across metros, not per task.
     _extract_gate = threading.BoundedSemaphore(_extract_worker_count())
@@ -585,8 +618,8 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None,
     import llm_providers
     if stats is None:
         stats = {}
-    # S273: halftime_itinerary passes a narrower prompt (only the dates around
-    # the remaining games). The sweep's own calls are unchanged.
+    # Both callers narrow output to the relevant game window(s), while reading
+    # each full source allowance. The default remains available to other callers.
     prompt = system or _EXTRACT_SYSTEM
     user = "LISTINGS:\n\n{}".format(block[:24000])
     # S125 (CUMULUS2-TP2-PLAN.md): TP=2 vLLM endpoint first when configured;

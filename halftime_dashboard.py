@@ -838,7 +838,8 @@ def build_snapshot(db_path: Optional[str] = None,
                 for c in touring:
                     c["viability"] = itin.verdict(game, itinerary.get(
                         halftime_routing.canonical_key(c["name"])))
-                if rows and len(errs) == len(rows):
+                if rows and len(errs) == len(rows) and not any(
+                        r.get("partial") for r in rows):
                     tr_cov = {"state": FAILED,
                               "swept_at": rows[0].get("swept_at"),
                               "sources": "{} metro(s)".format(len(rows)),
@@ -859,6 +860,10 @@ def build_snapshot(db_path: Optional[str] = None,
                                         len([r for r in rows
                                              if not r.get("found")]),
                                         len(rows))}
+                    if errs:
+                        tr_cov["note"] += (
+                            " Coverage incomplete in {} metro(s); confirmed shows "
+                            "are still listed.".format(len(errs)))
         else:
             tr_cov = {"state": NOT_APPLICABLE, "swept_at": None,
                       "sources": None, "found": 0,
@@ -2574,6 +2579,18 @@ def selftest() -> int:
                   today=_T, db_path=db, routing_path=_fail_routing(Path(tmp), gid8)
               )["games"] if g["week"] == 5
               )["coverage"]["touring"]["state"] == FAILED)
+        # A failed source must not hide good shows from the same metro.
+        partial_data = json.loads(rt.read_text())
+        for row in partial_data["games"][gid8]["coverage"]:
+            row.update(error="partial extraction unusable: 1/2 sources", partial=True)
+        partial_path = Path(tmp) / "routing-partial.json"
+        partial_path.write_text(json.dumps(partial_data))
+        partial_game = next(g for g in build_snapshot(
+            today=_T, db_path=db, routing_path=partial_path)["games"] if g["week"] == 5)
+        check("partial source failures keep confirmed shows and disclose incomplete coverage",
+              partial_game["coverage"]["touring"]["state"] == SWEPT
+              and "Coverage incomplete in 2 metro(s)" in partial_game["coverage"]["touring"]["note"]
+              and [c["name"] for c in partial_game["candidates"]["touring"]] == ["Near Act"])
         rpage3 = render_html(rsnap)
         check("the routing hit and its gap reach the page",
               "Near Act" in rpage3 and "1 day(s) before" in rpage3)
