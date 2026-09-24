@@ -72,8 +72,10 @@ def load_sources(path):
 def merge(base, overlay):
     result = copy.deepcopy(base)
     paths = overlay.get('digest', {})
-    if set(paths) - {'output_dir', 'log_dir'}:
-        raise ValueError('runtime digest overlay may contain only paths')
+    if set(paths) - {'output_dir', 'log_dir', 'ollama_model'}:
+        raise ValueError('unsupported runtime digest overlay field')
+    if 'ollama_model' in paths and (not isinstance(paths['ollama_model'], str) or not paths['ollama_model'].strip()):
+        raise ValueError('runtime ollama_model must be a nonempty string')
     result.setdefault('digest', {}).update(paths)
     for account in overlay.get('email', {}).get('accounts', []):
         accounts = result.setdefault('email', {}).setdefault('accounts', [])
@@ -133,6 +135,13 @@ def selftest():
     try:
         merge(base, {'digest': {'bogus_key': '/z'}})
         raise AssertionError('merge should reject unsupported digest overlay keys')
+    except ValueError:
+        pass
+
+    assert merge(base, {'digest': {'ollama_model': 'gpt-oss:120b'}})['digest']['ollama_model'] == 'gpt-oss:120b'
+    try:
+        merge(base, {'digest': {'ollama_model': ''}})
+        raise AssertionError('empty model accepted')
     except ValueError:
         pass
 
