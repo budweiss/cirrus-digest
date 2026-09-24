@@ -1858,6 +1858,13 @@ def main() -> int:
             print("profiles:", json.dumps(halftime_profiles.run()))
         except Exception as e:
             print(f"profiles failed: {type(e).__name__}")
+        # S277 (Phase 5, R40): a published fee range for each shown act, for
+        # the cost view. Same rule: never fails the catalogue run.
+        try:
+            import halftime_fees
+            print("fees:", json.dumps(halftime_fees.run()))
+        except Exception as e:
+            print(f"fees failed: {type(e).__name__}")
     return 0
 
 

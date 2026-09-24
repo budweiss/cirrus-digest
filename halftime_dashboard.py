@@ -744,7 +744,8 @@ def build_snapshot(db_path: Optional[str] = None,
                    routing_path: Optional[Path] = None,
                    today: Optional[str] = None,
                    itinerary_path: Optional[Path] = None,
-                   profiles_path: Optional[Path] = None) -> Dict:
+                   profiles_path: Optional[Path] = None,
+                   fees_path: Optional[Path] = None) -> Dict:
     """Everything the page needs, in one file."""
     games = games if games is not None else HOME_GAMES
     today = today or today_et()
@@ -882,6 +883,17 @@ def build_snapshot(db_path: Optional[str] = None,
         entry["held"] = {"for_hire": fh_held, "touring": []}
         entry["coverage"] = {"for_hire": fh_cov, "touring": tr_cov}
         snap["games"].append(entry)
+
+    # R40: every act priced, with its basis; his agent's acts join the cost
+    # view as for-hire options.
+    import halftime_fees
+    fees = halftime_fees.load(fees_path or FEES_PATH).get("acts") or {}
+    snap["agent_roster"] = agent_roster_acts(
+        {canonical_name(a["name"]) for pool in ("roster", "roster_held",
+                                                "fans")
+         for a in snap[pool]})
+    price_all(snap, fees)
+    snap["calibration"] = calibration(fees)
     return snap
 
 
@@ -995,6 +1007,30 @@ def market_analysis(snap: Dict) -> List[Dict]:
         "basis": "Five recent club bookings — a small sample, and stated as one.",
         "strength": "small sample"})
 
+    # R40: the cost view leans on published agency ranges where nothing better
+    # exists; this says how far they can be trusted, measured on his own list.
+    cal = snap.get("calibration") or {}
+    n = sum(len(v) for v in cal.values())
+    if n:
+        findings.append({
+            "title": "A published fee range is a rough guide, not a quote",
+            "body": "For the {} acts on your agent's list that an agency also "
+                    "prices publicly, its published starting range matched "
+                    "your agent's all-in figure for {}, ran higher for {}{} "
+                    "and lower for {}{}. That is why the cost view uses your "
+                    "agent's figure wherever there is one, and marks every "
+                    "published range as such.".format(
+                        n, len(cal.get("match") or []),
+                        len(cal.get("higher") or []),
+                        " ({})".format(", ".join(cal["higher"]))
+                        if cal.get("higher") else "",
+                        len(cal.get("lower") or []),
+                        " ({})".format(", ".join(cal["lower"]))
+                        if cal.get("lower") else ""),
+            "basis": "Computed nightly: your agent's 26 Aug list against "
+                     "celebritytalent.net's published ranges.",
+            "strength": "computed"})
+
     gaps = []
     for g in snap["games"]:
         if g.get("at_venue", True) and \
@@ -1012,6 +1048,182 @@ def market_analysis(snap: Dict) -> List[Dict]:
         "basis": "Stated so it is not mistaken for an absence of effect.",
         "strength": "gap"})
     return findings
+
+
+# ── R40: what each act costs, and on what basis ─────────────────────────────
+# Justin (23 Sep): "a visual of acts across a cost spectrum x viability, with a
+# budget ($25K) that narrows the universe to realistic options."
+#
+# ONE PRICE PER ACT, from the best basis held, and the basis always travels
+# with it -- an agency's published range is not a quote, and the page must
+# never let the two read the same:
+#   1. documented  a fee recorded with its source (the catalogue's fee_note)
+#   2. agent       the all-in figures his agent sent (26 Aug)
+#   3. published   an agency's published starting range (halftime_fees.py)
+#   4. room        the size of room a touring act is playing -- ONLY when at
+#                  least ROOM_MIN_SAMPLE priced acts play rooms that size, so
+#                  the band is measured from them, never assumed. No public
+#                  source gives dollar bands per room size (S277 looked).
+# Anything else is UNPRICED: said so, listed apart, never dropped. A budget
+# tests the LOW end -- an act fits when its cheapest estimate does.
+
+FEES_PATH = OUT_DIR / "fees.json"
+# The two roster lines _ROSTER_* cannot hold: a range, and "in line with the
+# others" (read as the nostalgia tier it was said about).
+_AGENT_EXTRA = [
+    {"name": "Andra Day", "low": 75000, "high": 100000,
+     "note": "your agent's list (26 Aug): $75–100,000 all-in"},
+    {"name": "Tone Loc", "low": 15000, "high": 30000,
+     "note": "your agent's list (26 Aug): “in line with the others” — the "
+             "$15–30,000 nostalgia tier"}]
+AGENT_BASIS = "your agent's list (26 Aug) — all-in, approximate, negotiable"
+PUBLISHED_BASIS = "published starting range, U.S. dates — an agency's " \
+                  "figure, not a quote"
+BASIS_SHORT = {"documented": "documented", "agent": "your agent's figure",
+               "published": "published range",
+               "room": "rough, from room size"}
+ROOM_TIERS = ("stadium", "arena", "amphitheatre", "theatre", "club")
+ROOM_MIN_SAMPLE = 3
+_DOLLAR = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*([kKmM]\b)?")
+_UNPRICED_WHY = {
+    "not listed": "not listed by the agency we read",
+    "no figure published (\"please contact\")":
+        "the agency lists them with no published figure"}
+
+
+def agent_fees() -> Dict[str, Dict]:
+    out = {}
+    for name, fee in _ROSTER_NOSTALGIA + _ROSTER_HEADLINE:
+        out[canonical_name(name)] = {"name": name, "low": fee, "high": fee,
+                                     "note": AGENT_BASIS}
+    for e in _AGENT_EXTRA:
+        out[canonical_name(e["name"])] = dict(e)
+    return out
+
+
+def _documented(note: str) -> List[int]:
+    out = []
+    for num, mult in _DOLLAR.findall(note or ""):
+        v = float(num.replace(",", "")) * {"k": 1e3, "m": 1e6}.get(
+            mult.lower(), 1)
+        if v >= 100:
+            out.append(int(v))
+    return out
+
+
+def fee_range(p: Dict) -> str:
+    if not p or not p.get("low"):
+        return ""
+    return _money(p["low"]) if p["low"] == p["high"] else \
+        "{}–{}".format(_money(p["low"]), _money(p["high"]))
+
+
+def price_for(act: Dict, fees: Dict, bands: Optional[Dict] = None) -> Dict:
+    """{basis, low, high, why, url[, also]}. low is None when unpriced."""
+    import halftime_routing
+    name = act.get("name", "")
+    note = ((act.get("fields") or {}).get("fee_note") or "").strip()
+    found = _documented(note)
+    if found:
+        return {"basis": "documented", "low": min(found), "high": max(found),
+                "why": "documented: " + note, "url": ""}
+    pub = fees.get(halftime_routing.canonical_key(name)) or {}
+    ag = agent_fees().get(canonical_name(name))
+    if ag:
+        return {"basis": "agent", "low": ag["low"], "high": ag["high"],
+                "why": ag["note"], "url": "",
+                "also": "{} published by {}".format(fee_range(pub), _domain(
+                    pub["url"])) if pub.get("low") else ""}
+    if pub.get("low"):
+        return {"basis": "published", "low": pub["low"], "high": pub["high"],
+                "why": PUBLISHED_BASIS, "url": pub.get("url", ""),
+                "quote": pub.get("quote", "")}
+    tier = (act.get("draw") or {}).get("tier")
+    band = (bands or {}).get(tier)
+    if band:
+        return {"basis": "room", "low": band["low"], "high": band["high"],
+                "why": "rough — the {} priced acts we found playing {}-scale "
+                       "rooms start between {} and {}. From the room, not a "
+                       "quote.".format(band["n"], tier, _money(band["low"]),
+                                       _money(band["high"])), "url": ""}
+    if not pub:
+        why = "not looked up yet"
+    elif pub.get("error"):
+        why = "the fee lookup failed; it is retried nightly"
+    else:
+        why = _UNPRICED_WHY.get(pub.get("reason"),
+                                "agency listing not used ({})".format(
+                                    pub.get("reason")))
+    if tier in ROOM_TIERS:
+        why += "; playing a {}-scale room, but too few priced acts play " \
+               "rooms that size to estimate from".format(tier)
+    return {"basis": "unpriced", "low": None, "high": None, "why": why,
+            "url": ""}
+
+
+def room_bands(acts: List[Dict]) -> Dict[str, Dict]:
+    """Per room size, the low ends of acts playing rooms that size that are
+    priced on a real basis. Only sizes with ROOM_MIN_SAMPLE acts or more."""
+    lows = {}
+    for a in acts:
+        tier = (a.get("draw") or {}).get("tier")
+        p = a.get("price") or {}
+        if tier in ROOM_TIERS and p.get("basis") in ("documented", "agent",
+                                                     "published"):
+            lows.setdefault(tier, {})[canonical_name(a["name"])] = p["low"]
+    return {t: {"low": min(v.values()), "high": max(v.values()), "n": len(v)}
+            for t, v in lows.items() if len(v) >= ROOM_MIN_SAMPLE}
+
+
+def _act_lists(snap: Dict):
+    for pool in ("roster", "roster_held", "fans", "agent_roster"):
+        yield snap.get(pool) or []
+    for g in snap.get("games") or []:
+        for grp in ("candidates", "held"):
+            yield from (g.get(grp) or {}).values()
+        for aside in (g.get("set_aside") or {}).values():
+            yield from aside.values()
+
+
+def price_all(snap: Dict, fees: Dict) -> None:
+    """Every act the snapshot holds gets its price; room bands are measured
+    from the acts priced on a real basis, then offered to the unpriced."""
+    lists = list(_act_lists(snap))
+    for lst in lists:
+        for a in lst:
+            a["price"] = price_for(a, fees)
+    bands = room_bands([a for lst in lists for a in lst])
+    for lst in lists:
+        for a in lst:
+            if a["price"]["basis"] == "unpriced" and \
+                    (a.get("draw") or {}).get("tier") in bands:
+                a["price"] = price_for(a, fees, bands)
+    snap["room_bands"] = bands
+
+
+def agent_roster_acts(on_page: set) -> List[Dict]:
+    """His agent's acts that are not already on the page -- priced for-hire
+    options with no tour to clash with, which is what R40 is most for."""
+    return [{"name": e["name"], "agent": True, "badges": [],
+             "fields": {"category": "agent roster"},
+             "reach": {"state": "unknown", "why": ""}}
+            for k, e in sorted(agent_fees().items()) if k not in on_page]
+
+
+def calibration(fees: Dict) -> Dict:
+    """Where the agency's published range and his agent's real all-in figure
+    exist for the same act, how often do they agree? Computed, so the page
+    can say how far to trust a published range."""
+    import halftime_routing
+    out = {"match": [], "higher": [], "lower": []}
+    for e in agent_fees().values():
+        p = fees.get(halftime_routing.canonical_key(e["name"])) or {}
+        if not p.get("low"):
+            continue
+        side = ("higher" if p["low"] > e["high"] else
+                "lower" if p["high"] < e["low"] else "match")
+        out[side].append(e["name"])
+    return out
 
 
 def _as_candidates(events: List[Dict],
@@ -1356,10 +1568,28 @@ def for_your_fans(act: Dict) -> str:
     return "; ".join(b for b in bits[:4] if b)
 
 
+def _budget_attrs(act: Dict) -> str:
+    """What the budget box reads: the act's LOW estimate ('' = unpriced) and
+    a key, so an act listed under several games is counted once."""
+    p = act.get("price")
+    if not p:
+        return ""
+    return " data-low='{}' data-act='{}'".format(
+        p["low"] if p.get("low") else "",
+        _e(canonical_name(act.get("name", ""))))
+
+
+def _fee_text(p: Dict) -> str:
+    """The card's Fee row: the figure, then what it rests on -- escaped."""
+    if p.get("basis") == "unpriced":
+        return "Unpriced — " + _e(p["why"])
+    return "{} · {}".format(_e(fee_range(p)), _basis_html(p))
+
+
 def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
-    bits = ["<li class='act'>", "<div class='act-name'>",
-            _e(act.get("name")), "</div>"]
+    bits = ["<li class='act'{}>".format(_budget_attrs(act)),
+            "<div class='act-name'>", _e(act.get("name")), "</div>"]
     if act.get("client_note"):
         bits.append("<div class='client-note'>{}</div>".format(
             _e(act["client_note"])))
@@ -1435,6 +1665,13 @@ def _act_card(act: Dict) -> str:
                                 " · " + _link(vid.get("url", ""), "video")
                                 if vid.get("url") else ""))
             continue
+        # R40: the Fee row is the priced estimate and its basis; the raw
+        # fee_note is what "documented" quotes, so it is not lost.
+        if key == "fee_note" and act.get("price"):
+            bits.append("<div class='row fee'><span class='k'>Fee</span>"
+                        "<span class='v'>{}</span></div>".format(
+                            _fee_text(act["price"])))
+            continue
         val = (fields.get(key) or "").strip()
         if val:
             bits.append("<div class='row'><span class='k'>{}</span>"
@@ -1469,8 +1706,8 @@ def _short_list(acts: List[Dict], detail) -> str:
     out = ["<ul class='acts'>"]
     for a in acts:
         line = detail(a)
-        out.append("<li class='act'><div class='act-name'>{}</div>{}</li>".format(
-            _e(a.get("name")),
+        out.append("<li class='act'{}><div class='act-name'>{}</div>{}</li>"
+                   .format(_budget_attrs(a), _e(a.get("name")),
             "<div class='row'><span class='v'>{}</span></div>".format(_e(line))
             if line else ""))
     out.append("</ul>")
@@ -1480,11 +1717,14 @@ def _short_list(acts: List[Dict], detail) -> str:
 def _fan_line(a: Dict) -> str:
     f = a.get("fields") or {}
     v = a.get("viability") or {}
+    p = a.get("price") or {}
     return " · ".join(x for x in (
         "from " + f["hometown"] if f.get("hometown") else "",
         f.get("style"),
         "broke through in the " + f["era"] if f.get("era") else "",
-        "game day: " + v["label"].lower() if v.get("label") else "") if x)
+        "game day: " + v["label"].lower() if v.get("label") else "",
+        "fee {} ({})".format(fee_range(p), BASIS_SHORT[p["basis"]])
+        if p.get("low") else "unpriced" if p else "") if x)
 
 
 def _style_and_place(a: Dict) -> str:
@@ -1610,6 +1850,258 @@ def _pool_panel(g: Dict, pool: str) -> str:
     return "".join(parts)
 
 
+# ── R40: the cost x viability view ──────────────────────────────────────────
+# One per date, because game-day viability is per date. Drawn server-side as
+# plain SVG: nothing to load, and the selftest can read what the page shows.
+# The budget box is the only script on the page, and it only hides and dims.
+
+LANES = (("clear", "Clear that day", ("clear", "local")),
+         ("ask", "Ask — tight, or tour not visible", ("tight", "open")),
+         ("unchecked", "Game day not checked", ("not_checked", None)),
+         ("conflict", "Playing elsewhere", ("conflict",)))
+_FROM = {"fans": "your list", "touring": "routing through",
+         "for_hire": "credit list", "agent": "your agent's list"}
+_SX0, _SX1, _SW, _LANE_H, _TOP = 190, 985, 1000, 44, 6
+
+
+def lane_of(act: Dict) -> str:
+    state = (act.get("viability") or {}).get("state")
+    return next((k for k, _l, states in LANES if state in states),
+                "unchecked")
+
+
+def cost_acts(g: Dict, snap: Dict) -> List[Dict]:
+    """Every act listed for this date, the ones set aside for a game-day
+    clash, and his agent's acts -- once each."""
+    seen, out = set(), []
+
+    def add(a, source):
+        k = canonical_name(a.get("name", ""))
+        if k and k not in seen:
+            seen.add(k)
+            out.append(dict(a, _from=source))
+    for pool in ("fans", "touring", "for_hire"):
+        for a in (g.get("candidates") or {}).get(pool) or []:
+            add(a, pool)
+    for pool, aside in (g.get("set_aside") or {}).items():
+        for a in aside.get("conflict") or []:
+            add(a, pool)
+    for a in snap.get("agent_roster") or []:
+        add(a, "agent")
+    return out
+
+
+def _log_x(v: float, lo: float, hi: float) -> float:
+    import math
+    v = min(max(v, lo), hi)
+    return round(_SX0 + (_SX1 - _SX0) * (math.log10(v) - math.log10(lo))
+                 / (math.log10(hi) - math.log10(lo)), 1)
+
+
+def _axis(priced: List[Dict]) -> tuple:
+    import math
+    lo = 10 ** int(math.floor(math.log10(min(a["price"]["low"]
+                                            for a in priced))))
+    hi = 10 ** int(math.ceil(math.log10(max(a["price"]["high"]
+                                           for a in priced))))
+    return lo, max(hi, lo * 100)
+
+
+def _short_money(v: int) -> str:
+    return ("${:g}M".format(v / 1e6) if v >= 1000000 else
+            "${:g}K".format(v / 1e3) if v >= 1000 else "${}".format(v))
+
+
+def _strip_svg(priced: List[Dict]) -> str:
+    lo, hi = _axis(priced)
+    base = _TOP + _LANE_H * len(LANES)
+    out = ["<svg class='strip' viewBox='0 0 {} {}' role='img' aria-label="
+           "'Estimated cost against game-day viability' data-lo='{}' "
+           "data-hi='{}' data-x0='{}' data-x1='{}'>".format(
+               _SW, base + 22, lo, hi, _SX0, _SX1)]
+    for i, (key, label, _s) in enumerate(LANES):
+        y = _TOP + i * _LANE_H
+        out.append("<rect class='lane lane-{}' x='{}' y='{}' width='{}' "
+                   "height='{}'/><text class='lane-label' x='{}' y='{}'>{}"
+                   "</text>".format(key, _SX0, y, _SX1 - _SX0, _LANE_H - 2,
+                                    _SX0 - 8, y + _LANE_H // 2 + 3,
+                                    _e(label)))
+    decade = lo
+    while decade <= hi:
+        for t in (decade, decade * 3):
+            if t <= hi:
+                x = _log_x(t, lo, hi)
+                out.append("<line class='tick' x1='{0}' x2='{0}' y1='{1}' "
+                           "y2='{2}'/><text class='tick-label' x='{0}' "
+                           "y='{3}'>{4}</text>".format(
+                               x, _TOP, base, base + 15, _short_money(t)))
+        decade *= 10
+    for i, (key, _l, _s) in enumerate(LANES):
+        mid = _TOP + i * _LANE_H + _LANE_H // 2 - 1
+        ends = [0.0, 0.0]
+        rows = sorted((a for a in priced if lane_of(a) == key),
+                      key=lambda a: (a["price"]["low"], a["name"]))
+        for j, a in enumerate(rows):
+            p = a["price"]
+            x1, x2 = _log_x(p["low"], lo, hi), _log_x(p["high"], lo, hi)
+            y = mid + (-8, 10)[j % 2]
+            label = ""
+            # A name only where it will not print over the last one; every
+            # point keeps its name in the tooltip and the table below.
+            if x1 >= ends[j % 2]:
+                ends[j % 2] = x1 + 9 + 5.6 * len(a["name"])
+                label = "<text class='pt-label' x='{}' y='{}'>{}</text>" \
+                    .format(x1 + 6, y - 6, _e(a["name"]))
+            out.append(
+                "<g class='pt pt-{}'{}><title>{} — {} · {}</title>{}"
+                "<circle cx='{}' cy='{}' r='4.5'/>{}</g>".format(
+                    _e(p["basis"]), _budget_attrs(a), _e(a["name"]),
+                    _e(fee_range(p)), _e(BASIS_SHORT[p["basis"]]),
+                    "<line class='rng' x1='{}' x2='{}' y1='{}' y2='{}'/>"
+                    .format(x1, x2, y, y) if x2 - x1 >= 1 else "",
+                    x1, y, label))
+    out.append("<line class='budget-line' x1='0' x2='0' y1='{}' y2='{}' "
+               "style='display:none'/></svg>".format(_TOP, base))
+    return "".join(out)
+
+
+def _basis_html(p: Dict) -> str:
+    out = _e(p["why"])
+    if p.get("url"):
+        out += " (" + _link(p["url"], _domain(p["url"])) + ")"
+    if p.get("also"):
+        out += " · also " + _e(p["also"])
+    return out
+
+
+def _cost_view(g: Dict, snap: Dict) -> str:
+    acts = cost_acts(g, snap)
+    if not acts:
+        return ""
+    priced = [a for a in acts if (a.get("price") or {}).get("low")]
+    unpriced = [a for a in acts if not (a.get("price") or {}).get("low")]
+    parts = ["<div class='cost'><h3>Cost × game day</h3>",
+             "<p class='poolsub'>{} priced, {} unpriced — every act listed for "
+             "this date, plus your agent's list. Left to right is the estimate "
+             "(log scale): a bar is a range, the dot its low end, which is what "
+             "the budget tests. Estimates come from, in order: a documented "
+             "fee, your agent's list, an agency's published range, or (rough) "
+             "the size of room a touring act is playing.</p>".format(
+                 len(priced), len(unpriced)),
+             "<p class='legend'>{}</p>".format(" ".join(
+                 "<span class='key key-{}'>{}</span>".format(b, _e(t))
+                 for b, t in BASIS_SHORT.items()))]
+    if priced:
+        parts.append(_strip_svg(priced))
+        rows = []
+        for a in sorted(priced, key=lambda a: (a["price"]["low"], a["name"])):
+            rows.append(
+                "<tr{}><td>{} <span class='from'>{}</span></td><td class='num'>"
+                "{}</td><td>{}</td><td>{}</td></tr>".format(
+                    _budget_attrs(a), _e(a["name"]),
+                    _e(_FROM.get(a.get("_from"), "")),
+                    _e(fee_range(a["price"])), _basis_html(a["price"]),
+                    _e((a.get("viability") or {}).get("label")
+                       or "not checked")))
+        parts.append("<details class='rest'><summary>The {} priced acts, "
+                     "cheapest first, each with what its estimate rests on"
+                     "</summary><table class='cost-table'><thead><tr><th>Act"
+                     "</th><th>Estimate</th><th>Basis</th><th>Game day</th>"
+                     "</tr></thead><tbody>{}</tbody></table></details>".format(
+                         len(priced), "".join(rows)))
+    if unpriced:
+        groups = {}
+        for a in unpriced:
+            groups.setdefault((a.get("price") or {}).get(
+                "why", "not priced"), []).append(a["name"])
+        parts.append("<div class='unpriced'><strong>Unpriced — {}.</strong> "
+                     "Not on the cost axis, and a budget never hides them here."
+                     "<ul>{}</ul></div>".format(len(unpriced), "".join(
+                         "<li>{} <span class='why'>— {}</span></li>".format(
+                             _e(", ".join(sorted(names))), _e(why))
+                         for why, names in sorted(groups.items()))))
+    parts.append("</div>")
+    return "".join(parts)
+
+
+_BUDGET_BAR = (
+    "<div class='budget-bar'><label for='budget'>Budget</label> "
+    "<input id='budget' type='text' inputmode='numeric' autocomplete='off' "
+    "placeholder='e.g. 25000'> <span id='budget-status'>Type a figure to "
+    "narrow every list on the page to acts whose lowest estimate fits it. "
+    "Unpriced acts stay listed under each date's cost view.</span></div>")
+
+# The one script on the page. It carries an id on purpose: the XSS checks in
+# both selftests look for an injected bare "<script>" and must keep working.
+_BUDGET_JS = """<script id='budget-js'>
+(function () {
+  var box = document.getElementById('budget');
+  var status = document.getElementById('budget-status');
+  if (!box || !status) return;
+  var idle = status.textContent;
+  function parse(v) {
+    var m = /^(\\d+(?:\\.\\d+)?)(k|m)?$/.exec(
+      (v || '').toLowerCase().replace(/[\\s,$]/g, ''));
+    if (!m) return null;
+    var n = parseFloat(m[1]) * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
+    return n > 0 ? n : null;
+  }
+  function count(o) { return Object.keys(o).length; }
+  function apply() {
+    var b = parse(box.value), fit = {}, over = {}, unp = {};
+    document.querySelectorAll('[data-low]').forEach(function (el) {
+      var low = el.getAttribute('data-low'), k = el.getAttribute('data-act');
+      var cut = false;
+      if (b !== null) {
+        if (low === '') { cut = true; unp[k] = 1; }
+        else if (+low > b) { cut = true; over[k] = 1; }
+        else { fit[k] = 1; }
+      }
+      el.classList.toggle('cut', cut);
+    });
+    document.querySelectorAll('svg.strip').forEach(function (s) {
+      var line = s.querySelector('.budget-line');
+      if (b === null) { line.style.display = 'none'; return; }
+      var lo = +s.dataset.lo, hi = +s.dataset.hi;
+      var x0 = +s.dataset.x0, x1 = +s.dataset.x1;
+      var v = Math.min(Math.max(b, lo), hi);
+      var x = x0 + (x1 - x0) * (Math.log(v) - Math.log(lo)) /
+              (Math.log(hi) - Math.log(lo));
+      line.setAttribute('x1', x); line.setAttribute('x2', x);
+      line.style.display = '';
+    });
+    document.querySelectorAll('.budget-note').forEach(function (n) {
+      n.parentNode.removeChild(n);
+    });
+    if (b !== null) {
+      document.querySelectorAll('ul.acts, table.cost-table tbody')
+        .forEach(function (list) {
+          var n = 0;
+          for (var i = 0; i < list.children.length; i++)
+            if (list.children[i].classList.contains('cut')) n++;
+          if (!n) return;
+          var row = document.createElement(
+            list.tagName === 'TBODY' ? 'tr' : 'li');
+          row.className = 'budget-note';
+          var text = n + ' hidden by your budget — over it, or unpriced';
+          if (list.tagName === 'TBODY') {
+            var td = document.createElement('td');
+            td.colSpan = 4; td.textContent = text; row.appendChild(td);
+          } else { row.textContent = text; }
+          list.appendChild(row);
+        });
+    }
+    status.textContent = b === null ? idle :
+      'At $' + Math.round(b).toLocaleString('en-US') + ': ' + count(fit) +
+      ' act(s) fit, ' + count(over) + ' over, ' + count(unp) +
+      ' unpriced — the unpriced stay listed under each date\\'s cost view.';
+  }
+  box.addEventListener('input', apply);
+  apply();
+})();
+</script>"""
+
+
 def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                 saved: Optional[str] = None) -> str:
     parts = [_HEAD.format(team=_e(snap["team"]), season=_e(snap["season"]))]
@@ -1631,6 +2123,8 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                 _e(g.get("date") or "date TBD"), _e(g["opponent"]),
                 _e(g["target"])))
         parts.append("</ul></section>")
+    # R40: one box narrows every list below it.
+    parts.append(_BUDGET_BAR)
 
     for g in live:
         cls = "game" + (" is-target" if g.get("target") else "") + \
@@ -1659,6 +2153,8 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
         # own, under the two supply pools and filtered by the same brief.
         if g.get("theme") and g.get("at_venue", True):
             parts.append(_pool_panel(g, "fans"))
+        if g.get("at_venue", True):
+            parts.append(_cost_view(g, snap))
         parts.append("</section>")
 
     # R28: played games leave the main view. Phase 2 turns each one into a log
@@ -1715,7 +2211,9 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
         "than guessed.</p>"
         "<p>Coverage is stated on every panel so an empty one can be read "
         "correctly: “none available” and “not searched yet” are different "
-        "answers.</p></footer></body></html>")
+        "answers.</p></footer>")
+    parts.append(_BUDGET_JS)
+    parts.append("</body></html>")
     return "\n".join(parts)
 
 
@@ -1818,6 +2316,59 @@ a {{ color:var(--accent); }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
+.budget-bar {{ position:sticky; top:0; z-index:5; max-width:1100px;
+    margin:0 auto 18px; padding:10px 14px; background:var(--bg);
+    border:1px solid var(--gold); border-radius:10px; display:flex;
+    flex-wrap:wrap; gap:8px 12px; align-items:center; font-size:13px; }}
+.budget-bar label {{ font-weight:600; color:var(--gold); }}
+.budget-bar input {{ font:inherit; width:130px; color:var(--ink);
+    background:#12171c; border:1px solid var(--edge); border-radius:6px;
+    padding:5px 8px; }}
+#budget-status {{ color:var(--dim); flex:1 1 300px; }}
+@media (max-width:760px) {{ .budget-bar {{ position:static; }} }}
+li.cut, tr.cut {{ display:none; }}
+.budget-note {{ color:#e0a03a; font-size:12px; padding:6px 0; }}
+.cost {{ margin-top:16px; background:#12171c; border:1px solid var(--edge);
+         border-radius:9px; padding:12px 14px; }}
+.legend {{ margin:0 0 6px; font-size:11px; color:var(--dim); }}
+.key::before {{ content:""; display:inline-block; width:9px; height:9px;
+    border-radius:50%; margin:0 4px 0 10px; vertical-align:-1px;
+    background:var(--kc); border:1.5px solid var(--kc); }}
+.key-documented {{ --kc:#79d19a; }} .key-agent {{ --kc:#ffb612; }}
+.key-published {{ --kc:#4da3ff; }}
+.key-room::before {{ background:transparent; border-color:#93a1b0; }}
+svg.strip {{ width:100%; height:auto; display:block; }}
+.lane {{ fill:#171c22; }} .lane-clear {{ fill:#15231b; }}
+.lane-conflict {{ fill:#261719; }}
+.lane-label {{ fill:#93a1b0; font-size:11px; text-anchor:end; }}
+.tick {{ stroke:#232b34; stroke-width:1; }}
+.tick-label {{ fill:#6f7b88; font-size:10px; text-anchor:middle; }}
+.pt circle {{ stroke-width:1.5; }}
+.pt .rng {{ stroke-width:3; stroke-linecap:round; opacity:.55; }}
+.pt-label {{ fill:#c4cdd6; font-size:10px; paint-order:stroke;
+              stroke:#12171c; stroke-width:3px; stroke-linejoin:round; }}
+.pt-documented circle {{ fill:#79d19a; stroke:#79d19a; }}
+.pt-documented .rng {{ stroke:#79d19a; }}
+.pt-agent circle {{ fill:#ffb612; stroke:#ffb612; }}
+.pt-agent .rng {{ stroke:#ffb612; }}
+.pt-published circle {{ fill:#4da3ff; stroke:#4da3ff; }}
+.pt-published .rng {{ stroke:#4da3ff; }}
+.pt-room circle {{ fill:#0f1216; stroke:#93a1b0; }}
+.pt-room .rng {{ stroke:#93a1b0; }}
+g.cut {{ opacity:.13; }}
+.budget-line {{ stroke:#ffb612; stroke-width:2; stroke-dasharray:4 3; }}
+.cost-table {{ width:100%; border-collapse:collapse; font-size:12px;
+               margin-top:8px; }}
+.cost-table th {{ text-align:left; color:#6f7b88; font-weight:500;
+                  border-bottom:1px solid var(--edge); padding:4px 6px; }}
+.cost-table td {{ border-bottom:1px solid var(--edge); padding:5px 6px;
+                  vertical-align:top; color:var(--dim); }}
+.cost-table td:first-child {{ color:var(--ink); }}
+.cost-table .num {{ white-space:nowrap; font-variant-numeric:tabular-nums; }}
+.from {{ color:#6f7b88; font-size:11px; }}
+.unpriced {{ margin-top:10px; font-size:12px; color:var(--dim); }}
+.unpriced ul {{ margin:4px 0 0; padding-left:18px; }}
+.unpriced .why {{ color:#6f7b88; }}
 footer {{ max-width:1100px; margin:26px auto 0; color:var(--dim);
           font-size:13px; border-top:1px solid var(--edge); padding-top:14px; }}
 </style></head><body>"""
@@ -1885,6 +2436,7 @@ def selftest() -> int:
         globals()["ITINERARY_PATH"] = Path(tmp) / "no-itinerary.json"
         globals()["HISTORY_PATH"] = Path(tmp) / "no-history.jsonl"
         globals()["PROFILES_PATH"] = Path(tmp) / "no-profiles.json"
+        globals()["FEES_PATH"] = Path(tmp) / "no-fees.json"
         entity_kb.upsert_entity(
             KB_PROJECT, "test-patriot", "Test Patriot Band",
             entity_type="halftime_act", db_path=db,
@@ -1960,8 +2512,13 @@ def selftest() -> int:
                 _g["candidates"]["for_hire"] = [
                     dict(_a, name="Act {}".format(i)) for i in range(9)]
         big = render_html(many)
+        # S277: the per-date cost view names every act on purpose (R40), so
+        # the shortlist is counted in the for-hire COLUMNS only.
+        _cols = "".join(re.findall(
+            r"<div class='pool pool-for_hire'>.*?(?=<div class='pool |"
+            r"<div class='cost'>|</section>)", big, re.S))
         check("a game column shows a few options, not the whole roster",
-              big.count("Act 0") <= len(many["games"]) + 1
+              0 < _cols.count("Act 0") <= len(many["games"])
               and "+6 more in the credit list" in big)
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
@@ -2387,7 +2944,7 @@ def selftest() -> int:
               and "in the credit list below" not in _p8)
         check("fans panel: every act that fits is listed, not three and a fold",
               "<details class='rest'>" not in _fans_main
-              and _fans_main.count("<li class='act'>") == len(next(
+              and _fans_main.count("<li class='act'") == len(next(
                   g for g in build_snapshot(today=_T, db_path=db,
                                             routing_path=_rt8)["games"]
                   if g["week"] == 8)["candidates"]["fans"]))
@@ -2625,6 +3182,145 @@ def selftest() -> int:
         mpage = render_html(snap)
         check("the analysis reaches the page",
               "What does well in this market" in mpage)
+
+        # --- R40 cost x viability (S277) ------------------------------
+        _ct = "https://www.celebritytalent.net/sampletalent/{}/x/"
+        _fees = {
+            "clarks": {"low": 25000, "high": 39999, "url": _ct.format(1)},
+            "vanilla ice": {"low": 75000, "high": 149999,
+                            "url": _ct.format(2)},
+            "backstreet boys": {"low": 2000000, "high": 2499999,
+                                "url": _ct.format(3)},
+            "flavor flav": {"low": 25000, "high": 39999,
+                            "url": _ct.format(4)},
+            "rolling stones": {"low": None, "reason":
+                               "no figure published (\"please contact\")"},
+            "nobody band": {"low": None, "reason": "not listed"},
+            "broken band": {"low": None, "reason": "", "error": "OSError"},
+            "arena a": {"low": 150000, "high": 299000, "url": _ct.format(5)},
+            "arena b": {"low": 300000, "high": 499000, "url": _ct.format(6)},
+            "arena c": {"low": 100000, "high": 149000, "url": _ct.format(7)}}
+        _pf = lambda n, **kw: price_for(dict({"name": n}, **kw), _fees)
+        check("fee: a documented figure outranks everything",
+              _pf("Vanilla Ice", fields={"fee_note": "$60,000 (contract)"})
+              ["basis"] == "documented"
+              and _pf("Vanilla Ice", fields={"fee_note": "$60,000"})["low"]
+              == 60000)
+        _bsb = _pf("Backstreet Boys")
+        check("fee: his agent's figure outranks a published range, and the "
+              "published one is still shown beside it",
+              _bsb["basis"] == "agent" and _bsb["low"] == 75000
+              and "$2,000,000–$2,499,999" in _bsb["also"])
+        check("fee: agent names match without their parenthetical (Treach)",
+              _pf("Treach")["low"] == 17500
+              and _pf("Andra Day")["high"] == 100000
+              and _pf("Tone Loc")["basis"] == "agent")
+        _cl = _pf("The Clarks")
+        check("fee: a published range carries its source and says it is not "
+              "a quote", _cl["basis"] == "published" and _cl["low"] == 25000
+              and _cl["url"].startswith("https://www.celebritytalent.net/")
+              and "not a quote" in _cl["why"])
+        check("fee: unpriced says WHY, per reason, and never carries a figure",
+              all(_pf(n)["low"] is None for n in (
+                  "Rolling Stones", "Nobody Band", "Broken Band", "Unseen"))
+              and "no published figure" in _pf("Rolling Stones")["why"]
+              and "not listed" in _pf("Nobody Band")["why"]
+              and "retried" in _pf("Broken Band")["why"]
+              and "not looked up yet" in _pf("Unseen")["why"])
+        check("fee: dollar figures read as written ($3.5M, $25K, none)",
+              _documented("$3.5M or $25K") == [3500000, 25000]
+              and _documented("fee on request") == [])
+        _arena = lambda n: {"name": n, "draw": {"tier": "arena"}}
+        _rs = {"roster": [], "roster_held": [], "fans": [],
+               "agent_roster": [], "games": [{"candidates": {"touring": [
+                   _arena("Arena A"), _arena("Arena B"), _arena("Unknown Big"),
+                   {"name": "Tiny", "draw": {"tier": "club"}}]}}]}
+        price_all(_rs, _fees)
+        _tour = _rs["games"][0]["candidates"]["touring"]
+        check("room: two priced arena acts are NOT enough to price a third",
+              _rs["room_bands"] == {} and _tour[2]["price"]["low"] is None
+              and "too few priced acts" in _tour[2]["price"]["why"])
+        _rs["games"][0]["candidates"]["touring"].append(_arena("Arena C"))
+        price_all(_rs, _fees)
+        _big = _rs["games"][0]["candidates"]["touring"][2]["price"]
+        check("room: with three, the band is measured from them and says so",
+              _rs["room_bands"]["arena"] == {"low": 100000, "high": 300000,
+                                             "n": 3}
+              and _big["basis"] == "room" and "rough" in _big["why"]
+              and "3 priced acts" in _big["why"]
+              and _rs["games"][0]["candidates"]["touring"][3]["price"]
+              ["low"] is None)
+
+        _fp = Path(tmp) / "fees.json"
+        _fp.write_text(json.dumps({"acts": _fees}))
+        s5 = build_snapshot(today=_T, db_path=db, routing_path=no_routing,
+                            fees_path=_fp)
+        check("every act the snapshot holds carries a price or a reason",
+              all((a.get("price") or {}).get("basis")
+                  for lst in _act_lists(s5) for a in lst))
+        check("his agent's acts join as priced options, once each",
+              len(s5["agent_roster"]) == len(agent_fees())
+              and all(a["price"]["basis"] == "agent"
+                      for a in s5["agent_roster"]))
+        check("calibration: published vs his agent, computed per act",
+              s5["calibration"] == {"match": ["Vanilla Ice"],
+                                    "higher": ["Backstreet Boys"],
+                                    "lower": ["Flavor Flav"]})
+        check("calibration: stated on the page as a finding with its basis",
+              any("rough guide, not a quote" in f["title"]
+                  and "matched your agent's all-in figure for 1" in f["body"]
+                  for f in market_analysis(s5)))
+        p5 = render_html(s5)
+        _live = [g for g in s5["games"] if not g["completed"]
+                 and g.get("mode") != "no_act"]
+        check("one budget box and one script on the page",
+              p5.count("id='budget'") == 1 and p5.count("<script") == 1)
+        check("every live date has a cost view; a no-act date has none",
+              p5.count("<div class='cost'>") == len(_live)
+              and "<div class='cost'>" not in p5[p5.index(
+                  "id='wk16-panthers'"):p5.index("</section>", p5.index(
+                      "id='wk16-panthers'"))])
+        _rows = re.findall(r"<tr data-low='(\d*)' data-act='[^']*'><td>"
+                           r"(.*?)</td><td class='num'>(.*?)</td><td>(.*?)"
+                           r"</td><td>(.*?)</td></tr>", p5)
+        check("every priced row names its estimate AND its basis",
+              _rows and all(low and est and basis.strip()
+                            for low, _n, est, basis, _v in _rows))
+        # The done-when, on the rendered page: what a 25000 budget keeps.
+        _kept = {m for low, m in re.findall(
+            r"data-low='(\d*)' data-act='([^']*)'", p5)
+            if low and int(low) <= 25000}
+        _cut = {m for low, m in re.findall(
+            r"data-low='(\d*)' data-act='([^']*)'", p5)
+            if not low or int(low) > 25000}
+        check("budget 25000 keeps only acts whose low estimate fits",
+              {"rob base", "test patriot band", "treach"} <= _kept
+              and "vanilla ice" not in _kept and "lil jon" not in _kept
+              and all(int(l) <= 25000 for l, m in re.findall(
+                  r"data-low='(\d+)' data-act='([^']*)'", p5) if m in _kept))
+        _unp = "".join(re.findall(r"<div class='unpriced'>.*?</div>", p5))
+        check("...and the unpriced ones are still listed, outside anything "
+              "the budget can hide", "Trace Adkins" in _unp
+              and "data-low" not in _unp and "trace adkins" in _cut)
+        _svg = re.search(r"<svg class='strip'.*?</svg>", p5).group(0)
+        _pts = [(int(l), float(x)) for l, x in re.findall(
+            r"<g class='pt pt-\w+' data-low='(\d+)'[^>]*>.*?<circle "
+            r"cx='([\d.]+)'", _svg)]
+        check("chart: one point per priced act, placed left to right by cost",
+              len(_pts) == _svg.count("<g class='pt ")
+              and _pts == sorted(_pts)
+              and [x for _l, x in sorted(_pts)] == sorted(
+                  x for _l, x in _pts))
+        check("card: the Fee row names the basis, or says unpriced and why",
+              _e("your agent's list (26 Aug)") in _act_card(dict(
+                  {"name": "Rob Base"}, price=_pf("Rob Base")))
+              and "celebritytalent.net</a>" in _act_card(dict(
+                  {"name": "The Clarks"}, price=_cl))
+              and "Unpriced — not listed" in _act_card(dict(
+                  {"name": "Nobody Band"}, price=_pf("Nobody Band"))))
+        check("fee text is escaped like everything else",
+              "<b>" not in _act_card({"name": "X", "price": dict(
+                  _pf("Nobody Band"), why="<b>x</b>")}))
 
         # T107: an unknown argument must never reach build(). build is
         # stubbed, so if this guard regresses the check fails instead of
