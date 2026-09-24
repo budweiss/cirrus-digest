@@ -422,7 +422,19 @@ MAX_EXTRACT_WORKERS = 16
 # 09-16 to 09-23. Measured on two real Pittsburgh blocks: low effort at 8,000
 # returns 67 and 70 shows using 3,547 and 4,571 tokens; at 4,000 both are cut
 # off. Only tokens used are billed, so the higher cap costs nothing extra.
-LOCAL_EXTRACT_MAX_TOKENS = 8000
+#
+# S274, the LOCAL side of the same week: the endpoint failed every Pittsburgh
+# block because Pittsburgh's ANSWER is long (66-70 shows, ~7,500 chars of JSON)
+# on top of the reasoning. Measured on real Pittsburgh blocks:
+#   low    at 8,000   all four months cut off (finish=length, ~285s each)
+#   low    at 16,000  66 and 69 shows, 9,431 / 10,535 tokens, 294s / 331s
+#   medium at 16,000  67 shows, 11,681 tokens, 368s
+# (the paid model found 67 / 70 on the same pages). Low effort gave the same
+# counts as medium on Erie, Youngstown and Morgantown, in fewer tokens and up
+# to 3x faster, and answered both Cleveland blocks that had been failing.
+# Ollama is capped by its own 120s timeout whatever this says.
+LOCAL_EXTRACT_MAX_TOKENS = 16000
+LOCAL_REASONING_EFFORT = "low"
 PAID_EXTRACT_MAX_TOKENS = 8000
 PAID_EXTRACT_EFFORT = "low"
 
@@ -801,6 +813,9 @@ def _selftest_body(_real_log_path) -> int:
           LOCAL_EXTRACT_MAX_TOKENS >= PAID_EXTRACT_MAX_TOKENS)
     check("...with room for ~2,700 reasoning tokens AND the answer",
           LOCAL_EXTRACT_MAX_TOKENS >= 6000)
+    check("...and for a Pittsburgh block, the longest answer we ask for "
+          "(S274: 9,431-11,681 tokens used)",
+          LOCAL_EXTRACT_MAX_TOKENS >= 14000 and LOCAL_REASONING_EFFORT == "low")
     check("the PAID budget has room for low-effort reasoning AND the answer "
           "(S274: 4,571 tokens used on a real Pittsburgh block)",
           PAID_EXTRACT_MAX_TOKENS >= 6000 and PAID_EXTRACT_EFFORT == "low")
@@ -1337,6 +1352,9 @@ def main() -> int:
     args = sys.argv[1:]
     if "selftest" in args:
         return selftest()
+    # S274: the endpoint's reasoning effort for THIS process only (the server
+    # default is medium). A unit that sets it explicitly still wins.
+    os.environ.setdefault("VLLM_REASONING_EFFORT", LOCAL_REASONING_EFFORT)
     lock = _Lock()
     if not lock.__enter__():
         log("another sweep is already running — not starting a second one.")
