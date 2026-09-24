@@ -38,6 +38,16 @@ class FoundationTests(unittest.TestCase):
             return ensemble.best_answer('sys','PRIVATE PAYLOAD',self.creds,
                 task='pedagogy-topic',max_tokens=100,app_dir=self.root,**kwargs)
 
+    def test_repair_deferral_never_calls_direct_cloud_fallback(self):
+        import dev_agent
+        for error in (L.ProviderError('admission rejected'), L.AccountingError('ledger failed')):
+            with patch.object(dev_agent, '_creds', return_value=self.creds), \
+                 patch.object(ensemble, 'best_answer', side_effect=error), \
+                 patch.object(dev_agent, 'call_claude_build') as direct:
+                with self.assertRaises(type(error)):
+                    dev_agent.council_repair('sys', 'synthetic')
+                direct.assert_not_called()
+
     def test_default_single_best_specialist_not_provider_order(self):
         meta,text=self.invoke(self.route(),mode='council')
         self.assertEqual(meta['members'],['gemini']);self.assertEqual(text,'valid')

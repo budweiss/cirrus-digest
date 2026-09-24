@@ -1088,33 +1088,19 @@ def repair_prompt(item, blobs, conventions, edit_only, failure, prior, attempt):
 
 
 def council_repair(system: str, user: str):
-    """Attempt 3 escalation: ask the whole keyed panel, not Claude again.
+    """Attempt 3 uses the council boundary, including admission and privacy.
 
-    Buddy, S80. Attempts 1-2 are Claude alone. A third identical swing walks
-    straight into the no-progress rule, so the last attempt gets a genuinely
-    different brain: ensemble.best_answer runs the keyed providers in parallel
-    and has a judge synthesize one answer. dev_agent has always imported this
-    module -- it has just never asked it to FIX anything, only to comment on a
-    diff after the fact.
-
-    Falls back to Claude alone if the panel is unavailable, and says so.
+    A rejected or unavailable council must defer. Calling Claude directly here
+    would bypass its qualification, privacy and aggregate spending decision.
     """
-    try:
-        import ensemble
-    except Exception as e:
-        _log("council_repair: ensemble unavailable (%s) — falling back to Claude" % e)
-        return parse_model_json(call_claude_build(system, user)), {"driver": "claude-fallback"}
-    try:
-        meta, text = ensemble.best_answer(system, user, _creds(),
-                                          max_tokens=16384,
-                                          task="dev-agent-repair", mode="council")
-        return parse_model_json(text), {"driver": "council",
-                                        "members": meta.get("members", []),
-                                        "judge": meta.get("judge"),
-                                        "degraded": bool(meta.get("degraded"))}
-    except Exception as e:
-        _log("council_repair failed (%s) — falling back to Claude" % e)
-        return parse_model_json(call_claude_build(system, user)), {"driver": "claude-fallback"}
+    import ensemble
+    meta, text = ensemble.best_answer(system, user, _creds(),
+                                      max_tokens=16384,
+                                      task="dev-agent-repair", mode="council")
+    return parse_model_json(text), {"driver": "council",
+                                    "members": meta.get("members", []),
+                                    "judge": meta.get("judge"),
+                                    "degraded": bool(meta.get("degraded"))}
 
 
 # ── Build one item ────────────────────────────────────────────────────────────
