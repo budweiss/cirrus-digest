@@ -289,7 +289,8 @@ def selftest() -> int:
         TODAY = "2026-09-20"            # Week 1 played, Week 15 not
         snap = hd.build_snapshot(today=TODAY, db_path=str(Path(td) / "kb.db"),
                                  routing_path=Path(td) / "never.json",
-                                 itinerary_path=Path(td) / "never-itin.json")
+                                 itinerary_path=Path(td) / "never-itin.json",
+                                 profiles_path=Path(td) / "never-prof.json")
         SNAPSHOT.write_text(json.dumps(snap))
         (Path(td) / "data").mkdir(exist_ok=True)
         check("the start-up write check says yes for a writable log dir",

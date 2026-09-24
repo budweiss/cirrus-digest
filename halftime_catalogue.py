@@ -1828,6 +1828,14 @@ def main() -> int:
             job_status.record("halftimecatalogue", True, build_note(st))
         except Exception as e:
             print(f"job_status.record failed: {e}")
+        # S274 (Phase 3, R32/R33): who each shown act is and what it actually
+        # did. After the catalogue, so new acts get a profile the same night;
+        # never allowed to fail the catalogue run.
+        try:
+            import halftime_profiles
+            print("profiles:", json.dumps(halftime_profiles.run()))
+        except Exception as e:
+            print(f"profiles failed: {type(e).__name__}")
     return 0
 
 

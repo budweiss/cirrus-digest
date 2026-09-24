@@ -46,6 +46,9 @@ HISTORY_PATH = PROJECT_DIR / "data" / "halftime" / "history.jsonl"
 # Phase 4 (R34): each act's whole announced itinerary, written by
 # halftime_itinerary.py at the end of the nightly routing sweep.
 ITINERARY_PATH = OUT_DIR / "itinerary.json"
+# Phase 3 (R32/R33): who each act is and what it actually did, written by
+# halftime_profiles.py at the end of the nightly catalogue job.
+PROFILES_PATH = OUT_DIR / "profiles.json"
 
 SEASON = 2026
 TEAM = "Pittsburgh Steelers"
@@ -679,6 +682,19 @@ def _load_routing(path: Optional[Path] = None) -> Dict:
         return {}
 
 
+def with_profile(act: Dict, profiles: Dict) -> Dict:
+    """The act with its profile attached, and the profile's SOURCED era used
+    when the catalogue has none -- that is what fills the '90s date."""
+    import halftime_routing
+    prof = profiles.get(halftime_routing.canonical_key(act.get("name", "")))
+    if not prof or prof.get("error"):
+        return act
+    act = dict(act, profile=prof)
+    if prof.get("era") and not (act.get("fields") or {}).get("era"):
+        act["fields"] = dict(act.get("fields") or {}, era=prof["era"])
+    return act
+
+
 def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
     """(shown, set_aside) for one game's ranked list. Nothing is dropped:
     set_aside holds the acts with no tie to the brief, the ones whose fit is
@@ -721,7 +737,8 @@ def build_snapshot(db_path: Optional[str] = None,
                    games: Optional[List[Dict]] = None,
                    routing_path: Optional[Path] = None,
                    today: Optional[str] = None,
-                   itinerary_path: Optional[Path] = None) -> Dict:
+                   itinerary_path: Optional[Path] = None,
+                   profiles_path: Optional[Path] = None) -> Dict:
     """Everything the page needs, in one file."""
     games = games if games is not None else HOME_GAMES
     today = today or today_et()
@@ -729,11 +746,15 @@ def build_snapshot(db_path: Optional[str] = None,
     routing = _load_routing(routing_path)
     import halftime_itinerary as itin
     itinerary = itin.load(itinerary_path or ITINERARY_PATH).get("artists") or {}
+    import halftime_profiles
+    profiles = halftime_profiles.load(profiles_path or PROFILES_PATH) \
+        .get("acts") or {}
     # Cross-reference key: an act in BOTH pools is the strongest lead there is.
     import halftime_routing
     credited_names = {halftime_routing.canonical_key(a["name"])
                       for a in for_hire}
 
+    for_hire = [with_profile(a, profiles) for a in for_hire]
     roster, roster_held = apply_rules(for_hire)
     snap = {"season": SEASON, "team": TEAM, "venue": VENUE,
             "generated_at": _now(), "today": today, "games": [],
@@ -806,6 +827,7 @@ def build_snapshot(db_path: Optional[str] = None,
                                 halftime_routing.canonical_key(f["name"])))]
                 touring = _as_candidates(
                     (swept.get("events") or []) + fan_near, credited_names)
+                touring = [with_profile(c, profiles) for c in touring]
                 for c in touring:
                     c["viability"] = itin.verdict(game, itinerary.get(
                         halftime_routing.canonical_key(c["name"])))
@@ -1286,6 +1308,48 @@ def _empty_message(cov: Dict) -> str:
             + _e(cov.get("note") or "") + "</p>")
 
 
+def _link(url: str, text: str) -> str:
+    """An outbound link, https only. Anything else renders as plain text --
+    a profile URL is scraped data and must never become javascript: etc."""
+    if not re.match(r"^https://[^\s'\"<>]+$", url or ""):
+        return _e(text)
+    return ("<a href='{}' target='_blank' rel='noopener noreferrer'>{}</a>"
+            .format(_e(url), _e(text)))
+
+
+def _domain(url: str) -> str:
+    m = re.match(r"^https://(?:www\.)?([^/]+)", url or "")
+    return m.group(1) if m else "source"
+
+
+def for_your_fans(act: Dict) -> str:
+    """R32's "more importantly, why they'd be relevant to our fans" -- built
+    only from signals already on the card, so it can be checked, not trusted."""
+    kinds = {b["kind"]: b for b in act.get("badges", [])}
+    f = act.get("fields") or {}
+    prof = act.get("profile") or {}
+    bits = []
+    if "fan" in kinds:
+        bits.append("on your Steelers-connected list")
+    if "market" in kinds:
+        bits.append("Pittsburgh / PA roots ({})".format(kinds["market"]["why"]))
+    if "patriotic" in kinds:
+        bits.append("a military / patriotic act")
+    if f.get("era"):
+        bits.append("broke through in the {}".format(f["era"]))
+    for c in (prof.get("credits") or [])[:1]:
+        bits.append("has done a {} for {}{}".format(
+            c["role"], c["team"] or "a team",
+            ", " + c["year"] if c.get("year") else ""))
+    draw = act.get("draw") or {}
+    if draw.get("plausible"):
+        bits.append(draw.get("label", "").lower())
+    v = act.get("viability") or {}
+    if v.get("state") in ("clear", "local"):
+        bits.append(v.get("label", "").lower())
+    return "; ".join(b for b in bits[:4] if b)
+
+
 def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
@@ -1293,6 +1357,17 @@ def _act_card(act: Dict) -> str:
     if act.get("client_note"):
         bits.append("<div class='client-note'>{}</div>".format(
             _e(act["client_note"])))
+    prof = act.get("profile") or {}
+    if prof.get("who"):
+        bits.append("<div class='who'>{} <span class='src'>({})</span></div>"
+                    .format(_e(prof["who"]), _link(prof.get("who_source", ""),
+                                                   _domain(prof.get(
+                                                       "who_source", "")))))
+    fans_line = for_your_fans(act)
+    if fans_line and (act.get("fields") or {}).get("category") \
+            != "steelers-connected":
+        bits.append("<div class='fans-why'>Why it could land with your fans: "
+                    "{}.</div>".format(_e(fans_line)))
     v = act.get("viability")
     if v:
         bits.append("<div class='via via-{}' title='{}'>Game day: {}</div>"
@@ -1331,11 +1406,26 @@ def _act_card(act: Dict) -> str:
     # "With A Vengeance" and "The Amity Affliction" -- thrash and metalcore --
     # with nothing on the page to say so. First, because it is the field a
     # booker rejects on before reading anything else.
+    # R33: what they actually DID, by role, when the profile found it with a
+    # source quote; the catalogue's bare team name only when it did not.
+    role_credits = prof.get("credits") or []
     for label, key in (("Style", "style"),
                        ("Playing", "routing"), ("Fee", "fee_note"),
                        ("Base", "home_base"), ("From", "hometown"),
                        ("Credits", "clients"),
                        ("Booking", "booking_contact")):
+        if key == "clients" and role_credits:
+            for c in role_credits:
+                vid = c.get("video") or {}
+                bits.append("<div class='row'><span class='k'>Did</span>"
+                            "<span class='v' title='{}'>{} — {}{}{}</span>"
+                            "</div>".format(
+                                _e(c.get("quote", "")), _e(c["role"].capitalize()),
+                                _e(c.get("event") or c.get("team")),
+                                _e(", " + c["year"]) if c.get("year") else "",
+                                " · " + _link(vid.get("url", ""), "video")
+                                if vid.get("url") else ""))
+            continue
         val = (fields.get(key) or "").strip()
         if val:
             bits.append("<div class='row'><span class='k'>{}</span>"
@@ -1687,6 +1777,10 @@ section.no-act {{ opacity:.72; }}
 .aside.ruled summary {{ color:var(--gold); }}
 .aside.conflict summary {{ color:#e06a6a; }}
 .via {{ margin:5px 0 2px; font-size:12px; }}
+.who {{ margin:4px 0 2px; font-size:13px; color:var(--ink); }}
+.who .src, .who .src a {{ color:#7d8794; font-size:11px; }}
+.fans-why {{ margin:3px 0 2px; font-size:12px; color:#c9a3ff; }}
+a {{ color:var(--accent); }}
 .via-conflict {{ color:#e06a6a; }} .via-tight {{ color:#e0a03a; }}
 .via-clear, .via-local {{ color:#79d19a; }} .via-not_checked {{ color:#7d8794; }}
 .completed summary {{ cursor:pointer; }}
@@ -1775,6 +1869,7 @@ def selftest() -> int:
         # case below would silently read real data. Paths never created.
         globals()["ITINERARY_PATH"] = Path(tmp) / "no-itinerary.json"
         globals()["HISTORY_PATH"] = Path(tmp) / "no-history.jsonl"
+        globals()["PROFILES_PATH"] = Path(tmp) / "no-profiles.json"
         entity_kb.upsert_entity(
             KB_PROJECT, "test-patriot", "Test Patriot Band",
             entity_type="halftime_act", db_path=db,
@@ -2455,6 +2550,41 @@ def selftest() -> int:
         _w8v = next(g for g in vsnap["games"] if g["week"] == 8)
         check("viability: his list's panel carries each act's game-day state",
               all("viability" in a for a in _w8v["candidates"]["fans"]))
+
+        # --- Phase 3 (R32/R33): profiles on the cards -----------------
+        _pp = Path(tmp) / "profiles.json"
+        _pp.write_text(json.dumps({"acts": {_k("Test Patriot Band"): {
+            "name": "Test Patriot Band", "error": None, "era": "1990s",
+            "who": "A Pittsburgh military band.",
+            "who_source": "https://en.wikipedia.org/wiki/Test",
+            "credits": [{"team": "Cincinnati Bengals", "event": "halftime vs "
+                         "Browns", "year": "2023", "role": "halftime show",
+                         "quote": "They played halftime.",
+                         "video": {"url": "https://www.youtube.com/watch?v=abcdefg",
+                                   "title": "Test Patriot Band halftime"}}]}}}))
+        psnap = build_snapshot(today=_T, db_path=db, routing_path=no_routing,
+                               profiles_path=_pp)
+        _pc = _act_card(psnap["roster"][0])
+        check("profile: the card says who they are, with its source linked",
+              "A Pittsburgh military band." in _pc
+              and "href='https://en.wikipedia.org/wiki/Test'" in _pc)
+        check("profile: the credit says what they DID, by role, with video",
+              "Halftime show — halftime vs Browns, 2023" in _pc
+              and "youtube.com/watch?v=abcdefg" in _pc
+              and "<span class='k'>Credits</span>" not in _pc)
+        check("profile: a 'why your fans' line built from the card's signals",
+              "Why it could land with your fans:" in _pc
+              and "has done a halftime show for Cincinnati Bengals, 2023" in _pc)
+        _w13p = next(g for g in psnap["games"] if g["week"] == 13)
+        check("profile: a SOURCED era puts a catalogue act on the '90s date",
+              "Test Patriot Band" in [a["name"] for a in
+                                      _w13p["candidates"]["for_hire"]])
+        check("links: a non-https URL is never a link (javascript:, http:)",
+              "<a " not in _link("javascript:alert(1)", "x")
+              and "<a " not in _link("http://x.com", "x")
+              and "<a " not in _link("https://x.com/'onmouseover=", "x"))
+        check("profile: an act without one renders exactly as before",
+              "Why it could land" not in _act_card({"name": "Plain", "fields": {}}))
 
         # --- R13 market analysis --------------------------------------
         mkt = market_analysis(snap)
