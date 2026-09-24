@@ -47,7 +47,7 @@ class CatalogueIntegrationTests(unittest.TestCase):
 
     def test_cloud_hook_passes_paid_limit_and_parsed_output(self):
         self.path.write_text(json.dumps({'version':1,'cloud_pools':{'variety':[{'id':'gemini'}]},'cloud_max_user_bytes':{'variety':100}}))
-        with patch.object(admission,'dispatch_reviewed',return_value=('gemini',[])) as dispatch,patch.object(health,'observe_cloud',return_value={'id':'gemini'}):
+        with patch('capability_registry.foundation_route',return_value=None),patch.object(admission,'dispatch_reviewed',return_value=('gemini',[])) as dispatch,patch.object(health,'observe_cloud',return_value={'id':'gemini'}):
             self.assertEqual(hc._reviewed_cloud('s','u',self.creds,'variety'),('gemini',[]))
         args=dispatch.call_args.kwargs
         self.assertEqual(args['max_tokens'],hc.PAID_EXTRACT_MAX_TOKENS)
