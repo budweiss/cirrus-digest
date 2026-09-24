@@ -54,7 +54,9 @@ MAX_EVENTS_KEPT = 120
 SOURCE_CHARS = 24000
 # A record written by older logic is re-checked on the next run, whatever its
 # age -- a better check should not wait a week behind a stale cache.
-RECORD_VERSION = 3
+# 4: pages are now read past the digest fetcher's 3,000-character cut (S273),
+# which is what actually hid TSO's December dates.
+RECORD_VERSION = 4
 # CLEAR needs the tour VISIBLE around the game: an announced date within this
 # many days on BOTH sides, with none within a day. Dates only far away is not
 # evidence of a free day, just of an unannounced stretch.
@@ -363,7 +365,8 @@ def run(creds: Optional[Dict] = None, out_path: Optional[Path] = None,
         import cirrus_daily
         searcher = searcher or (lambda q: cirrus_daily.search_web(
             q, max_results=SEARCH_RESULTS, caller="halftime_itinerary"))
-        fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
+        fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(
+            u, max_chars=SOURCE_CHARS)[0])
     stats = {}
     prompt = extraction_prompt(today)
     extractor = extractor or (
@@ -402,7 +405,8 @@ def probe(name: str) -> Dict:
         {"name": name, "key": _key(name), "aka": []},
         lambda q: cirrus_daily.search_web(q, max_results=SEARCH_RESULTS,
                                           caller="halftime_itinerary"),
-        lambda u: cirrus_daily.fetch_article_content(u)[0],
+        lambda u: cirrus_daily.fetch_article_content(
+            u, max_chars=SOURCE_CHARS)[0],
         lambda block: halftime_routing._extract(block, creds, stats,
                                                 system=prompt))
     rec["llm"] = stats

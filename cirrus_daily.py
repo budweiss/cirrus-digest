@@ -1120,8 +1120,13 @@ def dedupe_items(items: list) -> list:
         kept.append(it); keys.append(key)
     return kept
 
-def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
+def fetch_article_content(url: str, timeout: int = 30,
+                          max_chars: int = 0) -> tuple[str, bool]:
     """GET a URL and extract its main readable text.
+
+    max_chars (S273): 0 = the digest's MAX_ARTICLE (3,000), unchanged for
+    every existing caller. A tour page's dates run long past 3,000
+    characters, so halftime_itinerary asks for more.
 
     Returns (content, is_paywalled).
     content  — extracted article text, '' on failure or too-short content.
@@ -1173,7 +1178,7 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         ]:
             el = soup.select_one(selector)
             if el:
-                text = clean_text(el.get_text(), MAX_ARTICLE)
+                text = clean_text(el.get_text(), max_chars or MAX_ARTICLE)
                 if len(text) > 200:
                     return text, is_paywalled
 
@@ -1182,7 +1187,7 @@ def fetch_article_content(url: str, timeout: int = 30) -> tuple[str, bool]:
         if paras:
             text = re.sub(r"\s+", " ", " ".join(paras)).strip()
             if len(text) > 200:
-                return text[:MAX_ARTICLE], is_paywalled  # T40-OK: LLM cost control, not an operator view; marker would change prompt text on a live digest (worklisted: log the cut instead)
+                return text[:max_chars or MAX_ARTICLE], is_paywalled  # T40-OK: LLM cost control, not an operator view; marker would change prompt text on a live digest (worklisted: log the cut instead)
 
     except requests.exceptions.Timeout:
         _LAST_FETCH_REASON = "timeout"
