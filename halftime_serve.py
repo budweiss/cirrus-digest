@@ -58,8 +58,29 @@ MAX_BODY = 4096
 _GAME_ID = re.compile(r"^wk\d{2}-[a-z]{1,20}$")
 
 
+_DASH = {"mtime": None}
+
+
 def _dashboard():
+    """The dashboard module -- RELOADED when its file changes on disk.
+
+    S274: this process lives for weeks and imported the render code once. A
+    deploy that changed the rendering never reached the live page: Phase 3's
+    profiles were in the snapshot and absent from what Justin saw, while the
+    nightly static build (a fresh process) had them -- so every check made
+    against the built file passed. Only the signed-in look caught it."""
+    import importlib
     import halftime_dashboard
+    try:
+        mtime = Path(halftime_dashboard.__file__).stat().st_mtime
+    except OSError:
+        return halftime_dashboard
+    if _DASH["mtime"] is None:
+        _DASH["mtime"] = mtime
+    elif mtime != _DASH["mtime"]:
+        halftime_dashboard = importlib.reload(halftime_dashboard)
+        _DASH["mtime"] = mtime
+        sys.stderr.write("dashboard code changed on disk -- reloaded\n")
     return halftime_dashboard
 
 
@@ -293,6 +314,15 @@ def selftest() -> int:
                                  profiles_path=Path(td) / "never-prof.json")
         SNAPSHOT.write_text(json.dumps(snap))
         (Path(td) / "data").mkdir(exist_ok=True)
+        _hd0 = _dashboard()
+        _before = _hd0.render_html
+        _DASH["mtime"] = -1.0          # as if the file changed since import
+        check("a changed dashboard file is RELOADED, so a deploy reaches the "
+              "live page (S274: profiles were in the data, not on the page)",
+              _dashboard().render_html is not _before)
+        _same = _dashboard().render_html
+        check("...and an unchanged one is not reloaded on every request",
+              _dashboard().render_html is _same)
         check("the start-up write check says yes for a writable log dir",
               history_writable().startswith("yes"))
         HISTORY = Path(td) / "no-such-dir" / "history.jsonl"
