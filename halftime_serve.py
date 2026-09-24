@@ -123,6 +123,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.do_GET()
 
     def _refuse(self, code, why):
+        # S273: every refusal is logged with its reason. Until now a client
+        # whose save failed was invisible to us -- the journal showed only
+        # "POST /history". Reasons are fixed strings; no field a client typed
+        # and no email address is ever written here.
+        sys.stderr.write("history: refused %d -- %s\n" % (code, why))
         import html
         self._send(code, ("<h1>Not saved</h1><p>{}</p><p><a href='/'>Back to "
                           "the dashboard</a></p>".format(html.escape(why))
@@ -175,6 +180,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                               "written; please try again.")
             return
         gid = entry["game_id"]
+        sys.stderr.write("history: saved %s\n" % gid)
         self.send_response(303)
         self.send_header("Location", "/?saved={0}#log-{0}".format(gid))
         self.send_header("Content-Length", "0")
