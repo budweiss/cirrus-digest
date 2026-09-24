@@ -887,6 +887,12 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
     never needed deep reasoning in the first place. A caller that
     genuinely wants full effort on its cloud tier should call escalate()
     directly (as call_council does), not through this function.
+
+    S274: the tier now SETS effort to low rather than dropping the key.
+    claude-sonnet-5 thinks by default -- a request with no effort runs at
+    HIGH -- so dropping it bought the exact deep reasoning this tier exists
+    to avoid (measured on halftime routing: 4,000 tokens all thinking, empty
+    reply, every night for a week).
     """
     # An explicit specialist target must never silently become another model.
     if local_provider not in (None, "ollama", "vllm"):
@@ -936,8 +942,7 @@ def call_local_first(system, user, creds, max_tokens=2048, *, task=None,
             llm_routing.audit(task or DEFAULT_TASK, "local", "local_unavailable_or_rejected", route_policy)
         except OSError as exc:
             raise ProviderError("routing audit unavailable") from exc
-    _cloud_creds = creds if "anthropic_effort" not in creds else {
-        k: v for k, v in creds.items() if k != "anthropic_effort"}
+    _cloud_creds = dict(creds, anthropic_effort="low")
     provider, raw = escalate(system, user, _cloud_creds, max_tokens=max_tokens,
                              mode="single", task=task)
     result = _accept(raw)
@@ -1514,10 +1519,14 @@ def selftest():
              "content": [{"type": "text", "text": "ok"}]})
         call_local_first("s", "u", {"anthropic_api_key": "a",
                                     "anthropic_effort": "max"})
-        check("call_local_first: anthropic_effort does NOT reach the wire "
-              "through this function's cloud tier, even when configured "
-              "(this tier is meant to be cheap/fast, not deep reasoning)",
-              "output_config" not in _seen_effort_body["b"])
+        check("call_local_first: the box's anthropic_effort does NOT reach the "
+              "wire through this function's cloud tier -- it sends LOW, never "
+              "the configured max and never nothing (S274: no effort = HIGH "
+              "on claude-sonnet-5)",
+              _seen_effort_body["b"].get("output_config") == {"effort": "low"})
+        call_local_first("s", "u", {"anthropic_api_key": "a"})
+        check("...and LOW is sent even when the box configures no effort at all",
+              _seen_effort_body["b"].get("output_config") == {"effort": "low"})
         call("anthropic", "s", "u", {"anthropic_api_key": "a",
                                      "anthropic_effort": "max"})
         check("...while a DIRECT call()/escalate() (e.g. call_council's own "

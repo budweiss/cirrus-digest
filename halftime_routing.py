@@ -683,7 +683,9 @@ def note_for(res: Dict) -> str:
             f"{res.get('games_swept', 0)} game(s), "
             f"escalated {esc}/{tot} ({rate})"
             + (f", {bad} unusable" if bad else "")
-            + (f", vllm fell back {vfb}x" if vfb else ""))
+            + (f", vllm fell back {vfb}x" if vfb else "")
+            + (f", {METROS[0][0]} FAILED on {len(res['home_failed'])} game(s)"
+               if res.get("home_failed") else ""))
 
 
 def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
@@ -725,7 +727,15 @@ def run(games: Optional[List[Dict]] = None, only_targets: bool = False,
     total = sum(len(v["events"]) for v in result["games"].values())
     log("done: {} game(s) swept, {} show(s) in window, extraction {}".format(
         len(todo), total, llm or "(none called)"))
+    # S274: the home metro IS the product. Its extraction failed on every game
+    # from 09-16 to 09-23 while each run recorded ok -- "9 unusable" sat in a
+    # note nothing alerts on. Carried out so record_run can fail the run.
+    home = METROS[0][0]
+    home_failed = sorted(gid for gid, g in result["games"].items()
+                         if any(c["metro"] == home and c.get("error")
+                                for c in g["coverage"]))
     return {"games_swept": len(todo), "events": total, "out": str(out),
+            "home_failed": home_failed,
             "local": llm.get("local", 0),
             "escalated": llm.get("escalated", 0),
             "unusable": llm.get("unusable", 0),
@@ -1185,6 +1195,11 @@ def _selftest_body(_real_log_path) -> int:
             check("what gets RECORDED is the note, not something re-derived",
                   seen and seen[0] == ("halftimerouting", True, note)
                   and "escalated 1/4 (25%)" in seen[0][2])
+            record_run({"events": 1, "games_swept": 1, "local": 1,
+                        "home_failed": ["wk01-falcons"]})
+            check("a run whose home metro failed is recorded NOT ok, and says so (S274)",
+                  seen[-1][1] is False
+                  and f"{METROS[0][0]} FAILED on 1 game(s)" in seen[-1][2])
             _js.record = lambda *a: 1 / 0
             check("a ledger that blows up cannot take the job down with it",
                   record_run({}).startswith("0 event"))
@@ -1227,6 +1242,22 @@ def _selftest_body(_real_log_path) -> int:
                   all("llm" not in g for g in
                       json.loads((Path(td) / "routing.json").read_text())
                       ["games"].values()))
+            check("...and no home-metro failure when every extraction worked",
+                  out["home_failed"] == [])
+            # S274: every model answer unusable -> the home metro failed on
+            # both games, and that survives the trip out of run().
+            sys.modules["llm_providers"] = _fake_llm(local_raw="junk",
+                                                     escalate_raw="junk")
+            dead = run(games=[{"date": "2026-11-01", "opponent": "Team A",
+                               "week": 8, "at_venue": True},
+                              {"date": "2026-11-08", "opponent": "Team B",
+                               "week": 9, "at_venue": True}],
+                       creds={}, out_path=Path(td) / "routing.json",
+                       searcher=lambda q: ["http://x"],
+                       fetcher=lambda u: "listing text")
+            check("run() names every game whose home-metro extraction failed (S274)",
+                  len(dead["home_failed"]) == 2
+                  and f"{METROS[0][0]} FAILED on 2 game(s)" in note_for(dead))
             check("the WHOLE selftest logs to a temp path, never to the live "
                   "file the escalation trend is read from",
                   LOG_PATH != _real_log_path
@@ -1295,7 +1326,8 @@ def record_run(res: Dict) -> str:
     note = note_for(res)
     try:
         import job_status
-        job_status.record("halftimerouting", True, note)
+        # S274: a run whose home metro failed is a FAILED run, not ok + a note.
+        job_status.record("halftimerouting", not res.get("home_failed"), note)
     except Exception as e:
         print(f"job_status.record failed: {e}")
     return note
