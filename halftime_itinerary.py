@@ -562,7 +562,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     if len(args) >= 2 and args[0] == "probe":
         # One act, printed, NOTHING written -- for "why does this act read
         # the way it does?" without touching the file the page is built from.
-        print(json.dumps(probe(" ".join(args[1:])), indent=2))
+        rec = probe(" ".join(args[1:]))
+        print(json.dumps(rec, indent=2))
+        # A compact tail: job status shows only the last lines of a log.
+        import halftime_dashboard as hd
+        print("== SUMMARY: {} | {} source(s), {} dated show(s), error={}".format(
+            rec["name"], rec["sources"], len(rec["events"]), rec["error"]))
+        for u in rec["urls"]:
+            print("   read:", u[:150])
+        for g in hd.upcoming_games():
+            if g.get("date"):
+                v = verdict(g, rec)
+                print("   {} {:<10} {:<11} {}".format(
+                    g["date"], g["opponent"].split()[-1], v["state"],
+                    v["label"]))
         return 0
     if args:
         print(USAGE, file=sys.stderr)
