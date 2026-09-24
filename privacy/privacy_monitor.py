@@ -460,7 +460,7 @@ def triage(hits, breaches, creds, no_llm=False):
         user = _triage_prompt(batch, br)
         mode = "council" if bi == 0 else "failover"   # council once, then cheap
         try:
-            res = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=6000, mode=mode)
+            res = L.escalate(TRIAGE_SYSTEM, user, creds, max_tokens=6000, mode=mode, task='privacy:triage', privacy='LOCAL_ONLY')
         except Exception as e:
             notes.append(f"b{bi}:{e}")
             continue

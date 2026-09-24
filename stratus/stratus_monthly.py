@@ -128,7 +128,7 @@ def synthesize():
         return None, [], f"llm_providers import failed: {e}"
     web_block, urls = gather_web()
     try:
-        provider, text = L.escalate(SYSTEM, build_prompt(web_block, urls), creds, max_tokens=4000)
+        provider, text = L.escalate(SYSTEM, build_prompt(web_block, urls), creds, max_tokens=4000, task='stratus:monthly')
         print(f"[llm] provider={provider}, {len(text)} chars; sources={len(urls)}")
     except Exception as e:
         return None, urls, f"LLM call failed: {e}"

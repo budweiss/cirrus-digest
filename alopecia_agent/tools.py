@@ -207,7 +207,7 @@ def call_council(prompt: str) -> str:
         # halftime_catalogue.py's LOCAL_EXTRACT_MAX_TOKENS for its own
         # heavy-extraction task, rather than guessing a new number.
         pairs = llm_providers.escalate(system, prompt, creds, max_tokens=8000,
-                                      mode="council", task="alopecia-agent")
+                                      mode="council", task="alopecia-agent:council")
         result = "\n\n".join(f"--- {p} ---\n{t}" for p, t in pairs)
         members = [p for p, _ in pairs]
     except llm_providers.ProviderError as e:

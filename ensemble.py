@@ -263,9 +263,10 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
             chosen, _ = plan(system, user, creds, candidates=remaining, session_id=session_id or task, **args)
             selected.append(chosen)
             remaining = [r for r in remaining if r['id'] != chosen['id']]
+        panel_only = route.get('panel_only') is True
         judge_records = []
         total = sum(r['estimated_request_cost_usd'] for r in selected)
-        if reviewers == 2:
+        if reviewers == 2 and not panel_only:
             judge_records = candidates(route.get('judge_evaluations', []), health,
                 task=task, capability=capability + ':synthesis', system=_JUDGE_SYSTEM,
                 contract_sha256=contract)
@@ -278,6 +279,8 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
             cloud_ids = {r['id'] for r in selected + [judge] if r['id'] not in R.LOCAL}
             if len(cloud_ids) > policy['max_cloud_providers']:
                 raise ValueError('project reviewer limit exceeded')
+        if len({r['id'] for r in selected if r['id'] not in R.LOCAL}) > policy['max_cloud_providers']:
+            raise ValueError('project reviewer limit exceeded')
         if total > limit:
             raise ValueError('route budget exhausted')
         cfg, box, ledger, _ = _load_budget(creds, root)
@@ -318,7 +321,7 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
         meta['members'].append(provider)
         meta['models'][provider] = L.last_model()
         answers.append((provider, text))
-    if reviewers == 2:
+    if reviewers == 2 and not panel_only:
         planned_judge = [r for r in judge_records if r['id'] == judge['id']]
         remaining_limit = max(0, limit - sum(r['estimated_request_cost_usd'] for r in selected))
         provider, text = invoke(planned_judge, _JUDGE_SYSTEM,

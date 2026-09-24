@@ -792,6 +792,20 @@ def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,
     S132: task= and record= are forwarded to every call() (see call()).
     """
     import llm_routing
+    from capability_registry import foundation_route
+    route_task = task or DEFAULT_TASK
+    try:
+        reviewed = foundation_route(route_task, Path(__file__).resolve().parent)
+    except (ValueError, OSError, TypeError) as exc:
+        raise ProviderError('foundation registry requires review') from exc
+    if reviewed is not None:
+        # This path calls dispatch -> call(), never legacy escalate again.
+        import ensemble
+        meta, answer = ensemble.best_answer(system, user, creds, task=route_task,
+            max_tokens=max_tokens, session_id=session_id, privacy=privacy,
+            keep_answers=True)
+        resolved_mode = mode or (creds.get('dev_escalation') or {}).get('mode', 'single')
+        return meta['answers'] if resolved_mode == 'council' else (meta['judge'], answer)
     try:
         selected, route_policy = llm_routing.cloud_order(
             task or DEFAULT_TASK, creds, order=order, privacy=privacy)

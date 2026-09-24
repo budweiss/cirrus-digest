@@ -213,7 +213,7 @@ def extract(video, transcript, lane, caller=None):
         # module. Unpack it.
         def caller(sysmsg, usermsg):
             _provider, text = llm_providers.escalate(
-                sysmsg, usermsg, creds, max_tokens=4000)
+                sysmsg, usermsg, creds, max_tokens=4000, task='yt-watch:extract')
             return text
     user = "Video: %s\nChannel lane: %s\n\nTranscript:\n%s" % (
         video.get("title", ""), lane, transcript[:60000])

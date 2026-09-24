@@ -38,6 +38,22 @@ class FoundationTests(unittest.TestCase):
             return ensemble.best_answer('sys','PRIVATE PAYLOAD',self.creds,
                 task='pedagogy-topic',max_tokens=100,app_dir=self.root,**kwargs)
 
+    def test_escalate_bridge_preserves_result_shapes_and_never_legacy_falls_back(self):
+        meta={'answers':[('kimi','one'),('anthropic','two')], 'judge':'kimi'}
+        with patch('capability_registry.foundation_route',return_value={'enabled':True}), patch.object(ensemble,'best_answer',return_value=(meta,'one')) as dynamic, patch.object(L,'call') as raw:
+            self.assertEqual(L.escalate('s','u',{},task='migrated',mode='council'),meta['answers'])
+            self.assertEqual(L.escalate('s','u',{},task='migrated',mode='single'),('kimi','one'))
+            dynamic.side_effect=L.ProviderError('unqualified')
+            with self.assertRaises(L.ProviderError):L.escalate('s','u',{},task='migrated')
+            raw.assert_not_called()
+
+    def test_reviewed_panel_needs_no_judge_and_keeps_labelled_members(self):
+        route=self.route(reviewers=2,panel_only=True,review_reason='independent evidence grades')
+        meta,text=self.invoke(route,keep_answers=True)
+        self.assertEqual(len(meta['answers']),2)
+        self.assertEqual(len(self.calls),2)
+        self.assertEqual(text,meta['answers'][0][1])
+
     def test_repair_deferral_never_calls_direct_cloud_fallback(self):
         import dev_agent
         for error in (L.ProviderError('admission rejected'), L.AccountingError('ledger failed')):

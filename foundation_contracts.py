@@ -18,6 +18,28 @@ def valid(task, text, user=''):
     try:
         if not isinstance(text, str) or not text.strip():
             return False
+        if task == 'yt-watch:extract':
+            rows=json_value(text).get('claims')
+            return isinstance(rows,list) and all(isinstance(r,dict) and all(isinstance(r.get(k),str) for k in ('claim','why_it_applies','how_to_test')) for r in rows)
+        if task == 'pedagogy:source-discovery':
+            rows=json_value(text)
+            return isinstance(rows,list) and all(isinstance(r,dict) and all(isinstance(r.get(k),str) for k in ('name','type','url','why')) for r in rows)
+        if task == 'intake:promise_detect':
+            d=json_value(text)
+            return isinstance(d,dict) and type(d.get('promise')) is bool and isinstance(d.get('what'),str) and (not d['promise'] or bool(d['what'].strip()))
+        if task.startswith('halftime:catalogue:'):
+            from halftime_catalogue import parse_acts
+            return parse_acts(text, task.rsplit(':',1)[1]) is not None
+        if task == 'halftime:events':
+            from halftime_routing import parse_events
+            return parse_events(text) is not None
+        if task == 'privacy:triage':
+            rows=[json.loads(line) for line in text.strip().splitlines()]
+            return bool(rows) and all(isinstance(r,dict) and r.get('verdict') in ('real','false_positive') and r.get('severity') in ('high','medium','low') and all(isinstance(r.get(k),str) for k in ('target','url','category','why')) for r in rows)
+        if task == 'stratus:monthly':
+            return text.startswith('### ') and len(text)>200
+        if task == 'alopecia-agent:council':
+            return len(text)>200
         if task == 'research:decompose':
             from research_task import _valid_decomposition
             return _valid_decomposition(text)

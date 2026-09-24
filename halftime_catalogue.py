@@ -689,7 +689,8 @@ def extract_acts(source_block: str, creds: dict,
             provider, acts = reviewed
             return acts, _tag(provider), True
         provider, raw = llm_providers.escalate(
-            system, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
+            system, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single",
+            task="halftime:catalogue:" + pool)
         acts = parse_acts(raw, pool)
         if acts is not None:
             return acts, _tag(provider), True
@@ -742,7 +743,14 @@ def _reviewed_vllm(system, user, creds, pool):
 
 def _reviewed_cloud(system, user, creds, pool):
     """One qualified cloud specialist, only after existing local attempts fail."""
-    from capability_registry import load_project
+    from capability_registry import load_project, foundation_route
+    task = 'halftime:catalogue:' + pool
+    if foundation_route(task, PROJECT_DIR) is not None:
+        import ensemble
+        meta, text = ensemble.best_answer(system, user, creds, task=task,
+            max_tokens=PAID_EXTRACT_MAX_TOKENS, app_dir=PROJECT_DIR,
+            validate=lambda raw: parse_acts(raw, pool) is not None)
+        return meta['judge'], parse_acts(text, pool)
     records = load_project('halftime_catalogue', CAPABILITY_RECORDS)
     if records is None:
         return None

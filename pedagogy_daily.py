@@ -553,7 +553,7 @@ def discover_sources(cfg, creds, state, dry=False):
         names = ([s.get("name", "") for s in cfg.get("rss", [])]
                  + [p.get("name", "") for p in cfg.get("podcasts", [])])
         provider, reply = llm_providers.escalate(
-            DISCOVERY_SYSTEM, _discovery_user_prompt(names), creds, max_tokens=4000)
+            DISCOVERY_SYSTEM, _discovery_user_prompt(names), creds, max_tokens=4000, task='pedagogy:source-discovery')
         cands = _extract_json_array(reply)
         if not cands:
             log(f"  discovery: {provider} reply {len(reply or '')} chars, 0 parsed; "

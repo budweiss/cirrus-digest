@@ -93,6 +93,16 @@
     "dev-agent-review": "coding",
     "dev-agent-review:council": "coding",
     "dev-agent-review:judge": "coding",
-    "dev-agent-review:draft": "coding"
+    "dev-agent-review:draft": "coding",
+    "yt-watch:extract": "research",
+    "pedagogy:source-discovery": "research",
+    "halftime:events": "research",
+    "intake:promise_detect": "research",
+    "stratus:monthly": "research",
+    "alopecia-agent:council": "research",
+    "privacy:triage": "research",
+    "halftime:catalogue:variety": "research",
+    "halftime:catalogue:for_hire_music": "research",
+    "halftime:catalogue:program": "research"
   }
 }

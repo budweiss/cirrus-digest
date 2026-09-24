@@ -618,7 +618,8 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None,
         # Set LOW explicitly: dropping the key means Sonnet 5's default, HIGH.
         cloud_creds = dict(creds, anthropic_effort=PAID_EXTRACT_EFFORT)
         _provider, raw = llm_providers.escalate(
-            prompt, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
+            _EXTRACT_SYSTEM, ('ADDITIONAL SCOPE:\n' + prompt + '\n\n' + user) if system else user,
+            cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode='single', task='halftime:events')
         got = parse_events(raw)
         if got is not None:
             stats["escalated"] = stats.get("escalated", 0) + 1
