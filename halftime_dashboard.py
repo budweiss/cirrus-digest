@@ -94,38 +94,58 @@ THEME_LABEL = {"salute_to_service": "tie to Salute to Service",
 # R35 (Justin, 2026-09-23): his list of artists who are known Steelers fans or
 # have a connection to the team. CLIENT DATA, his names -- a signal on any card
 # where the act turns up, and on a themed date its own list. `aka` is the other
-# name the same act arrives under; `style` only where it is not in doubt, and
-# blank otherwise, because a wrong style is worse than none (S141).
+# name the same act arrives under.
+#
+# `style` only where it is not in doubt, blank otherwise -- a wrong style is
+# worse than none (S141). `hometown` and `era` are from each act's Wikipedia
+# intro and infobox, read 2026-09-23 (S270), not from memory: hometown only
+# where it is a Pennsylvania tie (the Heritage filter), era = the decade the
+# source shows them breaking through. Blank where the source does not say --
+# Garth Brooks debuted in 1989 and the intro never says "1990s", so his era is
+# unknown rather than rounded. Christina Aguilera's infobox gives New York
+# City, so she carries no PA tie here despite older notes saying Wexford.
 STEELERS_CONNECTED = [
-    {"name": "Bret Michaels", "style": "rock"},
-    {"name": "Charles Wesley Godwin", "style": "country"},
-    {"name": "Christina Aguilera", "style": "pop"},
-    {"name": "Dan Smyers", "style": "country"},
-    {"name": "Gabby Barrett", "style": "country"},
-    {"name": "Garth Brooks", "style": "country"},
-    {"name": "GloRilla", "style": "hip hop / rap"},
-    {"name": "Daya", "aka": ["Grace Tandon"], "style": "pop"},
-    {"name": "Hank Williams Jr.", "style": "country"},
-    {"name": "Harry Mack", "style": "hip hop / rap"},
-    {"name": "Jack Harlow", "style": "hip hop / rap"},
-    {"name": "Jackie Evancho", "style": "classical / orchestral"},
-    {"name": "Martina McBride", "style": "country"},
-    {"name": "Noah Kahan", "style": ""},
-    {"name": "Pat Monahan", "aka": ["Train"], "style": ""},
-    {"name": "Chip Esten", "aka": ["Charles Esten"], "style": "country"},
-    {"name": "Smokey Robinson", "style": "r&b / soul"},
-    {"name": "Snoop Dogg", "style": "hip hop / rap"},
-    {"name": "Trace Adkins", "style": "country"},
-    {"name": "Warren Zeiders", "style": "country"},
-    {"name": "Wiz Khalifa", "style": "hip hop / rap"},
-    {"name": "Dan + Shay", "style": "country", "group": True},
-    {"name": "Styx", "style": "classic rock", "group": True},
-    {"name": "The Clarks", "style": "rock", "group": True},
-    {"name": "Rusted Root", "style": "rock", "group": True},
+    {"name": "Bret Michaels", "style": "rock", "hometown": "Butler, PA",
+     "era": "1980s"},
+    {"name": "Charles Wesley Godwin", "style": "country", "era": "2010s"},
+    {"name": "Christina Aguilera", "style": "pop", "era": "1990s"},
+    {"name": "Dan Smyers", "style": "country", "era": "2010s"},
+    {"name": "Gabby Barrett", "style": "country", "hometown": "Munhall, PA",
+     "era": "2010s"},
+    {"name": "Garth Brooks", "style": "country", "era": ""},
+    {"name": "GloRilla", "style": "hip hop / rap", "era": "2020s"},
+    {"name": "Daya", "aka": ["Grace Tandon"], "style": "pop",
+     "hometown": "Mt. Lebanon, PA", "era": "2010s"},
+    {"name": "Hank Williams Jr.", "style": "country", "era": ""},
+    {"name": "Harry Mack", "style": "hip hop / rap", "era": "2000s"},
+    {"name": "Jack Harlow", "style": "hip hop / rap", "era": "2010s"},
+    {"name": "Jackie Evancho", "style": "classical / orchestral",
+     "hometown": "Pittsburgh, PA", "era": "2000s"},
+    {"name": "Martina McBride", "style": "country", "era": "1990s"},
+    {"name": "Noah Kahan", "style": "", "era": "2010s"},
+    {"name": "Pat Monahan", "aka": ["Train"], "style": "",
+     "hometown": "Erie, PA", "era": ""},
+    {"name": "Chip Esten", "aka": ["Charles Esten"], "style": "country",
+     "hometown": "Pittsburgh, PA", "era": ""},
+    {"name": "Smokey Robinson", "style": "r&b / soul", "era": "1950s"},
+    {"name": "Snoop Dogg", "style": "hip hop / rap", "era": "1990s"},
+    {"name": "Trace Adkins", "style": "country", "era": "1990s"},
+    {"name": "Warren Zeiders", "style": "country", "hometown": "Hershey, PA",
+     "era": "2020s"},
+    {"name": "Wiz Khalifa", "style": "hip hop / rap",
+     "hometown": "Pittsburgh, PA", "era": "2000s"},
+    {"name": "Dan + Shay", "style": "country", "group": True, "era": "2010s"},
+    {"name": "Styx", "style": "classic rock", "group": True, "era": "1970s"},
+    {"name": "The Clarks", "style": "rock", "group": True,
+     "hometown": "Indiana, PA", "era": ""},
+    {"name": "Rusted Root", "style": "rock", "group": True,
+     "hometown": "Pittsburgh, PA", "era": "1990s"},
     {"name": "Donnie Iris & The Cruisers", "aka": ["Donnie Iris"],
-     "style": "classic rock", "group": True},
-    {"name": "Wild Cherry", "style": "", "group": True},
-    {"name": "The Gathering Field", "style": "rock", "group": True},
+     "style": "classic rock", "group": True, "hometown": "New Castle, PA",
+     "era": "1970s"},
+    {"name": "Wild Cherry", "style": "", "group": True, "era": "1970s"},
+    {"name": "The Gathering Field", "style": "rock", "group": True,
+     "hometown": "Pittsburgh, PA", "era": "1990s"},
 ]
 
 # Justin's own calls on specific acts for specific dates (2026-09-23). Shown on
@@ -238,6 +258,8 @@ def fan_acts() -> List[Dict]:
     for entry in STEELERS_CONNECTED:
         act = {"name": entry["name"], "also_known_as": list(entry.get("aka") or []),
                "fields": {"style": entry.get("style", ""),
+                          "hometown": entry.get("hometown", ""),
+                          "era": entry.get("era", ""),
                           "category": "steelers-connected"}}
         act["badges"] = badges_for(act)
         act["reach"] = {"state": "unknown", "why": ""}
@@ -272,7 +294,7 @@ def theme_fit(act: Dict, theme: Optional[str]) -> tuple:
     if theme == "heritage":
         if "market" in kinds:
             return FIT, "Pittsburgh / PA tie ({}).".format(
-                fields.get("home_base", ""))
+                fields.get("home_base") or fields.get("hometown", ""))
         if "fan" in kinds:
             return FIT, "On your Steelers-connected list."
         reach = act.get("reach") or {}
@@ -312,7 +334,7 @@ def badges_for(act: Dict) -> List[Dict]:
     so a badge can be argued with rather than trusted."""
     out = []
     fields = act.get("fields") or {}
-    home = (fields.get("home_base") or "").lower()
+    home = (fields.get("home_base") or fields.get("hometown") or "").lower()
     cat = (fields.get("category") or "").lower()
     clients = (fields.get("clients") or "")
     fee = (fields.get("fee_note") or "").strip()
@@ -324,7 +346,7 @@ def badges_for(act: Dict) -> List[Dict]:
                            "connections.".format(fan["name"])})
     if any(h in home for h in _PA_HINTS):
         out.append({"kind": "market", "label": "Pittsburgh / PA tie",
-                    "why": fields.get("home_base", "")})
+                    "why": fields.get("home_base") or fields.get("hometown")})
     if "military" in cat or "patriotic" in cat:
         out.append({"kind": "patriotic", "label": "Military / patriotic",
                     "why": fields.get("category", "")})
@@ -363,18 +385,20 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
 
     def key(act):
         kinds = {b["kind"] for b in act.get("badges", [])}
-        # R35: his Steelers-connected list is a Pittsburgh tie for ranking.
-        if "fan" in kinds:
-            kinds = kinds | {"market"}
+        # R35: his Steelers-connected list clears the Pittsburgh lead, but a
+        # real local tie still sorts ahead of a fan from elsewhere -- on the
+        # Heritage date that is what puts The Clarks above Garth Brooks.
+        leads = lead in kinds or (lead == "market" and "fan" in kinds)
         reach = REACH_ORDER.get((act.get("reach") or {}).get("state"), 2)
         # An act whose ONLY claim is the patriotic one is a Salute to Service
         # booking; it should not head a September afternoon game.
         patriotic_only = ("patriotic" in kinds
                           and not (kinds - {"patriotic", "credit"}))
-        return (0 if lead in kinds else 1,
+        return (0 if leads else 1,
                 reach,
                 1 if (patriotic_only and not wants_patriotic) else 0,
                 0 if "market" in kinds else 1,
+                0 if "fan" in kinds else 1,
                 0 if "nostalgia" in kinds else 1,
                 0 if "credit" in kinds else 1,
                 0 if "price" in kinds else 1,
@@ -957,8 +981,13 @@ def _as_candidates(events: List[Dict],
             ev.get("venue") or ev.get("city") or ev.get("metro", ""),
             "" if not ev.get("miles") else " ({} mi)".format(ev["miles"]))
         cand = {"name": ev.get("artist"),
+                # S270: this was the SHOW's city, and badges_for reads
+                # home_base as where the act is FROM -- so every act playing
+                # Pittsburgh or Erie was badged "Pittsburgh / PA tie", and the
+                # Heritage filter let the Erie Philharmonic through on it. The
+                # city is already on the card, in the "Playing" row.
                 "fields": {"clients": "", "category": "touring",
-                           "home_base": ev.get("city", ""),
+                           "home_base": "",
                            # S141: was hard-coded "" — so even after the sweep
                            # started extracting a style, the page would have
                            # thrown it away. Both halves had to change: the
@@ -1063,7 +1092,7 @@ def _act_card(act: Dict) -> str:
     # booker rejects on before reading anything else.
     for label, key in (("Style", "style"),
                        ("Playing", "routing"), ("Fee", "fee_note"),
-                       ("Base", "home_base"),
+                       ("Base", "home_base"), ("From", "hometown"),
                        ("Credits", "clients"),
                        ("Booking", "booking_contact")):
         val = (fields.get(key) or "").strip()
@@ -1106,6 +1135,14 @@ def _short_list(acts: List[Dict], detail) -> str:
             if line else ""))
     out.append("</ul>")
     return "".join(out)
+
+
+def _fan_line(a: Dict) -> str:
+    f = a.get("fields") or {}
+    return " · ".join(x for x in (
+        "from " + f["hometown"] if f.get("hometown") else "",
+        f.get("style"),
+        "broke through in the " + f["era"] if f.get("era") else "") if x)
 
 
 def _style_and_place(a: Dict) -> str:
@@ -1174,6 +1211,11 @@ def _pool_panel(g: Dict, pool: str) -> str:
         parts.append("<p class='more'>{} acts in the credit list, and it "
                      "applies to every date equally — so it is listed once "
                      "below rather than repeated here.</p>".format(len(acts)))
+    elif acts and pool == "fans":
+        # His own list: he knows these acts, so every one that fits is shown,
+        # one line each -- local first -- rather than three cards and a fold.
+        parts.append("<div class='fan-list'>" + _short_list(
+            acts, _fan_line) + "</div>")
     elif acts:
         shown = acts[:PER_GAME_SHOWN]
         parts.append("<ul class='acts'>")
@@ -1388,6 +1430,9 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .b-fan {{ border-color:var(--gold); color:var(--bg); background:var(--gold); }}
 section.no-act {{ opacity:.72; }}
 .pool-fans {{ margin-top:16px; }}
+.fan-list .acts {{ columns:3; column-gap:24px; }}
+@media (max-width:760px) {{ .fan-list .acts {{ columns:1; }} }}
+.fan-list .act {{ break-inside:avoid; padding:6px 0; }}
 .aside, .rest {{ margin-top:10px; font-size:13px; }}
 .aside summary, .rest summary {{ cursor:pointer; color:#7d8794; font-size:12px; }}
 .aside.ruled summary {{ color:var(--gold); }}
@@ -1948,9 +1993,35 @@ def selftest() -> int:
         # Everything before the set-aside lists: the 3 shown plus the rest of
         # the acts that fit, which open in place.
         _fans_main = _fans.split("<details class='aside")[0]
+        check("fans panel: every act that fits is listed, not three and a fold",
+              "<details class='rest'>" not in _fans_main
+              and _fans_main.count("<li class='act'>") == len(next(
+                  g for g in build_snapshot(today=_T, db_path=db,
+                                            routing_path=_rt8)["games"]
+                  if g["week"] == 8)["candidates"]["fans"]))
         check("fans panel: a themed date shows his list, filtered to the brief",
               "Trace Adkins" in _fans_main and "Snoop Dogg" not in _fans_main
               and "Snoop Dogg" in _fans)
+
+        _w12 = next(g for g in HOME_GAMES if g["week"] == 12)
+        _order = [a["name"] for a in rank_for_game(_w12, fan_acts())]
+        check("heritage: a Pittsburgh act on his list ranks above a fan from "
+              "elsewhere (The Clarks over Garth Brooks)",
+              _order.index("The Clarks") < _order.index("Garth Brooks"))
+        _tc2 = _as_candidates([{"artist": "Erie Phil", "date": "2026-11-29",
+                                "venue": "Warner Theatre", "city": "Erie, PA",
+                                "miles": 130, "gap": 2}], set())
+        check("touring: playing a PA city is NOT a Pittsburgh / PA tie",
+              "market" not in {b["kind"] for b in _tc2[0]["badges"]})
+        check("touring: ...so it does not pass the Heritage filter on that",
+              theme_fit(_tc2[0], "heritage")[0] == NO_FIT)
+        _w13 = next(g for g in HOME_GAMES if g["week"] == 13)
+        _f13, _a13 = split_for_game(_w13, fan_acts())
+        check("'90s: his list's sourced '90s acts fit Alumni Weekend",
+              {"Rusted Root", "Trace Adkins", "Martina McBride"}
+              <= {a["name"] for a in _f13})
+        check("'90s: an act with no sourced decade stays 'not checked'",
+              "Garth Brooks" in {a["name"] for a in _a13["unknown"]})
 
         # S270 fix: touring overflow used to point at "the credit list below",
         # which never holds a routing hit.
