@@ -1235,6 +1235,14 @@ def selftest() -> int:
     """Offline. No network, no model, no writes outside a temp DB."""
     import tempfile
     bad = 0
+    # T32/T80 (S274): extract_acts consults the LIVE capability-rollout file,
+    # config/halftime_capabilities.json. It exists on CUMULUS and not on the
+    # Mac, so the extraction checks below passed locally and FAILED on the box
+    # (the reviewed dispatch bypassed the faked llm_providers, then an
+    # IndexError ended the suite). The rollout has its own tests
+    # (test_halftime_capabilities.py, which patch this path); this suite tests
+    # the path without one -- a file that is never created.
+    globals()["CAPABILITY_RECORDS"] = Path(tempfile.mkdtemp()) / "none.json"
 
     def check(label, ok):
         nonlocal bad
