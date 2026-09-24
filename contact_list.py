@@ -60,6 +60,12 @@ MAX_CANDIDATES = 160
 MAX_CLOUD_ESCALATIONS = 40
 # Sibling pages read when a found page is one letter of an A-Z directory.
 MAX_EXPANSION_PAGES = 60
+# Pages that named many organizations, kept per region + kind and read first
+# on every later run (S270: edge builders came and went with the planner's
+# searches -- Gemcraft and Timberlake were found in run 3, not run 4).
+SEEDS_DIR = PROJECT_DIR / "logs/contact_lists/seeds"
+MAX_SEEDS = 40
+SEED_MIN_ORGS = 3
 PAGE_CHARS = 5000
 WORKERS = 4
 
@@ -168,6 +174,26 @@ def in_region(text: str, region_terms: list) -> bool:
     return any(_n(r) and " %s " % _n(r) in t for r in region_terms or [])
 
 
+_US_STATES = ("alabama alaska arizona arkansas california colorado connecticut delaware florida "
+              "georgia hawaii idaho illinois indiana iowa kansas kentucky louisiana maine maryland "
+              "massachusetts michigan minnesota mississippi missouri montana nebraska nevada "
+              "new_hampshire new_jersey new_mexico new_york north_carolina north_dakota ohio oklahoma "
+              "oregon pennsylvania rhode_island south_carolina south_dakota tennessee texas utah "
+              "vermont virginia washington west_virginia wisconsin wyoming").split()
+
+
+def page_only_in_region(head: str, region_terms: list) -> bool:
+    """The page header names the region and no other US state. S270: Country
+    Life Homes lists its communities by town alone ('Milford', 'Milton') under
+    a header reading 'Homes for sale in Delaware', so all three were dropped
+    for lacking 'DE'. A two-state builder ('Home Builders in Pennsylvania and
+    Delaware') still has to locate each community itself."""
+    h = " %s " % _n(head)
+    mine = {_n(t) for t in region_terms or []}
+    others = [st.replace("_", " ") for st in _US_STATES if st.replace("_", " ") not in mine]
+    return in_region(head, region_terms) and not any(" %s " % o in h for o in others)
+
+
 def evidence_ok(e: dict, pages: dict, region_terms: list = None, company: str = None) -> bool:
     """On the cited page, naming the thing, AND located in the region as the
     page writes it. S264 smoke run: a builder active in two states was put in
@@ -176,7 +202,8 @@ def evidence_ok(e: dict, pages: dict, region_terms: list = None, company: str = 
     q, loc = e.get("quote") or "", e.get("location") or ""
     ok = quote_on_page(q, page) and value_in_quote(e.get("name"), q)
     if region_terms is not None:
-        ok = ok and bool(loc) and value_in_quote(loc, page) and in_region(loc, region_terms)
+        ok = ok and bool(loc) and value_in_quote(loc, page) and (
+            in_region(loc, region_terms) or page_only_in_region(page[:HEAD_CHARS], region_terms))
     if company is not None:
         # A town is not a community (S264: 'Greenwood' counted as one).
         town = _n(loc.split(",")[0])
@@ -221,6 +248,43 @@ def trim_page(text: str, keep=PAGE_CHARS) -> str:
             hits.append(l)
     out = "\n".join(head + ["..."] + hits) if hits else "\n".join(head)
     return out[:keep]
+
+
+def seed_key(p: dict) -> str:
+    """Region plus the KIND's last word, so 'new home builder' and 'home
+    builder' share seeds and a marina list does not use builder directories."""
+    kind = (_n(p.get("entity")).split() or ["x"])[-1].rstrip("s")
+    return re.sub(r"[^a-z0-9]+", "-", "%s-%s" % (_n(p.get("region")), kind)).strip("-")
+
+
+def load_seeds(p: dict, seeds_dir: Path = None) -> list:
+    try:
+        data = json.loads(((seeds_dir or SEEDS_DIR) / (seed_key(p) + ".json")).read_text())
+    except (OSError, ValueError):
+        return []
+    return [u for u, _ in sorted(data.items(), key=lambda kv: -kv[1])][:MAX_SEEDS]
+
+
+def save_seeds(p: dict, found: dict, seeds_dir: Path = None) -> int:
+    """Remember every page that named SEED_MIN_ORGS+ organizations this run,
+    merged with earlier runs (best count kept), top MAX_SEEDS. Returns count."""
+    per_url = {}
+    for row in found.values():
+        for u in row.get("sources") or []:
+            per_url[u] = per_url.get(u, 0) + 1
+    d = seeds_dir or SEEDS_DIR
+    path = d / (seed_key(p) + ".json")
+    try:
+        old = json.loads(path.read_text())
+    except (OSError, ValueError):
+        old = {}
+    for u, n in per_url.items():
+        if n >= SEED_MIN_ORGS:
+            old[u] = max(old.get(u, 0), n)
+    keep = dict(sorted(old.items(), key=lambda kv: -kv[1])[:MAX_SEEDS])
+    d.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(keep, indent=1))
+    return len(keep)
 
 
 _LETTER_RX = re.compile(r"([?&][A-Za-z_]+=)([A-Za-z])(?=&|#|$)")
@@ -366,7 +430,7 @@ def plan(request: str, creds: dict) -> dict:
     return p
 
 
-def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
+def roster(p: dict, creds: dict, budget: Budget, cache: dict, log, seeds: list = None) -> dict:
     """{name_key: {"name", "sources": [url]}} for every organization named on a
     page that the page really names."""
     found = {}
@@ -387,7 +451,7 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log) -> dict:
         by_text[key] = orgs
         return url, orgs
 
-    urls = []
+    urls = list(seeds or [])
     for q in p["roster_queries"]:
         urls += search(q, 8, budget)
     urls = list(dict.fromkeys(urls))
@@ -690,7 +754,14 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
     log("plan: %s in %s, %d roster queries, split=%s" % (
         p["entity"], p["region"], len(p["roster_queries"]), bool(p.get("group_question"))))
     (out_dir / "plan.json").write_text(json.dumps(p, indent=1))
-    cands = roster(p, creds, budget, cache, log)
+    seeds = load_seeds(p)
+    if seeds:
+        log("roster: %d remembered source page(s) for %s" % (len(seeds), seed_key(p)))
+    cands = roster(p, creds, budget, cache, log, seeds)
+    try:
+        log("roster: %d source page(s) remembered for next time" % save_seeds(p, cands))
+    except OSError as e:
+        log("roster: could not save source pages (%s)" % e)
     ranked = sorted(cands.values(), key=lambda c: -len(c["sources"]))[:max_candidates]
     rows = []
     with ThreadPoolExecutor(WORKERS) as ex:
@@ -868,6 +939,24 @@ def selftest() -> bool:
     check("alphabet_siblings: an ordinary page is not a directory letter",
           alphabet_siblings("https://www.ryanhomes.com/new-homes/communities/delaware") == []
           and alphabet_siblings("https://x.org/search?q=builders") == [])
+    cl = {"http://www.countrylifehomes.com/": "Homes For Sales in Delaware | Country Life Homes\n"
+          "Hearthstone Manor Single Family Homes - NEW MODEL NOW OPEN!\nMilford"}
+    check("a bare town counts when the builder's own page header names only the region (Country Life)",
+          evidence_ok({"name": "Hearthstone Manor", "location": "Milford",
+                       "url": "http://www.countrylifehomes.com/",
+                       "quote": "Hearthstone Manor Single Family Homes - NEW MODEL NOW OPEN!"},
+                      cl, ["Delaware", "DE", "Sussex County"], company="Country Life Homes"))
+    mo = {"https://montchaninbuilders.net/": "Home Builders in Pennsylvania and Delaware | Montchanin Builders\n"
+          "The Enclave at Longwood Preserve - Now selling\nKennett Square"}
+    check("...but not when the header names another state too (Montchanin, PA + DE)",
+          not evidence_ok({"name": "The Enclave at Longwood Preserve", "location": "Kennett Square",
+                           "url": "https://montchaninbuilders.net/",
+                           "quote": "The Enclave at Longwood Preserve - Now selling"},
+                          mo, ["Delaware", "DE"], company="Montchanin Builders"))
+    check("seed_key: 'new home builder' and 'home builder' share seeds; a marina list does not",
+          seed_key({"region": "Delaware", "entity": "new home builder"})
+          == seed_key({"region": "Delaware", "entity": "home builder"}) == "delaware-builder"
+          and seed_key({"region": "Delaware", "entity": "marina"}) == "delaware-marina")
     check("dedupe_key merges 'K. Hovnanian' with 'K. Hovnanian Homes of Delaware'",
           dedupe_key("K. Hovnanian") == dedupe_key("K. Hovnanian Homes of Delaware") == "hovnanian")
     check("a name of only generic words is not a company ('Community Home Builders')",
@@ -948,6 +1037,17 @@ def selftest() -> bool:
             js = compare([{"name": "JS Homes", "status": "ok", "evidence": []}], ref_js, [])
             check("compare: 'Ryan Homes' matches the NVR row; Lane Builders counted missed",
                   sc["found"] == 2 and sc["missed"] == ["Lane Builders"])
+            sd = Path(td) / "seeds"
+            pp = {"region": "Delaware", "entity": "home builder"}
+            found = {"a": {"name": "A", "sources": ["https://dir/x", "https://one/page"]},
+                     "b": {"name": "B", "sources": ["https://dir/x"]},
+                     "c": {"name": "C", "sources": ["https://dir/x"]}}
+            save_seeds(pp, found, sd)
+            check("seeds: a page that named 3+ organizations is remembered; a one-name page is not",
+                  load_seeds(pp, sd) == ["https://dir/x"])
+            save_seeds(pp, {"d": {"name": "D", "sources": ["https://dir/y"]}}, sd)
+            check("seeds: a later run keeps what earlier runs remembered",
+                  load_seeds(pp, sd) == ["https://dir/x"])
             check("compare: a short name (JS Homes) is matched, not reported missed", js["found"] == 1)
             tb = compare([{"name": "Toll Brothers", "status": "ok", "evidence": []}], ref_sb, [])
             check("compare: sharing 'brothers' is not a match (Toll vs Schell)", tb["found"] == 0)
