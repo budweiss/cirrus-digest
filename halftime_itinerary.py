@@ -54,7 +54,7 @@ MAX_EVENTS_KEPT = 120
 SOURCE_CHARS = 24000
 # A record written by older logic is re-checked on the next run, whatever its
 # age -- a better check should not wait a week behind a stale cache.
-RECORD_VERSION = 2
+RECORD_VERSION = 3
 # CLEAR needs the tour VISIBLE around the game: an announced date within this
 # many days on BOTH sides, with none within a day. Dates only far away is not
 # evidence of a free day, just of an unannounced stretch.
@@ -292,6 +292,27 @@ def check_artist(artist: Dict, searcher, fetcher, extractor,
     return rec
 
 
+def extraction_prompt(today: Optional[str] = None) -> str:
+    """The routing extractor's rules, narrowed to the days that decide a
+    verdict. Asked for EVERY date on a long tour page, the model returned 10
+    of TSO's dozens; asked only for the windows around our games, the answer
+    is short and the dates that matter are the ones it looks for."""
+    import halftime_dashboard as hd
+    import halftime_routing
+    wins = []
+    for g in hd.upcoming_games(today):
+        if g.get("date"):
+            d = datetime.strptime(g["date"], "%Y-%m-%d")
+            wins.append("{} to {}".format(
+                (d - timedelta(days=BRACKET_DAYS)).strftime("%Y-%m-%d"),
+                (d + timedelta(days=BRACKET_DAYS)).strftime("%Y-%m-%d")))
+    return (halftime_routing._EXTRACT_SYSTEM + "\n- ONLY include shows dated "
+            "inside one of these windows (inclusive): {}. Ignore every other "
+            "date.\n- Inside those windows include EVERY show: both shows if "
+            "the act plays twice in a day, and every city if the act tours as "
+            "more than one company at once.".format("; ".join(wins) or "none"))
+
+
 def _fresh(rec: Optional[Dict], today: str) -> bool:
     if not rec or rec.get("error") or rec.get("v") != RECORD_VERSION:
         return False
@@ -344,8 +365,10 @@ def run(creds: Optional[Dict] = None, out_path: Optional[Path] = None,
             q, max_results=SEARCH_RESULTS, caller="halftime_itinerary"))
         fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(u)[0])
     stats = {}
+    prompt = extraction_prompt(today)
     extractor = extractor or (
-        lambda block: halftime_routing._extract(block, creds, stats))
+        lambda block: halftime_routing._extract(block, creds, stats,
+                                                system=prompt))
 
     todo = [a for a in artists_to_check(routing, today)
             if not _fresh(prior.get(a["key"]), today)][:limit]
@@ -374,12 +397,14 @@ def probe(name: str) -> Dict:
     import halftime_routing
     creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     stats = {}
+    prompt = extraction_prompt()
     rec = check_artist(
         {"name": name, "key": _key(name), "aka": []},
         lambda q: cirrus_daily.search_web(q, max_results=SEARCH_RESULTS,
                                           caller="halftime_itinerary"),
         lambda u: cirrus_daily.fetch_article_content(u)[0],
-        lambda block: halftime_routing._extract(block, creds, stats))
+        lambda block: halftime_routing._extract(block, creds, stats,
+                                                system=prompt))
     rec["llm"] = stats
     return rec
 
@@ -474,6 +499,11 @@ def selftest() -> int:
           r["urls"] == ["u1", "u2"] and r["v"] == RECORD_VERSION)
     check("a record from older logic is re-checked whatever its age",
           not _fresh(dict(r, v=1), r["checked_at"][:10]))
+    _pr = extraction_prompt("2026-09-23")
+    check("the extraction prompt asks only for the windows around remaining "
+          "games, and for every show inside them",
+          "2026-12-13 to 2026-12-27" in _pr and "2026-09-06" not in _pr
+          and "twice in a day" in _pr and "more than one company" in _pr)
     check("no source is an error, not an empty itinerary",
           check_artist(tso, lambda q: [], lambda u: "", fx)["error"]
           == "no fetchable source")

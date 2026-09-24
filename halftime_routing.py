@@ -547,7 +547,8 @@ def sweep_game(game: Dict, creds: Dict, searcher=None, fetcher=None,
     return {"events": events, "coverage": coverage, "llm": llm_stats}
 
 
-def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
+def _extract(block: str, creds: Dict, stats: Optional[Dict] = None,
+             system: Optional[str] = None):
     """Events, or None when nothing usable came back.
 
     S103: `stats` counts WHICH path answered. Until now this lane threw that
@@ -564,13 +565,16 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
     import llm_providers
     if stats is None:
         stats = {}
+    # S273: halftime_itinerary passes a narrower prompt (only the dates around
+    # the remaining games). The sweep's own calls are unchanged.
+    prompt = system or _EXTRACT_SYSTEM
     user = "LISTINGS:\n\n{}".format(block[:24000])
     # S125 (CUMULUS2-TP2-PLAN.md): TP=2 vLLM endpoint first when configured;
     # any failure falls through to ollama and is counted as `vllm_fallback`,
     # separately from `escalated`, so a dead endpoint is seen, not paid for.
     if creds.get("vllm_url"):
         try:
-            raw = llm_providers.call("vllm", _EXTRACT_SYSTEM, user, creds,
+            raw = llm_providers.call("vllm", prompt, user, creds,
                                      max_tokens=LOCAL_EXTRACT_MAX_TOKENS, retries=0)
             got = parse_events(raw)
             if got is not None:
@@ -581,7 +585,7 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
             pass
         stats["vllm_fallback"] = stats.get("vllm_fallback", 0) + 1
     try:
-        raw = llm_providers.call("ollama", _EXTRACT_SYSTEM, user, creds,
+        raw = llm_providers.call("ollama", prompt, user, creds,
                                  max_tokens=LOCAL_EXTRACT_MAX_TOKENS, retries=0)
         got = parse_events(raw)
         if got is not None:
@@ -593,7 +597,7 @@ def _extract(block: str, creds: Dict, stats: Optional[Dict] = None):
         # Routine extraction must not inherit the host deep-reasoning setting.
         cloud_creds = {k: v for k, v in creds.items() if k != "anthropic_effort"}
         _provider, raw = llm_providers.escalate(
-            _EXTRACT_SYSTEM, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
+            prompt, user, cloud_creds, max_tokens=PAID_EXTRACT_MAX_TOKENS, mode="single")
         got = parse_events(raw)
         if got is not None:
             stats["escalated"] = stats.get("escalated", 0) + 1
