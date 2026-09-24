@@ -47,9 +47,21 @@ RECHECK_DAYS = 7
 MAX_PER_RUN = 60
 SEARCH_RESULTS = 4
 MAX_EVENTS_KEPT = 120
+# Each source is read on its own, up to this much. The first version joined
+# the sources and the extractor read only the first 24,000 characters of the
+# lot -- so a long tour page (TSO runs two companies through December) was cut
+# off mid-list, and the act read CLEAR for a date Justin knew it was booked.
+SOURCE_CHARS = 24000
+# A record written by older logic is re-checked on the next run, whatever its
+# age -- a better check should not wait a week behind a stale cache.
+RECORD_VERSION = 2
+# CLEAR needs the tour VISIBLE around the game: an announced date within this
+# many days on BOTH sides, with none within a day. Dates only far away is not
+# evidence of a free day, just of an unannounced stretch.
+BRACKET_DAYS = 7
 
-CONFLICT, LOCAL, TIGHT, CLEAR, NOT_CHECKED = (
-    "conflict", "local", "tight", "clear", "not_checked")
+CONFLICT, LOCAL, TIGHT, CLEAR, OPEN, NOT_CHECKED = (
+    "conflict", "local", "tight", "clear", "open", "not_checked")
 
 # Suburbs whose rooms a booker files under Pittsburgh (Star Lake is in
 # Burgettstown). Anything unrecognised is "elsewhere", said as the city name.
@@ -95,12 +107,13 @@ def verdict(game: Dict, record: Optional[Dict]) -> Dict:
         return {"state": NOT_CHECKED, "label": "Game date not set",
                 "why": "The league has not set this date."}
     g = datetime.strptime(date, "%Y-%m-%d")
-    same, near = [], []
+    same, near, gaps = [], [], []
     for ev in record["events"]:
         try:
             gap = (datetime.strptime(ev.get("date", ""), "%Y-%m-%d") - g).days
         except ValueError:
             continue
+        gaps.append(gap)
         if gap == 0:
             same.append(ev)
         elif abs(gap) == 1:
@@ -114,8 +127,15 @@ def verdict(game: Dict, record: Optional[Dict]) -> Dict:
                            "not a conflict to assume. Itinerary checked {}."
                            .format(_where(ev), ev.get("venue") or "a venue",
                                    checked)}
+    placed = [ev for ev in same if ev.get("city") or ev.get("venue")]
+    if same and not placed:
+        return {"state": TIGHT, "label": "Another show on game day, place "
+                                          "not stated",
+                "why": "The itinerary lists a show on {} but not where. Could "
+                       "be close, could be far -- ask. Itinerary checked {}."
+                       .format(date, checked)}
     if same:
-        ev = same[0]
+        ev = placed[0]
         m = metro_of(ev)
         return {"state": CONFLICT,
                 "label": "Playing {} on game day".format(_where(ev)),
@@ -133,12 +153,34 @@ def verdict(game: Dict, record: Optional[Dict]) -> Dict:
                 "why": "Plays {} on {} — a travel day either side of our game. "
                        "Possible, but ask. Itinerary checked {}.".format(
                            _where(ev), ev.get("date"), checked)}
+    inside = [ev for ev in near if metro_of(ev)]
+    if inside:
+        ev = inside[0]
+        m = metro_of(ev)
+        return {"state": CLEAR, "label": "In the area the day {}".format(
+                    "before" if ev["gap"] < 0 else "after"),
+                "why": "Plays {} ({} mi) on {}, nothing announced on {} itself "
+                       "-- already here, and no show of their own that day. "
+                       "Checked {}.".format(_where(ev), m[1], ev.get("date"),
+                                            date, checked)}
     dates = sorted(ev.get("date", "") for ev in record["events"])
-    return {"state": CLEAR, "label": "No show within a day of kickoff",
-            "why": "{} announced date(s) checked, {} to {}; nothing within a "
-                   "day of {}. Only ANNOUNCED dates — tours fill in as the "
-                   "season nears. Checked {}.".format(
-                       len(dates), dates[0], dates[-1], date, checked)}
+    before = [x for x in gaps if -BRACKET_DAYS <= x < 0]
+    after = [x for x in gaps if 0 < x <= BRACKET_DAYS]
+    if before and after:
+        return {"state": CLEAR, "label": "Open day in their tour",
+                "why": "Announced {} day(s) before and {} day(s) after, "
+                       "nothing within a day of {} -- a gap in a tour we can "
+                       "see. {} date(s) checked. Checked {}.".format(
+                           -max(before), min(after), date, len(dates),
+                           checked)}
+    nearest = min(abs(x) for x in gaps) if gaps else None
+    return {"state": OPEN, "label": "No announced show near kickoff",
+            "why": "{} announced date(s) seen, {} to {}; the nearest is {} "
+                   "day(s) from {}. Not a confirmed free day -- the tour is "
+                   "not visible around kickoff, and dates this far out are "
+                   "only partly announced. Checked {}.".format(
+                       len(dates), dates[0], dates[-1], nearest, date,
+                       checked)}
 
 
 def near_events(game: Dict, record: Optional[Dict]) -> List[Dict]:
@@ -206,27 +248,31 @@ def check_artist(artist: Dict, searcher, fetcher, extractor,
     season = hd.SEASON
     query = '"{}" tour dates {}'.format(artist["name"], season)
     rec = {"name": artist["name"], "checked_at": _now(), "query": query,
-           "sources": 0, "events": [], "error": None}
+           "sources": 0, "urls": [], "events": [], "error": None,
+           "v": RECORD_VERSION}
     try:
         urls = searcher(query) or []
     except Exception as e:
         rec["error"] = "search failed: {}".format(type(e).__name__)
         return rec
-    blocks = []
+    found, usable = [], False
     for url in urls[:SEARCH_RESULTS]:
         try:
             text = fetcher(url)
         except Exception:
             continue
-        if text:
-            blocks.append("SOURCE: {}\n{}".format(
-                url, text[:halftime_routing.MAX_FETCH_CHARS]))
-    rec["sources"] = len(blocks)
-    if not blocks:
+        if not text:
+            continue
+        rec["urls"].append(url)
+        got = extractor("SOURCE: {}\n{}".format(url, text[:SOURCE_CHARS]))
+        if got is not None:
+            usable = True
+            found.extend(got)
+    rec["sources"] = len(rec["urls"])
+    if not rec["urls"]:
         rec["error"] = "no fetchable source"
         return rec
-    found = extractor("\n\n".join(blocks))
-    if found is None:
+    if not usable:
         rec["error"] = "extraction unusable"
         return rec
     names = {artist["key"]} | {_key(a) for a in artist.get("aka") or []}
@@ -247,7 +293,7 @@ def check_artist(artist: Dict, searcher, fetcher, extractor,
 
 
 def _fresh(rec: Optional[Dict], today: str) -> bool:
-    if not rec or rec.get("error"):
+    if not rec or rec.get("error") or rec.get("v") != RECORD_VERSION:
         return False
     try:
         at = datetime.strptime(rec.get("checked_at", "")[:10], "%Y-%m-%d")
@@ -322,6 +368,22 @@ def run(creds: Optional[Dict] = None, out_path: Optional[Path] = None,
             "known": len(artists), "llm": stats, "out": str(out)}
 
 
+def probe(name: str) -> Dict:
+    """check_artist for one act with the live search and model; writes nothing."""
+    import cirrus_daily
+    import halftime_routing
+    creds = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
+    stats = {}
+    rec = check_artist(
+        {"name": name, "key": _key(name), "aka": []},
+        lambda q: cirrus_daily.search_web(q, max_results=SEARCH_RESULTS,
+                                          caller="halftime_itinerary"),
+        lambda u: cirrus_daily.fetch_article_content(u)[0],
+        lambda block: halftime_routing._extract(block, creds, stats))
+    rec["llm"] = stats
+    return rec
+
+
 # ── selftest ────────────────────────────────────────────────────────────────
 
 def selftest() -> int:
@@ -355,14 +417,25 @@ def selftest() -> int:
     check("a far show the day before is TIGHT",
           verdict(g20, rec([{"date": "2026-12-19",
                              "city": "Denver, CO"}]))["state"] == TIGHT)
-    check("an in-radius show the day before is not a problem",
-          verdict(g20, rec([{"date": "2026-12-19",
-                             "city": "Cleveland, OH"}]))["state"] == CLEAR)
-    c = verdict(g20, rec([{"date": "2026-11-02", "city": "Omaha, NE"},
-                          {"date": "2026-12-28", "city": "Boise, ID"}]))
-    check("nothing near the date is CLEAR, and says how many dates it saw",
-          c["state"] == CLEAR and "2 announced" in c["why"]
-          and "ANNOUNCED" in c["why"])
+    _in = verdict(g20, rec([{"date": "2026-12-19", "city": "Cleveland, OH"}]))
+    check("an in-radius show the day before reads 'in the area', not a problem",
+          _in["state"] == CLEAR and "day before" in _in["label"])
+    c = verdict(g20, rec([{"date": "2026-12-17", "city": "Omaha, NE"},
+                          {"date": "2026-12-23", "city": "Boise, ID"}]))
+    check("a gap in a tour we can SEE around kickoff is CLEAR, with the gap",
+          c["state"] == CLEAR and "3 day(s) before" in c["why"]
+          and "3 day(s) after" in c["why"])
+    o = verdict(g20, rec([{"date": "2026-11-19", "city": "Omaha, NE"},
+                          {"date": "2026-12-30", "city": "Boise, ID"}]))
+    check("dates only FAR from kickoff are 'open', never CLEAR (the TSO case: "
+          "8 dates seen, the 12/20 show missed)",
+          o["state"] == OPEN and "Not a confirmed free day" in o["why"])
+    check("dates on one side only is not a visible gap either",
+          verdict(g20, rec([{"date": "2026-12-17", "city": "Omaha, NE"}]))
+          ["state"] == OPEN)
+    check("a same-day show with no stated place is TIGHT, not a conflict",
+          verdict(g20, rec([{"date": "2026-12-20", "city": "",
+                             "venue": ""}]))["state"] == TIGHT)
     check("NO itinerary is 'not checked' -- never 'clear'",
           verdict(g20, rec([]))["state"] == NOT_CHECKED
           and verdict(g20, None)["state"] == NOT_CHECKED
@@ -391,6 +464,16 @@ def selftest() -> int:
               for e in r["events"]))
     check("the check itself rules TSO out on 12/20",
           verdict(g20, r)["state"] == CONFLICT)
+    _seen = []
+    check_artist(tso, lambda q: ["u1", "u2", "u3"],
+                 lambda u: "page " + u + " " + "x" * 30000,
+                 lambda b: _seen.append(len(b)) or [], today="2026-09-23")
+    check("each source is read ON ITS OWN, not cut off behind the others",
+          len(_seen) == 3 and all(n > SOURCE_CHARS for n in _seen))
+    check("a record carries the pages it read, and its logic version",
+          r["urls"] == ["u1", "u2"] and r["v"] == RECORD_VERSION)
+    check("a record from older logic is re-checked whatever its age",
+          not _fresh(dict(r, v=1), r["checked_at"][:10]))
     check("no source is an error, not an empty itinerary",
           check_artist(tso, lambda q: [], lambda u: "", fx)["error"]
           == "no fetchable source")
@@ -468,13 +551,19 @@ def selftest() -> int:
     return 0
 
 
-USAGE = "usage: halftime_itinerary.py [selftest]   (no argument = run)"
+USAGE = ("usage: halftime_itinerary.py [selftest | probe <act name>]   "
+         "(no argument = run)")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args == ["selftest"]:
         return selftest()
+    if len(args) >= 2 and args[0] == "probe":
+        # One act, printed, NOTHING written -- for "why does this act read
+        # the way it does?" without touching the file the page is built from.
+        print(json.dumps(probe(" ".join(args[1:])), indent=2))
+        return 0
     if args:
         print(USAGE, file=sys.stderr)
         return 2
