@@ -51,6 +51,7 @@ ALLOWED_SCRIPTS = {
     "halftime_catalogue.py",
     "halftime_routing.py",
     "halftime_dashboard.py",
+    "halftime_itinerary.py",   # S273 Phase 4: the game-day check, on demand
     "cirrus_daily.py",
     "model_bench.py",
     "opportunity_scout.py",

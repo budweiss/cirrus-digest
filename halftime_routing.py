@@ -1297,6 +1297,15 @@ def main() -> int:
         lock.__exit__()
     print(json.dumps(res))
     record_run(res)
+    # S273 (Phase 4, R34): where each act is ON game day. After the sweep, so
+    # tonight's acts are the ones checked; each is re-searched at most weekly.
+    # It may never fail the sweep -- the routing column is worth more than the
+    # verdict line on it.
+    try:
+        import halftime_itinerary
+        log("itinerary: {}".format(json.dumps(halftime_itinerary.run())))
+    except Exception as e:
+        log("itinerary failed: {}".format(type(e).__name__))
     return 0
 
 

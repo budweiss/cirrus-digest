@@ -43,6 +43,9 @@ ROUTING_PATH = OUT_DIR / "routing.json"
 # data and must never ride a commit to GitHub. The nightly backup rsyncs the
 # whole checkout, so it is covered there.
 HISTORY_PATH = PROJECT_DIR / "data" / "halftime" / "history.jsonl"
+# Phase 4 (R34): each act's whole announced itinerary, written by
+# halftime_itinerary.py at the end of the nightly routing sweep.
+ITINERARY_PATH = OUT_DIR / "itinerary.json"
 
 SEASON = 2026
 TEAM = "Pittsburgh Steelers"
@@ -684,12 +687,19 @@ def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
     notes = {canonical_name(n["act"]): n for n in CLIENT_NOTES
              if n.get("week") == game.get("week")}
     shown = []
-    aside = {"no_fit": [], "unknown": [], "ruled_out": []}
+    aside = _empty_aside()
     for act in acts:
         act = dict(act)
         note = notes.get(canonical_name(act.get("name", "")))
         if note:
             act["client_note"] = note["note"]
+        # R34: the itinerary's own evidence rules an act out before Justin's
+        # note does -- TSO on 12/20 is set aside by the check, and still
+        # carries his note beside it.
+        if (act.get("viability") or {}).get("state") == "conflict":
+            aside["conflict"].append(act)
+            continue
+        if note:
             if note.get("ruled_out"):
                 aside["ruled_out"].append(act)
                 continue
@@ -704,18 +714,21 @@ def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
 
 
 def _empty_aside() -> Dict:
-    return {"no_fit": [], "unknown": [], "ruled_out": []}
+    return {"conflict": [], "no_fit": [], "unknown": [], "ruled_out": []}
 
 
 def build_snapshot(db_path: Optional[str] = None,
                    games: Optional[List[Dict]] = None,
                    routing_path: Optional[Path] = None,
-                   today: Optional[str] = None) -> Dict:
+                   today: Optional[str] = None,
+                   itinerary_path: Optional[Path] = None) -> Dict:
     """Everything the page needs, in one file."""
     games = games if games is not None else HOME_GAMES
     today = today or today_et()
     for_hire = _load_acts("for_hire", db_path=db_path)
     routing = _load_routing(routing_path)
+    import halftime_itinerary as itin
+    itinerary = itin.load(itinerary_path or ITINERARY_PATH).get("artists") or {}
     # Cross-reference key: an act in BOTH pools is the strongest lead there is.
     import halftime_routing
     credited_names = {halftime_routing.canonical_key(a["name"])
@@ -785,8 +798,17 @@ def build_snapshot(db_path: Optional[str] = None,
             else:
                 rows = swept.get("coverage") or []
                 errs = [r for r in rows if r.get("error")]
+                # R35: an act on Justin's list whose OWN itinerary puts it in
+                # the window and radius joins this column, even when the metro
+                # search missed it.
+                fan_near = [ev for f in STEELERS_CONNECTED
+                            for ev in itin.near_events(game, itinerary.get(
+                                halftime_routing.canonical_key(f["name"])))]
                 touring = _as_candidates(
-                    swept.get("events") or [], credited_names)
+                    (swept.get("events") or []) + fan_near, credited_names)
+                for c in touring:
+                    c["viability"] = itin.verdict(game, itinerary.get(
+                        halftime_routing.canonical_key(c["name"])))
                 if rows and len(errs) == len(rows):
                     tr_cov = {"state": FAILED,
                               "swept_at": rows[0].get("swept_at"),
@@ -823,7 +845,9 @@ def build_snapshot(db_path: Optional[str] = None,
         if game.get("theme") and entry["at_venue"]:
             elsewhere = {canonical_name(a["name"]) for a in fh + touring}
             fans, entry["set_aside"]["fans"] = split_for_game(
-                game, [a for a in rank_for_game(game, snap["fans"])
+                game, [dict(a, viability=itin.verdict(game, itinerary.get(
+                    halftime_routing.canonical_key(a["name"]))))
+                       for a in rank_for_game(game, snap["fans"])
                        if canonical_name(a["name"]) not in elsewhere])
         entry["candidates"] = {"for_hire": fh, "touring": touring,
                                "fans": fans}
@@ -1269,6 +1293,10 @@ def _act_card(act: Dict) -> str:
     if act.get("client_note"):
         bits.append("<div class='client-note'>{}</div>".format(
             _e(act["client_note"])))
+    v = act.get("viability")
+    if v:
+        bits.append("<div class='via via-{}' title='{}'>Game day: {}</div>"
+                    .format(_e(v["state"]), _e(v["why"]), _e(v["label"])))
     if act.get("theme_fit"):
         bits.append("<div class='cleared'>Fits the brief: {}</div>".format(
             _e(act["theme_fit"])))
@@ -1352,10 +1380,12 @@ def _short_list(acts: List[Dict], detail) -> str:
 
 def _fan_line(a: Dict) -> str:
     f = a.get("fields") or {}
+    v = a.get("viability") or {}
     return " · ".join(x for x in (
         "from " + f["hometown"] if f.get("hometown") else "",
         f.get("style"),
-        "broke through in the " + f["era"] if f.get("era") else "") if x)
+        "broke through in the " + f["era"] if f.get("era") else "",
+        "game day: " + v["label"].lower() if v.get("label") else "") if x)
 
 
 def _style_and_place(a: Dict) -> str:
@@ -1373,6 +1403,13 @@ _NO_FIT_LABEL = {"salute_to_service": "no tie to Salute to Service on record",
 
 def _aside_html(aside: Dict, theme: Optional[str]) -> str:
     out = []
+    if aside.get("conflict"):
+        out.append("<details class='aside conflict'><summary>{} playing "
+                   "elsewhere on game day</summary>{}</details>".format(
+                       len(aside["conflict"]),
+                       _short_list(aside["conflict"], lambda a: " ".join(
+                           x for x in ((a.get("viability") or {}).get("why"),
+                                       a.get("client_note")) if x))))
     if aside.get("ruled_out"):
         out.append("<details class='aside ruled'><summary>{} ruled out by you"
                    "</summary>{}</details>".format(
@@ -1409,9 +1446,11 @@ def _pool_panel(g: Dict, pool: str) -> str:
              "<h3>{}</h3>".format(_e(POOL_LABEL[pool])),
              "<p class='poolsub'>{}</p>".format(_e(POOL_SUB[pool]))]
     if pool == "fans":
-        parts.append("<div class='cov'>your list · {} fit this brief · where "
-                     "they are playing is not checked yet</div>".format(
-                         len(acts)))
+        checked = sum(1 for a in acts if (a.get("viability") or {}).get(
+            "state") not in (None, "not_checked"))
+        parts.append("<div class='cov'>your list · {} fit this brief · game-"
+                     "day schedule found for {} of them</div>".format(
+                         len(acts), checked))
     else:
         parts.append(_coverage_line(cov))
     # The credit pool has no per-game signal — the same acts rank the same way
@@ -1549,8 +1588,10 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                      "artists — {}</h2>".format(len(fans)))
         parts.append("<p class='meta'>Your list, 23 Sep. Wherever one of these "
                      "turns up on a card above it is marked, and ranks with a "
-                     "Pittsburgh tie. Where each is playing around your dates "
-                     "is not checked yet — that check is in progress.</p>")
+                     "Pittsburgh tie. Each date's panel says where they are "
+                     "on game day when an itinerary was found; one with no "
+                     "announced dates says so rather than reading as free."
+                     "</p>")
         parts.append("<ul class='acts'>")
         parts.extend(_act_card(a) for a in fans)
         parts.append("</ul></section>")
@@ -1644,6 +1685,10 @@ section.no-act {{ opacity:.72; }}
 .aside, .rest {{ margin-top:10px; font-size:13px; }}
 .aside summary, .rest summary {{ cursor:pointer; color:#7d8794; font-size:12px; }}
 .aside.ruled summary {{ color:var(--gold); }}
+.aside.conflict summary {{ color:#e06a6a; }}
+.via {{ margin:5px 0 2px; font-size:12px; }}
+.via-conflict {{ color:#e06a6a; }} .via-tight {{ color:#e0a03a; }}
+.via-clear, .via-local {{ color:#79d19a; }} .via-not_checked {{ color:#7d8794; }}
 .completed summary {{ cursor:pointer; }}
 .completed summary h2 {{ display:inline; }}
 .completed .logs {{ list-style:none; margin:10px 0 0; padding:0; }}
@@ -1725,6 +1770,11 @@ def selftest() -> int:
         # A path inside the tmpdir that is never created is the honest stand-in
         # for "no sweep has ever run" -- _load_routing returns {} for it.
         no_routing = Path(tmp) / "never-swept.json"
+        # T32/T80: build() and build_snapshot() default to the LIVE itinerary
+        # and the LIVE client history log. On CUMULUS both exist, so every
+        # case below would silently read real data. Paths never created.
+        globals()["ITINERARY_PATH"] = Path(tmp) / "no-itinerary.json"
+        globals()["HISTORY_PATH"] = Path(tmp) / "no-history.jsonl"
         entity_kb.upsert_entity(
             KB_PROJECT, "test-patriot", "Test Patriot Band",
             entity_type="halftime_act", db_path=db,
@@ -2347,6 +2397,64 @@ def selftest() -> int:
         except OSError:
             _capped = True
         check("history: the log refuses to grow past its ceiling", _capped)
+
+        # --- Phase 4 (R34): where is the act ON game day --------------
+        import halftime_routing as _hr
+        _k = _hr.canonical_key
+        _itp = Path(tmp) / "itin.json"
+        _itp.write_text(json.dumps({"artists": {
+            _k("Trans-Siberian Orchestra"): {
+                "name": "Trans-Siberian Orchestra", "error": None,
+                "checked_at": "2026-09-23T00:00:00Z",
+                "events": [{"date": "2026-12-20", "city": "Chicago, IL",
+                            "venue": "Allstate Arena"}]},
+            _k("Rusted Root"): {
+                "name": "Rusted Root", "error": None,
+                "checked_at": "2026-09-23T00:00:00Z",
+                "events": [{"date": "2026-10-12", "city": "Pittsburgh, PA",
+                            "venue": "Stage AE"}]}}}))
+        _rt15 = Path(tmp) / "routing-15.json"
+        _cov = [{"metro": "Cleveland, OH", "miles": 135, "sources": 1,
+                 "found": 1, "error": None, "swept_at": "2026-09-23T00:00:00Z"}]
+        _rt15.write_text(json.dumps({"window_days": 3, "games": {
+            "wk15-ravens": {"events": [
+                {"artist": "Trans-Siberian Orchestra", "date": "2026-12-22",
+                 "venue": "Rocket Arena", "city": "Cleveland, OH",
+                 "miles": 135, "gap": 2},
+                {"artist": "Unlisted Act", "date": "2026-12-21",
+                 "venue": "Rocket Arena", "city": "Cleveland, OH",
+                 "miles": 135, "gap": 1}], "coverage": _cov},
+            "wk05-colts": {"events": [], "coverage": _cov}}}))
+        vsnap = build_snapshot(today=_T, db_path=db, routing_path=_rt15,
+                               itinerary_path=_itp)
+        _v15 = next(g for g in vsnap["games"] if g["week"] == 15)
+        _conf = _v15["set_aside"]["touring"]["conflict"]
+        check("viability: TSO is set aside on 12/20 by the CHECK itself",
+              [a["name"] for a in _conf] == ["Trans-Siberian Orchestra"]
+              and _v15["set_aside"]["touring"]["ruled_out"] == [])
+        check("viability: ...with the evidence AND Justin's note beside it",
+              "Chicago" in _conf[0]["viability"]["label"]
+              and "performance schedule" in _conf[0]["client_note"])
+        _un = [a for a in _v15["candidates"]["touring"]
+               if a["name"] == "Unlisted Act"]
+        check("viability: an act with no itinerary reads 'not checked', "
+              "never 'clear'",
+              _un and _un[0]["viability"]["state"] == "not_checked")
+        _v5 = next(g for g in vsnap["games"] if g["week"] == 5)
+        _rr = [a for a in _v5["candidates"]["touring"]
+               if a["name"] == "Rusted Root"]
+        check("viability: a fan-list act the metro search missed joins the "
+              "touring column from its own itinerary",
+              _rr and "fan" in {b["kind"] for b in _rr[0]["badges"]})
+        _vp = render_html(vsnap)
+        check("viability: the conflict fold reaches the page with its city",
+              "playing elsewhere on game day" in _vp and "Allstate Arena" in _vp)
+        check("viability: every touring card says its game-day state",
+              _vp.count("class='via via-") >= 2
+              and "Game day: Game-day schedule not checked" in _vp)
+        _w8v = next(g for g in vsnap["games"] if g["week"] == 8)
+        check("viability: his list's panel carries each act's game-day state",
+              all("viability" in a for a in _w8v["candidates"]["fans"]))
 
         # --- R13 market analysis --------------------------------------
         mkt = market_analysis(snap)

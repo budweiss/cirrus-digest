@@ -274,7 +274,8 @@ def selftest() -> int:
         SNAPSHOT = Path(td) / "snapshot.json"
         TODAY = "2026-09-20"            # Week 1 played, Week 15 not
         snap = hd.build_snapshot(today=TODAY, db_path=str(Path(td) / "kb.db"),
-                                 routing_path=Path(td) / "never.json")
+                                 routing_path=Path(td) / "never.json",
+                                 itinerary_path=Path(td) / "never-itin.json")
         SNAPSHOT.write_text(json.dumps(snap))
         check("the log is NOT under out/ -- build output is rewritten nightly",
               "out" not in hd.HISTORY_PATH.relative_to(
