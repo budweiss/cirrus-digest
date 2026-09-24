@@ -43,11 +43,14 @@ SEASON = 2026
 TEAM = "Pittsburgh Steelers"
 VENUE = "Acrisure Stadium"
 
-# 2026 home slate. `date` is None where the league has not set it: Week 16 is
-# unflexed, and the Week 7 game against New Orleans is a home game STAGED IN
-# PARIS, whose date we have not verified from a primary source. A guessed date
-# on a client dashboard is worse than an absent one -- the booker plans around
-# it. Absent, with the reason, is honest and still useful.
+# 2026 home slate. `date` is None where the league has not set it (Week 16 is
+# unflexed). A guessed date on a client dashboard is worse than an absent one --
+# the booker plans around it. Absent, with the reason, is honest and still useful.
+#
+# 2026-09-23, Justin (halftime/REQUIREMENTS-2026-09-23.md): the Paris game is
+# REMOVED (R30) -- it had been listed as "not a venue date" for completeness,
+# and he asked for it gone. Carolina needs no act (R31). Three dates now carry
+# his own brief (R36-R38), which is the `theme`; `brief` is his wording.
 HOME_GAMES = [
     {"week": 1,  "date": "2026-09-13", "opponent": "Atlanta Falcons",
      "kick_et": "13:00", "slot": "day"},
@@ -55,28 +58,86 @@ HOME_GAMES = [
      "kick_et": "13:00", "slot": "day"},
     {"week": 5,  "date": "2026-10-11", "opponent": "Indianapolis Colts",
      "kick_et": "13:00", "slot": "day"},
-    {"week": 7,  "date": None, "opponent": "New Orleans Saints",
-     "kick_et": None, "slot": "international",
-     "note": "Home game staged in Paris. Not an Acrisure date, and a different "
-             "entertainment programme — listed so the season is complete, not "
-             "because it is a booking opportunity. Date unverified here.",
-     "at_venue": False},
     {"week": 8,  "date": "2026-11-01", "opponent": "Cleveland Browns",
      "kick_et": "13:00", "slot": "day",
-     "target": "military / patriotic tie",
-     "note": "Client target. Falls in the league's November Salute to Service "
-             "window."},
+     "target": "Salute to Service", "theme": "salute_to_service",
+     "brief": "A clear connection to the theme — military bands, country "
+              "artists, or performers with songs or ties to the military, the "
+              "country or American pride. Not unrelated acts just because they "
+              "are available."},
     {"week": 12, "date": "2026-11-27", "opponent": "Denver Broncos",
-     "kick_et": "15:00", "slot": "Black Friday national (Prime Video)"},
+     "kick_et": "15:00", "slot": "Black Friday national (Prime Video)",
+     "target": "Heritage Game", "theme": "heritage",
+     "brief": "1933 uniforms and a broader celebration of Pittsburgh. "
+              "Pittsburgh / local connection is a major filter. The primetime "
+              "window could make a larger act worth considering."},
     {"week": 13, "date": "2026-12-06", "opponent": "Houston Texans",
-     "kick_et": "20:20", "slot": "Sunday Night Football (NBC)"},
+     "kick_et": "20:20", "slot": "Sunday Night Football (NBC)",
+     "target": "Alumni Weekend — in-game stage acts, '90s theme",
+     "theme": "alumni_90s",
+     "brief": "No traditional halftime act. Supporting / stage acts during the "
+              "game who could perform a couple of songs — House of Pain is the "
+              "type."},
     {"week": 15, "date": "2026-12-20", "opponent": "Baltimore Ravens",
      "kick_et": "13:00", "slot": "day",
-     "target": "rivalry game — warrants an act",
-     "note": "Client target."},
+     "target": "Rivalry game — warrants an act"},
     {"week": 16, "date": None, "opponent": "Carolina Panthers",
-     "kick_et": None, "slot": "flex — not yet set",
-     "note": "Late December. Recheck when the league sets it."},
+     "kick_et": None, "slot": "flex — not yet set", "mode": "no_act",
+     "note": "No act needed (your note, 23 Sep)."},
+]
+
+# The brief each theme stands for, in the words the page uses for its sorting.
+THEME_LABEL = {"salute_to_service": "tie to Salute to Service",
+               "heritage": "Pittsburgh / local connection",
+               "alumni_90s": "'90s act"}
+
+# R35 (Justin, 2026-09-23): his list of artists who are known Steelers fans or
+# have a connection to the team. CLIENT DATA, his names -- a signal on any card
+# where the act turns up, and on a themed date its own list. `aka` is the other
+# name the same act arrives under; `style` only where it is not in doubt, and
+# blank otherwise, because a wrong style is worse than none (S141).
+STEELERS_CONNECTED = [
+    {"name": "Bret Michaels", "style": "rock"},
+    {"name": "Charles Wesley Godwin", "style": "country"},
+    {"name": "Christina Aguilera", "style": "pop"},
+    {"name": "Dan Smyers", "style": "country"},
+    {"name": "Gabby Barrett", "style": "country"},
+    {"name": "Garth Brooks", "style": "country"},
+    {"name": "GloRilla", "style": "hip hop / rap"},
+    {"name": "Daya", "aka": ["Grace Tandon"], "style": "pop"},
+    {"name": "Hank Williams Jr.", "style": "country"},
+    {"name": "Harry Mack", "style": "hip hop / rap"},
+    {"name": "Jack Harlow", "style": "hip hop / rap"},
+    {"name": "Jackie Evancho", "style": "classical / orchestral"},
+    {"name": "Martina McBride", "style": "country"},
+    {"name": "Noah Kahan", "style": ""},
+    {"name": "Pat Monahan", "aka": ["Train"], "style": ""},
+    {"name": "Chip Esten", "aka": ["Charles Esten"], "style": "country"},
+    {"name": "Smokey Robinson", "style": "r&b / soul"},
+    {"name": "Snoop Dogg", "style": "hip hop / rap"},
+    {"name": "Trace Adkins", "style": "country"},
+    {"name": "Warren Zeiders", "style": "country"},
+    {"name": "Wiz Khalifa", "style": "hip hop / rap"},
+    {"name": "Dan + Shay", "style": "country", "group": True},
+    {"name": "Styx", "style": "classic rock", "group": True},
+    {"name": "The Clarks", "style": "rock", "group": True},
+    {"name": "Rusted Root", "style": "rock", "group": True},
+    {"name": "Donnie Iris & The Cruisers", "aka": ["Donnie Iris"],
+     "style": "classic rock", "group": True},
+    {"name": "Wild Cherry", "style": "", "group": True},
+    {"name": "The Gathering Field", "style": "rock", "group": True},
+]
+
+# Justin's own calls on specific acts for specific dates (2026-09-23). Shown on
+# the card as HIS note, never reworded into a finding of ours. `ruled_out`
+# moves the act into a collapsed list with the reason -- not deleted.
+CLIENT_NOTES = [
+    {"act": "Trans-Siberian Orchestra", "week": 15, "ruled_out": True,
+     "note": "Your note (23 Sep): looks viable at first, but their performance "
+             "schedule that day makes it unrealistic."},
+    {"act": "Styx", "week": 15,
+     "note": "Your note (23 Sep): interesting — though the 25th anniversary of "
+             "Renegade next year may make 2027 the stronger opportunity."},
 ]
 
 POOLS = ("touring", "for_hire")
@@ -88,7 +149,8 @@ POOLS = ("touring", "for_hire")
 # sweep is not only the other pool, it is the discriminator that makes THIS
 # pool correct. Until then the honest label is what we actually know.
 POOL_LABEL = {"touring": "Routing through",
-              "for_hire": "Has played a sports slot"}
+              "for_hire": "Has played a sports slot",
+              "fans": "Your Steelers-connected artists"}
 # R5: "a few options for each game" -- a few, not the whole roster. Repeating
 # every credit-list act under all nine games rendered 99 near-identical cards
 # and buried the ranking that makes the column worth reading. The full roster
@@ -102,6 +164,9 @@ POOL_SUB = {
                 "here has performed a halftime or in-game slot somewhere. "
                 "Whether a given one still takes one-off bookings is the phone "
                 "call, and is not claimed here.",
+    "fans": "From your list of Steelers fans and connections, filtered by "
+            "this date's brief. Acts already in a column above are left "
+            "there, marked.",
 }
 
 # Coverage states. The whole point of R4 is that these are three different
@@ -124,6 +189,104 @@ def _now() -> str:
 def game_id(game: Dict) -> str:
     return "wk{:02d}-{}".format(
         game["week"], game["opponent"].split()[-1].lower())
+
+
+def today_et() -> str:
+    """Today in Pittsburgh. A game is still upcoming on its own day."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def is_completed(game: Dict, today: Optional[str] = None) -> bool:
+    """R28: played games leave the main view. Undated games never are."""
+    return bool(game.get("date")) and game["date"] < (today or today_et())
+
+
+def upcoming_games(today: Optional[str] = None) -> List[Dict]:
+    """The slate still worth sweeping: not played, and an act is wanted."""
+    return [g for g in HOME_GAMES
+            if not is_completed(g, today) and g.get("mode") != "no_act"]
+
+
+# ── R35: Justin's Steelers-connected list ───────────────────────────────────
+
+def _fan_key(name: str) -> str:
+    """Letters and digits only, so "Dan + Shay" / "Dan & Shay" and "Hank
+    Williams, Jr." / "Hank Williams Jr." meet."""
+    return "".join(ch for ch in canonical_name(name) if ch.isalnum())
+
+
+def _fan_index() -> Dict[str, Dict]:
+    idx = {}
+    for entry in STEELERS_CONNECTED:
+        for n in [entry["name"]] + list(entry.get("aka") or []):
+            idx.setdefault(_fan_key(n), entry)
+    return idx
+
+
+def fan_entry(name: str) -> Optional[Dict]:
+    """The list entry this act matches, or None. Whole-name match only."""
+    return _fan_index().get(_fan_key(name)) if name else None
+
+
+def fan_acts() -> List[Dict]:
+    """The list itself, shaped like act cards."""
+    out = []
+    for entry in STEELERS_CONNECTED:
+        act = {"name": entry["name"], "also_known_as": list(entry.get("aka") or []),
+               "fields": {"style": entry.get("style", ""),
+                          "category": "steelers-connected"}}
+        act["badges"] = badges_for(act)
+        act["reach"] = {"state": "unknown", "why": ""}
+        out.append(act)
+    return out
+
+
+# ── R36-R38: does this act fit the date's brief ─────────────────────────────
+# Three answers, not two. For Salute to Service and the Heritage Game the brief
+# asks for a CLEAR tie, so no evidence of one means not surfaced -- Justin: "We
+# shouldn't surface unrelated mainstream artists simply because they're
+# available." For the '90s date the evidence is a recorded era, and most acts
+# have none yet: that is UNKNOWN, and the page must not say "not a '90s act"
+# about an act whose decade nobody has looked up.
+FIT, NO_FIT, UNKNOWN_FIT = "fit", "no", "unknown"
+
+
+def theme_fit(act: Dict, theme: Optional[str]) -> tuple:
+    """(FIT | NO_FIT | UNKNOWN_FIT, why)."""
+    if not theme:
+        return FIT, ""
+    fields = act.get("fields") or {}
+    kinds = {b["kind"] for b in act.get("badges", [])}
+    style = (fields.get("style") or "").lower()
+    cat = (fields.get("category") or "").lower()
+    if theme == "salute_to_service":
+        if "military" in cat or "patriotic" in cat or "military" in style:
+            return FIT, "Military / patriotic act."
+        if style == "country":
+            return FIT, "Country — inside your Salute to Service brief."
+        return NO_FIT, ""
+    if theme == "heritage":
+        if "market" in kinds:
+            return FIT, "Pittsburgh / PA tie ({}).".format(
+                fields.get("home_base", ""))
+        if "fan" in kinds:
+            return FIT, "On your Steelers-connected list."
+        reach = act.get("reach") or {}
+        if reach.get("state") == "our_market":
+            return FIT, reach.get("why", "")
+        return NO_FIT, ""
+    if theme == "alumni_90s":
+        era = (fields.get("era") or "").strip()
+        if not era:
+            return UNKNOWN_FIT, ""
+        if era.startswith("199"):
+            return FIT, "Broke through in the {}.".format(era)
+        return NO_FIT, ""
+    return FIT, ""
 
 
 # ── badges ──────────────────────────────────────────────────────────────────
@@ -154,6 +317,11 @@ def badges_for(act: Dict) -> List[Dict]:
     clients = (fields.get("clients") or "")
     fee = (fields.get("fee_note") or "").strip()
 
+    fan = fan_entry(act.get("name", ""))
+    if fan:
+        out.append({"kind": "fan", "label": "Steelers-connected (your list)",
+                    "why": "{} is on your list of Steelers fans / "
+                           "connections.".format(fan["name"])})
     if any(h in home for h in _PA_HINTS):
         out.append({"kind": "market", "label": "Pittsburgh / PA tie",
                     "why": fields.get("home_base", "")})
@@ -186,12 +354,18 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
     Nothing is filtered out by ranking; only the top few are shown, and the
     full list is on the page.
     """
-    target = (game.get("target") or "").lower()
-    wants_patriotic = "military" in target or "patriot" in target
+    # S270: keyed on the THEME. It used to read "military" out of the target
+    # wording, and Justin's own name for the date -- "Salute to Service" --
+    # contains neither word, so renaming the label would have silently dropped
+    # the patriotic lead.
+    wants_patriotic = game.get("theme") == "salute_to_service"
     lead = "patriotic" if wants_patriotic else "market"
 
     def key(act):
         kinds = {b["kind"] for b in act.get("badges", [])}
+        # R35: his Steelers-connected list is a Pittsburgh tie for ranking.
+        if "fan" in kinds:
+            kinds = kinds | {"market"}
         reach = REACH_ORDER.get((act.get("reach") or {}).get("state"), 2)
         # An act whose ONLY claim is the patriotic one is a Salute to Service
         # booking; it should not head a September afternoon game.
@@ -396,6 +570,14 @@ def rule_verdict(act: Dict) -> Dict:
         return {"state": "admitted", "rule": "rap rule",
                 "why": "Pittsburgh / PA tie — clears your rule the way Wiz does.",
                 "style": style, "style_source": source}
+    # S270: an act Justin himself listed as Steelers-connected (GloRilla, Jack
+    # Harlow, Harry Mack) is not held by his own rule. Treated like the
+    # Pittsburgh door, and the card says so, so the call can be argued with.
+    if "fan" in kinds:
+        return {"state": "admitted", "rule": "rap rule",
+                "why": "On your own Steelers-connected list — treated like a "
+                       "Pittsburgh tie.",
+                "style": style, "style_source": source}
     cat = (fields.get("category") or "").lower()
     if any(n in cat for n in _NOSTALGIA_CATS) or "nostalgia" in kinds:
         return {"state": "admitted", "rule": "rap rule",
@@ -462,11 +644,44 @@ def _load_routing(path: Optional[Path] = None) -> Dict:
         return {}
 
 
+def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
+    """(shown, set_aside) for one game's ranked list. Nothing is dropped:
+    set_aside holds the acts with no tie to the brief, the ones whose fit is
+    not yet known, and the ones Justin ruled out himself -- each with its
+    reason, so an empty main list can always be explained."""
+    notes = {canonical_name(n["act"]): n for n in CLIENT_NOTES
+             if n.get("week") == game.get("week")}
+    shown = []
+    aside = {"no_fit": [], "unknown": [], "ruled_out": []}
+    for act in acts:
+        act = dict(act)
+        note = notes.get(canonical_name(act.get("name", "")))
+        if note:
+            act["client_note"] = note["note"]
+            if note.get("ruled_out"):
+                aside["ruled_out"].append(act)
+                continue
+        state, why = theme_fit(act, game.get("theme"))
+        if state == FIT:
+            if why:
+                act["theme_fit"] = why
+            shown.append(act)
+        else:
+            aside["no_fit" if state == NO_FIT else "unknown"].append(act)
+    return shown, aside
+
+
+def _empty_aside() -> Dict:
+    return {"no_fit": [], "unknown": [], "ruled_out": []}
+
+
 def build_snapshot(db_path: Optional[str] = None,
                    games: Optional[List[Dict]] = None,
-                   routing_path: Optional[Path] = None) -> Dict:
+                   routing_path: Optional[Path] = None,
+                   today: Optional[str] = None) -> Dict:
     """Everything the page needs, in one file."""
     games = games if games is not None else HOME_GAMES
+    today = today or today_et()
     for_hire = _load_acts("for_hire", db_path=db_path)
     routing = _load_routing(routing_path)
     # Cross-reference key: an act in BOTH pools is the strongest lead there is.
@@ -474,14 +689,39 @@ def build_snapshot(db_path: Optional[str] = None,
     credited_names = {halftime_routing.canonical_key(a["name"])
                       for a in for_hire}
 
+    roster, roster_held = apply_rules(for_hire)
     snap = {"season": SEASON, "team": TEAM, "venue": VENUE,
-            "generated_at": _now(), "games": [], "acts_total": len(for_hire)}
+            "generated_at": _now(), "today": today, "games": [],
+            "acts_total": len(for_hire),
+            # The whole credit list and Justin's list, listed ONCE at the foot.
+            # Built here rather than gathered back out of the games, because a
+            # themed or played game no longer carries every act.
+            "roster": sorted(roster, key=lambda a: a.get("name", "")),
+            "roster_held": roster_held,
+            "fans": fan_acts()}
 
     for game in games:
         gid = game_id(game)
         entry = dict(game)
         entry["game_id"] = gid
         entry["at_venue"] = game.get("at_venue", True)
+        entry["completed"] = is_completed(game, today)
+        entry["set_aside"] = {"for_hire": _empty_aside(),
+                              "touring": _empty_aside(),
+                              "fans": _empty_aside()}
+        entry["candidates"] = {"for_hire": [], "touring": [], "fans": []}
+        entry["held"] = {"for_hire": [], "touring": []}
+
+        # R28 / R31: a played game and a no-act game carry no candidates. They
+        # are rendered as what they are, not as an empty search.
+        if entry["completed"] or game.get("mode") == "no_act":
+            why = ("Played." if entry["completed"]
+                   else game.get("note") or "No act needed.")
+            na = {"state": NOT_APPLICABLE, "swept_at": None, "sources": None,
+                  "found": 0, "note": why}
+            entry["coverage"] = {"for_hire": na, "touring": dict(na)}
+            snap["games"].append(entry)
+            continue
 
         # FOR-HIRE: no routing, so the same pool applies to every game. Coverage
         # is the catalogue's own state, which is genuinely known.
@@ -542,7 +782,19 @@ def build_snapshot(db_path: Optional[str] = None,
                       "note": "Staged in Paris — routing to Acrisure does not "
                               "apply."}
 
-        entry["candidates"] = {"for_hire": fh, "touring": touring}
+        fh, entry["set_aside"]["for_hire"] = split_for_game(game, fh)
+        touring, entry["set_aside"]["touring"] = split_for_game(game, touring)
+        # R35: on a date with a brief, Justin's own list is a column of its own,
+        # filtered by the same brief. Acts already in another column for this
+        # game are left there (they carry the badge) rather than listed twice.
+        fans = []
+        if game.get("theme") and entry["at_venue"]:
+            elsewhere = {canonical_name(a["name"]) for a in fh + touring}
+            fans, entry["set_aside"]["fans"] = split_for_game(
+                game, [a for a in rank_for_game(game, snap["fans"])
+                       if canonical_name(a["name"]) not in elsewhere])
+        entry["candidates"] = {"for_hire": fh, "touring": touring,
+                               "fans": fans}
         entry["held"] = {"for_hire": fh_held, "touring": []}
         entry["coverage"] = {"for_hire": fh_cov, "touring": tr_cov}
         snap["games"].append(entry)
@@ -581,9 +833,8 @@ _ARENA_KEYS = ("nba", "nhl", "all-star", "all star", "arena", "finals")
 def _credit_split(snap: Dict) -> Dict:
     """Where the catalogue's credits actually sit. Computed, not asserted."""
     seen, nfl, arena = {}, [], []
-    for g in snap["games"]:
-        for a in g["candidates"]["for_hire"] + (g.get("held", {}).get("for_hire") or []):
-            seen[a["name"]] = (a.get("fields") or {}).get("clients", "") or ""
+    for a in (snap.get("roster") or []) + (snap.get("roster_held") or []):
+        seen[a["name"]] = (a.get("fields") or {}).get("clients", "") or ""
     for name, clients in seen.items():
         low = clients.lower()
         if any(k in low for k in _ARENA_KEYS):
@@ -731,9 +982,13 @@ def _as_candidates(events: List[Dict],
             cand["_gap"] = ev.get("gap")
             by_artist[key] = cand
     # Draw first, date second. An arena act four days out is a better lead
-    # than a 300-capacity club act on the day.
+    # than a 300-capacity club act on the day. Justin's Steelers-connected list
+    # ahead of both (R35): "Dan + Shay playing the same venue two days before
+    # our game, combined with Dan being a Steelers fan" is his own example of
+    # the signal worth leading with.
     return sorted(by_artist.values(),
                   key=lambda c: (
+                      0 if fan_entry(c["name"]) else 1,
                       halftime_routing.DRAW_ORDER.get(
                           (c.get("draw") or {}).get("tier"), 4),
                       abs(c.get("_gap") or 99), c["name"]))
@@ -766,6 +1021,12 @@ def _act_card(act: Dict) -> str:
     fields = act.get("fields") or {}
     bits = ["<li class='act'>", "<div class='act-name'>",
             _e(act.get("name")), "</div>"]
+    if act.get("client_note"):
+        bits.append("<div class='client-note'>{}</div>".format(
+            _e(act["client_note"])))
+    if act.get("theme_fit"):
+        bits.append("<div class='cleared'>Fits the brief: {}</div>".format(
+            _e(act["theme_fit"])))
     d = act.get("draw") or {}
     if d.get("why"):
         bits.append("<div class='{}'>{}</div>".format(
@@ -821,6 +1082,129 @@ def _coverage_line(cov: Dict) -> str:
         _e((cov.get("swept_at") or "")[:10]))
 
 
+def _game_heading(g: Dict) -> str:
+    meta = [g.get("slot")]
+    if g.get("kick_et"):
+        meta.append(g["kick_et"] + " ET")
+    return ("<h2><span class='wk'>Wk {}</span> {} <span class='opp'>vs {}"
+            "</span></h2><p class='meta'>{}</p>".format(
+                _e(g["week"]), _e(g.get("date") or "date TBD"),
+                _e(g["opponent"]), _e(" · ".join(m for m in meta if m))))
+
+
+def _short_list(acts: List[Dict], detail) -> str:
+    """Name plus one line -- for lists a booker scans, not reads."""
+    out = ["<ul class='acts'>"]
+    for a in acts:
+        line = detail(a)
+        out.append("<li class='act'><div class='act-name'>{}</div>{}</li>".format(
+            _e(a.get("name")),
+            "<div class='row'><span class='v'>{}</span></div>".format(_e(line))
+            if line else ""))
+    out.append("</ul>")
+    return "".join(out)
+
+
+def _style_and_place(a: Dict) -> str:
+    f = a.get("fields") or {}
+    return " · ".join(x for x in (f.get("style"), f.get("routing")) if x)
+
+
+# R36-R38: what was set aside, and why -- collapsed, never deleted. An empty
+# main list on a themed date is only honest if the reader can open this and
+# see what was found and why it is not being recommended.
+_NO_FIT_LABEL = {"salute_to_service": "no tie to Salute to Service on record",
+                 "heritage": "no Pittsburgh / local connection on record",
+                 "alumni_90s": "did not break through in the '90s"}
+
+
+def _aside_html(aside: Dict, theme: Optional[str]) -> str:
+    out = []
+    if aside.get("ruled_out"):
+        out.append("<details class='aside ruled'><summary>{} ruled out by you"
+                   "</summary>{}</details>".format(
+                       len(aside["ruled_out"]),
+                       _short_list(aside["ruled_out"],
+                                   lambda a: a.get("client_note", ""))))
+    if aside.get("no_fit"):
+        out.append("<details class='aside'><summary>{} set aside — {}"
+                   "</summary>{}</details>".format(
+                       len(aside["no_fit"]),
+                       _e(_NO_FIT_LABEL.get(theme, "no tie to the brief")),
+                       _short_list(aside["no_fit"], _style_and_place)))
+    if aside.get("unknown"):
+        out.append("<details class='aside'><summary>{} not checked yet — "
+                   "decade not recorded, so not ruled out</summary>{}"
+                   "</details>".format(
+                       len(aside["unknown"]),
+                       _short_list(aside["unknown"], _style_and_place)))
+    return "".join(out)
+
+
+def _held_html(held: List[Dict], lead: str) -> str:
+    return ("<details class='held'><summary>{}</summary>{}</details>".format(
+        _e(lead), _short_list(held, lambda h: (h.get("verdict") or {}).get(
+            "why", ""))))
+
+
+def _pool_panel(g: Dict, pool: str) -> str:
+    cov = g["coverage"].get(pool)
+    acts = list(g["candidates"].get(pool) or [])
+    aside = (g.get("set_aside") or {}).get(pool) or _empty_aside()
+    held = (g.get("held") or {}).get(pool) or []
+    parts = ["<div class='pool pool-{}'>".format(_e(pool)),
+             "<h3>{}</h3>".format(_e(POOL_LABEL[pool])),
+             "<p class='poolsub'>{}</p>".format(_e(POOL_SUB[pool]))]
+    if pool == "fans":
+        parts.append("<div class='cov'>your list · {} fit this brief · where "
+                     "they are playing is not checked yet</div>".format(
+                         len(acts)))
+    else:
+        parts.append(_coverage_line(cov))
+    # The credit pool has no per-game signal — the same acts rank the same way
+    # on every date — so repeating the top three under all nine games said
+    # nothing and put Bret Michaels, who Justin told us they have booked "many
+    # times", at the top of six cards. Show it per game only where the game's
+    # own target actually reorders it; elsewhere point at the one list.
+    pointed = pool == "for_hire" and bool(acts) and not g.get("target")
+    if pointed:
+        parts.append("<p class='more'>{} acts in the credit list, and it "
+                     "applies to every date equally — so it is listed once "
+                     "below rather than repeated here.</p>".format(len(acts)))
+    elif acts:
+        shown = acts[:PER_GAME_SHOWN]
+        parts.append("<ul class='acts'>")
+        parts.extend(_act_card(a) for a in shown)
+        parts.append("</ul>")
+        rest = acts[len(shown):]
+        if rest and pool == "for_hire":
+            parts.append("<p class='more'>+{} more in the credit list below — "
+                         "these {} rank highest for this game.</p>".format(
+                             len(rest), len(shown)))
+        elif rest:
+            # S270: these used to be pointed at "the credit list below", which
+            # never contains a routing hit -- the rest of this column was
+            # simply unreachable. They open here instead.
+            parts.append("<details class='rest'><summary>{} more for this "
+                         "date</summary><ul class='acts'>{}</ul></details>"
+                         .format(len(rest),
+                                 "".join(_act_card(a) for a in rest)))
+    elif any(aside.values()):
+        n = sum(len(v) for v in aside.values())
+        parts.append("<p class='empty none'><strong>Nothing here fits the "
+                     "brief yet.</strong> {} found and set aside below, each "
+                     "with the reason.</p>".format(n))
+    else:
+        parts.append(_empty_message(cov) if cov else
+                     "<p class='empty none'><strong>None on your list fit "
+                     "this brief.</strong></p>")
+    parts.append(_aside_html(aside, g.get("theme")))
+    if held:
+        parts.append(_held_html(held, "{} held by your rules".format(len(held))))
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def render_html(snap: Dict) -> str:
     parts = [_HEAD.format(team=_e(snap["team"]), season=_e(snap["season"]))]
     parts.append(
@@ -830,97 +1214,59 @@ def render_html(snap: Dict) -> str:
             _e(snap["team"]), _e(snap["season"]), _e(snap["venue"]),
             _e(snap["generated_at"])))
 
-    targets = [g for g in snap["games"] if g.get("target")]
+    live = [g for g in snap["games"] if not g.get("completed")]
+    done = [g for g in snap["games"] if g.get("completed")]
+
+    targets = [g for g in live if g.get("target")]
     if targets:
-        parts.append("<section class='targets'><h2>Your two dates</h2><ul>")
+        parts.append("<section class='targets'><h2>Your dates</h2><ul>")
         for g in targets:
             parts.append("<li><strong>{}</strong> vs {} — {}</li>".format(
                 _e(g.get("date") or "date TBD"), _e(g["opponent"]),
                 _e(g["target"])))
         parts.append("</ul></section>")
 
-    for g in snap["games"]:
+    for g in live:
         cls = "game" + (" is-target" if g.get("target") else "") + \
-              ("" if g.get("at_venue", True) else " off-site")
-        parts.append("<section class='{}'>".format(cls))
-        parts.append(
-            "<h2><span class='wk'>Wk {}</span> {} <span class='opp'>vs {}</span>"
-            "</h2>".format(_e(g["week"]), _e(g.get("date") or "date TBD"),
-                           _e(g["opponent"])))
-        meta = [g.get("slot")]
-        if g.get("kick_et"):
-            meta.append(g["kick_et"] + " ET")
-        parts.append("<p class='meta'>{}</p>".format(
-            _e(" · ".join(m for m in meta if m))))
+              ("" if g.get("at_venue", True) else " off-site") + \
+              (" no-act" if g.get("mode") == "no_act" else "")
+        parts.append("<section class='{}' id='{}'>".format(
+            cls, _e(g.get("game_id", ""))))
+        parts.append(_game_heading(g))
         if g.get("target"):
-            parts.append("<p class='target'>Target: {}</p>".format(
-                _e(g["target"])))
+            parts.append("<p class='target'>{}</p>".format(_e(g["target"])))
+        if g.get("brief"):
+            parts.append("<p class='brief'><span class='k'>Your brief</span> "
+                         "{}</p>".format(_e(g["brief"])))
         if g.get("note"):
             parts.append("<p class='note'>{}</p>".format(_e(g["note"])))
+        # R31: no act wanted -- say so in one line, not two empty panels.
+        if g.get("mode") == "no_act":
+            parts.append("</section>")
+            continue
 
         parts.append("<div class='pools'>")
         for pool in POOLS:
-            cov = g["coverage"][pool]
-            acts = g["candidates"][pool]
-            parts.append("<div class='pool pool-{}'>".format(_e(pool)))
-            parts.append("<h3>{}</h3>".format(_e(POOL_LABEL[pool])))
-            parts.append("<p class='poolsub'>{}</p>".format(
-                _e(POOL_SUB[pool])))
-            parts.append(_coverage_line(cov))
-            # The credit pool has no per-game signal — the same acts rank the
-            # same way on every date — so repeating the top three under all
-            # nine games said nothing and put Bret Michaels, who Justin told us
-            # they have booked "many times", at the top of six cards. Show it
-            # per game only where the game's own target actually reorders it
-            # (11/1 patriotic, 12/20 rivalry); elsewhere point at the one list.
-            if pool == "for_hire" and acts and not g.get("target"):
-                parts.append(
-                    "<p class='more'>{} acts in the credit list, and it "
-                    "applies to every date equally — so it is listed once "
-                    "below rather than repeated here.</p>".format(len(acts)))
-                acts = []
-            if acts:
-                shown = acts[:PER_GAME_SHOWN]
-                parts.append("<ul class='acts'>")
-                parts.extend(_act_card(a) for a in shown)
-                parts.append("</ul>")
-                held = g.get("held", {}).get(pool) or []
-                if held:
-                    parts.append(
-                        "<details class='held'><summary>{} held by your "
-                        "rules</summary><ul class='acts'>".format(len(held)))
-                    for h in held:
-                        parts.append(
-                            "<li class='act'><div class='act-name'>{}</div>"
-                            "<div class='row'><span class='v'>{}</span></div>"
-                            "</li>".format(_e(h.get("name")),
-                                           _e((h.get("verdict") or {}).get("why"))))
-                    parts.append("</ul></details>")
-                if len(acts) > len(shown):
-                    parts.append(
-                        "<p class='more'>+{} more in the credit list below — "
-                        "these {} rank highest for this game.</p>".format(
-                            len(acts) - len(shown), len(shown)))
-            else:
-                parts.append(_empty_message(cov))
-                held = g.get("held", {}).get(pool) or []
-                if held:
-                    parts.append(
-                        "<p class='more'>{} act(s) were held by your rules "
-                        "rather than being absent — see below.</p>".format(
-                            len(held)))
-                    parts.append(
-                        "<details class='held'><summary>held by your rules"
-                        "</summary><ul class='acts'>")
-                    for h in held:
-                        parts.append(
-                            "<li class='act'><div class='act-name'>{}</div>"
-                            "<div class='row'><span class='v'>{}</span></div>"
-                            "</li>".format(_e(h.get("name")),
-                                           _e((h.get("verdict") or {}).get("why"))))
-                    parts.append("</ul></details>")
-            parts.append("</div>")
-        parts.append("</div></section>")
+            parts.append(_pool_panel(g, pool))
+        parts.append("</div>")
+        # R35: on a date with a brief, Justin's own list gets a panel of its
+        # own, under the two supply pools and filtered by the same brief.
+        if g.get("theme") and g.get("at_venue", True):
+            parts.append(_pool_panel(g, "fans"))
+        parts.append("</section>")
+
+    # R28: played games leave the main view. Phase 2 turns each one into a log
+    # entry (what was done, final cost, Voice of the Fan rating).
+    if done:
+        parts.append("<section class='completed'><details><summary>"
+                     "<h2>Completed games ({})</h2></summary><ul>".format(
+                         len(done)))
+        for g in done:
+            parts.append("<li id='{}'><span class='wk'>Wk {}</span> {} vs {}"
+                         "</li>".format(_e(g.get("game_id", "")),
+                                        _e(g["week"]), _e(g.get("date")),
+                                        _e(g["opponent"])))
+        parts.append("</ul></details></section>")
 
     parts.append("<section class='analysis'><h2>What does well in this "
                  "market</h2>")
@@ -932,11 +1278,7 @@ def render_html(snap: Dict) -> str:
                 _e(f["basis"])))
     parts.append("</section>")
 
-    roster = []
-    for g in snap["games"]:
-        for a in g["candidates"]["for_hire"]:
-            if a["name"] not in [r["name"] for r in roster]:
-                roster.append(a)
+    roster = snap.get("roster") or []
     if roster:
         parts.append("<section class='roster'><h2>Credit list — "
                      "{} acts</h2>".format(len(roster)))
@@ -945,8 +1287,19 @@ def render_html(snap: Dict) -> str:
                      "rank highest for it; this is the whole list.</p>".format(
                          PER_GAME_SHOWN))
         parts.append("<ul class='acts'>")
-        parts.extend(_act_card(a) for a in sorted(roster,
-                                                  key=lambda x: x["name"]))
+        parts.extend(_act_card(a) for a in roster)
+        parts.append("</ul></section>")
+
+    fans = snap.get("fans") or []
+    if fans:
+        parts.append("<section class='roster fans'><h2>Your Steelers-connected "
+                     "artists — {}</h2>".format(len(fans)))
+        parts.append("<p class='meta'>Your list, 23 Sep. Wherever one of these "
+                     "turns up on a card above it is marked, and ranks with a "
+                     "Pittsburgh tie. Where each is playing around your dates "
+                     "is not checked yet — that check is in progress.</p>")
+        parts.append("<ul class='acts'>")
+        parts.extend(_act_card(a) for a in fans)
         parts.append("</ul></section>")
 
     parts.append(
@@ -1025,6 +1378,19 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .cleared {{ margin:5px 0 2px; font-size:12px; color:#79d19a; }}
 .held {{ margin-top:10px; font-size:13px; }}
 .held summary {{ cursor:pointer; color:#e0a03a; font-size:12px; }}\n.finding {{ padding:12px 0; border-top:1px solid var(--edge); }}\n.finding:first-of-type {{ border-top:none; }}\n.finding h3 {{ margin:0 0 5px; color:var(--ink); font-size:15px;\n               text-transform:none; letter-spacing:0; }}\n.finding p {{ margin:0 0 4px; }}\n.basis {{ font-size:12px; color:#6f7b88; }}\n.aka {{ font-size:12px; color:#6f7b88; font-style:italic; }}\n.reach {{ margin:5px 0 2px; font-size:12px; color:#e0a03a; }}\n.f-small .basis, .f-gap .basis {{ color:#e0a03a; }}
+.brief {{ margin:0 0 12px; font-size:13px; color:var(--ink); }}
+.brief .k {{ color:var(--gold); min-width:0; margin-right:6px; }}
+.client-note {{ margin:5px 0 2px; font-size:12px; color:var(--gold);
+                font-style:italic; }}
+.b-fan {{ border-color:var(--gold); color:var(--bg); background:var(--gold); }}
+section.no-act {{ opacity:.72; }}
+.pool-fans {{ margin-top:16px; }}
+.aside, .rest {{ margin-top:10px; font-size:13px; }}
+.aside summary, .rest summary {{ cursor:pointer; color:#7d8794; font-size:12px; }}
+.aside.ruled summary {{ color:var(--gold); }}
+.completed summary {{ cursor:pointer; }}
+.completed summary h2 {{ display:inline; }}
+.completed ul {{ margin:10px 0 0; padding-left:20px; color:var(--dim); }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
@@ -1055,15 +1421,25 @@ def selftest() -> int:
         if not ok:
             failures.append(label)
 
+    # S270: every snapshot below is built as of a FIXED day before the season.
+    # Played games now leave the main view (R28), so a suite on the real
+    # calendar would lose its Week 8 checks on 2 November -- a time bomb.
+    _T = "2026-09-01"
+
     check("every home game has a stable id",
           len({game_id(g) for g in HOME_GAMES}) == len(HOME_GAMES))
     check("the whole home slate is present, not just the target dates",
-          len(HOME_GAMES) == 9)
-    check("both client target dates are flagged",
+          len(HOME_GAMES) == 8)
+    check("the Paris game is GONE (Justin, 23 Sep: remove it)",
+          not any("Saints" in g["opponent"] for g in HOME_GAMES))
+    check("every date Justin gave a brief is flagged",
           {g["date"] for g in HOME_GAMES if g.get("target")}
-          == {"2026-11-01", "2026-12-20"})
-    check("the Paris game is listed but marked as not a venue date",
-          any(g.get("at_venue") is False for g in HOME_GAMES))
+          == {"2026-11-01", "2026-11-27", "2026-12-06", "2026-12-20"})
+    check("each themed date carries his brief in words",
+          all(g.get("brief") for g in HOME_GAMES if g.get("theme")))
+    check("Carolina needs no act, and says so",
+          next(g for g in HOME_GAMES if "Panthers" in g["opponent"])
+          .get("mode") == "no_act")
     check("no game invents a date the league has not set",
           all(g.get("date") or g.get("note") for g in HOME_GAMES))
 
@@ -1089,7 +1465,7 @@ def selftest() -> int:
             KB_PROJECT, "test-variety", "Test Dog Show",
             entity_type="halftime_act", db_path=db,
             fields={"pool": "variety", "category": "dog show"})
-        snap = build_snapshot(db_path=db, routing_path=no_routing)
+        snap = build_snapshot(today=_T, db_path=db, routing_path=no_routing)
 
         check("a snapshot covers every game",
               len(snap["games"]) == len(HOME_GAMES))
@@ -1102,32 +1478,40 @@ def selftest() -> int:
               == ["Test Patriot Band"])
         check("the touring pool is EMPTY and says why, rather than looking searched",
               wk8["coverage"]["touring"]["state"] == NOT_SWEPT)
-        check("for-hire acts are offered on every venue game, not just targets",
-              all(g["candidates"]["for_hire"]
-                  for g in snap["games"] if g.get("at_venue", True)))
-        check("the Paris game is not offered for-hire candidates",
-              next(g for g in snap["games"]
+        check("for-hire acts are offered on every un-themed game, not just "
+              "targets",
+              all(g["candidates"]["for_hire"] for g in snap["games"]
+                  if not g.get("theme") and g.get("mode") != "no_act"))
+        # The off-site path is kept for the next international game, and tested
+        # on a synthetic one now that Paris is off the real slate.
+        _offsite = {"week": 7, "date": None, "opponent": "Test Saints",
+                    "kick_et": None, "slot": "international",
+                    "at_venue": False, "note": "Staged abroad."}
+        osnap = build_snapshot(today=_T, db_path=db, routing_path=no_routing,
+                               games=HOME_GAMES + [_offsite])
+        check("an off-site game is not offered for-hire candidates",
+              next(g for g in osnap["games"]
                    if g["week"] == 7)["candidates"]["for_hire"] == [])
 
         badges = {b["kind"] for b in wk8["candidates"]["for_hire"][0]["badges"]}
         check("badges are independent claims, not one score",
               {"patriotic", "market", "price", "credit"} <= badges)
 
-        page = render_html(snap)
+        page = render_html(osnap)
         check("each kind of empty gets its OWN wording on the page",
               all(w in page for w in ("Not searched yet", "Not applicable"))
               and page.count("class='empty not-swept'") > 0
               and page.count("class='empty na'") > 0)
         check("an empty panel never renders as a bare blank",
-              page.count("<div class='pool pool-") == sum(
-                  1 for _g in snap["games"] for _p in POOLS)
+              page.count("<div class='pool pool-touring'>") == sum(
+                  1 for _g in osnap["games"] if _g.get("mode") != "no_act")
               and "class='empty" in page)
         check("an unsearched pool never reads as 'nothing out there'",
               "NOT a finding" in json.dumps(snap))
         check("every game reaches the page",
               all(_e(g["opponent"]) in page for g in snap["games"]))
         check("the target dates are called out on the page",
-              "Your two dates" in page)
+              "Your dates" in page)
         check("the credit pool does NOT claim the acts are available",
               "Available to book" not in page
               and "not a verified availability list" in page)
@@ -1152,18 +1536,20 @@ def selftest() -> int:
         check("the full roster still appears exactly once",
               big.count("Credit list —") == 1)
 
-        # --- routing feeds the touring column ---------------------------
+        # --- routing feeds the touring column
+        # S270: on Week 5, an un-themed date. Week 8 is Salute to Service now,
+        # and its brief would set these style-less test acts aside. ---------------------------
         import tempfile as _tf
         rt = Path(tmp) / "routing.json"
-        gid8 = game_id(next(g for g in HOME_GAMES if g["week"] == 8))
+        gid8 = game_id(next(g for g in HOME_GAMES if g["week"] == 5))
         rt.write_text(json.dumps({
             "generated_at": "2026-08-26T00:00:00Z", "window_days": 3,
             "games": {gid8: {
                 "events": [
-                    {"artist": "Near Act", "date": "2026-10-31",
+                    {"artist": "Near Act", "date": "2026-10-10",
                      "venue": "Stage AE", "city": "Pittsburgh, PA",
                      "metro": "Pittsburgh, PA", "miles": 0, "gap": -1},
-                    {"artist": "Near Act", "date": "2026-11-03",
+                    {"artist": "Near Act", "date": "2026-10-13",
                      "venue": "Rocket", "city": "Cleveland, OH",
                      "metro": "Cleveland, OH", "miles": 135, "gap": 2}],
                 "coverage": [
@@ -1173,25 +1559,25 @@ def selftest() -> int:
                     {"metro": "Cleveland, OH", "miles": 135, "sources": 1,
                      "found": 1, "error": None,
                      "swept_at": "2026-08-26T00:00:00Z"}]}}}))
-        rsnap = build_snapshot(db_path=db, routing_path=rt)
-        w8 = next(g for g in rsnap["games"] if g["week"] == 8)
+        rsnap = build_snapshot(today=_T, db_path=db, routing_path=rt)
+        w8 = next(g for g in rsnap["games"] if g["week"] == 5)
         w1 = next(g for g in rsnap["games"] if g["week"] == 1)
         check("a swept game shows its routing hits",
               [c["name"] for c in w8["candidates"]["touring"]] == ["Near Act"])
         check("one artist in two metros is ONE option, not two",
               len(w8["candidates"]["touring"]) == 1)
         check("...and it keeps the CLOSEST date",
-              "2026-10-31" in w8["candidates"]["touring"][0]["fields"]["routing"])
+              "2026-10-10" in w8["candidates"]["touring"][0]["fields"]["routing"])
         check("a swept game reports coverage, not 'not searched'",
               w8["coverage"]["touring"]["state"] == SWEPT)
         check("an UNSWEPT game still says nobody looked",
               w1["coverage"]["touring"]["state"] == NOT_SWEPT)
         check("a sweep where every metro failed is FAILED, not empty",
-              build_snapshot(db_path=db, routing_path=_fail_routing(
+              build_snapshot(today=_T, db_path=db, routing_path=_fail_routing(
                   Path(tmp), gid8))["games"][0] is not None
               and next(g for g in build_snapshot(
-                  db_path=db, routing_path=_fail_routing(Path(tmp), gid8)
-              )["games"] if g["week"] == 8
+                  today=_T, db_path=db, routing_path=_fail_routing(Path(tmp), gid8)
+              )["games"] if g["week"] == 5
               )["coverage"]["touring"]["state"] == FAILED)
         rpage3 = render_html(rsnap)
         check("the routing hit and its gap reach the page",
@@ -1202,20 +1588,20 @@ def selftest() -> int:
         rt2.write_text(json.dumps({
             "generated_at": "2026-08-26T00:00:00Z", "window_days": 3,
             "games": {gid8: {"events": [
-                {"artist": "Club Act", "date": "2026-11-01",
+                {"artist": "Club Act", "date": "2026-10-11",
                  "venue": "Rumba Cafe", "city": "Columbus, OH",
                  "metro": "Columbus, OH", "miles": 185, "gap": 0},
-                {"artist": "Arena Act", "date": "2026-11-04",
+                {"artist": "Arena Act", "date": "2026-10-14",
                  "venue": "PPG Paints Arena", "city": "Pittsburgh, PA",
                  "metro": "Pittsburgh, PA", "miles": 0, "gap": 3},
-                {"artist": "Test Patriot Band", "date": "2026-11-02",
+                {"artist": "Test Patriot Band", "date": "2026-10-12",
                  "venue": "Rumba Cafe", "city": "Columbus, OH",
                  "metro": "Columbus, OH", "miles": 185, "gap": 1}],
                 "coverage": [{"metro": "Pittsburgh, PA", "miles": 0,
                               "sources": 2, "found": 3, "error": None,
                               "swept_at": "2026-08-26T00:00:00Z"}]}}}))
-        dsnap = build_snapshot(db_path=db, routing_path=rt2)
-        d8 = next(g for g in dsnap["games"] if g["week"] == 8)
+        dsnap = build_snapshot(today=_T, db_path=db, routing_path=rt2)
+        d8 = next(g for g in dsnap["games"] if g["week"] == 5)
         order = [c["name"] for c in d8["candidates"]["touring"]]
         check("an act in BOTH pools leads the touring column",
               order[0] == "Test Patriot Band")
@@ -1230,8 +1616,11 @@ def selftest() -> int:
                   for a in g_["candidates"]["for_hire"]]
         if _names:
             _lead = _names[0]
+            # One per dated brief (each reorders the list for its own reason)
+            # plus the roster -- never once per game, which was nine.
             check("a credit act is not repeated under every game",
-                  tpage.count(">" + _e(_lead) + "<") <= 3)
+                  tpage.count(">" + _e(_lead) + "<")
+                  <= sum(1 for g_ in HOME_GAMES if g_.get("target")) + 1)
         check("a game with no target points at the one list instead",
               "applies to every date equally" in tpage)
         check("a TARGET game still shows its ranked credit acts",
@@ -1299,7 +1688,7 @@ def selftest() -> int:
         ordered = rank_for_game(HOME_GAMES[0], reach_pool)
         check("a marquee-only act does NOT outrank a Pittsburgh credit",
               ordered[0]["name"] == "Steelers Act")
-        rpage2 = render_html(build_snapshot(db_path=db,
+        rpage2 = render_html(build_snapshot(today=_T, db_path=db,
                                             routing_path=no_routing))
         check("reachability is EXPLAINED on the page, not applied invisibly",
               "reach" in rpage2 or "strongest evidence available" in rpage2)
@@ -1471,10 +1860,19 @@ def _fail_routing(tmp: Path, gid: str) -> Path:
 
 
 def _snap_with_name(snap: Dict, name: str) -> Dict:
+    """Every name the page renders, replaced -- S270 added set-aside lists, the
+    fan panel and a snapshot-level roster, and a test that only renamed the
+    old for-hire cards would pass without ever reaching them."""
     clone = json.loads(json.dumps(snap))
     for g in clone["games"]:
-        for a in g["candidates"]["for_hire"]:
-            a["name"] = name
+        for acts in list(g["candidates"].values()) + [
+                v for aside in (g.get("set_aside") or {}).values()
+                for v in aside.values()]:
+            for a in acts:
+                a["name"] = name
+                a["client_note"] = name
+    for a in (clone.get("roster") or []) + (clone.get("fans") or []):
+        a["name"] = name
     return clone
 
 
