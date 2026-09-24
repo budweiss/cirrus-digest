@@ -11,7 +11,7 @@ import halftime_routing as routing
 
 
 class ExtractionEffortTests(unittest.TestCase):
-    def test_both_cloud_fallbacks_drop_effort_preserve_other_settings(self):
+    def test_both_cloud_fallbacks_send_low_effort_preserve_other_settings(self):
         creds={'anthropic_effort':'max','llm_privacy':'CLOUD_ALLOWED',
                'llm_budget':{'per_call_usd':.1},'ollama_url':'http://fixture',
                'vllm_url':'http://fixture'}
@@ -19,8 +19,10 @@ class ExtractionEffortTests(unittest.TestCase):
         observed=[]
         def fallback(system,user,c,**kwargs):
             observed.append(c)
-            # Reproduce the incident: reasoning consumes output before text.
-            return 'anthropic', '' if lp._anthropic_extra(c) else '[]'
+            # Reproduce both incidents: reasoning consumes output before text
+            # at the host's max effort (S190) AND with the key dropped, which
+            # claude-sonnet-5 runs at its default, high (S274).
+            return 'anthropic', '[]' if c.get('anthropic_effort') == 'low' else ''
         with patch.object(lp,'call',side_effect=lp.ProviderError('local unavailable')), patch.object(lp,'escalate',side_effect=fallback):
             acts,model,escalated=catalogue.extract_acts('synthetic',creds)
             self.assertEqual(acts,[]);self.assertTrue(escalated)
@@ -30,7 +32,7 @@ class ExtractionEffortTests(unittest.TestCase):
         self.assertEqual(creds,original)
         self.assertEqual(len(observed),2)
         for c in observed:
-            self.assertNotIn('anthropic_effort',c)
+            self.assertEqual(c['anthropic_effort'],'low')
             self.assertEqual(c['llm_budget'],original['llm_budget'])
             self.assertEqual(c['llm_privacy'],original['llm_privacy'])
 

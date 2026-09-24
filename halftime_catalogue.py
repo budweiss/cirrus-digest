@@ -617,11 +617,19 @@ def _tag(provider: str) -> str:
 # for the answer. 8/8 local on all three low runs, 7/8 at medium.
 #
 # The endpoint is local and free, and vllm_timeout is 900s against ~60 tok/s
-# (8,000 tokens ≈ 133s worst case), so headroom here costs nothing. The PAID
-# tier deliberately keeps the smaller budget: it has no hidden reasoning spend
-# on this prompt, and a bigger number there would be billed.
+# (8,000 tokens ≈ 133s worst case), so headroom here costs nothing.
+#
+# S274: the PAID tier has hidden reasoning too now. claude-sonnet-5 thinks by
+# default -- a request with no effort set runs at HIGH, it is not "off" -- so
+# the old 4,000 budget, sized for a model that did not think, went entirely to
+# thinking and the reply came back EMPTY (stop_reason max_tokens, 0 chars).
+# Every Pittsburgh metro in the routing sweep was "extraction unusable" from
+# 09-16 to 09-23. Measured on two real Pittsburgh blocks: low effort at 8,000
+# returns 67 and 70 shows using 3,547 and 4,571 tokens; at 4,000 both are cut
+# off. Only tokens used are billed, so the higher cap costs nothing extra.
 LOCAL_EXTRACT_MAX_TOKENS = 8000
-PAID_EXTRACT_MAX_TOKENS = 4000
+PAID_EXTRACT_MAX_TOKENS = 8000
+PAID_EXTRACT_EFFORT = "low"
 
 
 def extract_acts(source_block: str, creds: dict,
@@ -674,7 +682,8 @@ def extract_acts(source_block: str, creds: dict,
 
     try:
         # Routine extraction must not inherit the host deep-reasoning setting.
-        cloud_creds = {k: v for k, v in creds.items() if k != "anthropic_effort"}
+        # Set LOW explicitly: dropping the key means Sonnet 5's default, HIGH.
+        cloud_creds = dict(creds, anthropic_effort=PAID_EXTRACT_EFFORT)
         reviewed = _reviewed_cloud(system, user, cloud_creds, pool)
         if reviewed is not None:
             provider, acts = reviewed
@@ -1256,10 +1265,15 @@ def selftest() -> int:
     # PAID call again. Measured: reasoning 2,500-2,700 tokens on the 09-09
     # sources, and max_tokens=3000 reproduced finish_reason=length +
     # parse_acts None on that exact block.
-    check("the LOCAL extract budget is bigger than the PAID one",
-          LOCAL_EXTRACT_MAX_TOKENS > PAID_EXTRACT_MAX_TOKENS)
+    # S274: the PAID tier reasons too now (claude-sonnet-5 thinks by default),
+    # so the two budgets may be equal; the local one must never be the smaller.
+    check("the LOCAL extract budget is at least the PAID one",
+          LOCAL_EXTRACT_MAX_TOKENS >= PAID_EXTRACT_MAX_TOKENS)
     check("...with room for ~2,700 reasoning tokens AND the answer",
           LOCAL_EXTRACT_MAX_TOKENS >= 6000)
+    check("the PAID budget has room for low-effort reasoning AND the answer "
+          "(S274: 4,571 tokens used on a real Pittsburgh block)",
+          PAID_EXTRACT_MAX_TOKENS >= 6000 and PAID_EXTRACT_EFFORT == "low")
     _src = _extract_src()
     check("legacy and reviewed local tiers use the local budget, the paid tier does not",
           _src.count("max_tokens=LOCAL_EXTRACT_MAX_TOKENS") == 3
