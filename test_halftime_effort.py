@@ -11,6 +11,18 @@ import halftime_routing as routing
 
 
 class ExtractionEffortTests(unittest.TestCase):
+    def setUp(self):
+        # Test the legacy low-effort fallback, independent of installed routing
+        # approvals. Both registry lookups must stay inside the fixture tree.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        for field, value in (("PROJECT_DIR", root),
+                             ("CAPABILITY_RECORDS", root / "config/halftime_capabilities.json")):
+            fixture = patch.object(catalogue, field, value)
+            fixture.start()
+            self.addCleanup(fixture.stop)
+
     def test_both_cloud_fallbacks_send_low_effort_preserve_other_settings(self):
         creds={'anthropic_effort':'max','llm_privacy':'CLOUD_ALLOWED',
                'llm_budget':{'per_call_usd':.1},'ollama_url':'http://fixture',
