@@ -38,6 +38,11 @@ KB_PROJECT = "halftime_acts"
 PROJECT_DIR = Path(__file__).resolve().parent
 OUT_DIR = PROJECT_DIR / "out" / "halftime"
 ROUTING_PATH = OUT_DIR / "routing.json"
+# R29: the history log Justin's team writes. NOT under out/ -- that is build
+# output, rewritten nightly -- and git-ignored, because it is client-entered
+# data and must never ride a commit to GitHub. The nightly backup rsyncs the
+# whole checkout, so it is covered there.
+HISTORY_PATH = PROJECT_DIR / "data" / "halftime" / "history.jsonl"
 
 SEASON = 2026
 TEAM = "Pittsburgh Steelers"
@@ -1026,6 +1031,214 @@ def _as_candidates(events: List[Dict],
                       abs(c.get("_gap") or 99), c["name"]))
 
 
+# ── R29: the history log ────────────────────────────────────────────────────
+# Once a game is played, the team records what they did at halftime, what it
+# cost and the Voice of the Fan rating, so over seasons the page becomes a
+# record of what was booked, for how much, and how it landed.
+#
+# APPEND-ONLY. An edit is a new line; the newest line for a game is what the
+# page shows. Nothing a client typed is ever overwritten or lost, and "who
+# changed this, when" is answerable from the file itself.
+#
+# Voice of the Fan is kept as the text they enter. We do not know the scale
+# their survey uses, and converting it would be inventing one.
+
+HISTORY_WHAT_MAX = 600
+HISTORY_VOF_MAX = 40
+HISTORY_COST_MAX = 5000000
+HISTORY_FILE_MAX = 2 * 1024 * 1024
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}$")
+
+
+def load_history(path: Optional[Path] = None) -> List[Dict]:
+    """Every entry, oldest first. A missing file is an empty log; a damaged
+    line is skipped rather than taking the page down with it."""
+    path = Path(path) if path else HISTORY_PATH
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("game_id"):
+            out.append(row)
+    return out
+
+
+def latest_by_game(entries: List[Dict]) -> Dict[tuple, Dict]:
+    """(season, game_id) -> the newest entry, with how many came before it."""
+    out = {}
+    for row in entries:
+        key = (row.get("season"), row.get("game_id"))
+        prior = out.get(key)
+        out[key] = dict(row, revisions=(prior or {}).get("revisions", 0) + 1)
+    return out
+
+
+def _clean(text: str, limit: int, newlines: bool = False) -> str:
+    """Printable text only, bounded. Newlines kept only where asked."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    keep = "".join(ch for ch in text
+                   if ch.isprintable() or (newlines and ch == "\n"))
+    return keep.strip()[:limit]
+
+
+def parse_cost(raw: str) -> tuple:
+    """(dollars or None, error). Accepts "$25,000", "25000", "25k"."""
+    txt = (raw or "").strip().lower().replace("$", "").replace(",", "") \
+        .replace(" ", "")
+    if not txt:
+        return None, ""
+    mult = 1
+    if txt.endswith("k"):
+        txt, mult = txt[:-1], 1000
+    try:
+        value = float(txt)
+    except ValueError:
+        return None, "Final cost should be a dollar amount, like 25000."
+    dollars = int(round(value * mult))
+    if not 0 <= dollars <= HISTORY_COST_MAX:
+        return None, "Final cost is outside the range this log accepts."
+    return dollars, ""
+
+
+def history_entry(form: Dict[str, str], snap: Dict, entered_by: str,
+                  today: Optional[str] = None) -> tuple:
+    """(entry, "") or (None, reason). Every field is checked here, in one
+    place, so the server that calls it stays a thin HTTP shell."""
+    gid = (form.get("game_id") or "").strip()
+    game = next((g for g in snap.get("games", [])
+                 if g.get("game_id") == gid), None)
+    if game is None:
+        return None, "That game is not on this season's slate."
+    if not is_completed(game, today):
+        return None, "That game has not been played yet."
+    if not _EMAIL.match(entered_by or ""):
+        return None, "The sign-in identity was missing, so nothing was saved."
+    what = _clean(form.get("what", ""), HISTORY_WHAT_MAX, newlines=True)
+    vof = _clean(form.get("vof", ""), HISTORY_VOF_MAX)
+    cost, err = parse_cost(form.get("cost", ""))
+    if err:
+        return None, err
+    if not what and cost is None and not vof:
+        return None, "Nothing to save — every field was empty."
+    return {"season": snap.get("season"), "game_id": gid,
+            "date": game.get("date"), "opponent": game.get("opponent"),
+            "week": game.get("week"), "what": what, "cost": cost, "vof": vof,
+            "entered_by": entered_by, "entered_at": _now()}, ""
+
+
+def append_history(entry: Dict, path: Optional[Path] = None) -> None:
+    """One line, locked, flushed to disk before returning. Refuses to grow the
+    file past a ceiling, so a runaway client cannot fill the disk."""
+    import fcntl
+    import os
+    path = Path(path) if path else HISTORY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > HISTORY_FILE_MAX:
+        raise OSError("history log is at its size ceiling")
+    with open(path, "a") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _money(dollars) -> str:
+    return "${:,}".format(dollars) if isinstance(dollars, int) else ""
+
+
+def _log_form(g: Dict, entry: Optional[Dict]) -> str:
+    e = entry or {}
+    return ("<form method='post' action='/history' class='log-form'>"
+            "<input type='hidden' name='game_id' value='{gid}'>"
+            "<label>What you did at halftime<textarea name='what' rows='3' "
+            "maxlength='{wmax}'>{what}</textarea></label>"
+            "<label>Final cost ($)<input name='cost' inputmode='decimal' "
+            "maxlength='14' value='{cost}'></label>"
+            "<label>Voice of the Fan rating<input name='vof' maxlength='{vmax}' "
+            "placeholder='as your survey reports it' value='{vof}'></label>"
+            "<button type='submit'>Save</button></form>").format(
+                gid=_e(g.get("game_id")), wmax=HISTORY_WHAT_MAX,
+                what=_e(e.get("what", "")),
+                cost=_e(e.get("cost") if e.get("cost") is not None else ""),
+                vmax=HISTORY_VOF_MAX, vof=_e(e.get("vof", "")))
+
+
+def _log_entry_html(g: Dict, entry: Optional[Dict], saved: bool) -> str:
+    gid = g.get("game_id", "")
+    bits = ["<li class='log' id='log-{}'>".format(_e(gid)),
+            "<div class='log-head'><span class='wk'>Wk {}</span> {} vs {}"
+            "</div>".format(_e(g.get("week")), _e(g.get("date")),
+                            _e(g.get("opponent")))]
+    if saved:
+        bits.append("<p class='saved'>Saved.</p>")
+    if entry:
+        for label, val in (("Halftime", entry.get("what")),
+                           ("Final cost", _money(entry.get("cost"))),
+                           ("Voice of the Fan", entry.get("vof"))):
+            if val:
+                bits.append("<div class='row'><span class='k'>{}</span>"
+                            "<span class='v log-v'>{}</span></div>".format(
+                                _e(label), _e(val)))
+        bits.append("<p class='basis'>Logged by {} · {}{}</p>".format(
+            _e(entry.get("entered_by")), _e((entry.get("entered_at") or "")[:10]),
+            " · edited {} time(s)".format(entry["revisions"] - 1)
+            if entry.get("revisions", 1) > 1 else ""))
+    else:
+        bits.append("<p class='empty'>Not logged yet.</p>")
+    bits.append("<details class='log-edit'{}><summary>{}</summary>{}"
+                "</details>".format(" open" if not entry else "",
+                                    "Edit the log" if entry else "Log this game",
+                                    _log_form(g, entry)))
+    bits.append("</li>")
+    return "".join(bits)
+
+
+def _history_section(snap: Dict, done: List[Dict], history: List[Dict],
+                     saved: Optional[str]) -> str:
+    """Played games, each with its log -- collapsed unless something was just
+    saved, so a returning booker lands on what they entered."""
+    latest = latest_by_game(history)
+    season = snap.get("season")
+    logged = [latest.get((season, g.get("game_id"))) for g in done]
+    spend = sum(e["cost"] for e in logged if e and isinstance(e.get("cost"), int))
+    earlier = sorted((e for (s_, _), e in latest.items() if s_ != season),
+                     key=lambda e: (e.get("season") or 0, e.get("date") or ""))
+    if not done and not earlier:
+        return ""
+    is_open = bool(saved) and any(g.get("game_id") == saved for g in done)
+    parts = ["<section class='completed'><details{}><summary><h2>Completed "
+             "games ({})</h2> <span class='meta'>· history log: {} of {} "
+             "logged{}</span></summary><ul class='logs'>".format(
+                 " open" if is_open else "", len(done),
+                 sum(1 for e in logged if e), len(done),
+                 " · {} recorded spend".format(_money(spend)) if spend else "")]
+    for g, e in zip(done, logged):
+        parts.append(_log_entry_html(g, e, saved == g.get("game_id")))
+    parts.append("</ul>")
+    if earlier:
+        parts.append("<h3>Earlier seasons</h3><ul class='acts'>")
+        for e in earlier:
+            parts.append("<li class='act'><div class='act-name'>{} · Wk {} vs {}"
+                         "</div><div class='row'><span class='v'>{}</span></div>"
+                         "</li>".format(_e(e.get("season")), _e(e.get("week")),
+                                        _e(e.get("opponent")), _e(" · ".join(
+                                            x for x in (e.get("what"),
+                                                        _money(e.get("cost")),
+                                                        e.get("vof")) if x))))
+        parts.append("</ul>")
+    parts.append("</details></section>")
+    return "".join(parts)
+
+
 # ── render ──────────────────────────────────────────────────────────────────
 
 def _e(s) -> str:
@@ -1253,7 +1466,8 @@ def _pool_panel(g: Dict, pool: str) -> str:
     return "".join(parts)
 
 
-def render_html(snap: Dict) -> str:
+def render_html(snap: Dict, history: Optional[List[Dict]] = None,
+                saved: Optional[str] = None) -> str:
     parts = [_HEAD.format(team=_e(snap["team"]), season=_e(snap["season"]))]
     parts.append(
         "<header><h1>{} · {} home slate</h1>"
@@ -1305,16 +1519,7 @@ def render_html(snap: Dict) -> str:
 
     # R28: played games leave the main view. Phase 2 turns each one into a log
     # entry (what was done, final cost, Voice of the Fan rating).
-    if done:
-        parts.append("<section class='completed'><details><summary>"
-                     "<h2>Completed games ({})</h2></summary><ul>".format(
-                         len(done)))
-        for g in done:
-            parts.append("<li id='{}'><span class='wk'>Wk {}</span> {} vs {}"
-                         "</li>".format(_e(g.get("game_id", "")),
-                                        _e(g["week"]), _e(g.get("date")),
-                                        _e(g["opponent"])))
-        parts.append("</ul></details></section>")
+    parts.append(_history_section(snap, done, history or [], saved))
 
     parts.append("<section class='analysis'><h2>What does well in this "
                  "market</h2>")
@@ -1441,7 +1646,21 @@ section.no-act {{ opacity:.72; }}
 .aside.ruled summary {{ color:var(--gold); }}
 .completed summary {{ cursor:pointer; }}
 .completed summary h2 {{ display:inline; }}
-.completed ul {{ margin:10px 0 0; padding-left:20px; color:var(--dim); }}
+.completed .logs {{ list-style:none; margin:10px 0 0; padding:0; }}
+.log {{ padding:12px 0; border-top:1px solid var(--edge); }}
+.log-head {{ font-weight:600; margin-bottom:4px; }}
+.log-v {{ white-space:pre-wrap; color:var(--ink); }}
+.saved {{ margin:4px 0; color:#79d19a; font-size:13px; font-weight:600; }}
+.log-edit summary {{ cursor:pointer; color:var(--accent); font-size:13px;
+                     margin-top:6px; }}
+.log-form {{ display:grid; gap:8px; max-width:560px; margin-top:8px; }}
+.log-form label {{ display:grid; gap:3px; font-size:12px; color:var(--dim); }}
+.log-form textarea, .log-form input {{ font:inherit; color:var(--ink);
+    background:#12171c; border:1px solid var(--edge); border-radius:6px;
+    padding:7px 9px; }}
+.log-form button {{ justify-self:start; font:inherit; font-weight:600;
+    color:var(--bg); background:var(--gold); border:0; border-radius:6px;
+    padding:7px 16px; cursor:pointer; }}
 .roster .acts {{ columns:2; column-gap:26px; }}
 @media (max-width:760px) {{ .roster .acts {{ columns:1; }} }}
 .roster .act {{ break-inside:avoid; }}
@@ -1456,7 +1675,7 @@ def build(out_dir: Optional[Path] = None,
     out_dir.mkdir(parents=True, exist_ok=True)
     snap = build_snapshot(db_path=db_path)
     (out_dir / "snapshot.json").write_text(json.dumps(snap, indent=2))
-    (out_dir / "index.html").write_text(render_html(snap))
+    (out_dir / "index.html").write_text(render_html(snap, load_history()))
     return {"games": len(snap["games"]), "acts": snap["acts_total"],
             "out": str(out_dir)}
 
@@ -1957,7 +2176,7 @@ def selftest() -> int:
         cpage = render_html(csnap)
         check("completed: it moves to the collapsed section at the foot",
               "Completed games (1)" in cpage
-              and "id='wk01-falcons'" in cpage
+              and "id='log-wk01-falcons'" in cpage
               and cpage.index("Completed games") > cpage.index("Wk 3"))
         check("completed: ...and no longer has a full card in the main view",
               "<section class='game' id='wk01-falcons'>" not in cpage)
@@ -2047,6 +2266,87 @@ def selftest() -> int:
         check("overflow: extra routing hits open in place, not 'in the "
               "credit list'",
               "2 more for this date" in _op and "Tour 4" in _op)
+
+        # --- R29: the history log ------------------------------------
+        # T32: a temp path throughout -- never the live log.
+        hist = Path(tmp) / "hist" / "history.jsonl"
+        _who = "justin@example.com"
+        check("history: a cost parses from how people type it",
+              [parse_cost(x)[0] for x in ("$25,000", "25000", "25k", "", "3.5k")]
+              == [25000, 25000, 25000, None, 3500])
+        check("history: a cost that is not money is refused, not guessed",
+              parse_cost("about 20")[0] is None and parse_cost("about 20")[1])
+        check("history: a cost outside the range is refused",
+              parse_cost("9999999")[1] != "" and parse_cost("-5")[1] != "")
+        _ok, _err = history_entry({"game_id": "wk01-falcons", "what": "Drumline",
+                                   "cost": "$12,500", "vof": "8.1 / 10"},
+                                  csnap, _who, today="2026-09-20")
+        check("history: a played game is accepted, with who and when",
+              _err == "" and _ok["cost"] == 12500
+              and _ok["entered_by"] == _who and _ok["season"] == SEASON
+              and _ok["opponent"] == "Atlanta Falcons")
+        check("history: a game not yet played is refused",
+              history_entry({"game_id": "wk15-ravens", "what": "x"}, csnap,
+                            _who, today="2026-09-20")[0] is None)
+        check("history: an unknown game is refused",
+              history_entry({"game_id": "../../etc", "what": "x"}, csnap,
+                            _who, today="2026-09-20")[0] is None)
+        check("history: an entry with no identity is refused",
+              history_entry({"game_id": "wk01-falcons", "what": "x"}, csnap,
+                            "", today="2026-09-20")[0] is None)
+        check("history: an all-empty form saves nothing",
+              history_entry({"game_id": "wk01-falcons"}, csnap, _who,
+                            today="2026-09-20")[0] is None)
+        _long = history_entry({"game_id": "wk01-falcons",
+                               "what": "a\x00b" + "x" * 900}, csnap, _who,
+                              today="2026-09-20")[0]
+        check("history: control characters dropped and length bounded",
+              "\x00" not in _long["what"]
+              and len(_long["what"]) == HISTORY_WHAT_MAX)
+        append_history(_ok, hist)
+        _ed = dict(_ok, vof="8.4 / 10")
+        append_history(_ed, hist)
+        with open(hist, "a") as _fh:
+            _fh.write("not json\n")
+        _rows = load_history(hist)
+        check("history: append-only -- the edit is a second line, both kept",
+              len(_rows) == 2 and _rows[0]["vof"] == "8.1 / 10")
+        check("history: a damaged line is skipped, not fatal",
+              len(load_history(hist)) == 2)
+        _lat = latest_by_game(_rows)[(SEASON, "wk01-falcons")]
+        check("history: the newest line wins and counts its revisions",
+              _lat["vof"] == "8.4 / 10" and _lat["revisions"] == 2)
+        _hp = render_html(csnap, _rows)
+        check("history: the log reaches the page with the latest figures",
+              "Drumline" in _hp and "$12,500" in _hp and "8.4 / 10" in _hp
+              and "edited 1 time(s)" in _hp and "1 of 1 logged" in _hp)
+        check("history: a played game with no log offers the form, open",
+              "Log this game" in render_html(csnap, [])
+              and "<details class='log-edit' open>" in render_html(csnap, []))
+        _xss = render_html(csnap, [dict(_ok, what="<script>alert(1)</script>",
+                                        entered_by="<b>x</b>@y")])
+        check("history: whatever a client typed is escaped on the page",
+              "<script>alert" not in _xss and "<b>x</b>" not in _xss)
+        check("history: the section stays collapsed unless a save just landed",
+              "<section class='completed'><details>" in _hp
+              and "<section class='completed'><details open>"
+              in render_html(csnap, _rows, saved="wk01-falcons"))
+        check("history: 'saved' naming no played game opens nothing",
+              "<details open>" not in render_html(csnap, _rows,
+                                                  saved="<script>"))
+        _old = dict(_ok, season=2025, game_id="wk02-browns",
+                    opponent="Cleveland Browns", week=2, what="Anthem only")
+        check("history: an earlier season's log still shows",
+              "Earlier seasons" in render_html(csnap, _rows + [_old])
+              and "Anthem only" in render_html(csnap, _rows + [_old]))
+        _big = Path(tmp) / "hist" / "big.jsonl"
+        _big.write_text("x" * (HISTORY_FILE_MAX + 1))
+        try:
+            append_history(_ok, _big)
+            _capped = False
+        except OSError:
+            _capped = True
+        check("history: the log refuses to grow past its ceiling", _capped)
 
         # --- R13 market analysis --------------------------------------
         mkt = market_analysis(snap)

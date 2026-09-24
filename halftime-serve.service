@@ -21,6 +21,10 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadOnlyPaths=/home/buddy/cirrus-digest/out/halftime
+# S271 (R29): the history log is the ONE place this process may write. The
+# directory must exist before start -- systemd refuses to start a unit whose
+# ReadWritePaths is missing (226/NAMESPACE) -- so the installer creates it.
+ReadWritePaths=/home/buddy/cirrus-digest/data/halftime
 InaccessiblePaths=/home/buddy/cirrus-digest/config
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
