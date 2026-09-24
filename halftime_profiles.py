@@ -45,12 +45,14 @@ PROJECT_DIR = Path(__file__).resolve().parent
 OUT_PATH = PROJECT_DIR / "out" / "halftime" / "profiles.json"
 RECHECK_DAYS = 30
 MAX_PER_RUN = 40
-RECORD_VERSION = 1
+# 2 (S274): film pages refused, "song played" is not a performance, inactive
+# acts flagged -- every first-run profile is redone.
+RECORD_VERSION = 2
 SOURCE_CHARS = 12000
 UA = "cowork-halftime-research/1.0 (cirrustask@gmail.com)"
 
 ROLES = ("halftime show", "pregame", "national anthem", "in-game / stage",
-         "postgame concert", "other")
+         "postgame concert", "song played at games", "other")
 _MUSIC = ("band", "singer", "musician", "rapper", "group", "orchestra", "duo",
           "trio", "dj", "composer", "songwriter", "ensemble", "performer",
           "vocalist", "guitarist", "drummer", "pianist", "violinist", "choir",
@@ -69,7 +71,8 @@ Return ONLY a JSON object, no prose:
               "event": "short description, e.g. halftime show vs Browns",
               "year": "four-digit year or ''",
               "role": "one of: halftime show, pregame, national anthem,
-                       in-game / stage, postgame concert, other",
+                       in-game / stage, postgame concert,
+                       song played at games, other",
               "quote": "one sentence copied EXACTLY from the sources"}]}
 
 Rules:
@@ -77,6 +80,9 @@ Rules:
 - Every quote must be copied character for character from the sources.
 - A pregame appearance is NOT a halftime show; an anthem is NOT a halftime
   show. Use the role the source actually describes.
+- If the act's RECORDING was played -- entrance music, a stadium anthem, a
+  song during timeouts -- and the act did not perform, the role is
+  "song played at games". That is not a performance.
 - If the sources are about a different act with a similar name, return
   {"who": "", "who_quote": "", "era": "", "era_quote": "", "credits": []}."""
 
@@ -99,6 +105,22 @@ def quoted(quote: str, source: str) -> bool:
     long enough to mean something."""
     q = _norm(quote)
     return len(q) >= 20 and q in _norm(source)
+
+
+def is_music(text: str) -> bool:
+    return any(re.search(r"\b" + re.escape(m) + r"s?\b", text) for m in _MUSIC)
+
+
+def inactive_quote(extract: str) -> str:
+    """Wikipedia's first sentence when it speaks of the act in the PAST tense
+    ("... was an English singer", "... were an American punk rock band") --
+    a death or a break-up. '' otherwise. A booking list must not offer them."""
+    first = first_sentences(extract, n=1, limit=400)
+    past = re.search(r"\b(was|were) (an?|the)\b", first)
+    present = re.search(r"\b(is|are) (an?|the)\b", first)
+    if past and (not present or past.start() < present.start()):
+        return first
+    return ""
 
 
 def first_sentences(text: str, n: int = 2, limit: int = 320) -> str:
@@ -137,9 +159,12 @@ def wiki_lookup(name: str, getter=_get_json) -> Optional[Dict]:
                           + urllib.parse.quote(title.replace(" ", "_")))
         except Exception:
             continue
-        blob = _norm("{} {}".format(summ.get("description", ""),
-                                    summ.get("extract", "")))
-        if summ.get("type") == "standard" and any(m in blob for m in _MUSIC):
+        # S274: judged on Wikipedia's SHORT description ("American rock band"
+        # vs "2015 film"), whole words. The first cut searched the whole
+        # extract by substring, and "Creed" came back as the Rocky spin-off
+        # film because "Rocky" contains "rock".
+        desc = _norm(summ.get("description", ""))
+        if summ.get("type") == "standard" and is_music(desc):
             return {"title": summ.get("title"), "extract":
                     summ.get("extract", ""), "url": ((summ.get(
                         "content_urls") or {}).get("desktop") or {}).get(
@@ -223,9 +248,16 @@ def verify(obj: Dict, source: str) -> Dict:
     if m and quoted(eq, source) and re.search(
             r"\b" + era[:3] + r"\d\b", eq):
         out["era"], out["era_quote"] = era, eq
+    seen = set()
     for c in obj.get("credits") or []:
         if not isinstance(c, dict):
             continue
+        key = ((c.get("role") or "").lower(), _norm(c.get("event") or
+                                                    c.get("team") or ""),
+               str(c.get("year") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
         role = (c.get("role") or "").strip().lower()
         if role in ROLES and quoted(c.get("quote", ""), source):
             year = str(c.get("year") or "")
@@ -242,7 +274,7 @@ def profile_act(act: Dict, searcher, fetcher, ask, getter=_get_json) -> Dict:
     name = act["name"]
     rec = {"name": name, "checked_at": _now(), "v": RECORD_VERSION,
            "who": "", "who_source": "", "era": "", "era_quote": "",
-           "credits": [], "sources": [], "error": None}
+           "credits": [], "sources": [], "error": None, "inactive": ""}
     wiki = wiki_lookup(name, getter)
     blocks = []
     if wiki:
@@ -280,6 +312,7 @@ def profile_act(act: Dict, searcher, fetcher, ask, getter=_get_json) -> Dict:
     if wiki:
         rec["who"], rec["who_source"] = first_sentences(wiki["extract"]), \
             wiki["url"]
+        rec["inactive"] = inactive_quote(wiki["extract"])
     elif got["who"]:
         rec["who"], rec["who_source"] = got["who"], rec["sources"][0]
     for c in rec["credits"][:2]:
@@ -440,6 +473,35 @@ def selftest() -> int:
                     if "good" in u else "Some other band live"}
         raise AssertionError(url)
 
+    wiki_pages.update({
+        "Creed": ["Creed", ["Creed (film)", "Creed (band)"]],
+        "summ:Creed_(film)": {"type": "standard", "description":
+                              "2015 film by Ryan Coogler", "extract":
+                              "Creed is a 2015 American sports drama film, a "
+                              "spin-off of the Rocky series."},
+        "summ:Creed_(band)": {"type": "standard", "description":
+                              "American rock band", "extract":
+                              "Creed is an American rock band."}})
+    check("Wikipedia: a FILM page is refused, the band chosen (Creed; "
+          "'Rocky' is not 'rock')",
+          "rock band" in (wiki_lookup("Creed", getter) or {}).get("extract", ""))
+    check("music words are whole words", not is_music("rocky film")
+          and is_music("american rock band") and is_music("country singers"))
+    check("inactive: a past-tense first sentence is flagged (death)",
+          inactive_quote('John Michael "Ozzy" Osbourne was an English singer.'))
+    check("inactive: ...and a break-up",
+          inactive_quote("The Ramones were an American punk rock band formed "
+                         "in 1974. They played fast."))
+    check("inactive: a present-tense act is not",
+          inactive_quote("Styx is an American rock band. It was formed in "
+                         "1972.") == "")
+    _dup = verify(dict(good, credits=good["credits"] * 2), src)
+    check("credits: the same credit twice is listed once",
+          len(_dup["credits"]) == 1)
+    _song = verify(dict(good, credits=[dict(good["credits"][0],
+                                            role="song played at games")]), src)
+    check("credits: 'song played at games' is its own role, not a performance",
+          _song["credits"][0]["role"] == "song played at games")
     w = wiki_lookup("Styx", getter)
     check("Wikipedia: the BAND page is chosen, not the river",
           w and "rock band" in w["extract"])

@@ -709,6 +709,11 @@ def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
         note = notes.get(canonical_name(act.get("name", "")))
         if note:
             act["client_note"] = note["note"]
+        # S274: an act whose Wikipedia page speaks of it in the past tense
+        # (died, broke up) is not a booking option, on any date.
+        if (act.get("profile") or {}).get("inactive"):
+            aside["inactive"].append(act)
+            continue
         # R34: the itinerary's own evidence rules an act out before Justin's
         # note does -- TSO on 12/20 is set aside by the check, and still
         # carries his note beside it.
@@ -730,7 +735,8 @@ def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
 
 
 def _empty_aside() -> Dict:
-    return {"conflict": [], "no_fit": [], "unknown": [], "ruled_out": []}
+    return {"inactive": [], "conflict": [], "no_fit": [], "unknown": [],
+            "ruled_out": []}
 
 
 def build_snapshot(db_path: Optional[str] = None,
@@ -1358,6 +1364,9 @@ def _act_card(act: Dict) -> str:
         bits.append("<div class='client-note'>{}</div>".format(
             _e(act["client_note"])))
     prof = act.get("profile") or {}
+    if prof.get("inactive"):
+        bits.append("<div class='reach'>No longer performing, per Wikipedia: "
+                    "“{}”</div>".format(_e(prof["inactive"])))
     if prof.get("who"):
         bits.append("<div class='who'>{} <span class='src'>({})</span></div>"
                     .format(_e(prof["who"]), _link(prof.get("who_source", ""),
@@ -1493,6 +1502,12 @@ _NO_FIT_LABEL = {"salute_to_service": "no tie to Salute to Service on record",
 
 def _aside_html(aside: Dict, theme: Optional[str]) -> str:
     out = []
+    if aside.get("inactive"):
+        out.append("<details class='aside'><summary>{} no longer performing "
+                   "(per Wikipedia)</summary>{}</details>".format(
+                       len(aside["inactive"]),
+                       _short_list(aside["inactive"], lambda a: (
+                           a.get("profile") or {}).get("inactive", ""))))
     if aside.get("conflict"):
         out.append("<details class='aside conflict'><summary>{} playing "
                    "elsewhere on game day</summary>{}</details>".format(
@@ -2583,6 +2598,15 @@ def selftest() -> int:
               "<a " not in _link("javascript:alert(1)", "x")
               and "<a " not in _link("http://x.com", "x")
               and "<a " not in _link("https://x.com/'onmouseover=", "x"))
+        _gone = with_profile({"name": "Gone Act", "fields": {}, "badges": []},
+                             {_k("Gone Act"): {"name": "Gone Act", "error": None,
+                                               "inactive": "Gone Act were a band."}})
+        _sh, _as = split_for_game(next(g for g in HOME_GAMES if g["week"] == 3),
+                                  [_gone])
+        check("profile: an act no longer performing is set aside on every date",
+              _sh == [] and [a["name"] for a in _as["inactive"]] == ["Gone Act"])
+        check("profile: ...and its card says so, quoting the source",
+              "No longer performing" in _act_card(_gone))
         check("profile: an act without one renders exactly as before",
               "Why it could land" not in _act_card({"name": "Plain", "fields": {}}))
 
