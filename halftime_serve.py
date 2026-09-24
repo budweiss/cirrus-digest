@@ -92,7 +92,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # a copy that outlives the Access session.
         self.send_header("Cache-Control", "no-store, private")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # S274: "same-origin", NOT "no-referrer". Under no-referrer a browser
+        # sends `Origin: null` on the page's own form POST (Fetch spec), so
+        # the history log refused every real save from the dashboard -- found
+        # by the first signed-in save, 2026-09-24. same-origin still sends
+        # nothing to any other site, which was the point of the header.
+        self.send_header("Referrer-Policy", "same-origin")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -138,7 +143,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path != "/history":
             self._send(404, b"<h1>404</h1>")
             return
-        if self.headers.get("Origin") != ALLOWED_ORIGIN:
+        origin = self.headers.get("Origin")
+        if origin != ALLOWED_ORIGIN:
+            # The origin that DID arrive, so a refusal can be diagnosed from
+            # the journal. repr() and a length cap: it is caller-controlled.
+            sys.stderr.write("history: origin was %r\n" % (origin or "")[:80])
             self._refuse(403, "This form only accepts entries from the "
                               "dashboard page itself.")
             return
@@ -237,6 +246,11 @@ def selftest() -> int:
                   and b"dashboard" in body)
             check("it is marked no-store, so no proxy keeps client research",
                   "no-store" in hdrs.get("Cache-Control", ""))
+            # A test that sets Origin by hand cannot see this: under
+            # no-referrer the BROWSER sends Origin: null on the form POST and
+            # the history log refuses its own page (S274, found live).
+            check("referrer policy lets the page's own POST carry its Origin",
+                  hdrs.get("Referrer-Policy") == "same-origin")
             check("healthz answers for monitoring", get("/healthz")[0] == 200)
             check("an unknown path is 404, not a directory listing",
                   get("/anything")[0] == 404)
@@ -337,6 +351,8 @@ def selftest() -> int:
                     ("a cross-site POST (CSRF)", 403,
                      dict(fields=good, headers=dict(ok_hdrs,
                           Origin="https://evil.example"))),
+                    ("a POST with Origin: null (a no-referrer page)", 403,
+                     dict(fields=good, headers=dict(ok_hdrs, Origin="null"))),
                     ("a POST with no Origin", 403,
                      dict(fields=good, headers={k: v for k, v in ok_hdrs.items()
                                                 if k != "Origin"})),
