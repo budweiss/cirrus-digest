@@ -299,10 +299,11 @@ def _handle_trigger(reason: str, is_daily: bool):
         else:
             ledger_append({"event": "reasoning-pass-skipped", "tool": "supervisor_agent",
                            "tier_name": "n/a", "detail": reason, "result": why})
-            if _should_notify_skip():
-                tools.send_telegram(
+            # S292 (T113): send_telegram never raises -- it RETURNS "FAILED: ...".
+            # Only a notice that went out starts the hour's quiet period.
+            if _should_notify_skip() and tools.send_telegram(
                     f"CUMULUS supervisor: {reason}. Skipping AI review — this month's "
-                    f"${budget.MONTHLY_CAP_USD:.2f} cap reached (${spent:.2f} spent).")
+                    f"${budget.MONTHLY_CAP_USD:.2f} cap reached (${spent:.2f} spent).") == "sent":
                 _mark_skip_notified()
     except Exception as exc:
         if getattr(exc, 'cost', None) is not None:

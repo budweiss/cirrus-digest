@@ -19,6 +19,8 @@ Each run (immaculate-tick.timer, 09:00 and 21:00 ET):
      deadline and the kickoff, then stop checking until that game is Final.
      With under 36h to kickoff and nothing found, one heads-up instead -- a
      watch that missed a renamed contest page would otherwise stay silent.
+     Either alert counts as done only once Telegram says "sent"; a failed one
+     fails the tick and is retried by the next (S292).
 
 State: logs/immaculate-tick.json. Records job_status "immaculatetick".
 
@@ -107,6 +109,50 @@ def plan(rows, state, now):
     return {"postgame": postgame, "target": target, "watch": watch, "heads_up": heads_up}
 
 
+# S292: send_telegram never raises -- it RETURNS "FAILED: ...". Until then the
+# tick ignored that return, so a failed contest alert still marked the week
+# found and stopped the checks: Buddy never heard, and nothing retried. Both
+# alerts below change state only once the send says "sent". -> (ok, note)
+def why(sent):
+    return str(sent).removeprefix("FAILED: ")
+
+
+def contest_alert(r, t, slug):
+    """The contest-found Telegram. Deadline and ask come first: Buddy, 09-25,
+    "I got the telegram but it was truncated" -- the phone preview showed only
+    the 110-character rules title the S255 text led with."""
+    # S255: say when it OPENS, not just when it closes. Buddy: for a
+    # Sunday game "you may not see the questions until Thursday" --
+    # Week 2's rules page went up Wed 9/16 for a Thu 9/17 open, so this
+    # can fire a day before the questions are in the app.
+    return (f"Immaculate: Week {t['week']} contest posted. Entry closes "
+            f"{r.get('ends') or '(see the app)'}.\n"
+            "Send the questions (screenshots are fine) to any Cowork session; "
+            "it will research and email answers.\n"
+            f"Game: {game_label(t)}. Entry opens {r.get('begins') or '(see the app)'}. "
+            f"Rules: {r.get('title') or slug}")
+
+
+def alert_found(tell, state, t, slug, r, now):
+    sent = tell(contest_alert(r, t, slug))
+    if sent != "sent":
+        return False, (f"contest found for {game_label(t)} but Telegram FAILED "
+                       f"({why(sent)}); will retry next tick")
+    state.setdefault("found", {})[t["event_id"]] = {
+        "slug": slug, "title": r.get("title"), "ends": r.get("ends"),
+        "found_utc": now.isoformat()}
+    return True, f"contest FOUND for {game_label(t)}; no more checks until it is played"
+
+
+def alert_heads_up(tell, state, t):
+    sent = tell(f"Immaculate: no weekly contest found yet for {game_label(t)}. If the "
+                f"Steelers app shows one, the watch missed it — {RELAY}")
+    if sent != "sent":
+        return False, f"under-36h heads-up Telegram FAILED ({why(sent)}); will retry next tick"
+    state.setdefault("warned", []).append(t["event_id"])
+    return True, "sent the under-36h heads-up"
+
+
 def _load(path):
     try:
         return json.loads(path.read_text())
@@ -135,7 +181,7 @@ def main(dry=False):
     now = datetime.now(timezone.utc)
     state = _load(STATE)
     notes, ok = [], True
-    tell = (lambda m: print("WOULD TELEGRAM:", m)) if dry else send_telegram
+    tell = (lambda m: print("WOULD TELEGRAM:", m) or "sent") if dry else send_telegram
 
     try:
         rows = immaculate_espn.schedule()
@@ -168,8 +214,9 @@ def main(dry=False):
                 notes.append(f"recap emailed for {what}")
             else:
                 ok = False
-                tell(f"Immaculate: the recap email for {what} FAILED to send; retrying at the next 9am/9pm check.")
-                notes.append(f"recap email FAILED for {what}")
+                sent = tell(f"Immaculate: the recap email for {what} FAILED to send; retrying at the next 9am/9pm check.")
+                notes.append(f"recap email FAILED for {what}"
+                             + ("" if sent == "sent" else f"; its Telegram alert FAILED too ({why(sent)})"))
 
     # ── contest: look until found, then rest until the game is played ────────
     t = p["target"]
@@ -186,26 +233,16 @@ def main(dry=False):
         opened = open_contests(_load(WATCH_STATE), now)
         if opened:
             slug, r = opened[0]
-            state.setdefault("found", {})[t["event_id"]] = {
-                "slug": slug, "title": r.get("title"), "ends": r.get("ends"),
-                "found_utc": now.isoformat()}
-            # S255: say when it OPENS, not just when it closes. Buddy: for a
-            # Sunday game "you may not see the questions until Thursday" --
-            # Week 2's rules page went up Wed 9/16 for a Thu 9/17 open, so this
-            # can fire a day before the questions are in the app.
-            tell(f"Immaculate: new contest posted — {r.get('title') or slug}. "
-                 f"Opens {r.get('begins') or '(see the app)'}; entry closes "
-                 f"{r.get('ends') or '(see the app)'}. "
-                 f"This week's game: {game_label(t)}. {RELAY}")
-            notes.append(f"contest FOUND for {game_label(t)}; no more checks until it is played")
+            sent, note = alert_found(tell, state, t, slug, r, now)
+            ok = ok and sent
+            notes.append(note)
         else:
             notes.append(f"no open contest yet for {game_label(t)}"
                          + (" (some pages unreachable)" if rc == 1 else ""))
             if p["heads_up"]:
-                tell(f"Immaculate: no weekly contest found yet for {game_label(t)}. If the "
-                     f"Steelers app shows one, the watch missed it — {RELAY}")
-                state.setdefault("warned", []).append(t["event_id"])
-                notes.append("sent the under-36h heads-up")
+                sent, note = alert_heads_up(tell, state, t)
+                ok = ok and sent
+                notes.append(note)
 
     return _finish(dry, ok, notes, state)
 
@@ -255,6 +292,28 @@ def selftest():
        not plan(rows, {"found": {"e3": {}}}, tue)["watch"])
     ck("under 36h, nothing found -> one heads-up", plan(rows, {}, sat)["heads_up"])
     ck("...and only once", not plan(rows, {"warned": ["e3"]}, sat)["heads_up"])
+
+    # S292: a failed send must change nothing, so the next tick tries again
+    down, up = (lambda m: "FAILED: URLError"), (lambda m: "sent")
+    wk3 = {"title": "Week 3", "ends": "September 27, 2026 at 1:00 PM EDST"}
+    st = {}
+    sent, note = alert_found(down, st, rows[1], "weekly", wk3, tue)
+    ck("contest found, Telegram FAILED -> tick fails, week NOT marked found, watch runs again",
+       not sent and "FAILED" in note and "found" not in st and plan(rows, st, tue)["watch"])
+    sent, note = alert_found(up, st, rows[1], "weekly", wk3, tue)
+    ck("...retried and sent -> marked found, watch rests",
+       sent and "e3" in st["found"] and not plan(rows, st, tue)["watch"])
+    st = {}
+    sent, note = alert_heads_up(down, st, rows[1])
+    ck("heads-up Telegram FAILED -> tick fails, NOT marked warned, sent again next tick",
+       not sent and "FAILED" in note and plan(rows, st, sat)["heads_up"])
+    sent, note = alert_heads_up(up, st, rows[1])
+    ck("...retried and sent -> only once", sent and not plan(rows, st, sat)["heads_up"])
+    long_title = ("PITTSBURGH STEELERS IMMACULATE PREDICTION 2026 NICK HERBIG AUTOGRAPHED "
+                  "REPLICA JERSEY GIVEAWAY CONTEST OFFICIAL RULES")   # the real 09-24 title
+    head = contest_alert(dict(wk3, title=long_title), rows[1], "weekly")[:120]
+    ck("contest alert: the close time and the ask fit the phone preview (first 120 chars)",
+       wk3["ends"] in head and "questions" in head)
 
     done3 = [g(2, "e2", "Final", "2026-09-20T17:00Z"), g(3, "e3", "Final", "2026-09-27T17:00Z"),
              g(4, "e4", "Scheduled", "2026-10-02T00:15Z")]
