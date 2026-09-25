@@ -584,6 +584,7 @@ def summarize_item(item):
     import media_pipeline
     if media_pipeline.enabled() and item.get('type') == 'podcast':
         notes = media_pipeline.call('analyze', text=item['content'], domain='ai',
+            metadata={k:item.get(k,'') for k in ('source','subject','url','published')},
             instructions='Create source-grounded evidence notes for an AI technology digest. '
             'Preserve named tools, exact numbers, comparisons, limitations, security details and '
             'concrete proposals. Distinguish speaker claims from verified evidence. '

@@ -38,7 +38,8 @@ def pedagogy():
         if kind != 'podcast episode':
             return original_summary(kind,title,source,content,cfg)
         instructions = p.TEACHER_PROMPT.format(kind=kind,title=title,source=source,content='[source supplied separately]')
-        return media.call('analyze',text=content,instructions=instructions,domain='pedagogy')
+        return media.call('analyze',text=content,instructions=instructions,domain='pedagogy',
+                          metadata={'title':title,'source':source})
     p.summarize_for_teacher=summarize
     args=sys.argv[1:]
     if '--selftest' in args or 'selftest' in args:

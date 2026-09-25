@@ -67,6 +67,36 @@ class MediaTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.analyze('test','task',domain='../bad',root=tmp)
 
+    def test_published_claim_is_source_not_model_guess(self):
+        source='A model with 27 billion parameters used 29 GiB of memory in this test.'
+        def caller(*args):
+            return json.dumps({'claims':[{'claim':'An invented model name had this result',
+                'why_it_applies':'This proves our system is identical',
+                'how_to_test':'Compare a local model under the same conditions','quote':source}]})
+        with tempfile.TemporaryDirectory() as tmp:
+            result=m.analyze(source,'hardware','youtube-hardware',True,root=tmp,
+                             caller=caller,counter=len,metadata={'title':'Test episode'})
+            self.assertEqual(result[0]['claim'],'Presenter reports: '+source)
+            self.assertNotIn('identical',result[0]['why_it_applies'])
+            self.assertTrue(next(Path(tmp).rglob('metadata.json')).exists())
+
+    def test_weekly_fetch_keeps_entire_transcript(self):
+        import types
+        entry=types.SimpleNamespace()
+        class Entry(dict):
+            __getattr__=dict.__getitem__
+        entry=Entry(title='Episode',enclosures=[{'type':'audio/mpeg','href':'https://example.org/audio'}])
+        feed=types.SimpleNamespace(entries=[entry])
+        fake_feed=types.SimpleNamespace(parse=lambda data:feed)
+        response=types.SimpleNamespace(content=b'<rss/>',raise_for_status=lambda:None)
+        fake_requests=types.SimpleNamespace(get=lambda *a,**kw:response)
+        full='Beginning '+('middle '*6000)+' ENDING'
+        with patch.dict('sys.modules',{'feedparser':fake_feed,'requests':fake_requests}), \
+             patch.object(m,'transcribe',return_value=full):
+            rows=m.weekly_fetch({'days_back':7,'podcasts':[{'name':'Test','rss':'https://example.org/feed'}]})
+        self.assertTrue(rows[0]['content'].endswith('ENDING'))
+        self.assertEqual(rows[0]['content'],'[TRANSCRIBED]\n'+full)
+
     def test_remote_failure_is_not_local_fallback(self):
         with patch.object(m.socket,'gethostname',return_value='cirrus'), \
              patch.object(m.subprocess,'run') as run:

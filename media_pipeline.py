@@ -110,15 +110,18 @@ def parse_claims(raw, source):
 
 
 def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
-            caller=complete, counter=token_count):
+            caller=complete, counter=token_count, metadata=None):
     if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
         raise ValueError('empty_transcript')
-    key = hashlib.sha256((VERSION+MODEL+domain+str(claims)+instructions+text).encode()).hexdigest()
+    key = hashlib.sha256((VERSION+MODEL+domain+str(claims)+instructions+text+
+                          json.dumps(metadata or {},sort_keys=True)).encode()).hexdigest()
     folder = Path(root) / 'media' / domain / key
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'transcript.txt').write_text(text)
+    atomic_json(folder/'metadata.json', {'source':metadata or {},'domain':domain,
+                 'model':MODEL,'pipeline_version':VERSION,'archived_at':datetime.now().isoformat()})
     spans = split_text(text, count=counter)
     state_path = folder / 'coverage.json'
     outputs, all_claims = [], []
@@ -238,6 +241,8 @@ def transcribe(url):
         if not text:
             raise RuntimeError('Whisper_empty_transcript')
         atomic_json(folder/'segments.json', transcript)
+        atomic_json(folder/'metadata.json', {'audio_url':url,'model':'whisper-small',
+                    'transcribed_at':datetime.now().isoformat()})
         temp = folder/'transcript.tmp'
         temp.write_text(text)
         temp.replace(saved)
@@ -287,7 +292,7 @@ def youtube(payload):
         atomic_json(seen, payload['seen'])
         out = Path(tmp)/'findings'
         def extract(video, text, lane):
-            return analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True)
+            return analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True,metadata=video)
         def captions(video_id):
             if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
                 return '', 'invalid video id'
@@ -316,7 +321,8 @@ def dispatch(payload):
     with lease(ROOT/'logs/media/worker.lock', timeout=7200):
         action = payload['action']
         if action == 'analyze':
-            return analyze(payload['text'],payload['instructions'],payload.get('domain','ai'),payload.get('claims',False))
+            return analyze(payload['text'],payload['instructions'],payload.get('domain','ai'),
+                           payload.get('claims',False),metadata=payload.get('metadata'))
         if action == 'prompt':
             return complete('Complete the requested research or reporting task. Do not invent source facts.',
                             payload['prompt'], 'media:weekly-meta')
