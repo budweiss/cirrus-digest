@@ -172,6 +172,21 @@ def call_local(task_class: str, prompt: str) -> str:
     Do NOT use this for the actual hypothesis judgment -- that is
     call_council's job, on purpose (see CLAUDE.md)."""
     creds = _load_creds()
+    if task_class == "medical_evidence":
+        try:
+            import alopecia_medical
+            result = alopecia_medical.extract(prompt, root=PROJECT_DIR, creds=creds)
+            _log("action", "call_local", task_class, "MedGemma RAG evidence returned")
+            return result
+        except Exception as exc:
+            # Do not silently substitute ungrounded generalist knowledge for
+            # source-bound medical extraction. Existing ordinary route remains
+            # available as a separate, explicit call_local task class.
+            result = "SPECIALIST_UNAVAILABLE: " + type(exc).__name__
+            if isinstance(exc, (ValueError, RuntimeError)):
+                result += ": " + str(exc)[:100]
+            _log("action", "call_local", task_class, result)
+            return result
     system = ("You are a research-literature assistant helping cluster and "
              "extract claims from alopecia areata research items. Be terse "
              "and factual.")

@@ -113,6 +113,10 @@
     "nomic-embed-text": {
       "in": 0.0,
       "out": 0.0
+    },
+    "medgemma-text:27b-q8_0": {
+      "in": 0.0,
+      "out": 0.0
     }
   },
   "discounts": {

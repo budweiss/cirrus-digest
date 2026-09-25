@@ -97,7 +97,9 @@ def _build_mcp_tools(dry_run=False):
         return {"content": [{"type": "text", "text": tools.mark_run_processed()}]}
 
     @tool("call_local",
-          "Cheap local model call (vLLM/ollama, cloud fallback) for "
+          "Use task_class medical_evidence for source-grounded foundation "
+          "evidence through on-demand MedGemma and RAG. Other task classes: "
+          "cheap local model call (vLLM/ollama, cloud fallback) for "
           "ROUTINE sub-steps: clustering similar items, extracting a claim "
           "from an abstract. Do NOT use this for the actual hypothesis "
           "judgment -- that is call_council's job.",

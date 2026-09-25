@@ -1,0 +1,16 @@
+{
+  "host": "cumulus1",
+  "endpoint": "http://127.0.0.1:11434",
+  "protected_models": ["gpt-oss:120b"],
+  "max_loaded_models": 2,
+  "specialists": {
+    "medical_evidence": {
+      "enabled": true,
+      "model": "medgemma-text:27b-q8_0",
+      "minimum_available_gib": 36,
+      "num_ctx": 8192,
+      "num_predict": 1024,
+      "timeout_seconds": 240
+    }
+  }
+}

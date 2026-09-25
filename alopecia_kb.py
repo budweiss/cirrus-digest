@@ -55,7 +55,7 @@ def _embed_real(text):
     try:
         resp = requests.post(
             "%s/api/embeddings" % _ollama_host(),
-            json={"model": EMBED_MODEL, "prompt": text[:2000]},
+            json={"model": EMBED_MODEL, "prompt": text[:2000], "keep_alive": 0},
             timeout=30)
         resp.raise_for_status()
         return resp.json().get("embedding", [])
