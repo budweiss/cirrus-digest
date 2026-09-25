@@ -133,3 +133,6 @@ config/sources-pedagogy.local.json.lock
 config/alopecia_profile.json
 # S271: Justin's history log -- client-entered data, never committed.
 data/halftime/
+
+# Full media transcripts, timestamps and resumable local inference artifacts.
+media/

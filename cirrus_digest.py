@@ -56,6 +56,8 @@ if _PROFILES_PATH.exists():
         print(f"[warn] could not read node_profiles.json: {_e}")
 NODE_NAME   = _NODE_PROFILE.get("node", "CIRRUS")
 MODEL       = _NODE_PROFILE.get("digest_model", DIGEST_CFG["ollama_model"])
+if os.environ.get('CUMULUS_MEDIA') == '1':
+    MODEL = 'qwen3.8-27b-fp8'
 NUM_CTX     = _NODE_PROFILE.get("num_ctx", DIGEST_CFG.get("num_ctx", 8192))
 OLLAMA_HOST = DIGEST_CFG["ollama_host"]
 MAX_ARTICLE = DIGEST_CFG["max_article_length"]
@@ -81,6 +83,9 @@ def clean_text(text, max_len=None):
 def ollama_summarize(prompt, timeout=120, model=None):
     """Send a prompt to local Ollama and return the response.
     model: override the default (e.g. PODCAST_MODEL for transcripts)."""
+    import media_pipeline
+    if media_pipeline.enabled():
+        return media_pipeline.call('prompt', prompt=prompt)
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
@@ -162,6 +167,9 @@ def summarize_with_fallback(prompt, item_type, timeout=120):
     model, then the main model — so losing the network degrades the summary
     rather than losing the item.
     """
+    import media_pipeline
+    if media_pipeline.enabled():
+        return ollama_summarize(prompt, timeout=timeout)
     if item_type == "podcast":
         if PODCAST_HOST:
             out = _remote_ollama(prompt, PODCAST_MODEL, PODCAST_HOST)
@@ -499,6 +507,10 @@ def transcribe_audio(audio_path):
 
 def fetch_podcasts():
     """Fetch latest episodes from podcast RSS feeds, transcribe audio with Whisper."""
+    import media_pipeline
+    if media_pipeline.enabled():
+        return media_pipeline.call('weekly-fetch', podcasts=PODCASTS,
+                                   days_back=CONFIG['email']['days_back'])
     results = []
     since = datetime.now() - timedelta(days=CONFIG["email"]["days_back"])
 
@@ -569,6 +581,15 @@ def fetch_podcasts():
 def summarize_item(item):
     """Summarize a single newsletter or podcast episode, enriched with RAG context
     and any referenced external sources fetched via web search."""
+    import media_pipeline
+    if media_pipeline.enabled() and item.get('type') == 'podcast':
+        notes = media_pipeline.call('analyze', text=item['content'], domain='ai',
+            instructions='Create source-grounded evidence notes for an AI technology digest. '
+            'Preserve named tools, exact numbers, comparisons, limitations, security details and '
+            'concrete proposals. Distinguish speaker claims from verified evidence. '
+            'Cover the whole supplied source, including its ending. Do not invent facts. '
+            'At most 700 words. Source: '+item['source']+'; Title: '+item['subject'])
+        item = dict(item, content='[FULL EPISODE EVIDENCE NOTES]\n'+notes)
     # Reference enrichment: find named papers/repos/models mentioned in the
     # content, search for each, fetch and append source material so qwen
     # summarizes with the original referenced content, not just a mention.

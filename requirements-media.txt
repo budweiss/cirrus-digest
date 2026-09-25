@@ -1,0 +1,2 @@
+# Same caption client already in use on CIRRUS; install into C1 app venv only.
+youtube-transcript-api==1.2.4
