@@ -14,6 +14,9 @@ or print the result are not flagged.
 
 Emits:  T113:<path>:<line>:<message>
 READ-ONLY. Always exits 0; the caller counts lines.
+
+    python3 trap_ignored_send.py <cowork-root>
+    python3 trap_ignored_send.py selftest
 """
 import ast
 import sys
@@ -76,7 +79,50 @@ def scan(tree, senders):
             yield n.lineno, name
 
 
+def selftest():
+    """Pins the shapes that matter, including the live S292 bug. -> exit code"""
+    failures = []
+
+    def check(label, ok):
+        print(("  PASS  " if ok else "  FAIL  ") + label)
+        if not ok:
+            failures.append(label)
+
+    sender = ("def send_telegram(m):\n"
+              "    try:\n        return 'sent'\n"
+              "    except OSError as e:\n        return f'FAILED: {e}'\n")
+
+    def hits(body, extra=""):
+        tree = ast.parse(sender + extra + body)
+        return [name for _, name in scan(tree, senders_in(ast.parse(sender + extra)))]
+
+    check("the pre-S292 tick: a bare call through a dry-run alias is FLAGGED",
+          hits("tell = (lambda m: print(m)) if dry else send_telegram\n"
+               "tell('contest found')\n") == ["tell"])
+    check("a bare module.send_telegram(...) is FLAGGED (the supervisor case)",
+          hits("tools.send_telegram('cap reached')\n") == ["send_telegram"])
+    check("a checked result is not flagged",
+          hits("if send_telegram('x') != 'sent':\n    pass\n") == [])
+    check("an assigned or appended result is not flagged",
+          hits("r = send_telegram('x')\nout.append(send_telegram('y'))\n") == [])
+    check("a FAILED string returned via a variable still marks a sender",
+          senders_in(ast.parse("def s(m):\n    result = 'FAILED: x'\n    return result\n"))
+          == {"s"})
+    check("a notifier that returns nothing is not a sender (dev_agent._notify)",
+          hits("_notify('deployed')\n",
+               "def _notify(t):\n    try:\n        pass\n    except Exception:\n"
+               "        log('notify failed')\n") == [])
+    print()
+    if failures:
+        print("FAILURES: %d" % len(failures))
+        return 1
+    print("ALL PASS")
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["selftest"]:
+        sys.exit(selftest())
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     files, trees = [], {}
     for sub in ("cirrus-repo", "runner"):
