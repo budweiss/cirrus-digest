@@ -7,7 +7,7 @@
     "medical_evidence": {
       "enabled": true,
       "model": "medgemma-text:27b-q8_0",
-      "minimum_available_gib": 36,
+      "minimum_available_gib": 40,
       "num_ctx": 8192,
       "num_predict": 1024,
       "timeout_seconds": 240
