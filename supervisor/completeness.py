@@ -476,7 +476,10 @@ RULES = {
                   "current", "model", "models",
                   # S263: "1 unchecked" -- a model with no public version to
                   # compare against (medgemma-text, built locally in S258).
-                  "unchecked"),   # status counters; `ok` is the signal
+                  "unchecked",
+                  # S292: "models: 6 current · 1 STALE (qwen3.8:...)" -- a local
+                  # model behind its upstream tag; a count to act on, not output.
+                  "stale"),   # status counters; `ok` is the signal
     ),
     # Vendor/account mail watcher (S67). Genuinely quiet most days — zero new
     # items is the NORMAL case, so this is only about the scan itself dying.
