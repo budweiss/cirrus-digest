@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 MODEL = 'qwen3.8-27b-fp8'
 ENDPOINT = 'http://192.168.100.11:8000'
-VERSION = 's298-v1'
+VERSION = 's298-v2'
 
 
 def enabled():
@@ -132,7 +132,9 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
             if claims:
                 system += ('Return JSON {"claims": [{"claim": "...", "why_it_applies": "...", '
                            '"how_to_test": "...", "quote": "verbatim source quote"}]}. '
-                           'At most 6 claims, each quote 30-700 characters; no useful claim means an empty list.')
+                           'At most 6 claims, each quote 30-700 characters; no useful claim means an empty list. '
+                           'Attribute claims to the presenter. A transcript is not independent verification; '
+                           'never describe its claims as verified by us.')
             elif len(spans) > 1:
                 system += ('This is one section of a longer episode. Produce concise evidence notes '
                            'for the requested task, retaining relevant details and limitations. No more than 500 words.')
@@ -154,7 +156,12 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
             identity = claim['quote'].lower()
             if identity not in seen:
                 seen.add(identity)
-                claim['why_it_applies'] += '\nSource quote: ' + claim['quote']
+                # Publish the source's actual words, not an unsupported model
+                # paraphrase or an invented equivalence to our installed model.
+                claim['claim'] = 'Presenter reports: '+claim['quote']
+                claim['why_it_applies'] = ('Candidate for review against our stack; verify model identity, '
+                    'settings and workload before treating the result as applicable.')
+                claim['how_to_test'] = 'Proposed test, not performed: '+claim['how_to_test']
                 result.append(claim)
     elif len(outputs) == 1:
         result = outputs[0]
@@ -264,6 +271,15 @@ def weekly_fetch(payload):
     return results
 
 
+def youtube_instructions(lane):
+    return ('Extract only actionable, testable '+lane+' claims. Current stack: two DGX Spark GB10 '
+        'machines, 128GB each; GPT-OSS120B in Ollama on C1, independent Qwen27B FP8 in vLLM on C2; '
+        'on-demand MedGemma and project-scoped RAG. No pooled memory. Distinguish creator claims '
+        'from established facts. Do not assume findings are new or adopt suggestions. '+
+        ('Only concrete hardware tests relevant to this stack.' if lane=='hardware' else
+         'Only news that changes a concrete action: provider changes, specific tools or models worth testing.'))
+
+
 def youtube(payload):
     import yt_watch as yt
     with tempfile.TemporaryDirectory(prefix='yt-state-') as tmp:
@@ -271,13 +287,7 @@ def youtube(payload):
         atomic_json(seen, payload['seen'])
         out = Path(tmp)/'findings'
         def extract(video, text, lane):
-            instruction = ('Extract only actionable, testable '+lane+' claims. Current stack: two DGX Spark GB10 '
-                'machines, 128GB each; GPT-OSS120B in Ollama on C1, independent Qwen27B FP8 in vLLM on C2; '
-                'on-demand MedGemma and project-scoped RAG. No pooled memory. Distinguish creator claims '
-                'from established facts. Do not assume findings are new or adopt suggestions. '+
-                ('Only concrete hardware tests relevant to this stack.' if lane=='hardware' else
-                 'Only news that changes a concrete action: provider changes, specific tools or models worth testing.'))
-            return analyze(text, instruction, domain='youtube-'+lane, claims=True)
+            return analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True)
         def captions(video_id):
             if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
                 return '', 'invalid video id'
