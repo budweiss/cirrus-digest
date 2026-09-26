@@ -26,12 +26,13 @@ Code auto-approves commands it judges read-only, so `cat` on the credentials
 file would have too (TOOLING-TRAPS T105). The hook sees every Bash call before
 it runs and denies anything that is not one exact script + subcommand.
 
-S307 added `inactives`: the one-off Week 3 game-day inactives check, moved off
-the Mac for the same reason (the desktop app skips tasks while it is closed).
-Unlike postgame, its final reply IS the delivery -- main() sends it to Buddy.
+S307 added `injuries` and `inactives`: the one-off Week 3 Saturday injury and
+Sunday game-day inactives checks, moved off the Mac for the same reason (the
+desktop app skips tasks while it is closed). Unlike postgame, their final reply
+IS the delivery -- main() sends it to Buddy.
 
     python3 immaculate_agent.py postgame [--dry-run]
-    python3 immaculate_agent.py inactives [--dry-run]
+    python3 immaculate_agent.py injuries|inactives [--dry-run]
     python3 immaculate_agent.py selftest
 
 On cumulus1 "python3" means ~/.venvs/alopecia-agent/bin/python (the tick's
@@ -60,8 +61,18 @@ PY = "./.venv/bin/python"
 # per mode: (budget USD, max turns, wall-clock seconds). The tick's own
 # subprocess timeout and the unit's TimeoutStartSec sit above the wall clock:
 # a hang ends the run instead of blocking every run after it (T102).
-LIMITS = {"postgame": (4.00, 80, 20 * 60), "inactives": (2.00, 40, 12 * 60)}
-WEB_TOOLS = {"postgame": ["WebSearch"], "inactives": ["WebSearch", "WebFetch"]}
+LIMITS = {"postgame": (4.00, 80, 20 * 60), "injuries": (2.00, 40, 12 * 60),
+          "inactives": (2.00, 40, 12 * 60)}
+WEB_TOOLS = {"postgame": ["WebSearch"], "injuries": ["WebSearch", "WebFetch"],
+             "inactives": ["WebSearch", "WebFetch"]}
+# pregame modes: the reply is the message. mode -> (what the run is, email
+# subject if Telegram fails, what Buddy should do if the run itself fails)
+PREGAME = {
+    "injuries": ("Saturday injury recheck", "Immaculate Wk3 injury recheck",
+                 "Check the Friday injury report yourself."),
+    "inactives": ("Game-day inactives check", "Immaculate Wk3 INACTIVES",
+                  "Check the ESPN game page yourself before 1:00."),
+}
 # inactives: a reply opening with this means "look again" -- the prompt promises
 # a follow-up pass, so the marker and the prompt must agree (selftest checks).
 NOT_POSTED = "Immaculate Wk3 INACTIVES NOT POSTED YET"
@@ -77,6 +88,7 @@ COMMANDS = {
         "writes": {"immaculate_store.py": {"record", "snapshot-leader"},
                    "immaculate_weekly_store.py": {"resolve"}},
     },
+    "injuries": {"reads": {"immaculate_espn.py": {"schedule"}}, "writes": {}},
     "inactives": {"reads": {"immaculate_espn.py": {"schedule"}}, "writes": {}},
 }
 # Interpreted by bash even inside double quotes ($ and backtick substitute,
@@ -239,12 +251,12 @@ async def run_pass(mode, dry_run, followup=False):
         env={"ANTHROPIC_API_KEY": creds["anthropic_api_key"]},
         cwd=str(HERE),
     )
-    kind = "Game-day inactives check" if mode == "inactives" else "Post-game run"
+    kind = PREGAME[mode][0] if mode in PREGAME else "Post-game run"
     prompt = f"{kind}. Now: {datetime.now():%A %Y-%m-%d %H:%M} (America/New_York)."
     if followup:
         prompt += (" This is the FOLLOW-UP look: the first one found the inactives not posted "
                    "and Buddy already has that message. Send the final verdict.")
-    if dry_run and mode == "inactives":
+    if dry_run and mode in PREGAME:
         prompt += " THIS IS A DRY RUN: your reply is printed, not sent. Write it exactly as you would send it."
     elif dry_run:
         prompt += (" THIS IS A DRY RUN: every record/resolve/snapshot command is unavailable. "
@@ -293,7 +305,7 @@ def _pass(mode, dry_run, followup=False):
     if lost and not error:
         error = (f"the gate refused {len(lost)} command(s) the run needed, so those "
                  f"steps did not happen (see 'Refused by the gate')")
-    if mode == "inactives" and not result.strip() and not error:
+    if mode in PREGAME and not result.strip() and not error:
         error = "the run finished with no reply, so there is no verdict to send"
     TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
     path = TRANSCRIPTS / f"{mode}{'-dryrun' if dry_run else ''}-{stamp}.md"
@@ -308,16 +320,15 @@ def _pass(mode, dry_run, followup=False):
     if error:
         print(f"FAILED: {error}")
         if not dry_run:
-            then = ("Check the ESPN game page yourself before 1:00." if mode == "inactives"
-                    else "The 9am/9pm check will retry it.")
+            then = PREGAME[mode][2] if mode in PREGAME else "The 9am/9pm check will retry it."
             print("alert:", send_telegram(
                 f"Immaculate {mode} run FAILED on cumulus1: {error}. Transcript: {path.name}. {then}"))
         return 1, result
     return 0, result
 
 
-def deliver(message, dry_run):
-    """inactives only: the reply goes to Buddy by Telegram; email if that fails twice.
+def deliver(message, dry_run, subject):
+    """Pregame modes: the reply goes to Buddy by Telegram; email if that fails twice.
     True only when one of them went (T113: a send that never raises must be read)."""
     if dry_run:
         print(f"DRY RUN -- not sent:\n{message}")
@@ -329,7 +340,7 @@ def deliver(message, dry_run):
         from entity_kb_weekly_digest import _send_mail
         c = _load_creds()
         ok = _send_mail(c.get("outlook_email", ""), c.get("outlook_password", ""),
-                        "Buddy.Weiss@outlook.com", "", "Immaculate Wk3 INACTIVES", message)
+                        "Buddy.Weiss@outlook.com", "", subject, message)
         status = f"telegram {status}; email {'sent' if ok else 'FAILED'}"
     print("delivery:", status)
     return status == "sent" or status.endswith("email sent")
@@ -337,14 +348,15 @@ def deliver(message, dry_run):
 
 def main(mode, dry_run=False):
     rc, result = _pass(mode, dry_run)
-    if mode != "inactives" or rc:
+    if mode not in PREGAME or rc:
         return rc
-    delivered = deliver(result.strip(), dry_run)
-    if result.strip().startswith(NOT_POSTED) and not dry_run:
+    subject = PREGAME[mode][1]
+    delivered = deliver(result.strip(), dry_run, subject)
+    if mode == "inactives" and result.strip().startswith(NOT_POSTED) and not dry_run:
         time.sleep(RECHECK_WAIT)
         rc, result = _pass(mode, dry_run, followup=True)
         if rc == 0:
-            delivered = deliver(result.strip(), dry_run) and delivered
+            delivered = deliver(result.strip(), dry_run, subject) and delivered
     return rc or (0 if delivered else 1)
 
 
@@ -438,10 +450,13 @@ def selftest():
     # promising it, a not-posted reply would be the last word Buddy gets.
     ck("inactives: prompt carries the exact NOT_POSTED opening main() looks for",
        f"`{NOT_POSTED}:`" in (PROMPTS / "inactives.md").read_text())
-    ck("inactives: gate refuses every write (it has none)",
-       not allowed_in("inactives", f"{PY} immaculate_store.py record 3 PIT x")
-       and not allowed_in("inactives", f"{PY} immaculate_weekly_store.py resolve 3 1 x y"))
-    ck("inactives: gate allows its one read", allowed_in("inactives", f"{PY} immaculate_espn.py schedule"))
+    for mode in PREGAME:
+        ck(f"{mode}: gate refuses every write (it has none)",
+           not allowed_in(mode, f"{PY} immaculate_store.py record 3 PIT x")
+           and not allowed_in(mode, f"{PY} immaculate_weekly_store.py resolve 3 1 x y"))
+        ck(f"{mode}: gate allows its one read", allowed_in(mode, f"{PY} immaculate_espn.py schedule"))
+        ck(f"{mode}: has limits, web tools and a prompt",
+           mode in LIMITS and mode in WEB_TOOLS and (PROMPTS / f"{mode}.md").exists())
     print("selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -452,5 +467,5 @@ if __name__ == "__main__":
         sys.exit(selftest())
     if a[:1] and a[0] in COMMANDS:
         sys.exit(main(a[0], dry_run="--dry-run" in a))
-    print("usage: immaculate_agent.py postgame|inactives [--dry-run] | selftest")
+    print("usage: immaculate_agent.py postgame|injuries|inactives [--dry-run] | selftest")
     sys.exit(2)
