@@ -1,0 +1,18 @@
+[Unit]
+Description=Foundation approval renewal — daily due check; runs the test half within 48 h of expiry (S316)
+After=network-online.target cumulus-creds-materialize.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+Environment=TZ=America/New_York
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/foundation_renewal.py
+# T58: a oneshot has no start timeout by default. A full run is ~20-30 min
+# (S315: 75 Claude + 59 Kimi + local cases); 3 h ends a hang instead of
+# blocking every later day's check.
+TimeoutStartSec=3h

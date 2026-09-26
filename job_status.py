@@ -34,6 +34,8 @@ CADENCE_H = {
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
     "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
+    "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)
+    "foundationrenewalcumulus": 26,  # daily 04:40 CUMULUS (S316; cloud + GPT-OSS + HOA)
     # S141 -> S253. Project Immaculate guards deadlines that cannot be
     # re-opened. Since S253 one twice-daily tick (immaculate-tick.timer, 09:00
     # and 21:00 on cumulus1) watches for each week's contest and, after each
@@ -173,6 +175,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciacollect",                       # S82, runs on CUMULUS
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
+                 "foundationrenewalcumulus",              # S316, runs on CUMULUS
                  "immaculatetick",                         # S253, runs on CUMULUS
                  # S254: runs on CUMULUS since S169 but was never listed here,
                  # so CIRRUS reported it "DECLARED BUT NEVER RAN" and every

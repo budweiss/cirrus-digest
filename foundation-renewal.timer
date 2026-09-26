@@ -1,0 +1,12 @@
+[Unit]
+Description=Foundation approval renewal — daily due check (S316)
+
+# 04:40 daily. Most days this is a sub-second due check; within 48 h of the
+# earliest approval expiry it runs the tests (~20-30 min, cloud APIs + GPT-OSS),
+# finishing before cirrus-modelhealth 05:30 and alopecia 05:45 use the local model.
+[Timer]
+OnCalendar=*-*-* 04:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
