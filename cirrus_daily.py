@@ -1310,7 +1310,10 @@ def fetch_web_sources():
         try:
             feed = feedparser.parse(source["rss"])
             if feed_unreadable(feed):
-                log(f"    ⚠ Feed unreadable (HTTP {feed.get('status', '?')}): {source['rss']}")
+                _why = (f"HTTP {feed.get('status')}" if feed.get("status") else
+                        f"{type(feed.get('bozo_exception')).__name__}: "
+                        f"{str(feed.get('bozo_exception'))[:70]}")
+                log(f"    ⚠ Feed unreadable ({_why}): {source['rss']}")
                 bump("feed_unreadable")
             count = 0
             for entry in feed.entries:

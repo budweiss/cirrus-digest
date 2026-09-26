@@ -49,6 +49,8 @@ LIMIT = 40           # posts analysed per run; ~30/day measured S308, so the
                      # backlog drains and a busy day does not run into the morning
 MAX_AGE_DAYS = 14    # older posts are skipped, not queued forever
 TEASER = 1500        # below this many characters we only had a teaser
+UNREADABLE = 300     # below this there is nothing to read -- a title, a byline.
+                     # S308: a 35-char "post" scored "nothing for us" is a lie.
 MAX_CHARS = 60000
 FEED_PAUSE = 1.0
 SEEN_KEEP = 5000
@@ -166,6 +168,15 @@ def feed_unreadable(feed):
     return status >= 400 or (bool(feed.get("bozo")) and not feed.get("entries"))
 
 
+def why_unreadable(feed):
+    """The cause, not "HTTP ?": S308's first dry run hid a CIRRUS DNS outage
+    behind six identical "HTTP ?" lines."""
+    if feed.get("status"):
+        return "HTTP %s" % feed.get("status")
+    exc = feed.get("bozo_exception")
+    return "%s: %s" % (type(exc).__name__, str(exc)[:70]) if exc else "no response"
+
+
 def collect(feeds, seen, now, parse, pause=0.0):
     """Unseen posts from every feed, newest first, one per post. Pure given parse."""
     posts, feed_errors = {}, []
@@ -178,7 +189,7 @@ def collect(feeds, seen, now, parse, pause=0.0):
             feed_errors.append("%s: %s" % (f["name"], type(e).__name__))
             continue
         if feed_unreadable(feed):
-            feed_errors.append("%s: HTTP %s" % (f["name"], feed.get("status", "?")))
+            feed_errors.append("%s: %s" % (f["name"], why_unreadable(feed)))
             continue
         for e in feed.get("entries", []):
             link = e.get("link", "")
@@ -236,7 +247,15 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
     for post in posts[:limit]:
         text = full_text(post.pop("entry"), post["kind"], parse)
         post["teaser"] = len(text) < TEASER
+        post["unread"] = len(text) < UNREADABLE
         meta = {k: post[k] for k in ("title", "url", "source", "published")}
+        if post["unread"]:
+            # member-only or unavailable: listed for Buddy, never scored
+            post.update(claims=[], failed=False)
+            results.append(post)
+            seen.append(post["key"])
+            seen_set.add(post["key"])
+            continue
         try:
             claims = analyze("%s\n\n%s" % (post["title"], text), meta) if text else []
         except (RuntimeError, OSError) as e:
@@ -269,7 +288,8 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
     return {"feeds": len(feeds), "feed_errors": len(feed_errors), "unseen": len(posts),
             "processed": len(results), "claims": sum(len(r["claims"]) for r in results),
             "with_claims": sum(1 for r in results if r["claims"]),
-            "teasers": sum(1 for r in results if r["teaser"]),
+            "teasers": sum(1 for r in results if r["teaser"] and not r.get("unread")),
+            "unread": sum(1 for r in results if r.get("unread")),
             "errors": errors, "body": body}
 
 
@@ -296,7 +316,16 @@ def render(results, day):
                       "  > %s  " % c.get("quote", "").replace("\n", " "),
                       "  %s" % c.get("how_to_test", ""),
                       "  Areas: %s" % ", ".join(c["areas"]), ""]
-    rest = [r for r in results if not r["claims"]]
+    unread = [r for r in results if r.get("unread")]
+    worth = [r for r in unread if areas_for(r["title"]) != ["Other"]]
+    if worth:
+        lines += ["## Could not read — titles worth opening yourself (%d)" % len(worth), "",
+                  "Member-only or not in any feed we can read; Medium's pages refuse servers.", ""]
+        lines += ["- %s — %s  \n  %s" % (r["title"][:110], r["source"], r["url"]) for r in worth]
+        lines += [""]
+    if len(unread) > len(worth):
+        lines += ["%d other post(s) could not be read and their titles are off-topic." % (len(unread) - len(worth)), ""]
+    rest = [r for r in results if not r["claims"] and not r.get("unread")]
     if rest:
         lines += ["## Read, nothing for us (%d)" % len(rest), ""]
         lines += ["- %s — %s%s%s" % (r["title"][:90], r["source"],
@@ -449,6 +478,18 @@ def selftest():
            not is_healthy({"feeds": 4, "feed_errors": 2, "unseen": 0, "processed": 0, "errors": ["a", "b"]}))
         s4 = run(dry_run=True, feeds=feeds, parse=parse, analyze=analyze,
                  seen_path=Path(td) / "seen3.json", out_dir=Path(td) / "out3", now=now, pause=0)
+        tiny = {"https://y.substack.com/feed": F(status=200, entries=[
+            entry("https://y.substack.com/p/t", "Ollama tool calls with Qwen", "35 chars of teaser only")]),
+            "https://z.substack.com/feed": F(bozo=1, entries=[], bozo_exception=OSError("nodename nor servname"))}
+        calls_before = len(seen_calls)
+        s5 = run(feeds=[{"name": "Y", "rss": "https://y.substack.com/feed", "kind": "substack"},
+                        {"name": "Z", "rss": "https://z.substack.com/feed", "kind": "substack"}],
+                 parse=lambda u: tiny[u], analyze=analyze, seen_path=Path(td) / "seen5.json",
+                 out_dir=Path(td) / "out5", now=now, pause=0)
+        ck("unread: a post with no text is never sent to the model", len(seen_calls) == calls_before)
+        ck("unread: ...and is listed for Buddy when its title is on-topic",
+           s5["unread"] == 1 and "worth opening yourself" in s5["body"] and "Ollama tool calls" in s5["body"])
+        ck("feed error: names the cause, not 'HTTP ?'", "nodename" in s5["errors"][0])
         ck("dry run: nothing written", not (Path(td) / "seen3.json").exists()
            and not (Path(td) / "out3").exists() and s4["processed"] == 2)
     print("selftest:", "PASS" if ok else "FAIL")
