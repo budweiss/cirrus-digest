@@ -125,6 +125,13 @@ def plain(markup):
     return re.sub(r"[ \t\r\f\v]+", " ", re.sub(r"\n\s*\n+", "\n\n", text)).strip()
 
 
+def mostly_latin(text):
+    """False for a post mostly in another script. S308's first run spent C2 time
+    on Bengali, Korean and Chinese posts and published quotes Buddy cannot read."""
+    letters = [ch for ch in text[:4000] if ch.isalpha()]
+    return not letters or sum(ch.isascii() for ch in letters) / len(letters) >= 0.6
+
+
 def entry_text(entry):
     body = (entry.get("content") or [{}])[0].get("value", "") or entry.get("summary", "")
     return plain(body)
@@ -248,13 +255,17 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
         text = full_text(post.pop("entry"), post["kind"], parse)
         post["teaser"] = len(text) < TEASER
         post["unread"] = len(text) < UNREADABLE
+        post["foreign"] = not post["unread"] and not mostly_latin(post["title"] + " " + text)
         meta = {k: post[k] for k in ("title", "url", "source", "published")}
-        if post["unread"]:
-            # member-only or unavailable: listed for Buddy, never scored
+        if post["unread"] or post["foreign"]:
+            # member-only / unavailable, or not in a language Buddy reads:
+            # listed or counted for Buddy, never scored
             post.update(claims=[], failed=False)
             results.append(post)
             seen.append(post["key"])
             seen_set.add(post["key"])
+            log("  %s | %s | %s" % (post["source"][:18], post["title"][:50],
+                                    "not English, skipped" if post["foreign"] else "could not read"))
             continue
         try:
             claims = analyze("%s\n\n%s" % (post["title"], text), meta) if text else []
@@ -290,6 +301,7 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
             "with_claims": sum(1 for r in results if r["claims"]),
             "teasers": sum(1 for r in results if r["teaser"] and not r.get("unread")),
             "unread": sum(1 for r in results if r.get("unread")),
+            "foreign": sum(1 for r in results if r.get("foreign")),
             "errors": errors, "body": body}
 
 
@@ -325,7 +337,10 @@ def render(results, day):
         lines += [""]
     if len(unread) > len(worth):
         lines += ["%d other post(s) could not be read and their titles are off-topic." % (len(unread) - len(worth)), ""]
-    rest = [r for r in results if not r["claims"] and not r.get("unread")]
+    foreign = sum(1 for r in results if r.get("foreign"))
+    if foreign:
+        lines += ["%d post(s) not in English were skipped." % foreign, ""]
+    rest = [r for r in results if not r["claims"] and not r.get("unread") and not r.get("foreign")]
     if rest:
         lines += ["## Read, nothing for us (%d)" % len(rest), ""]
         lines += ["- %s — %s%s%s" % (r["title"][:90], r["source"],
@@ -416,6 +431,10 @@ def selftest():
     ck("areas: DGX Spark is hardware", "Hardware" in areas_for("Two DGX Spark nodes"))
     ck("areas: a CLAUDE.md tip is harness", areas_for("keep CLAUDE.md short")[0].startswith("Agent harness"))
     ck("areas: nothing matched is Other", areas_for("a recipe for bread") == ["Other"])
+    ck("latin: English passes", mostly_latin("Serving Qwen on DGX Spark with vLLM"))
+    ck("latin: Indonesian (Latin script) passes", mostly_latin("Membangun RAG sederhana dari nol"))
+    ck("latin: Bengali does not", not mostly_latin("AI Model Quantization: পার্ট ৩ কোয়ান্টাইজেশন মডেলের আকার কমায়"))
+    ck("latin: Korean does not", not mostly_latin("클로드 코드 에이전틱 코딩 실전 가이드"))
     ck("capped: short text unchanged", capped("abc", 10) == "abc")
     ck("capped: a cut says so", capped("x" * 20, 10).endswith("[truncated at 10 of 20 characters]"))
 
