@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- S308: learn_watch.py, daily 01:15 -- after ytwatch has released the
+    <!-- S308: learn_watch.py, daily 01:15, after ytwatch has released the
          CUMULUS media worker, before cumulusstatepull at 01:45.
          S80. A LaunchDAEMON in /Library/LaunchDaemons, bootstrapped into the
          `system` domain — NOT a user LaunchAgent. CIRRUS normally runs with
