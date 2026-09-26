@@ -340,6 +340,43 @@ _PA_HINTS = ("pittsburgh", "pennsylvania", ", pa", " pa ", "butler",
              "wexford", "allegheny", "steel city")
 
 
+# R16-R18 (Justin, 26 Aug): Wiz, Snoop and Bret Michaels have been booked many
+# times -- "…we don't need to call it out as if it's a new idea/concept." An
+# act they have already used is LOWER RISK and is labelled so, never hidden;
+# it is not a discovery, so on a date's list it ranks after one that is. The
+# rest of their booking history arrives through their own log (R29): an act
+# named there is marked with the date. Their fuller history is his to give.
+PREVIOUSLY_BOOKED = ("Wiz Khalifa", "Snoop Dogg", "Bret Michaels")
+_BOOKED_NOTE = ("you have booked them many times (your note, 26 Aug) — "
+                "familiar, lower risk, not a new idea")
+
+
+def booked_note(act: Dict, history: Optional[List[Dict]] = None) -> str:
+    """Why this act counts as booked before, or ''."""
+    if canonical_name(act.get("name", "")) in {
+            canonical_name(n) for n in PREVIOUSLY_BOOKED}:
+        return _BOOKED_NOTE
+    names = [_PAREN.sub("", n).strip() for n in
+             [act.get("name", "")] + list(act.get("also_known_as") or [])]
+    for e in reversed(history or []):
+        for n in names:
+            # Whole name, as written: "Queen" must not match "drag queen".
+            if len(n) >= 4 and re.search(r"(?<!\w)" + re.escape(n)
+                                         + r"(?!\w)", e.get("what") or ""):
+                return "named in your history log for {} vs {}".format(
+                    e.get("date") or "a played game", e.get("opponent", ""))
+    return ""
+
+
+def mark_booked(acts: List[Dict], history: Optional[List[Dict]]) -> None:
+    for a in acts:
+        note = booked_note(a, history)
+        if note and not a.get("booked"):
+            a["booked"] = note
+            a.setdefault("badges", []).append(
+                {"kind": "booked", "label": "Booked before", "why": note})
+
+
 def badges_for(act: Dict) -> List[Dict]:
     """Independent claims about one act. Each carries the evidence for itself,
     so a badge can be argued with rather than trusted."""
@@ -405,7 +442,10 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
         # booking; it should not head a September afternoon game.
         patriotic_only = ("patriotic" in kinds
                           and not (kinds - {"patriotic", "credit"}))
+        # R18: something they have booked many times is not a discovery --
+        # it follows the acts that are, within the same lead.
         return (0 if leads else 1,
+                1 if act.get("booked") else 0,
                 reach,
                 1 if (patriotic_only and not wants_patriotic) else 0,
                 0 if "market" in kinds else 1,
@@ -695,6 +735,48 @@ def with_profile(act: Dict, profiles: Dict) -> Dict:
     return act
 
 
+# R11 (Justin, 26 Aug): a SECOND track, "notable currently-routing artists
+# that keep us relevant with younger fans -- potentially regardless of style".
+# Scored on its own, never folded into the nostalgia ranking. Notable needs
+# evidence, so: an act routing through near the date that broke through in the
+# 2010s or 2020s (a SOURCED era) and is playing a room that could carry a
+# stadium slot, or has a sports credit. Not offered on a date whose brief
+# rules unrelated acts out (11/1, 11/27, 12/6).
+YOUTH_ERAS = ("2020s", "2010s")
+
+
+def youth_track(game: Dict, touring: List[Dict]) -> List[Dict]:
+    import halftime_routing
+    if game.get("theme"):
+        return []
+    out = []
+    for a in touring:
+        era = (a.get("fields") or {}).get("era") or ""
+        d = a.get("draw") or {}
+        if era in YOUTH_ERAS and d.get("plausible"):
+            out.append(dict(a, youth="broke through in the {}; {}".format(
+                era, (d.get("label") or "").lower())))
+    return sorted(out, key=lambda a: (
+        halftime_routing.DRAW_ORDER.get((a.get("draw") or {}).get("tier"), 9),
+        YOUTH_ERAS.index(a["fields"]["era"]), abs(a.get("_gap") or 99),
+        a.get("name", "")))
+
+
+def worth_joining(ev: Dict, credited_names=()) -> bool:
+    """May a stored itinerary put this act in a date's touring column on its
+    own? Only one worth a booker's look: his list, his note, or a room (or a
+    credit) that could carry a stadium slot. The store also holds names a past
+    sweep misread -- "Ace of Cups" is a Columbus club -- and small rooms churn
+    nightly; neither belongs in the column on this evidence alone."""
+    import halftime_routing
+    name = ev.get("artist", "")
+    return bool(fan_entry(name)
+                or canonical_name(name) in {canonical_name(n["act"])
+                                            for n in CLIENT_NOTES}
+                or halftime_routing.draw_signal(ev, credited_names)
+                .get("plausible"))
+
+
 def split_for_game(game: Dict, acts: List[Dict]) -> tuple:
     """(shown, set_aside) for one game's ranked list. Nothing is dropped:
     set_aside holds the acts with no tie to the brief, the ones whose fit is
@@ -762,6 +844,8 @@ def build_snapshot(db_path: Optional[str] = None,
                       for a in for_hire}
 
     for_hire = [with_profile(a, profiles) for a in for_hire]
+    history = load_history()
+    mark_booked(for_hire, history)
     roster, roster_held = apply_rules(for_hire)
     snap = {"season": SEASON, "team": TEAM, "venue": VENUE,
             "generated_at": _now(), "today": today, "games": [],
@@ -772,6 +856,7 @@ def build_snapshot(db_path: Optional[str] = None,
             "roster": sorted(roster, key=lambda a: a.get("name", "")),
             "roster_held": roster_held,
             "fans": fan_acts()}
+    mark_booked(snap["fans"], history)
 
     for game in games:
         gid = game_id(game)
@@ -784,6 +869,7 @@ def build_snapshot(db_path: Optional[str] = None,
                               "fans": _empty_aside()}
         entry["candidates"] = {"for_hire": [], "touring": [], "fans": []}
         entry["held"] = {"for_hire": [], "touring": []}
+        entry["youth"] = []
 
         # R28 / R31: a played game and a no-act game carry no candidates. They
         # are rendered as what they are, not as an empty search.
@@ -826,14 +912,23 @@ def build_snapshot(db_path: Optional[str] = None,
             else:
                 rows = swept.get("coverage") or []
                 errs = [r for r in rows if r.get("error")]
-                # R35: an act on Justin's list whose OWN itinerary puts it in
-                # the window and radius joins this column, even when the metro
-                # search missed it.
-                fan_near = [ev for f in STEELERS_CONNECTED
-                            for ev in itin.near_events(game, itinerary.get(
-                                halftime_routing.canonical_key(f["name"])))]
+                # R35, widened S303: ANY act whose own recent itinerary puts
+                # it in the window and radius joins this column, even when the
+                # metro search missed it. It was Justin's list only, and TSO
+                # (PPG Paints, 12/19) fell off the page -- with his note -- the
+                # night one sweep did not find that show.
+                _swept = {canonical_name(ev.get("artist", ""))
+                          for ev in swept.get("events") or []}
+                near = [ev for rec in itin.recent(itinerary, today)
+                        for ev in itin.near_events(game, rec)
+                        if worth_joining(ev, credited_names)
+                        and not any(canonical_name(ev["artist"]) in s
+                                    for s in _swept)]
                 touring = _as_candidates(
-                    (swept.get("events") or []) + fan_near, credited_names)
+                    (swept.get("events") or []) + near, credited_names)
+                # R19: the acts the metro search missed and only the act's
+                # own tour page placed here -- the measured gap in free data.
+                itin_only = sorted({ev["artist"] for ev in near})
                 touring = [with_profile(c, profiles) for c in touring]
                 for c in touring:
                     c["viability"] = itin.verdict(game, itinerary.get(
@@ -854,6 +949,7 @@ def build_snapshot(db_path: Optional[str] = None,
                             len(rows), max((r.get("miles") or 0)
                                            for r in rows) if rows else 0),
                         "found": len(touring),
+                        "itinerary_only": itin_only,
                         "note": "Announced shows within {} days of kickoff. "
                                 "{} of {} metro searches returned nothing."
                                 .format(routing.get("window_days", 3),
@@ -872,6 +968,7 @@ def build_snapshot(db_path: Optional[str] = None,
 
         fh, entry["set_aside"]["for_hire"] = split_for_game(game, fh)
         touring, entry["set_aside"]["touring"] = split_for_game(game, touring)
+        entry["youth"] = youth_track(game, touring)
         # R35: on a date with a brief, Justin's own list is a column of its own,
         # filtered by the same brief. Acts already in another column for this
         # game are left there (they carry the badge) rather than listed twice.
@@ -899,6 +996,8 @@ def build_snapshot(db_path: Optional[str] = None,
          for a in snap[pool]})
     price_all(snap, fees)
     snap["calibration"] = calibration(fees)
+    for lst in _act_lists(snap):
+        mark_booked(lst, history)
     return snap
 
 
@@ -1184,6 +1283,7 @@ def _act_lists(snap: Dict):
     for pool in ("roster", "roster_held", "fans", "agent_roster"):
         yield snap.get(pool) or []
     for g in snap.get("games") or []:
+        yield g.get("youth") or []
         for grp in ("candidates", "held"):
             yield from (g.get(grp) or {}).values()
         for aside in (g.get("set_aside") or {}).values():
@@ -1598,6 +1698,9 @@ def _act_card(act: Dict) -> str:
     if act.get("client_note"):
         bits.append("<div class='client-note'>{}</div>".format(
             _e(act["client_note"])))
+    if act.get("booked"):
+        bits.append("<div class='booked'>Booked before: {}</div>".format(
+            _e(act["booked"])))
     prof = act.get("profile") or {}
     if prof.get("inactive"):
         bits.append("<div class='reach'>No longer performing, per Wikipedia: "
@@ -1724,6 +1827,7 @@ def _fan_line(a: Dict) -> str:
     v = a.get("viability") or {}
     p = a.get("price") or {}
     return " · ".join(x for x in (
+        "booked before" if a.get("booked") else "",
         "from " + f["hometown"] if f.get("hometown") else "",
         f.get("style"),
         "broke through in the " + f["era"] if f.get("era") else "",
@@ -1993,6 +2097,10 @@ def _cost_view(g: Dict, snap: Dict) -> str:
              "fee, your agent's list, an agency's published range, or (rough) "
              "the size of room a touring act is playing.</p>".format(
                  len(priced), len(unpriced)),
+             "<p class='poolsub'>Your agent's figures are all-in — flights, "
+             "hotels, ground, tickets, possibly a green-room rider — "
+             "approximate and negotiable, and some acts are stingier than "
+             "others on seats and flights (your note, 26 Aug).</p>",
              "<p class='legend'>{}</p>".format(" ".join(
                  "<span class='key key-{}'>{}</span>".format(b, _e(t))
                  for b, t in BASIS_SHORT.items()))]
@@ -2002,17 +2110,24 @@ def _cost_view(g: Dict, snap: Dict) -> str:
         for a in sorted(priced, key=lambda a: (a["price"]["low"], a["name"])):
             rows.append(
                 "<tr{}><td>{} <span class='from'>{}</span></td><td class='num'>"
-                "{}</td><td>{}</td><td>{}</td></tr>".format(
+                "{}</td><td>{}</td><td>{}</td><td><input type='checkbox' "
+                "class='pair' data-name='{}' data-plow='{}' data-phigh='{}' "
+                "aria-label='Add {} to a joint bill'></td></tr>".format(
                     _budget_attrs(a), _e(a["name"]),
                     _e(_FROM.get(a.get("_from"), "")),
                     _e(fee_range(a["price"])), _basis_html(a["price"]),
                     _e((a.get("viability") or {}).get("label")
-                       or "not checked")))
+                       or "not checked"), _e(a["name"]), a["price"]["low"],
+                    a["price"]["high"], _e(a["name"])))
+        # R25 (Justin, 26 Aug): "we could combine some of the options for a
+        # joint halftime" -- and the budget applies to the package.
         parts.append("<details class='rest'><summary>The {} priced acts, "
-                     "cheapest first, each with what its estimate rests on"
-                     "</summary><table class='cost-table'><thead><tr><th>Act"
-                     "</th><th>Estimate</th><th>Basis</th><th>Game day</th>"
-                     "</tr></thead><tbody>{}</tbody></table></details>".format(
+                     "cheapest first, each with what its estimate rests on — "
+                     "tick two or more to price a joint bill</summary><table "
+                     "class='cost-table'><thead><tr><th>Act</th><th>Estimate"
+                     "</th><th>Basis</th><th>Game day</th><th>Pair</th></tr>"
+                     "</thead><tbody>{}</tbody></table><p class='joint' "
+                     "aria-live='polite'></p></details>".format(
                          len(priced), "".join(rows)))
     if unpriced:
         groups = {}
@@ -2099,7 +2214,7 @@ _BUDGET_JS = """<script id='budget-js'>
           var text = n + ' hidden by your budget — over it, or unpriced';
           if (list.tagName === 'TBODY') {
             var td = document.createElement('td');
-            td.colSpan = 4; td.textContent = text; row.appendChild(td);
+            td.colSpan = 5; td.textContent = text; row.appendChild(td);
           } else { row.textContent = text; }
           list.appendChild(row);
         });
@@ -2109,10 +2224,188 @@ _BUDGET_JS = """<script id='budget-js'>
       ' act(s) fit, ' + count(over) + ' over, ' + count(unp) +
       ' unpriced — the unpriced stay listed under each date\\'s cost view.';
   }
-  box.addEventListener('input', apply);
+  function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+  // R25: a joint bill is priced as the SUM of its acts, and the budget
+  // applies to the package.
+  function joint(t) {
+    var out = t.parentNode.querySelector('.joint');
+    if (!out) return;
+    var picks = t.querySelectorAll('input.pair:checked');
+    if (picks.length < 2) {
+      out.textContent = picks.length ? 'Tick one more act to price a joint '
+        + 'bill.' : '';
+      return;
+    }
+    var lo = 0, hi = 0, names = [];
+    for (var i = 0; i < picks.length; i++) {
+      lo += +picks[i].getAttribute('data-plow');
+      hi += +picks[i].getAttribute('data-phigh');
+      names.push(picks[i].getAttribute('data-name'));
+    }
+    var b = parse(box.value);
+    out.textContent = 'Joint bill: ' + names.join(' + ') + ' — ' +
+      money(lo) + (hi > lo ? '–' + money(hi) : '') + ' combined' +
+      (b === null ? '' : lo <= b ? ', which fits your ' + money(b) +
+       ' budget' : ', over your ' + money(b) + ' budget by ' +
+       money(lo - b)) + '. Each figure keeps its own basis above.';
+  }
+  var tables = document.querySelectorAll('table.cost-table');
+  for (var t = 0; t < tables.length; t++) {
+    tables[t].addEventListener('change', function (ev) {
+      joint(ev.currentTarget);
+    });
+  }
+  box.addEventListener('input', function () {
+    apply();
+    for (var t = 0; t < tables.length; t++) joint(tables[t]);
+  });
   apply();
 })();
+(function () {
+  // R2: what arrived since THIS reader last looked. Browser memory only --
+  // if it is unavailable, the list simply shows everything, unmarked.
+  var box = document.querySelector('details.changes');
+  var count = document.getElementById('changes-count');
+  if (!box || !count) return;
+  var seen = null, gen = box.getAttribute('data-generated');
+  try { seen = window.localStorage.getItem('halftime-seen'); } catch (e) {}
+  if (seen) {
+    var fresh = 0, items = box.querySelectorAll('li.chg[data-at]');
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].getAttribute('data-at') > seen) {
+        items[i].className += ' fresh'; fresh++;
+      }
+    }
+    count.textContent = fresh ? fresh + ' new since your last visit'
+                              : 'nothing new since your last visit';
+  }
+  try { if (gen) window.localStorage.setItem('halftime-seen', gen); }
+  catch (e) {}
+})();
 </script>"""
+
+
+# R19 (Justin, 26 Aug): "can we bypass Pollstar or a similar service with this
+# tool?" Answered from what the tool measured tonight, not asserted. Checked
+# S303: Bandsintown, JamBase, SeatGeek and Concertfix all refuse automated
+# reads (403), from the Mac and from CUMULUS. Pollstar's store pages refused
+# us too, so its features are from its own listing and the prices from our
+# 24 Aug check -- said so.
+def data_sources(snap: Dict) -> Dict:
+    live = [g for g in snap.get("games") or []
+            if not g.get("completed") and g.get("mode") != "no_act"]
+    swept = [g["coverage"]["touring"] for g in live
+             if g["coverage"]["touring"].get("state") == SWEPT]
+    return {"dates": len(live), "swept": len(swept),
+            "found": sum(c.get("found") or 0 for c in swept),
+            "sources": swept[0].get("sources") if swept else "",
+            "missed": sorted({n for c in swept
+                              for n in c.get("itinerary_only") or []})}
+
+
+def _pollstar_html(snap: Dict) -> str:
+    d = data_sources(snap)
+    missed = d["missed"]
+    return (
+        "<section class='analysis sources'><h2>Can this replace Pollstar?</h2>"
+        "<div class='finding'><h3>For routing — who is near a date — mostly "
+        "yes, and it says where it is not</h3><p>Tonight's sweep covered {} "
+        "for {} of your {} open dates and found {} acts near them. The big "
+        "free tour databases (Bandsintown, JamBase, SeatGeek) refuse automated "
+        "reads, so it reads local venue and visitor-bureau calendars, then "
+        "each act's own tour page to see where it is on game day. {}</p>"
+        "</div><div class='finding'><h3>For draw — how many tickets an act "
+        "actually sells — no</h3><p>No free source publishes it, which is why "
+        "every size signal on this page is the room an act is playing or a "
+        "published fee. That is what Pollstar adds: artist and venue "
+        "box-office grosses and ticket-sales averages, plus agent and manager "
+        "contact directories. From $199 (Pro) to $3,364 a year (Ultimate), "
+        "depending on tier and term. Worth it once draw, rather than "
+        "availability, is the deciding question on a date.</p><p "
+        "class='basis'>Coverage computed from tonight's build. Pollstar's "
+        "features from its own store listing; prices from our check on 24 "
+        "Aug.</p></div></section>".format(
+            _e(d["sources"] or "no metros"), d["swept"], d["dates"],
+            d["found"],
+            _e("{} act(s) the metro search missed were placed near a date "
+               "only that way ({}) — the kind of show a paid database would "
+               "catch first time.".format(len(missed), ", ".join(missed[:6])
+                                          + (" …" if len(missed) > 6 else ""))
+               if missed else "Tonight every act near a date was found by "
+               "the metro search itself.")))
+
+
+_KIND_LABEL = {"new": "New", "dropped": "Dropped", "game day": "Game day",
+               "credit list": "Credit list"}
+CHANGES_SHOWN = 80
+
+
+def _changes_html(snap: Dict) -> str:
+    """R2: what moved, newest first. The browser marks what arrived since
+    this reader's last visit; without that memory it is the whole list."""
+    ch = snap.get("changes") or []
+    parts = ["<details class='changes' data-generated='{}'><summary><h2>What "
+             "changed</h2> <span class='meta' id='changes-count'>{}</span>"
+             "</summary>".format(
+                 _e(snap.get("generated_at", "")),
+                 "{} change(s) in the last {} days".format(
+                     len(ch), CHANGES_KEEP_DAYS) if ch else
+                 "nothing in the last {} days".format(CHANGES_KEEP_DAYS)),
+             "<p class='meta'>Each nightly update is compared with the one "
+             "before: acts newly listed or dropped for a date when they could "
+             "carry a stadium slot or are on your list, any change in where an "
+             "act is on game day, and new credit-list acts. Smaller rooms "
+             "change nightly and are left out so they do not bury the rest."
+             "</p><ul class='change-list'>"]
+    for e in ch[:CHANGES_SHOWN]:
+        game = ("{} vs {}".format(e.get("date"), e.get("opponent"))
+                if e.get("game_id") else "")
+        parts.append(
+            "<li class='chg' data-at='{}'><span class='chg-when'>{}</span> "
+            "<span class='chg-kind k-{}'>{}</span> <strong>{}</strong>{} — "
+            "{}</li>".format(
+                _e(e.get("at", "")), _e((e.get("at") or "")[:10]),
+                _e(e.get("kind", "").replace(" ", "-")),
+                _e(_KIND_LABEL.get(e.get("kind"), e.get("kind", ""))),
+                _e(e.get("act", "")), " · " + _e(game) if game else "",
+                _e(e.get("detail", ""))))
+    if len(ch) > CHANGES_SHOWN:
+        parts.append("<li class='chg more'>… and {} older</li>".format(
+            len(ch) - CHANGES_SHOWN))
+    parts.append("</ul></details>")
+    return "".join(parts)
+
+
+def _youth_line(a: Dict) -> str:
+    v = a.get("viability") or {}
+    p = a.get("price") or {}
+    return " · ".join(x for x in (
+        a.get("youth"), (a.get("fields") or {}).get("routing"),
+        "game day: " + v["label"].lower() if v.get("label") else "",
+        "fee {} ({})".format(fee_range(p), BASIS_SHORT[p["basis"]])
+        if p.get("low") else "") if x)
+
+
+def _youth_panel(g: Dict) -> str:
+    """R11: the younger-fan track, on its own and in its own words."""
+    cov = (g.get("coverage") or {}).get("touring") or {}
+    parts = ["<div class='pool pool-youth'><h3>Younger-fan track</h3>",
+             "<p class='poolsub'>Your second track (26 Aug): notable acts "
+             "routing through now that keep you relevant with younger fans, "
+             "whatever the style. Ranked on its own — room size, then how "
+             "recently they broke through — and not mixed into the ranking "
+             "above.</p>"]
+    if g.get("youth"):
+        parts.append(_short_list(g["youth"], _youth_line))
+    elif cov.get("state") != SWEPT:
+        parts.append(_empty_message(cov))
+    else:
+        parts.append("<p class='empty none'><strong>None near this date."
+                     "</strong> No act routing through broke through in the "
+                     "2010s or 2020s (by a sourced date) and is playing an "
+                     "arena-scale room.</p>")
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def render_html(snap: Dict, history: Optional[List[Dict]] = None,
@@ -2136,6 +2429,7 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                 _e(g.get("date") or "date TBD"), _e(g["opponent"]),
                 _e(g["target"])))
         parts.append("</ul></section>")
+    parts.append(_changes_html(snap))
     # R40: one box narrows every list below it.
     parts.append(_BUDGET_BAR)
 
@@ -2162,6 +2456,8 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
         for pool in POOLS:
             parts.append(_pool_panel(g, pool))
         parts.append("</div>")
+        if g.get("at_venue", True) and not g.get("theme"):
+            parts.append(_youth_panel(g))
         # R35: on a date with a brief, Justin's own list gets a panel of its
         # own, under the two supply pools and filtered by the same brief.
         if g.get("theme") and g.get("at_venue", True):
@@ -2183,6 +2479,7 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                 _e(f["strength"].split()[0]), _e(f["title"]), _e(f["body"]),
                 _e(f["basis"])))
     parts.append("</section>")
+    parts.append(_pollstar_html(snap))
 
     roster = snap.get("roster") or []
     if roster:
@@ -2293,8 +2590,10 @@ h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase;
 .client-note {{ margin:5px 0 2px; font-size:12px; color:var(--gold);
                 font-style:italic; }}
 .b-fan {{ border-color:var(--gold); color:var(--bg); background:var(--gold); }}
+.b-booked {{ border-color:#93a1b0; color:#c4cdd6; }}
+.booked {{ margin:5px 0 2px; font-size:12px; color:#c4cdd6; }}
 section.no-act {{ opacity:.72; }}
-.pool-fans {{ margin-top:16px; }}
+.pool-fans, .pool-youth {{ margin-top:16px; }}
 .fan-list .acts {{ columns:3; column-gap:24px; }}
 @media (max-width:760px) {{ .fan-list .acts {{ columns:1; }} }}
 .fan-list .act {{ break-inside:avoid; padding:6px 0; }}
@@ -2382,9 +2681,115 @@ g.cut {{ opacity:.13; }}
 .unpriced {{ margin-top:10px; font-size:12px; color:var(--dim); }}
 .unpriced ul {{ margin:4px 0 0; padding-left:18px; }}
 .unpriced .why {{ color:#6f7b88; }}
+.joint {{ margin:8px 0 0; font-size:13px; color:var(--gold); }}
+.changes summary {{ cursor:pointer; }}
+.changes summary h2 {{ display:inline; }}
+.change-list {{ list-style:none; margin:8px 0 0; padding:0; font-size:13px; }}
+.chg {{ padding:5px 0; border-top:1px solid var(--edge); color:var(--dim); }}
+.chg strong {{ color:var(--ink); font-weight:600; }}
+.chg-when {{ color:#6f7b88; font-variant-numeric:tabular-nums; }}
+.chg-kind {{ font-size:11px; padding:1px 6px; border-radius:99px;
+             border:1px solid var(--edge); }}
+.k-new {{ border-color:#79d19a; color:#79d19a; }}
+.k-dropped {{ border-color:#e0a03a; color:#e0a03a; }}
+.k-game-day {{ border-color:#4da3ff; color:#4da3ff; }}
+.chg.fresh {{ background:#1b2330; }}
+.chg.fresh strong::after {{ content:" · new"; color:var(--gold);
+                            font-weight:400; font-size:11px; }}
+.joint:empty {{ display:none; }}
 footer {{ max-width:1100px; margin:26px auto 0; color:var(--dim);
           font-size:13px; border-top:1px solid var(--edge); padding-top:14px; }}
 </style></head><body>"""
+
+
+# R2 (Justin, 26 Aug): "see what our options are whenever we go to check…
+# that would change as other acts and routes get added throughout the year."
+# Each build is compared with the one before it, and the differences a booker
+# would act on are logged for CHANGES_KEEP_DAYS. What counts: an act newly
+# listed for an open date, or no longer listed, when it could carry a stadium
+# slot or is on his list (club-size rooms churn nightly and would bury the
+# rest); any change in an act's game-day verdict; a new act on the credit list.
+CHANGES_KEEP_DAYS = 30
+
+
+def _watch(snap: Dict) -> Dict[tuple, Dict]:
+    out = {}
+    for g in snap.get("games") or []:
+        if g.get("completed") or g.get("mode") == "no_act":
+            continue
+        rows = [(a, pool) for pool in ("touring", "fans")
+                for a in (g.get("candidates") or {}).get(pool) or []]
+        rows += [(a, "aside") for aside in (g.get("set_aside") or {}).values()
+                 for a in aside.get("conflict") or []]
+        for a, pool in rows:
+            if not (pool == "fans" or fan_entry(a.get("name", ""))
+                    or (a.get("draw") or {}).get("plausible")):
+                continue
+            v = a.get("viability") or {}
+            out[(g.get("game_id"), canonical_name(a.get("name", "")))] = {
+                "name": a.get("name"), "state": v.get("state") or "not_checked",
+                "label": v.get("label") or "game-day schedule not checked",
+                "where": (a.get("fields") or {}).get("routing", "")}
+    return out
+
+
+def diff_snapshots(prev: Dict, snap: Dict) -> List[Dict]:
+    if not (prev or {}).get("games"):
+        return []
+    games = {g.get("game_id"): g for g in snap.get("games") or []}
+    before, after = _watch(prev), _watch(snap)
+    # A date that has since been played is not a list that lost its acts.
+    before = {k: v for k, v in before.items()
+              if k[0] in games and not games[k[0]].get("completed")}
+    at, out = snap.get("generated_at"), []
+
+    def add(key, kind, act, detail):
+        g = games.get(key[0]) or {}
+        out.append({"at": at, "game_id": key[0], "date": g.get("date"),
+                    "opponent": g.get("opponent"), "kind": kind, "act": act,
+                    "detail": detail})
+    for key in sorted(after.keys() - before.keys()):
+        add(key, "new", after[key]["name"],
+            after[key]["where"] or after[key]["label"])
+    for key in sorted(before.keys() - after.keys()):
+        add(key, "dropped", before[key]["name"],
+            "no longer listed for this date")
+    for key in sorted(after.keys() & before.keys()):
+        if after[key]["state"] != before[key]["state"]:
+            add(key, "game day", after[key]["name"], "{} (was: {})".format(
+                after[key]["label"], before[key]["label"]))
+    had = {canonical_name(a.get("name", "")) for a in prev.get("roster") or []}
+    for a in sorted(snap.get("roster") or [], key=lambda a: a.get("name", "")):
+        if canonical_name(a.get("name", "")) not in had:
+            add((None, ""), "credit list", a.get("name"),
+                "new to the credit list: {}".format(
+                    (a.get("fields") or {}).get("clients") or "a sports slot"))
+    return out
+
+
+def record_changes(path: Path, new: List[Dict],
+                   now: Optional[str] = None) -> List[Dict]:
+    """Append, keep CHANGES_KEEP_DAYS, return newest first."""
+    import halftime_routing
+    now = now or _now()
+    cutoff = (datetime.strptime(now[:10], "%Y-%m-%d").toordinal()
+              - CHANGES_KEEP_DAYS)
+    kept = []
+    try:
+        for line in Path(path).read_text().splitlines():
+            try:
+                e = json.loads(line)
+                if datetime.strptime(e["at"][:10], "%Y-%m-%d").toordinal() \
+                        >= cutoff:
+                    kept.append(e)
+            except (ValueError, KeyError, TypeError):
+                continue
+    except OSError:
+        pass
+    kept += new
+    halftime_routing._write_atomic(Path(path), "".join(
+        json.dumps(e) + "\n" for e in kept))
+    return sorted(kept, key=lambda e: e.get("at") or "", reverse=True)
 
 
 def build(out_dir: Optional[Path] = None,
@@ -2392,6 +2797,13 @@ def build(out_dir: Optional[Path] = None,
     out_dir = Path(out_dir) if out_dir else OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     snap = build_snapshot(db_path=db_path)
+    try:
+        prev = json.loads((out_dir / "snapshot.json").read_text())
+    except Exception:
+        prev = {}
+    snap["changes"] = record_changes(out_dir / "changes.jsonl",
+                                     diff_snapshots(prev, snap),
+                                     snap["generated_at"])
     (out_dir / "snapshot.json").write_text(json.dumps(snap, indent=2))
     (out_dir / "index.html").write_text(render_html(snap, load_history()))
     return {"games": len(snap["games"]), "acts": snap["acts_total"],
@@ -3148,6 +3560,64 @@ def selftest() -> int:
         check("viability: his list's panel carries each act's game-day state",
               all("viability" in a for a in _w8v["candidates"]["fans"]))
 
+        # S303: the 25 Sep page lost TSO (and Justin's note) because one
+        # night's metro search missed its PPG Paints show on 12/19.
+        import halftime_itinerary as _itn
+        _itp2 = Path(tmp) / "itin2.json"
+        _itp2.write_text(json.dumps({"artists": {
+            _k("Trans-Siberian Orchestra"): {
+                "name": "Trans-Siberian Orchestra", "error": None,
+                "checked_at": "2026-08-30T00:00:00Z",
+                "events": [{"date": "2026-12-19", "city": "Pittsburgh",
+                            "venue": "PPG Paints Arena"},
+                           {"date": "2026-12-20", "city": "Philadelphia",
+                            "venue": "Xfinity Mobile Arena"}]},
+            _k("Old News Band"): {
+                "name": "Old News Band", "error": None,
+                "checked_at": "2026-08-01T00:00:00Z",
+                "events": [{"date": "2026-12-19", "city": "Pittsburgh",
+                            "venue": "PPG Paints Arena"}]},
+            # A past sweep misread a Columbus club as an act (live, 25 Sep).
+            _k("Ace of Cups"): {
+                "name": "Ace of Cups", "error": None,
+                "checked_at": "2026-08-30T00:00:00Z",
+                "events": [{"date": "2026-12-19", "city": "Columbus, OH",
+                            "venue": "Ace of Cups"}]},
+            # Already in the sweep under its longer tour-bill name.
+            _k("Bill Headliner"): {
+                "name": "Bill Headliner", "error": None,
+                "checked_at": "2026-08-30T00:00:00Z",
+                "events": [{"date": "2026-12-21", "city": "Cleveland, OH",
+                            "venue": "Rocket Arena"}]}}}))
+        _rt15b = Path(tmp) / "routing-15b.json"
+        _rt15b.write_text(json.dumps({"window_days": 3, "games": {
+            "wk15-ravens": {"events": [
+                {"artist": "Unlisted Act", "date": "2026-12-21",
+                 "venue": "Rocket Arena", "city": "Cleveland, OH",
+                 "miles": 135, "gap": 1},
+                {"artist": "Bill Headliner with Two Openers",
+                 "date": "2026-12-21", "venue": "Rocket Arena",
+                 "city": "Cleveland, OH", "miles": 135, "gap": 1}],
+                "coverage": _cov}}}))
+        _g15 = next(g for g in build_snapshot(
+            today=_T, db_path=db, routing_path=_rt15b,
+            itinerary_path=_itp2)["games"] if g["week"] == 15)
+        _c15 = _g15["set_aside"]["touring"]["conflict"]
+        check("itinerary: TSO stays on 12/20 when the sweep misses it -- "
+              "joined from its own itinerary, set aside, his note beside it",
+              [a["name"] for a in _c15] == ["Trans-Siberian Orchestra"]
+              and "Philadelphia" in _c15[0]["viability"]["label"]
+              and "performance schedule" in _c15[0]["client_note"])
+        _n15 = {a["name"] for a in _g15["candidates"]["touring"] + _c15}
+        check("itinerary: ...but a record older than {} days adds nothing"
+              .format(_itn.FRESH_DAYS), "Old News Band" not in _n15)
+        check("itinerary: a misread venue in a club room is not an act to "
+              "add ('Ace of Cups')", "Ace of Cups" not in _n15)
+        check("itinerary: an act already in the sweep inside a longer bill "
+              "name is not added twice",
+              "Bill Headliner" not in _n15
+              and "Bill Headliner with Two Openers" in _n15)
+
         # --- Phase 3 (R32/R33): profiles on the cards -----------------
         _pp = Path(tmp) / "profiles.json"
         _pp.write_text(json.dumps({"acts": {_k("Test Patriot Band"): {
@@ -3307,10 +3777,19 @@ def selftest() -> int:
                       "id='wk16-panthers'"))])
         _rows = re.findall(r"<tr data-low='(\d*)' data-act='[^']*'><td>"
                            r"(.*?)</td><td class='num'>(.*?)</td><td>(.*?)"
-                           r"</td><td>(.*?)</td></tr>", p5)
+                           r"</td><td>([^<]*)</td><td><input type='checkbox' "
+                           r"class='pair' data-name='[^']*' data-plow='(\d+)'"
+                           r" data-phigh='(\d+)'", p5)
         check("every priced row names its estimate AND its basis",
               _rows and all(low and est and basis.strip()
-                            for low, _n, est, basis, _v in _rows))
+                            for low, _n, est, basis, _v, _pl, _ph in _rows))
+        check("joint bill: every priced row can be paired, carrying its own "
+              "low and high (R25)",
+              len(_rows) == p5.count("<tr data-low=") and all(
+                  low == pl and int(pl) <= int(ph)
+                  for low, _n, _e2, _b, _v, pl, ph in _rows)
+              and p5.count("<p class='joint'") == p5.count(
+                  "<table class='cost-table'>"))
         # The done-when, on the rendered page: what a 25000 budget keeps.
         _kept = {m for low, m in re.findall(
             r"data-low='(\d*)' data-act='([^']*)'", p5)
@@ -3346,6 +3825,129 @@ def selftest() -> int:
         check("fee text is escaped like everything else",
               "<b>" not in _act_card({"name": "X", "price": dict(
                   _pf("Nobody Band"), why="<b>x</b>")}))
+
+        # --- S303: the 26 Aug items that were never built ---------------
+        # R16-R18 booked before
+        check("booked: his three named acts are flagged from his own note",
+              all(booked_note({"name": n}) for n in PREVIOUSLY_BOOKED)
+              and "26 Aug" in booked_note({"name": "Snoop Dogg"}))
+        _hist = [{"date": "2026-09-13", "opponent": "Atlanta Falcons",
+                  "what": "Rusted Root played; a drag queen show at the half"}]
+        check("booked: an act named in their history log carries the date",
+              "2026-09-13 vs Atlanta Falcons" in booked_note(
+                  {"name": "Rusted Root"}, _hist))
+        check("booked: a name inside other words is not a booking (Queen)",
+              booked_note({"name": "Queen"}, _hist) == ""
+              and booked_note({"name": "The Clarks"}, _hist) == "")
+        _o12 = [a["name"] for a in next(g for g in snap["games"]
+                                        if g["week"] == 12)["candidates"]
+                ["fans"]]
+        check("booked: on the Heritage date an act they already use follows "
+              "the unbooked Pittsburgh acts (R18)",
+              _o12.index("Bret Michaels") > _o12.index("The Clarks")
+              and _o12.index("Wiz Khalifa") > _o12.index("The Clarks"))
+        _pb = render_html(snap)
+        check("booked: ...and the page says so, not as a discovery",
+              "Booked before: you have booked them many times" in _pb
+              and "booked before · from Butler, PA" in _pb)
+
+        # R11 younger-fan track
+        _ya = lambda n, era, tier, ok: {
+            "name": n, "fields": {"era": era}, "_gap": 1,
+            "draw": {"tier": tier, "plausible": ok, "label": tier}}
+        _yg = {"week": 3, "date": "2026-09-27"}
+        check("youth: a recent breakthrough AND a room that could carry the "
+              "slot; room first, then recency (R11)",
+              [a["name"] for a in youth_track(_yg, [
+                  _ya("Old Arena", "1980s", "arena", True),
+                  _ya("New Club", "2020s", "club", False),
+                  _ya("New Amph", "2020s", "amphitheatre", True),
+                  _ya("New Arena", "2010s", "arena", True),
+                  _ya("No Era", "", "arena", True)])]
+              == ["New Arena", "New Amph"])
+        check("youth: never offered on a date whose brief rules it out",
+              youth_track(dict(_yg, theme="heritage"),
+                          [_ya("New Arena", "2010s", "arena", True)]) == [])
+        _open = [g for g in snap["games"] if not g["completed"]
+                 and g.get("mode") != "no_act" and not g.get("theme")]
+        check("youth: its own panel on each un-themed date, honest when "
+              "unswept", _pb.count("pool pool-youth") == len(_open)
+              and "Younger-fan track" in _pb)
+
+        # R19 Pollstar, from measured coverage (the TSO fixture above)
+        _s15 = build_snapshot(today=_T, db_path=db, routing_path=_rt15b,
+                              itinerary_path=_itp2)
+        _src = data_sources(_s15)
+        _p15 = render_html(_s15)
+        check("Pollstar: the gap in free data is measured -- TSO came only "
+              "from its own tour page (R19)",
+              _src["missed"] == ["Trans-Siberian Orchestra"]
+              and "Can this replace Pollstar?" in _p15
+              and "(Trans-Siberian Orchestra)" in _p15)
+        check("Pollstar: what it adds and what it costs, with the date",
+              "box-office grosses" in _p15 and "our check on 24 Aug" in _p15)
+
+        # R26 price semantics
+        check("agent figures carry his all-in terms (R26)",
+              "stingier than others on seats and flights" in p5)
+
+        # R2 what changed
+        _pa = lambda n, ok, **kw: dict({"name": n, "draw": {"plausible": ok}},
+                                       **kw)
+        _prev = {"games": [
+            {"game_id": "wk15-ravens", "candidates": {"touring": [
+                _pa("Arena Act", True, viability={"state": "clear",
+                                                  "label": "Open day"}),
+                _pa("Gone Arena", True), _pa("Club Act", False)]}},
+            {"game_id": "wk01-falcons", "candidates": {"touring": [
+                _pa("Played Act", True)]}}],
+            "roster": [{"name": "Old Credit"}]}
+        _next = {"generated_at": "2026-09-26T10:00:00Z", "games": [
+            {"game_id": "wk15-ravens", "date": "2026-12-20",
+             "opponent": "Baltimore Ravens", "candidates": {"touring": [
+                 _pa("New Arena", True, fields={"routing": "PPG, 12/19"}),
+                 _pa("Club Two", False)]},
+             "set_aside": {"touring": {"conflict": [
+                 _pa("Arena Act", True, viability={
+                     "state": "conflict", "label": "Playing Philadelphia"})]}}},
+            {"game_id": "wk01-falcons", "completed": True}],
+            "roster": [{"name": "Old Credit"},
+                       {"name": "New Credit", "fields": {"clients": "X"}}]}
+        _d = diff_snapshots(_prev, _next)
+        check("changes: new, dropped, game-day moves and new credits; not "
+              "club churn, not a played date (R2)",
+              {(e["kind"], e["act"]) for e in _d} == {
+                  ("new", "New Arena"), ("dropped", "Gone Arena"),
+                  ("game day", "Arena Act"), ("credit list", "New Credit")}
+              and "Playing Philadelphia (was: Open day)" in json.dumps(_d))
+        check("changes: nothing to compare with -> nothing logged",
+              diff_snapshots({}, _next) == [])
+        _cp = Path(tmp) / "chg" / "changes.jsonl"
+        _cp.parent.mkdir()
+        _cp.write_text(json.dumps({"at": "2026-08-01T00:00:00Z",
+                                   "act": "Ancient"}) + "\n"
+                       + json.dumps({"at": "2026-09-20T00:00:00Z",
+                                     "act": "Recent"}) + "\nnot json\n")
+        _kept = record_changes(_cp, [{"at": "2026-09-26T10:00:00Z",
+                                      "act": "Newest"}],
+                               "2026-09-26T10:00:00Z")
+        check("changes: {} days kept, newest first, a bad line skipped"
+              .format(CHANGES_KEEP_DAYS),
+              [e["act"] for e in _kept] == ["Newest", "Recent"]
+              and "Ancient" not in _cp.read_text())
+        _pc = render_html(dict(snap, changes=_kept))
+        check("changes: on the page, each with its time for the browser to "
+              "mark what is new since the last visit",
+              "What changed" in _pc
+              and _pc.count("<li class='chg' data-at=") == 2
+              and "halftime-seen" in _pc)
+        _ob = Path(tmp) / "out2"
+        build(out_dir=_ob, db_path=db)
+        build(out_dir=_ob, db_path=db)
+        check("changes: a build compares with the last and writes its log "
+              "beside it, never into the live out/",
+              (_ob / "changes.jsonl").exists() and "changes" in json.loads(
+                  (_ob / "snapshot.json").read_text()))
 
         # T107: an unknown argument must never reach build(). build is
         # stubbed, so if this guard regresses the check fails instead of

@@ -44,6 +44,11 @@ OUT_PATH = PROJECT_DIR / "out" / "halftime" / "itinerary.json"
 ROUTING_PATH = PROJECT_DIR / "out" / "halftime" / "routing.json"
 
 RECHECK_DAYS = 7
+# S303: a stored itinerary can put an act in a game's touring column on its
+# own (TSO at PPG Paints on 12/19 fell off the page when one night's metro
+# search missed it). Only records this recent may do that -- an old tour page
+# is not evidence of where an act is now.
+FRESH_DAYS = 14
 MAX_PER_RUN = 60
 SEARCH_RESULTS = 4
 MAX_EVENTS_KEPT = 120
@@ -206,9 +211,28 @@ def near_events(game: Dict, record: Optional[Dict]) -> List[Dict]:
 
 # ── who to check ────────────────────────────────────────────────────────────
 
-def artists_to_check(routing: Dict, today: Optional[str] = None) -> List[Dict]:
-    """Routing acts for games still to come, then Justin's list. One entry per
-    act (by canonical name), nearest game first."""
+def recent(store: Dict, today: Optional[str] = None) -> List[Dict]:
+    """Stored records checked within FRESH_DAYS, without errors."""
+    import halftime_dashboard as hd
+    day = datetime.strptime(today or hd.today_et(), "%Y-%m-%d")
+    out = []
+    for rec in (store or {}).values():
+        try:
+            age = (day - datetime.strptime(rec.get("checked_at", "")[:10],
+                                           "%Y-%m-%d")).days
+        except ValueError:
+            continue
+        if not rec.get("error") and age <= FRESH_DAYS:
+            out.append(rec)
+    return out
+
+
+def artists_to_check(routing: Dict, today: Optional[str] = None,
+                     store: Optional[Dict] = None) -> List[Dict]:
+    """Routing acts for games still to come, then Justin's list, then acts
+    whose stored itinerary puts them near a game (so the dashboard never
+    leans on a record that has stopped being refreshed). One entry per act
+    (by canonical name), nearest game first."""
     import halftime_dashboard as hd
     upcoming = {hd.game_id(g): g for g in hd.upcoming_games(today)}
     seen, out = set(), []
@@ -227,6 +251,10 @@ def artists_to_check(routing: Dict, today: Optional[str] = None) -> List[Dict]:
             add(ev.get("artist", ""))
     for entry in hd.STEELERS_CONNECTED:
         add(entry["name"], entry.get("aka") or ())
+    for _gid, g in games:
+        for rec in (store or {}).values():
+            if any(hd.worth_joining(ev) for ev in near_events(g, rec)):
+                add(rec.get("name", ""))
     return out
 
 
@@ -373,7 +401,7 @@ def run(creds: Optional[Dict] = None, out_path: Optional[Path] = None,
         lambda block: halftime_routing._extract(block, creds, stats,
                                                 system=prompt))
 
-    todo = [a for a in artists_to_check(routing, today)
+    todo = [a for a in artists_to_check(routing, today, prior)
             if not _fresh(prior.get(a["key"]), today)][:limit]
     artists = dict(prior)
     if todo:
@@ -575,6 +603,36 @@ def selftest() -> int:
               not any("Played Game Act" in q for q in calls + [
                   a["name"] for a in artists_to_check(load(routing),
                                                       "2026-09-23")]))
+        # S303: an act the dashboard pulls in from its stored itinerary must
+        # keep being re-checked, or the page leans on a record gone stale.
+        _store = {"tso": {"name": "Stored Near Act", "checked_at":
+                          "2026-09-20T00:00:00Z", "error": None,
+                          "events": [{"date": "2026-12-19",
+                                      "city": "Pittsburgh",
+                                      "venue": "PPG Paints Arena"}]},
+                  "far": {"name": "Stored Far Act", "checked_at":
+                          "2026-09-20T00:00:00Z", "error": None,
+                          "events": [{"date": "2026-12-19",
+                                      "city": "Seattle", "venue": "X"}]}}
+        _names = [a["name"] for a in artists_to_check(
+            load(routing), "2026-09-23", dict(_store, club={
+                "name": "Ace of Cups", "checked_at": "2026-09-20T00:00:00Z",
+                "error": None, "events": [{"date": "2026-12-19",
+                                           "city": "Columbus, OH",
+                                           "venue": "Ace of Cups"}]}))]
+        check("to-check: a stored act near an upcoming game stays on the "
+              "weekly re-check; one far away, or a club-room misread, does "
+              "not", "Stored Near Act" in _names
+              and "Stored Far Act" not in _names
+              and "Ace of Cups" not in _names)
+        check("recent(): only records within {} days, without errors"
+              .format(FRESH_DAYS),
+              [r["name"] for r in recent(dict(_store, old={
+                  "name": "Old", "checked_at": "2026-08-01T00:00:00Z",
+                  "error": None, "events": []}, bad={
+                  "name": "Bad", "checked_at": "2026-09-22T00:00:00Z",
+                  "error": "x", "events": []}), "2026-09-25")]
+              == ["Stored Near Act", "Stored Far Act"])
 
     check("an unknown argument is refused (T107)", main(["--selftest"]) == 2)
     print()
