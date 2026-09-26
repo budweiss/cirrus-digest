@@ -17,9 +17,8 @@ Design principles
   but never routed to) after a real local_bench.py comparison on CUMULUS
   showed it agreeing with Anthropic on 8/9 real judgments across two call
   shapes -- see docs/COWORK-WORKLIST.md and the S177 recap. It is still
-  dormant-until-keyed like every cloud provider: CIRRUS has no
-  kimi_api_key today, so this is currently a CUMULUS-only routing change
-  in practice, code shared by both boxes.
+  dormant-until-keyed like every cloud provider; both boxes are keyed
+  (verified live S298), and model_health checks it daily since S301.
 * BACKWARD COMPATIBLE with dev_agent's Claude call (same api.anthropic.com/v1/messages
   request shape). STDLIB ONLY (urllib) — no new dependencies.
 
@@ -211,9 +210,8 @@ _KEY_FIELD = {
     "grok":      "grok_api_key",
     "openai":    "openai_api_key",
     "deepseek":  "deepseek_api_key",
-    # S159: Moonshot's Kimi. Same two gates as ollama/vllm -- absent from
-    # DEFAULT_ORDER, so keying it does NOT add a voice to the council or a
-    # hop to the failover chain. Only an explicit call("kimi", ...).
+    # S159: Moonshot's Kimi. S177 promoted it into DEFAULT_ORDER, so once
+    # keyed it IS a council voice and a failover hop like the other four.
     "kimi":      "kimi_api_key",
 }
 
@@ -546,14 +544,12 @@ def _kimi(creds, system, user, max_tokens):
         docs/KIMI-K3-ACCESS.md carries that recipe and its stray-
         ANTHROPIC_API_KEY trap.
 
-    ABSENT FROM DEFAULT_ORDER on purpose -- the S73/S92 gate. Every other cloud
-    provider here is dormant-until-keyed AND in DEFAULT_ORDER, so the moment a
-    key lands it becomes a fifth council voice and a new line on the bill,
-    everywhere, with no decision made. Kimi is keyed and then *measured*;
-    promoting it is one line in DEFAULT_ORDER and should follow a bench rather
-    than precede one. available() will not list it until then -- that is the
-    design, not a bug, and it is the same thing creds-llm-check reports for
-    ollama.
+    IN DEFAULT_ORDER since S177 (2026-09-15). S159 kept it out on purpose --
+    the S73/S92 gate: a key landing should not silently add a council voice
+    and a line on the bill -- until a bench earned it. local_bench.py then
+    showed it agreeing with Anthropic on 8/9 real judgments, and S177 promoted
+    it. Like every cloud provider it is still dormant until keyed; both boxes
+    are keyed, so available() lists it and it is a council voice/failover hop.
 
     Always-on reasoning ("thinking mode"): its thinking tokens are drawn from
     max_tokens before any answer text, which is the S91 gemini trap and the
