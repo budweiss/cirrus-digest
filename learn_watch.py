@@ -575,7 +575,9 @@ def main():
     stats = run(dry_run=dry, limit=limit)
     for e in stats["errors"]:
         log("  ERROR %s" % e)
-    note = "%d post(s), %d claim(s), %d teaser-only" % (stats["processed"], stats["claims"], stats["teasers"])
+    note = "%d post(s) in %dh, %d claim(s), %d via member session, %d teaser-only, %d unreadable" % (
+        stats["processed"], stats["window_h"], stats["claims"], stats["via_browser"],
+        stats["teasers"], stats["unread"])
     if stats["errors"]:
         note += ", %d error(s): %s" % (len(stats["errors"]), "; ".join(stats["errors"][:3]))
     healthy = is_healthy(stats)
