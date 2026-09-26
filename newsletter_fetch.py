@@ -213,10 +213,18 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
     key = account.get("credential_key", "")
     password = creds.get(key, "")
     if not password:
-        # Named, never printed.
-        log("credential %r is empty — set it on the box with:" % key)
-        log("  printf %%s '<app-password>' | ssh <box> "
-            "\"cd ~/cirrus-digest && FIELD=%s python3 tools/set_cred.py\"" % key)
+        # Named, never printed. S298 (T95): this hint used to say pipe into
+        # tools/set_cred.py, which writes only the live RAM copy -- rebuilt from
+        # credentials.json.age (CUMULUS within 10s, CIRRUS at reboot). The rotate
+        # script writes the .age file; CIRRUS then needs its live copy refreshed.
+        box = "cirrus" if sys.platform == "darwin" else "cumulus"
+        refresh = (" && ssh cirrus ~/projects/cirrus-digest/materialize_credentials_cirrus.sh"
+                   if box == "cirrus" else "")
+        log("credential %r is empty — set it from the MacBook Terminal "
+            "(hidden prompt, survives refresh and reboot):" % key)
+        log("  printf 'App password: '; read -rs K; echo; "
+            "~/Documents/Cowork/runner/rotate-creds-%s.sh %s=\"$K\"%s; unset K"
+            % (box, key, refresh))
         return {"error": "no-credential", "saved": 0}
 
     state = load_state(state_path)
@@ -424,6 +432,23 @@ def selftest():
        bool(fetches) and all(
            any("BODY.PEEK" in getattr(a, "value", "") for a in c.args
                if isinstance(getattr(a, "value", None), str)) for c in fetches))
+
+    # --- a missing credential prints a DURABLE fix (S298, T95) --------------
+    # Returns before any network or state-file access, so this stays offline.
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with tempfile.TemporaryDirectory() as td, contextlib.redirect_stdout(buf):
+        r = fetch({"email": {"accounts": [{"label": ACCOUNT_LABEL,
+                                           "credential_key": "yahoo_password"}]}},
+                  {}, al, out_dir=Path(td), state_path=Path(td) / "state.json")
+    hint = buf.getvalue()
+    ok("missing credential returns no-credential", r.get("error") == "no-credential")
+    ok("its hint names the .age rotate script for this box",
+       "rotate-creds-%s.sh yahoo_password=" % ("cirrus" if sys.platform == "darwin"
+                                              else "cumulus") in hint)
+    ok("its hint never points at tools/set_cred.py (reverted write)",
+       "set_cred.py" not in hint)
 
     failed = [n for n, g in checks if not g]
     for n, g in checks:
