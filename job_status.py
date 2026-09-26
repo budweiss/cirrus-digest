@@ -33,6 +33,7 @@ CADENCE_H = {
                                 # three boxes at BOTH layers and is the only thing
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
+    "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
     # S141 -> S253. Project Immaculate guards deadlines that cannot be
     # re-opened. Since S253 one twice-daily tick (immaculate-tick.timer, 09:00
     # and 21:00 on cumulus1) watches for each week's contest and, after each

@@ -125,7 +125,7 @@ def parse_claims(raw, source, dropped=None):
 
 def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
             caller=complete, counter=token_count, metadata=None, report=None):
-    if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware'):
+    if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware', 'articles-infra'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
         raise ValueError('empty_transcript')
