@@ -515,7 +515,9 @@ def selftest():
     # pinned rather than assumed.
     import types
     fake = types.ModuleType("llm_providers")
-    fake.escalate = lambda sysmsg, usermsg, creds, max_tokens=0: (
+    # **kw: S279 added task= to the real call; a stub that refused it made this
+    # check fail with TypeError for a week while production was fine.
+    fake.escalate = lambda sysmsg, usermsg, creds, max_tokens=0, **kw: (
         "anthropic", '{"claims":[{"claim":"c","why_it_applies":"w","how_to_test":"t"}]}')
     _real_mod = sys.modules.get("llm_providers")
     _real_pd = globals().get("PROJECT_DIR")
@@ -841,6 +843,10 @@ def main():
                 note += ", %d UNREADABLE" % stats["no_transcript"]
             if stats["extract_errors"]:
                 note += ", %d extract-failed" % stats["extract_errors"]
+            # S307: claims whose quote was not one verbatim source span are
+            # refused one by one (media_pipeline.parse_claims); say how many.
+            if stats.get("quotes_dropped"):
+                note += ", %d unverifiable quote(s) dropped" % stats["quotes_dropped"]
             # Same reasoning one layer up: jobs-status is what a review reads
             # first, and "0 video(s), 0 claim(s)" with ok=false gives it nothing
             # to act on. Name the failures, capped so the row stays a row.

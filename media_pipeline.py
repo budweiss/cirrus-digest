@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 MODEL = 'qwen3.8-27b-fp8'
 ENDPOINT = 'http://192.168.100.11:8000'
-VERSION = 's298-v2'
+VERSION = 's307-v3'  # S307: contiguous-quote rule in the claims prompt
 
 
 def enabled():
@@ -93,24 +93,38 @@ def source_quote(quote, source):
     return match.group(), match.start(), match.end()
 
 
-def parse_claims(raw, source):
+def parse_claims(raw, source, dropped=None):
     raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
     data = json.loads(raw)
     if not isinstance(data, dict) or not isinstance(data.get('claims'), list):
         raise ValueError('invalid_media_claim_schema')
     if len(data['claims']) > 6:
         raise ValueError('too_many_media_claims')
+    kept = []
     for claim in data['claims']:
         if not isinstance(claim, dict) or any(not isinstance(claim.get(k), str)
                 for k in ('claim', 'why_it_applies', 'how_to_test', 'quote')):
             raise ValueError('invalid_media_claim')
-        quote, start, end = source_quote(claim['quote'], source)
+        try:
+            quote, start, end = source_quote(claim['quote'], source)
+        except ValueError as exc:
+            # S307: the model stitches fragments ("A ... C") or skips words, so
+            # the quote is no single source span. That claim is refused and never
+            # published -- but at temperature 0 the same stitch comes back every
+            # retry, so failing the whole VIDEO retried it nightly forever (4 of
+            # 6 videos on 09-26), each holding a slot of the nightly limit.
+            # Callers that pass `dropped` get the claim refused, not the video.
+            if dropped is None:
+                raise
+            dropped.append({'quote': claim['quote'][:300], 'reason': str(exc)})
+            continue
         claim.update(quote=quote, source_start=start, source_end=end)
-    return data['claims']
+        kept.append(claim)
+    return kept
 
 
 def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
-            caller=complete, counter=token_count, metadata=None):
+            caller=complete, counter=token_count, metadata=None, report=None):
     if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
@@ -124,7 +138,7 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
                  'model':MODEL,'pipeline_version':VERSION,'archived_at':datetime.now().isoformat()})
     spans = split_text(text, count=counter)
     state_path = folder / 'coverage.json'
-    outputs, all_claims = [], []
+    outputs, all_claims, dropped = [], [], []
     for i, (start, end) in enumerate(spans):
         checkpoint = folder / ('section-%04d.json' % i)
         if checkpoint.exists():
@@ -136,6 +150,10 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
                 system += ('Return JSON {"claims": [{"claim": "...", "why_it_applies": "...", '
                            '"how_to_test": "...", "quote": "verbatim source quote"}]}. '
                            'At most 6 claims, each quote 30-700 characters; no useful claim means an empty list. '
+                           # S307, measured on the 4 videos that failed 09-26: verbatim quotes
+                           # 10 -> 16, stitched/unverifiable 11 -> 4 with this one sentence.
+                           'Each quote is ONE contiguous passage copied exactly from the source: '
+                           'never join passages with ... and never leave words out. '
                            'Attribute claims to the presenter. A transcript is not independent verification; '
                            'never describe its claims as verified by us.')
             elif len(spans) > 1:
@@ -143,17 +161,21 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
                            'for the requested task, retaining relevant details and limitations. No more than 500 words.')
             output = caller(system, text[start:end], 'media:' + domain)
             if claims:
-                parse_claims(output, text[start:end])
+                parse_claims(output, text[start:end], [])   # schema check before caching
             atomic_json(checkpoint, {'start': start, 'end': end, 'answer': output})
         outputs.append(output)
         if claims:
-            for claim in parse_claims(output, text[start:end]):
+            for claim in parse_claims(output, text[start:end], dropped):
                 claim['source_start'] += start
                 claim['source_end'] += start
                 all_claims.append(claim)
         atomic_json(state_path, {'model': MODEL, 'characters': len(text), 'sections': len(spans),
                      'completed': i+1, 'complete': False, 'spans': spans})
     if claims:
+        if dropped:
+            atomic_json(folder / 'dropped-claims.json', dropped)
+        if report is not None:
+            report['dropped'] = len(dropped)
         result, seen = [], set()
         for claim in all_claims:
             identity = claim['quote'].lower()
@@ -291,8 +313,13 @@ def youtube(payload):
         seen = Path(tmp)/'seen.json'
         atomic_json(seen, payload['seen'])
         out = Path(tmp)/'findings'
+        drops = [0]
         def extract(video, text, lane):
-            return analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True,metadata=video)
+            report = {}
+            found = analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True,
+                            metadata=video, report=report)
+            drops[0] += report.get('dropped', 0)
+            return found
         def captions(video_id):
             if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
                 return '', 'invalid video id'
@@ -312,6 +339,7 @@ def youtube(payload):
         state['video_ids'] = sorted(set(state['video_ids'])- (failed-set(payload['seen']['video_ids'])))
         if stats.get('transient_stop'):
             stats['errors'].append('temporary caption failure: '+stats['transient_stop'])
+        stats['quotes_dropped'] = drops[0]
         return {'stats':stats,'seen':state,'files':{p.name:p.read_text() for p in out.glob('*.md')}}
 
 

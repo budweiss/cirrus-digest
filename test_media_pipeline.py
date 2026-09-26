@@ -80,6 +80,41 @@ class MediaTests(unittest.TestCase):
             self.assertNotIn('identical',result[0]['why_it_applies'])
             self.assertTrue(next(Path(tmp).rglob('metadata.json')).exists())
 
+    def test_stitched_quote_refuses_the_claim_not_the_video(self):
+        # S307: the live model joined fragments with "..." and 4 of 6 videos
+        # failed whole, then failed again on every nightly retry.
+        source=('The chip drew 45 watts during generation. That is GPU plus CPU. '
+                'Prompt processing reached 3,200 tokens per second in this run.')
+        good='Prompt processing reached 3,200 tokens per second in this run.'
+        stitched='The chip drew 45 watts during generation. ... in this run.'
+        def claim(q):
+            return {'claim':'c','why_it_applies':'w','how_to_test':'t','quote':q}
+        raw=json.dumps({'claims':[claim(stitched),claim(good)]})
+        with self.assertRaises(ValueError):            # no `dropped`: unchanged
+            m.parse_claims(raw,source)
+        dropped=[]
+        kept=m.parse_claims(raw,source,dropped)
+        self.assertEqual([c['quote'] for c in kept],[good])
+        self.assertEqual(len(dropped),1)
+        with tempfile.TemporaryDirectory() as tmp:
+            report={}
+            result=m.analyze(source,'hardware','youtube-hardware',True,root=tmp,
+                             caller=lambda *a:raw,counter=len,report=report)
+            self.assertEqual([c['quote'] for c in result],[good])
+            self.assertEqual(report['dropped'],1)
+            saved=json.loads(next(Path(tmp).rglob('dropped-claims.json')).read_text())
+            self.assertIn('...',saved[0]['quote'])
+            # a stitched-only reply is still no published claim, never a guess
+            only=json.dumps({'claims':[claim(stitched)]})
+            self.assertEqual(m.analyze(source+' x','hardware','youtube-hardware',True,root=tmp,
+                                       caller=lambda *a:only,counter=len),[])
+
+    def test_bad_schema_still_fails_the_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                m.analyze('some source text','hardware','youtube-hardware',True,root=tmp,
+                          caller=lambda *a:'{"claims":[{"claim":"guess"}]}',counter=len)
+
     def test_weekly_fetch_keeps_entire_transcript(self):
         import types
         entry=types.SimpleNamespace()
