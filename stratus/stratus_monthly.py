@@ -37,6 +37,9 @@ LOG        = DIGEST_DIR / "docs/STRATUS-Research-Log.md"
 SIZING     = DIGEST_DIR / "docs/STRATUS-Production-Sizing-and-Architecture.md"
 CREDS_PATH = DIGEST_DIR / "config/credentials.json"
 MARKER     = "<!-- New monthly entries appended above this line by stratus-monthly-review -->"
+LEARNED    = DIGEST_DIR / "learn-watch/claims.jsonl"   # S310: learn_watch's verified article quotes
+LEARN_AREAS = ("STRATUS (production sizing)", "Hardware")
+LEARN_DAYS, LEARN_MAX = 35, 30
 
 sys.path.insert(0, str(DIGEST_DIR))               # cirrus_daily + llm_providers + send_digest
 
@@ -90,7 +93,34 @@ def gather_web():
     return block, [u for u, _ in fetched]
 
 
-def build_prompt(web_block, urls):
+def learned_block(path=LEARNED, today=None, days=LEARN_DAYS, cap=LEARN_MAX):
+    """S310, Buddy: "feed stratus". The month's learn_watch lessons tagged
+    STRATUS or Hardware -- quotes already verified word for word against the
+    article -- newest first. Returns (block, urls); ("", []) when there are none."""
+    today = today or datetime.now()
+    rows = []
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return "", []
+    for line in lines:
+        try:
+            r = json.loads(line)
+            if not set(r.get("areas", [])) & set(LEARN_AREAS):
+                continue
+            if (today - datetime.strptime(r["date"], "%Y-%m-%d")).days > days:
+                continue
+            rows.append(r)
+        except (ValueError, KeyError):
+            continue
+    rows = sorted(rows, key=lambda r: r["date"], reverse=True)[:cap]
+    block = "\n".join('- "%s" -- %s (%s, %s) %s' % (r["quote"][:400], r["title"][:90],
+                                                     r["source"][:40], r["date"], r["url"])
+                      for r in rows)
+    return block, sorted({r["url"] for r in rows})
+
+
+def build_prompt(web_block, urls, learned=""):
     log_txt = LOG.read_text() if LOG.exists() else ""
     # keep the snapshot + watch list (everything before the log entries) as context
     context = log_txt.split("## Log entries")[0][:6000]
@@ -105,6 +135,9 @@ def build_prompt(web_block, urls):
 
 === WEB FINDINGS (fetched just now; cite as markdown links to these URLs) ===
 {web_block if web_block else "(NO web sources retrieved this run — say so and keep the recommendation unchanged.)"}
+
+=== FROM ARTICLES WE READ THIS MONTH (learn_watch; quotes verified word for word, claims are the authors', not tested by us) ===
+{learned if learned else "(none tagged STRATUS or Hardware this month)"}
 
 URL LIST: {json.dumps(urls)}
 
@@ -127,8 +160,10 @@ def synthesize():
     except Exception as e:
         return None, [], f"llm_providers import failed: {e}"
     web_block, urls = gather_web()
+    learned, learned_urls = learned_block()
+    urls = urls + [u for u in learned_urls if u not in urls]
     try:
-        provider, text = L.escalate(SYSTEM, build_prompt(web_block, urls), creds, max_tokens=4000, task='stratus:monthly')
+        provider, text = L.escalate(SYSTEM, build_prompt(web_block, urls, learned), creds, max_tokens=4000, task='stratus:monthly')
         print(f"[llm] provider={provider}, {len(text)} chars; sources={len(urls)}")
     except Exception as e:
         return None, urls, f"LLM call failed: {e}"
@@ -162,7 +197,44 @@ def _rec(dry, ok, note=""):
         pass
 
 
+def selftest():
+    """Offline: learned_block only (T32: a temp file, never the live log)."""
+    import tempfile
+    ok = True
+
+    def ck(name, cond):
+        nonlocal ok
+        print("  [%s] %s" % ("OK " if cond else "FAIL", name))
+        ok = ok and cond
+    now = datetime(2026, 10, 1, 5, 15)
+    rows = [{"date": "2026-09-26", "title": "Two-node Spark", "url": "u1", "source": "s",
+             "quote": "q1", "areas": ["Hardware"]},
+            {"date": "2026-09-27", "title": "Rack notes", "url": "u2", "source": "s",
+             "quote": "q2", "areas": ["STRATUS (production sizing)"]},
+            {"date": "2026-09-27", "title": "Skill files", "url": "u3", "source": "s",
+             "quote": "q3", "areas": ["Agent harness & instruction files"]},
+            {"date": "2026-07-01", "title": "Old", "url": "u4", "source": "s",
+             "quote": "q4", "areas": ["Hardware"]}]
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "claims.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+        block, urls = learned_block(p, today=now)
+        ck("learned: STRATUS and Hardware rows only", urls == ["u1", "u2"])
+        ck("learned: newest first", block.index("Rack notes") < block.index("Two-node Spark"))
+        ck("learned: older than the window is dropped", "Old" not in block)
+        ck("learned: a bad line is skipped, not fatal", len(block.splitlines()) == 2)
+        ck("learned: a missing file is empty, not an error",
+           learned_block(Path(td) / "nope.jsonl", today=now) == ("", []))
+    ck("prompt: carries the learned block", "q2" in build_prompt("", [], "- \"q2\""))
+    print("selftest:", "PASS" if ok else "FAIL")
+    return ok
+
+
 def main():
+    # T107: an argument main() does not know must never fall through to the LIVE
+    # monthly run (research + log commit + email). selftest is handled first.
+    if "selftest" in sys.argv[1:] or "--selftest" in sys.argv[1:]:
+        sys.exit(0 if selftest() else 1)
     dry = "--dry-run" in sys.argv
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] stratus_monthly ({'dry-run' if dry else 'live'})")
     entry, urls, err = synthesize()
