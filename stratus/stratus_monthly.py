@@ -40,6 +40,13 @@ MARKER     = "<!-- New monthly entries appended above this line by stratus-month
 LEARNED    = DIGEST_DIR / "learn-watch/claims.jsonl"   # S310: learn_watch's verified article quotes
 LEARN_AREAS = ("STRATUS (production sizing)", "Hardware")
 LEARN_DAYS, LEARN_MAX = 35, 30
+LEARN_CHARS = 14000     # hard budget for the lessons block, whatever LEARN_MAX says
+# S313: the route admits prompts up to its reviewed max_user_bytes. The worst
+# case -- 8 web sources x 3,000 chars, the full lessons budget, 6,000 chars of
+# log context, 3,000 of sizing -- must stay under this envelope; the selftest
+# builds that worst case and fails if it does not, so no cap can be raised
+# without re-qualifying the route.
+PROMPT_ENVELOPE_BYTES = 60000
 
 sys.path.insert(0, str(DIGEST_DIR))               # cirrus_daily + llm_providers + send_digest
 
@@ -114,10 +121,16 @@ def learned_block(path=LEARNED, today=None, days=LEARN_DAYS, cap=LEARN_MAX):
         except (ValueError, KeyError):
             continue
     rows = sorted(rows, key=lambda r: r["date"], reverse=True)[:cap]
-    block = "\n".join('- "%s" -- %s (%s, %s) %s' % (r["quote"][:400], r["title"][:90],
-                                                     r["source"][:40], r["date"], r["url"])
-                      for r in rows)
-    return block, sorted({r["url"] for r in rows})
+    lines, used = [], 0
+    for r in rows:
+        line = '- "%s" -- %s (%s, %s) %s' % (r["quote"][:400], r["title"][:90],
+                                              r["source"][:40], r["date"], r["url"][:200])
+        if used + len(line) + 1 > LEARN_CHARS:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    kept = rows[:len(lines)]
+    return "\n".join(lines), sorted({r["url"][:200] for r in kept})
 
 
 def build_prompt(web_block, urls, learned=""):
@@ -153,6 +166,32 @@ End with a final line that is EITHER "Recommendation: unchanged." OR
 Do not invent numbers you cannot support from the findings."""
 
 
+def fitted_prompt(web_block, urls, learned, limit=PROMPT_ENVELOPE_BYTES):
+    """build_prompt, trimmed until it fits the route's reviewed max_user_bytes.
+    S313: the worst case of every capped input (non-Latin pages are 2-3 bytes a
+    character) measured 82,531 bytes against a 60,000 envelope; admission would
+    refuse the whole month's run. Oldest lessons go first, then the last web
+    source; what was dropped is said in the prompt, never silently."""
+    lessons = learned.split("\n") if learned else []
+    sources = web_block.split("\n\n--- SOURCE ") if web_block else []
+    dropped_l = dropped_s = 0
+    while True:
+        web = "\n\n--- SOURCE ".join(sources)
+        note = ""
+        if dropped_l or dropped_s:
+            note = ("\n(Trimmed to fit the reviewed input size: %d older lesson(s) and %d web "
+                    "source(s) omitted.)" % (dropped_l, dropped_s))
+        body = web + "\n" + "\n".join(lessons)
+        # only URLs whose text is still in the prompt may be cited (source fidelity)
+        prompt = build_prompt(web, [u for u in urls if u in body], "\n".join(lessons) + note)
+        if len(prompt.encode()) <= limit or (not lessons and len(sources) <= 1):
+            return prompt
+        if lessons:
+            lessons.pop(); dropped_l += 1
+        else:
+            sources.pop(); dropped_s += 1
+
+
 def synthesize():
     creds = json.load(open(CREDS_PATH))
     try:
@@ -163,7 +202,7 @@ def synthesize():
     learned, learned_urls = learned_block()
     urls = urls + [u for u in learned_urls if u not in urls]
     try:
-        provider, text = L.escalate(SYSTEM, build_prompt(web_block, urls, learned), creds, max_tokens=4000, task='stratus:monthly')
+        provider, text = L.escalate(SYSTEM, fitted_prompt(web_block, urls, learned), creds, max_tokens=4000, task='stratus:monthly')
         print(f"[llm] provider={provider}, {len(text)} chars; sources={len(urls)}")
     except Exception as e:
         return None, urls, f"LLM call failed: {e}"
@@ -226,6 +265,38 @@ def selftest():
         ck("learned: a missing file is empty, not an error",
            learned_block(Path(td) / "nope.jsonl", today=now) == ("", []))
     ck("prompt: carries the learned block", "q2" in build_prompt("", [], "- \"q2\""))
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "claims.jsonl"
+        big = [{"date": "2026-09-30", "title": "T" * 200, "url": "https://example.com/" + "u" * 300,
+                "source": "S" * 80, "quote": "é" * 900, "areas": ["Hardware"]} for _ in range(80)]
+        p.write_text("\n".join(json.dumps(r) for r in big))
+        block, _ = learned_block(p, today=now)
+        ck("learned: block never exceeds LEARN_CHARS", 0 < len(block) <= LEARN_CHARS)
+        # the reviewed size envelope: worst case of every capped input together
+        global LOG, SIZING
+        saved = LOG, SIZING
+        (Path(td) / "log.md").write_text("L" * 20000 + "## Log entries")
+        (Path(td) / "sizing.md").write_text("Z" * 20000)
+        LOG, SIZING = Path(td) / "log.md", Path(td) / "sizing.md"
+        try:
+            web = "\n\n".join(f"--- SOURCE {i}: https://example.com/{'w' * 180} ---\n" + "é" * 3000
+                               for i in range(1, 9))
+            urls = ["https://example.com/" + "w" * 180] * 8 + _
+            raw = build_prompt(web, urls, block)
+            worst = fitted_prompt(web, urls, block)
+        finally:
+            LOG, SIZING = saved
+        ck("envelope: the untrimmed worst case really is over (%d bytes) -- so the trim is exercised"
+           % len(raw.encode()), len(raw.encode()) > PROMPT_ENVELOPE_BYTES)
+        ck("envelope: the fitted worst case fits the reviewed max_user_bytes (%d <= %d)"
+           % (len(worst.encode()), PROMPT_ENVELOPE_BYTES), len(worst.encode()) <= PROMPT_ENVELOPE_BYTES)
+        ck("envelope: the trim is announced, not silent", "Trimmed to fit" in worst)
+        small = fitted_prompt("--- SOURCE 1: https://a.example ---\ntext", ["https://a.example", "https://gone.example"],
+                              "- \"q\" -- t (s, d) https://l.example", limit=10 ** 6)
+        ck("envelope: a URL whose text is not in the prompt is not offered for citation",
+           "https://gone.example" not in small and "https://l.example" in small)
+        ck("envelope: web sources survive before lessons are all gone, header intact",
+           "### " in worst and "SOURCE 1:" in worst)
     print("selftest:", "PASS" if ok else "FAIL")
     return ok
 
