@@ -1,15 +1,66 @@
 {
   "_comment": "S308 topic feeds for learn_watch.py, on top of the medium/substack web_sources in config/sources.json. Medium tag feeds list only the newest 10 posts, and their RSS body is a teaser; learn_watch reads the full text from each post's author/publication feed. Measured 2026-09-26 (posts in 24h / 7d): ollama 3/10, local-llm 5/10, llm-inference 1/10, vllm 1/10, claude-code 10/10 (saturated: a daily poll sees only the newest 10), openai-codex 4/10, dgx-spark 1/4, mac-studio 0/1, self-improving-ai 0/3, quantization 1/7. Left out as broad and noisy: ai-agents, agentic-ai, claude, anthropic-claude, mcp-server (all 10/10 in 24h). Empty: nvidia-dgx, llama-cpp.",
   "feeds": [
-    {"name": "Medium tag: ollama", "rss": "https://medium.com/feed/tag/ollama"},
-    {"name": "Medium tag: local-llm", "rss": "https://medium.com/feed/tag/local-llm"},
-    {"name": "Medium tag: llm-inference", "rss": "https://medium.com/feed/tag/llm-inference"},
-    {"name": "Medium tag: vllm", "rss": "https://medium.com/feed/tag/vllm"},
-    {"name": "Medium tag: quantization", "rss": "https://medium.com/feed/tag/quantization"},
-    {"name": "Medium tag: claude-code", "rss": "https://medium.com/feed/tag/claude-code"},
-    {"name": "Medium tag: openai-codex", "rss": "https://medium.com/feed/tag/openai-codex"},
-    {"name": "Medium tag: dgx-spark", "rss": "https://medium.com/feed/tag/dgx-spark"},
-    {"name": "Medium tag: mac-studio", "rss": "https://medium.com/feed/tag/mac-studio"},
-    {"name": "Medium tag: self-improving-ai", "rss": "https://medium.com/feed/tag/self-improving-ai"}
-  ]
+    {
+      "name": "Medium tag: ollama",
+      "rss": "https://medium.com/feed/tag/ollama"
+    },
+    {
+      "name": "Medium tag: local-llm",
+      "rss": "https://medium.com/feed/tag/local-llm"
+    },
+    {
+      "name": "Medium tag: llm-inference",
+      "rss": "https://medium.com/feed/tag/llm-inference"
+    },
+    {
+      "name": "Medium tag: vllm",
+      "rss": "https://medium.com/feed/tag/vllm"
+    },
+    {
+      "name": "Medium tag: quantization",
+      "rss": "https://medium.com/feed/tag/quantization"
+    },
+    {
+      "name": "Medium tag: claude-code",
+      "rss": "https://medium.com/feed/tag/claude-code"
+    },
+    {
+      "name": "Medium tag: openai-codex",
+      "rss": "https://medium.com/feed/tag/openai-codex"
+    },
+    {
+      "name": "Medium tag: dgx-spark",
+      "rss": "https://medium.com/feed/tag/dgx-spark"
+    },
+    {
+      "name": "Medium tag: mac-studio",
+      "rss": "https://medium.com/feed/tag/mac-studio"
+    },
+    {
+      "name": "Medium tag: self-improving-ai",
+      "rss": "https://medium.com/feed/tag/self-improving-ai"
+    },
+    {
+      "name": "Simon Willison's Newsletter",
+      "rss": "https://simonw.substack.com/feed",
+      "kind": "substack"
+    },
+    {
+      "name": "The Kaitchup (Benjamin Marie)",
+      "rss": "https://kaitchup.substack.com/feed",
+      "kind": "substack"
+    },
+    {
+      "name": "Elevate (Addy Osmani)",
+      "rss": "https://addyo.substack.com/feed",
+      "kind": "substack"
+    },
+    {
+      "name": "Gradient Flow (Ben Lorica)",
+      "rss": "https://gradientflow.substack.com/feed",
+      "kind": "substack"
+    }
+  ],
+  "_sampling_s310": "2026-09-26: candidate Substacks sampled -- first ~5 min of reading (7,000 chars) of each one's 3 latest posts through learn_watch's own local extraction. Rule: accept if >=2 of 3 posts or >=4 verified lessons, then read the lessons. ACCEPTED: Simon Willison (2/3, 6), The Kaitchup (3/3, 12; Qwen3.8-27B quantization/MTP), Elevate/Addy Osmani (2/3, 8; agent-file audits), Gradient Flow (3/3, 13). REJECTED: Interconnects (0/3), Ahead of AI (1/3, 2), Import AI (1/3, 3), SemiAnalysis (0/3; paid previews), The Pragmatic Engineer (1/3, 5 -- passed on count but the lessons were design tooling, not our stack: rejected on reading)."
 }
