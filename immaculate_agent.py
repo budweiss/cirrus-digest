@@ -313,10 +313,11 @@ def _pass(mode, dry_run, followup=False):
 
 
 def deliver(message, dry_run):
-    """inactives only: the reply goes to Buddy by Telegram; email if that fails twice."""
+    """inactives only: the reply goes to Buddy by Telegram; email if that fails twice.
+    True only when one of them went (T113: a send that never raises must be read)."""
     if dry_run:
         print(f"DRY RUN -- not sent:\n{message}")
-        return
+        return True
     status = send_telegram(message)
     if status != "sent":
         status = send_telegram(message)
@@ -327,19 +328,20 @@ def deliver(message, dry_run):
                         "Buddy.Weiss@outlook.com", "", "Immaculate Wk3 INACTIVES", message)
         status = f"telegram {status}; email {'sent' if ok else 'FAILED'}"
     print("delivery:", status)
+    return status == "sent" or status.endswith("email sent")
 
 
 def main(mode, dry_run=False):
     rc, result = _pass(mode, dry_run)
     if mode != "inactives" or rc:
         return rc
-    deliver(result.strip(), dry_run)
+    delivered = deliver(result.strip(), dry_run)
     if result.strip().startswith(NOT_POSTED) and not dry_run:
         time.sleep(RECHECK_WAIT)
         rc, result = _pass(mode, dry_run, followup=True)
         if rc == 0:
-            deliver(result.strip(), dry_run)
-    return rc
+            delivered = deliver(result.strip(), dry_run) and delivered
+    return rc or (0 if delivered else 1)
 
 
 # ── selftest ──────────────────────────────────────────────────────────────────
