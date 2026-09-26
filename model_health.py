@@ -18,7 +18,7 @@ Safety:
   * --dry-run: report only, change nothing.
 
 Providers covered: anthropic (claude_model), gemini (gemini_model),
-openai (openai_model). Grok/DeepSeek included if keyed.
+openai (openai_model). Grok/DeepSeek/Kimi included if keyed (Kimi: S301).
 
 Usage:
   python3 model_health.py            # check + self-heal + notify
@@ -78,6 +78,7 @@ MODEL_FIELD = {
     "openai":    "openai_model",
     "grok":      "grok_model",
     "deepseek":  "deepseek_model",
+    "kimi":      "kimi_model",      # S301: keyed on both boxes since S159, never checked
 }
 
 MODEL_ERR = re.compile(
@@ -298,6 +299,9 @@ CANDIDATES = {
     "openai":    candidates_openai,
     "grok":      candidates_grok,
     "deepseek":  lambda c: [],
+    # S301: report, never auto-swap -- same call as deepseek. Kimi's lineup is
+    # four ids (k2.6, k2.7-code(-highspeed), k3); picking one is a cost decision.
+    "kimi":      lambda c: [],
 }
 
 
@@ -1053,6 +1057,8 @@ _LIST_ENDPOINTS = {
                   lambda k: {"Authorization": "Bearer " + k}),
     "deepseek":  ("https://api.deepseek.com/v1/models",
                   lambda k: {"Authorization": "Bearer " + k}),
+    "kimi":      ("https://api.moonshot.ai/v1/models",
+                  lambda k: {"Authorization": "Bearer " + k}),
 }
 
 
@@ -1085,7 +1091,7 @@ def _list_cloud_models(provider, creds):
 _KEY_FIELD_CLOUD = {
     "anthropic": "anthropic_api_key", "gemini": "gemini_api_key",
     "openai": "openai_api_key", "grok": "grok_api_key",
-    "deepseek": "deepseek_api_key",
+    "deepseek": "deepseek_api_key", "kimi": "kimi_api_key",
 }
 
 
@@ -1251,6 +1257,32 @@ def selftest_save_field() -> int:
         ck("...and leaves the live copy and the .age untouched",
            json.loads((ram / "credentials.json").read_text())["gemini_model"] == "new"
            and dec()["gemini_model"] == "new")
+    return fails
+
+
+def selftest_coverage() -> int:
+    """S301: every cloud provider llm_providers can call must be health-checked.
+    Kimi was keyed and live on both boxes from S159 to S301 with no daily line,
+    because adding a provider meant editing four tables here and nothing said so.
+    """
+    fails = 0
+    cloud = [x for x in L.DEFAULT_ORDER if x in L._KEY_FIELD]
+
+    def ck(name, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] coverage: {name}")
+        fails += 0 if cond else 1
+
+    for name, table in (("MODEL_FIELD", MODEL_FIELD), ("CANDIDATES", CANDIDATES),
+                        ("_KEY_FIELD_CLOUD", _KEY_FIELD_CLOUD)):
+        missing = [x for x in cloud if x not in table]
+        ck(f"every DEFAULT_ORDER provider is in {name}"
+           + (f" (missing: {', '.join(missing)})" if missing else ""), not missing)
+    ck("_KEY_FIELD_CLOUD names the same key field as llm_providers",
+       all(_KEY_FIELD_CLOUD[x] == L._KEY_FIELD[x] for x in cloud if x in _KEY_FIELD_CLOUD))
+    nolist = [x for x in _KEY_FIELD_CLOUD if x != "gemini" and x not in _LIST_ENDPOINTS]
+    ck("every listed provider has a model-list endpoint (gemini is special-cased)"
+       + (f" (missing: {', '.join(nolist)})" if nolist else ""), not nolist)
     return fails
 
 
@@ -2015,6 +2047,7 @@ def selftest():
     # entry point.
     fails += selftest_delist()
     fails += selftest_save_field()   # S300 (T95)
+    fails += selftest_coverage()     # S301 (Kimi)
 
     # ── S173: the tailnet check. Driven with fixtures, because the live tailnet
     #    is not a test -- on the day this shipped it happened to have CIRRUS
