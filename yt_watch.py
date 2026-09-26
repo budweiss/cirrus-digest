@@ -360,6 +360,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
 
     seen = set(load_json(seen_path, {}).get("video_ids", []))
     results, errors, processed = [], [], 0
+    feed_errors = 0
     transient_stop = ""
 
     for i, ch in enumerate(channels):
@@ -374,6 +375,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
             # (feed gone), and each demands a different response. Three
             # nights of bare "HTTPError" on every channel proved that.
             _c = getattr(e, "code", None)
+            feed_errors += 1
             errors.append("%s: %s%s (after %d attempt(s))"
                           % (ch.get("name", "?"), type(e).__name__,
                              f" {_c}" if _c is not None else "", feed_attempts))
@@ -445,7 +447,8 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
             "no_transcript": sum(1 for r in results if r["no_transcript"]),
             "extract_errors": sum(1 for r in results if r.get("extract_error")),
             "transient_stop": transient_stop,
-            "errors": errors, "body": body}
+            "errors": errors, "body": body,
+            "feed_errors": feed_errors, "channels": len(channels)}
 
 
 def report():
@@ -467,6 +470,21 @@ FEED_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
  <entry><yt:videoId>vid222</yt:videoId><title>Second video</title>
   <published>2026-08-28T12:00:00+00:00</published></entry>
 </feed>"""
+
+
+def is_healthy(stats):
+    """The job_status verdict for one run; see the reasoning in main()."""
+    all_unreadable = (stats["processed"] > 0
+                      and stats["no_transcript"] >= stats["processed"])
+    # S307: 4 of 5 feeds 404'd on 09-26 and the run still read ok=true, because
+    # one channel's videos were processed. Half the watch list unread is not a
+    # quiet night. One channel blipping still is (it is named in the note).
+    feeds_down = stats.get("feed_errors", 0) * 2 >= max(stats.get("channels", 0), 1) \
+        and stats.get("feed_errors", 0) > 0
+    return ((not stats["errors"]) or (
+        stats["processed"] > 0
+        and stats["extract_errors"] < stats["processed"])
+    ) and not all_unreadable and not feeds_down
 
 
 def selftest():
@@ -649,6 +667,20 @@ def selftest():
         ck("run: a persistent 404 IS recorded once, attempts named",
            len(r["errors"]) == 1 and "attempt" in r["errors"][0])
         ck("run: ...after exactly the configured attempts", calls2["n"] == 3)
+        ck("run: a feed failure is counted as one", r["feed_errors"] == 1 and r["channels"] == 1)
+
+    def night(feed_errors, channels=5, processed=6, extract_errors=0, no_transcript=0):
+        return {"processed": processed, "extract_errors": extract_errors,
+                "no_transcript": no_transcript, "feed_errors": feed_errors, "channels": channels,
+                "errors": ["x"] * (feed_errors + extract_errors)}
+    ck("health: the 09-26 night (4 of 5 feeds 404, 6 processed) is NOT healthy",
+       not is_healthy(night(4)))
+    ck("health: one channel blipping, others read, stays healthy", is_healthy(night(1)))
+    ck("health: a clean night is healthy", is_healthy(night(0)))
+    ck("health: no new videos and no errors is healthy", is_healthy(night(0, processed=0)))
+    ck("health: every feed down is not", not is_healthy(night(5, processed=0)))
+    ck("health: old stats without feed counts keep the old rule",
+       is_healthy({"processed": 6, "extract_errors": 1, "no_transcript": 0, "errors": ["x"]}))
 
     calls3 = {"n": 0}
 
@@ -829,12 +861,7 @@ def main():
             # what an IpBlocked run looks like. extract_errors was 0 and there
             # were no feed errors, so that run recorded ok=TRUE while nothing
             # whatsoever had been read. An unreadable video is not a quiet night.
-            all_unreadable = (stats["processed"] > 0
-                              and stats["no_transcript"] >= stats["processed"])
-            healthy = ((not stats["errors"]) or (
-                stats["processed"] > 0
-                and stats["extract_errors"] < stats["processed"])
-            ) and not all_unreadable
+            healthy = is_healthy(stats)
             note = "%d video(s), %d claim(s)" % (stats["processed"], stats["claims"])
             # Carry the unread count into the NOTE as well: the monitor row is
             # what gets read at 07:30, and "12 video(s), 0 claim(s)" looks like
