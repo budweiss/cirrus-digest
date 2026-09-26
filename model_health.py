@@ -27,6 +27,8 @@ Usage:
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -95,15 +97,83 @@ def load():
     return json.loads(CREDS_PATH.read_text())
 
 
-def save_field(field, value):
-    d = load()
+def _atomic_json(path, d):
+    """Replace `path` atomically with a temp file in the SAME directory."""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as o:
+            json.dump(d, o, indent=2)
+            o.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(path))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _age_bin():
+    # launchd's PATH has /opt/homebrew/bin; a bare ssh on CIRRUS may not.
+    for c in (shutil.which("age"), "/opt/homebrew/bin/age", "/usr/bin/age",
+              "/usr/local/bin/age"):
+        if c and os.path.exists(c):
+            return c
+    raise RuntimeError("age binary not found")
+
+
+def _secrets_dir():
+    """This box's own age keypair (S62): one of these exists per box."""
+    for name in ("cirrus-secrets", "cumulus-secrets"):
+        d = Path.home() / ".config" / name
+        if (d / "age-identity.txt").exists():
+            return d
+    return None
+
+
+def save_field(field, value, creds_path=None, secrets_dir=None):
+    """Persist ONE credentials field so it SURVIVES. S300 (T95).
+
+    config/credentials.json is a symlink into RAM, rebuilt from
+    credentials.json.age (CUMULUS every 10s, CIRRUS at boot). This used to
+    os.replace() onto the symlink: CUMULUS reverted the swap within 10s, and
+    CIRRUS got a PLAINTEXT credentials.json on persistent disk until reboot.
+    Now: the .age source of truth FIRST, then the RAM copy in place, symlink
+    kept. Raises if the .age cannot be written -- a heal that would silently
+    revert must not be reported as healed. A checkout with no .age file keeps
+    the plain-file write. Paths are injectable for the selftest (T32).
+    """
+    creds_path = Path(creds_path or CREDS_PATH)
+    age_path = creds_path.with_name(creds_path.name + ".age")
+    if not age_path.exists():
+        d = json.loads(creds_path.read_text())
+        d[field] = value
+        _atomic_json(creds_path, d)
+        return
+    sdir = Path(secrets_dir) if secrets_dir else _secrets_dir()
+    if sdir is None:
+        raise RuntimeError(f"{age_path.name} exists but no age keypair in "
+                           "~/.config/{cirrus,cumulus}-secrets")
+    age = _age_bin()
+    recipient = (sdir / "age-recipient.txt").read_text().strip()
+    out = subprocess.run([age, "-d", "-i", str(sdir / "age-identity.txt"),
+                          str(age_path)], capture_output=True, check=True)
+    d = json.loads(out.stdout)
+    del out
     d[field] = value
-    fd, tmp = tempfile.mkstemp(dir=str(CREDS_PATH.parent))
-    with os.fdopen(fd, "w") as o:
-        json.dump(d, o, indent=2)
-        o.write("\n")
-    os.replace(tmp, str(CREDS_PATH))
-    os.chmod(str(CREDS_PATH), 0o600)
+    tmp_age = age_path.with_name(age_path.name + ".tmp")
+    try:
+        subprocess.run([age, "-e", "-r", recipient, "-o", str(tmp_age)],
+                       input=(json.dumps(d, indent=2) + "\n").encode(),
+                       capture_output=True, check=True)
+        os.chmod(tmp_age, 0o600)
+        os.replace(tmp_age, age_path)
+    finally:
+        if tmp_age.exists():
+            tmp_age.unlink()
+    # The RAM copy, written at the symlink's TARGET so the link survives and
+    # the plaintext never leaves RAM. CUMULUS's loop would rebuild it from
+    # .age within 10s anyway; CIRRUS's would not until reboot.
+    _atomic_json(creds_path.resolve(), d)
 
 
 def test_model(provider, creds, model):
@@ -1107,6 +1177,83 @@ def note_samples():
     ]
 
 
+def selftest_save_field() -> int:
+    """S300 (T95): save_field must write .age FIRST and keep the RAM symlink.
+    Temp files and a throwaway age keypair only -- never a live file (T32)."""
+    fails = 0
+
+    def ck(name, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] save_field: {name}")
+        fails += 0 if cond else 1
+
+    # Plain-file layout (a checkout with no .age): the old write, unchanged.
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "credentials.json"
+        cp.write_text(json.dumps({"gemini_model": "old", "keep": "k"}))
+        save_field("gemini_model", "new", creds_path=cp)
+        d = json.loads(cp.read_text())
+        ck("no .age -> plain file updated in place",
+           d == {"gemini_model": "new", "keep": "k"} and not cp.is_symlink())
+
+    try:
+        age = _age_bin()
+        keygen = str(Path(age).with_name("age-keygen"))
+        assert os.path.exists(keygen)
+    except Exception:
+        print("  [SKIP] save_field: `age` not installed here -- the .age path was "
+              "NOT tested on this machine (it is on CIRRUS and CUMULUS)")
+        return fails
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        sec, cfg, ram = td / "secrets", td / "config", td / "ram"
+        for x in (sec, cfg, ram):
+            x.mkdir()
+        subprocess.run([keygen, "-o", str(sec / "age-identity.txt")],
+                       capture_output=True, check=True)
+        rcp = subprocess.run([keygen, "-y", str(sec / "age-identity.txt")],
+                             capture_output=True, check=True).stdout.decode().strip()
+        (sec / "age-recipient.txt").write_text(rcp + "\n")
+        start = {"gemini_model": "old", "keep": "k"}
+        subprocess.run([age, "-e", "-r", rcp, "-o", str(cfg / "credentials.json.age")],
+                       input=json.dumps(start).encode(), check=True)
+        (ram / "credentials.json").write_text(json.dumps(start))
+        link = cfg / "credentials.json"
+        link.symlink_to(ram / "credentials.json")
+
+        def dec():
+            return json.loads(subprocess.run(
+                [age, "-d", "-i", str(sec / "age-identity.txt"),
+                 str(cfg / "credentials.json.age")],
+                capture_output=True, check=True).stdout)
+
+        save_field("gemini_model", "new", creds_path=link, secrets_dir=sec)
+        ck("the .age source of truth holds the new value (survives a rebuild)",
+           dec() == {"gemini_model": "new", "keep": "k"})
+        ck("the live RAM copy holds it too",
+           json.loads((ram / "credentials.json").read_text())["gemini_model"] == "new")
+        ck("config/credentials.json is STILL the symlink into RAM",
+           link.is_symlink() and link.resolve() == (ram / "credentials.json").resolve())
+        ck("no plaintext or temp file left beside the .age",
+           sorted(x.name for x in cfg.iterdir()) ==
+           ["credentials.json", "credentials.json.age"])
+
+        # No keypair: must RAISE, and must not touch the live copy.
+        empty = td / "nosecrets"
+        empty.mkdir()
+        raised = False
+        try:
+            save_field("gemini_model", "newer", creds_path=link, secrets_dir=empty)
+        except Exception:
+            raised = True
+        ck("a failed .age write RAISES (never a silent live-only heal)", raised)
+        ck("...and leaves the live copy and the .age untouched",
+           json.loads((ram / "credentials.json").read_text())["gemini_model"] == "new"
+           and dec()["gemini_model"] == "new")
+    return fails
+
+
 def selftest_delist() -> int:
     """S146. check_configured_model_delisted must FIRE, and must not fire on a
     provider it merely could not reach -- accusing a provider of retiring a model
@@ -1274,7 +1421,12 @@ def main():
                 break
         if chosen:
             if not DRY:
-                save_field(field, chosen)
+                try:
+                    save_field(field, chosen)
+                except Exception as e:   # S300: never report an unpersisted heal
+                    broken.append(f"{p}={shown}: found {chosen} but could NOT "
+                                  f"persist it ({type(e).__name__}: {str(e)[:80]})")
+                    continue
                 creds = load()
             healed.append(f"{p}: {model} -> {chosen}")
         else:
@@ -1862,6 +2014,7 @@ def selftest():
     # nothing invokes is not a test -- the dev-loop's gate 2 runs exactly this
     # entry point.
     fails += selftest_delist()
+    fails += selftest_save_field()   # S300 (T95)
 
     # ── S173: the tailnet check. Driven with fixtures, because the live tailnet
     #    is not a test -- on the day this shipped it happened to have CIRRUS

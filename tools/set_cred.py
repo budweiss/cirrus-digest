@@ -46,6 +46,15 @@ def main():
     if field not in ALLOWED:
         print(f"ERROR: FIELD '{field}' not in allowlist", file=sys.stderr)
         sys.exit(2)
+    # S300 (T95): on an encrypted-at-rest box credentials.json is a symlink into
+    # RAM rebuilt from credentials.json.age. Replacing it here was reverted
+    # within 10s on CUMULUS and left PLAINTEXT on disk on CIRRUS. Refuse.
+    if os.path.islink(CREDS) or os.path.exists(CREDS + ".age"):
+        print("REFUSED: config/credentials.json is encrypted at rest (.age + RAM "
+              "symlink); a write here would silently revert. From the MacBook use "
+              "runner/set-llm-key.sh (secrets) or runner/rotate-creds-<box>.sh.",
+              file=sys.stderr)
+        sys.exit(5)
     value = sys.stdin.read().strip()
     if not value:
         print("ERROR: empty value on stdin — nothing written", file=sys.stderr)
