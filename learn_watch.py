@@ -600,6 +600,25 @@ def main():
 
 # ── selftest ────────────────────────────────────────────────────────────────
 def selftest():
+    """Offline. T77 kill switch: for the whole suite the module's live paths
+    point into a temp dir and Browser is a fake, so a run() call that forgets
+    an injection still cannot write a live file or open Chromium with Buddy's
+    cookies. S310: before this, one such call left a fixture claim in
+    learn-watch/claims.jsonl."""
+    import tempfile
+    g = globals()
+    saved = {k: g[k] for k in ("CLAIMS_LOG", "SEEN_PATH", "OUT_DIR", "COOKIES_PATH", "Browser")}
+    guard = tempfile.TemporaryDirectory()
+    g.update(CLAIMS_LOG=Path(guard.name) / "claims.jsonl", SEEN_PATH=Path(guard.name) / "seen.json",
+             OUT_DIR=Path(guard.name) / "out", COOKIES_PATH=Path(guard.name) / "cookies.json")
+    try:
+        return _selftest(g)
+    finally:
+        g.update(saved)
+        guard.cleanup()
+
+
+def _selftest(g):
     import tempfile
     ok = True
 
@@ -685,6 +704,7 @@ def selftest():
 
         def close(self):
             self.closed = True
+    g["Browser"] = FakeBrowser      # the kill switch's second half
     tag_teaser = entry("https://medium.com/@a/spark-ab12cd34ef56?src=tag", "Spark tips", "short teaser")
     author_full = entry("https://medium.com/@a/spark-ab12cd34ef56", "Spark tips", long_body)
     feeds_map = {
