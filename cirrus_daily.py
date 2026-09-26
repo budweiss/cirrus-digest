@@ -708,6 +708,29 @@ def _ddg_search(query: str, max_results: int = 3) -> list[str]:
         return []
 
 
+def usable_reference(ref) -> bool:
+    """A reference worth a web SEARCH: a name, not a link.
+
+    S307: the model returned raw links as "references" 135 times in daily.log,
+    mostly substack.com/redirect/... from newsletter emails. Each was sent to
+    Brave as a search query -- carrying Substack's per-subscriber j= token to a
+    third party -- and the "result" fetched was substack.com/sign-in. Links in
+    the body are link-following's job, not this search's.
+    """
+    if not isinstance(ref, str) or len(ref.strip()) <= 5:
+        return False
+    r = ref.strip().lower()
+    return not (r.startswith(("http://", "https://", "www.")) or "://" in r)
+
+
+def feed_unreadable(feed) -> bool:
+    """True when feedparser got an HTTP error or nothing parseable. feedparser
+    never raises on a 404/403 -- it returns zero entries -- so a dead feed read
+    as a quiet one. S307: Medium @reactjsbd had been 404 with no log line."""
+    status = feed.get("status") or 0
+    return status >= 400 or (bool(feed.get("bozo")) and not feed.get("entries"))
+
+
 def extract_named_references(text: str) -> list[str]:
     """Ask qwen to identify specific named external sources in text.
 
@@ -744,7 +767,7 @@ Return only the JSON array on a single line, nothing else:"""
         if match:
             refs = json.loads(match.group())
             if isinstance(refs, list):
-                clean = [str(r).strip() for r in refs if isinstance(r, str) and len(r.strip()) > 5]
+                clean = [r.strip() for r in refs if usable_reference(r)]
                 return clean[:3]
     except Exception as e:
         log(f"    Reference extraction error: {e}")
@@ -1286,6 +1309,9 @@ def fetch_web_sources():
         log(f"Fetching: {source['name']}")
         try:
             feed = feedparser.parse(source["rss"])
+            if feed_unreadable(feed):
+                log(f"    ⚠ Feed unreadable (HTTP {feed.get('status', '?')}): {source['rss']}")
+                bump("feed_unreadable")
             count = 0
             for entry in feed.entries:
                 # Parse publish date
@@ -2026,6 +2052,24 @@ def selftest() -> bool:
             print(f"[selftest] FAIL {name}: got {got!r}, expected {expected!r}")
         else:
             print(f"[selftest] pass {name}")
+
+    # S307: links are not search queries; dead feeds are not quiet ones
+    check("ref: a named resource is searchable",
+          usable_reference("Mistral 7B model release"), True)
+    check("ref: a substack redirect link is not",
+          usable_reference("https://substack.com/redirect/4dab?j=tok"), False)
+    check("ref: a bare www link is not", usable_reference("www.example.com/post"), False)
+    check("ref: too short is not", usable_reference("GPT"), False)
+    check("ref: a non-string is not", usable_reference(None), False)
+    check("feed: HTTP 404 is unreadable", feed_unreadable({"status": 404, "entries": []}), True)
+    check("feed: 200 with entries is fine",
+          feed_unreadable({"status": 200, "entries": [1], "bozo": 0}), False)
+    check("feed: 200 with no entries is a quiet feed, not a dead one",
+          feed_unreadable({"status": 200, "entries": [], "bozo": 0}), False)
+    check("feed: unparseable with no entries is unreadable",
+          feed_unreadable({"status": 200, "entries": [], "bozo": 1}), True)
+    check("feed: a redirect that still parsed is fine",
+          feed_unreadable({"status": 301, "entries": [1], "bozo": 0}), False)
 
     # whole_word_match / matches_keywords — \b matching, not substring
     check("whole_word_match: whole-word hit",
