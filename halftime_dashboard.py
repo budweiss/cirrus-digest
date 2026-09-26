@@ -443,12 +443,14 @@ def rank_for_game(game: Dict, acts: List[Dict]) -> List[Dict]:
         patriotic_only = ("patriotic" in kinds
                           and not (kinds - {"patriotic", "credit"}))
         # R18: something they have booked many times is not a discovery --
-        # it follows the acts that are, within the same lead.
+        # it follows the unbooked acts of the SAME standing. It sat above
+        # reach at first, which put Wiz (Pittsburgh) below twelve fans with
+        # no Pittsburgh tie on the Heritage date (live, 25 Sep).
         return (0 if leads else 1,
-                1 if act.get("booked") else 0,
                 reach,
                 1 if (patriotic_only and not wants_patriotic) else 0,
                 0 if "market" in kinds else 1,
+                1 if act.get("booked") else 0,
                 0 if "fan" in kinds else 1,
                 0 if "nostalgia" in kinds else 1,
                 0 if "credit" in kinds else 1,
@@ -3846,6 +3848,9 @@ def selftest() -> int:
               "the unbooked Pittsburgh acts (R18)",
               _o12.index("Bret Michaels") > _o12.index("The Clarks")
               and _o12.index("Wiz Khalifa") > _o12.index("The Clarks"))
+        check("booked: ...but still leads every act with no Pittsburgh tie",
+              _o12.index("Wiz Khalifa") < _o12.index("Christina Aguilera")
+              and _o12.index("Bret Michaels") < _o12.index("Dan + Shay"))
         _pb = render_html(snap)
         check("booked: ...and the page says so, not as a discovery",
               "Booked before: you have booked them many times" in _pb
