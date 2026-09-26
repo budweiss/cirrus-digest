@@ -33,6 +33,10 @@ Unlike postgame, its final reply IS the delivery -- main() sends it to Buddy.
     python3 immaculate_agent.py postgame [--dry-run]
     python3 immaculate_agent.py inactives [--dry-run]
     python3 immaculate_agent.py selftest
+
+On cumulus1 "python3" means ~/.venvs/alopecia-agent/bin/python (the tick's
+AGENT_PY). The repo's .venv has no claude_agent_sdk: a run under it fails
+with ModuleNotFoundError (T114).
 """
 import asyncio
 import json
