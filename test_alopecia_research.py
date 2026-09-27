@@ -44,6 +44,22 @@ class ResearchTests(unittest.TestCase):
             data=self.step();data['supporting']=[claim]
             with self.assertRaises(ValueError):r.record_step(data)
         self.assertFalse((self.state/'steps.json').exists())
+    def test_unicode_whitespace_preserves_original_but_never_changes_words(self):
+        original='Mean age of onset was 5.9\u00a0±\u00a04.1\u00a0years.'
+        record=dict(self.record,text=original);record.pop("original_text",None)
+        r.save(self.state/'sources/pmid-123.json',record)
+        source=r.source('pmid:123')
+        self.assertEqual(source['original_text'],original)
+        data=self.step();data['supporting'][0]['quote']='Mean age of onset was 5.9 ± 4.1 years.'
+        self.assertTrue(r.record_step(data)['saved'])
+        data['supporting'][0]['quote']='Mean age of onset was 10.0 ± 4.1 years.'
+        with self.assertRaisesRegex(ValueError,'unverified_quote:pmid:123'):r.record_step(data)
+
+    def test_cached_source_does_not_repeat_network_within_day(self):
+        with patch.object(r,'fetch') as fetch:
+            result=r.retrieve_source('pmid:123')
+        self.assertTrue(result['cached']);fetch.assert_not_called()
+
     def test_exhaustive_absence_claim_refused(self):
         data=self.step();data["uncertainties"]="No study has ever measured this; a confirmed literature gap."
         with self.assertRaisesRegex(ValueError,"unsupported_exhaustive_absence_claim"):r.record_step(data)

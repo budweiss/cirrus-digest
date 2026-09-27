@@ -190,6 +190,9 @@ treatment withdrawal. Age10 is the motivating question, not proof of a special
 biological switch, an individual exposure, or one identifiable trigger. Consider
 combined susceptibility, immune development, and chance alongside exposures.
 Separate initiation from mechanisms maintaining disease after a trigger is gone.
+Source whitespace is canonicalized while original text is retained. Use literal
+source wording and numbers. If record_research_step reports unverified_quote,
+read the cached source and correct the quotation; do not repeatedly re-run MedGemma.
 
 New tools: `read_research_lead` (podcast/labs/niams/unither), `investigate_research_path` (reviewed
 queries only), `retrieve_research_source` (public PMID), `follow_related_research`,

@@ -32,6 +32,13 @@ def save(path, value):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2));tmp.replace(path)
 
 
+def canonical_source(record):
+    record=dict(record)
+    raw=record.get('original_text',record['text'])
+    record.update(original_text=raw,text=' '.join(raw.split()),normalization='Unicode whitespace collapsed; words, numbers and punctuation unchanged')
+    return record
+
+
 def catalog():
     return json.loads(CATALOG.read_text())
 
@@ -82,7 +89,7 @@ def parse_articles(raw):
             'publication_types':types,'abstract_only':True,'truncated':len(text)>12000,
             'retraction_flag':any('retract' in x.lower() for x in types) or bool(item.findall('.//CommentsCorrections[@RefType="RetractionIn"]')),
             'fetched_utc':datetime.now(timezone.utc).isoformat()})
-    return records
+    return [canonical_source(record) for record in records]
 
 
 def get_articles(ids, origin):
@@ -102,7 +109,7 @@ def source(source_id):
     if source_id.startswith('site:') and source_id.split(':')[1] not in SITE_LEADS:raise ValueError('unknown_source')
     p=STATE/'sources'/(source_id.replace(':','-')+'.json')
     if not p.exists():raise ValueError('source_not_retrieved')
-    return load(p,{})
+    return canonical_source(load(p,{}))
 
 
 def investigate(path_id):
@@ -176,7 +183,9 @@ def record_step(data):
         for claim in data[field]:
             if not isinstance(claim,dict) or set(claim)!={'source_id','quote'}:raise ValueError('invalid_quote')
             record=source(claim['source_id']);quote=claim['quote']
-            if record['retraction_flag'] or not isinstance(quote,str) or len(quote)<30 or quote not in record['text']:raise ValueError('unverified_quote')
+            if isinstance(quote,str):quote=' '.join(quote.split())
+            claim['quote']=quote
+            if record['retraction_flag'] or not isinstance(quote,str) or len(quote)<30 or quote not in record['text']:raise ValueError('unverified_quote:'+claim['source_id'])
     if 'avenue_id' in data:
         from alopecia_agent import notebook
         notebook.validate_comparison(data)
@@ -188,6 +197,8 @@ def record_step(data):
     for claim in data['supporting']+data['contradicting']:
         record=source(claim['source_id'])
         snapshots[record['id']]={k:record[k] for k in ['url','fetched_utc','abstract_only','publication_types','truncated']}
+        snapshots[record['id']]['normalization']=record.get('normalization','none')
+        snapshots[record['id']]['original_text_sha256']=hashlib.sha256(record.get('original_text',record['text']).encode()).hexdigest()
         snapshots[record['id']]['text_sha256']=hashlib.sha256(record['text'].encode()).hexdigest()
     data=dict(data,source_snapshots=snapshots,created=datetime.now(timezone.utc).isoformat(),status='UNREVIEWED RESEARCH HYPOTHESIS — not a causal finding or treatment recommendation')
     STATE.mkdir(parents=True,exist_ok=True)
@@ -210,6 +221,9 @@ def read_lead(lead_id):
 
 def retrieve_source(source_id):
     if not re.fullmatch(r'pmid:\d{1,9}',source_id):raise ValueError('invalid_public_record_id')
+    cached=STATE/'sources'/(source_id.replace(':','-')+'.json')
+    if cached.exists() and load(cached,{}).get('fetched_utc','')[:10]==datetime.now(timezone.utc).date().isoformat():
+        return dict(source(source_id),cached=True)
     records=get_articles([source_id.split(':')[1]],{'route':'public PMID from research lead'})
     if not records:raise ValueError('public_record_missing')
     return records[0]

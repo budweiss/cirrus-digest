@@ -157,7 +157,7 @@ def _build_mcp_tools(dry_run=False, no_send=False):
     async def _lead(args):
         return response(research.read_lead(args["lead_id"]))
 
-    @tool("retrieve_research_source", "Fetch a public PubMed record by source_id pmid:NUMBER cited in a lead; includes abstract-only and retraction flags.", {"source_id": str})
+    @tool("retrieve_research_source", "Read a same-day cached PubMed record or fetch it by source_id pmid:NUMBER cited in a lead; includes abstract-only and retraction flags.", {"source_id": str})
     async def _source(args):
         return response(research.retrieve_source(args["source_id"]))
 
