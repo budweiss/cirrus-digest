@@ -39,5 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(raw)
 
 if __name__=='__main__':
+    import argparse
+    argparse.ArgumentParser(description=__doc__).parse_args()
     if socket.gethostname()!='cumulus2':raise SystemExit('C2-only adapter')
     ThreadingHTTPServer((BIND,8011),Handler).serve_forever()

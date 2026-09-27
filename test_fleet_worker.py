@@ -27,4 +27,9 @@ class WorkerTests(unittest.TestCase):
     with self.assertRaises(urllib.error.HTTPError) as e:urllib.request.urlopen(urllib.request.Request(url+'/health',data=b'{}'))
     self.assertEqual(e.exception.code,501);e.exception.close()
   finally:server.shutdown();t.join();server.server_close()
+class EntryPointTests(unittest.TestCase):
+ def test_help_does_not_start_server(self):
+  import subprocess,sys
+  result=subprocess.run([sys.executable,str(Path(__file__).with_name('fleet_worker.py')),'--help'],capture_output=True,text=True,timeout=5)
+  self.assertEqual(result.returncode,0);self.assertIn('usage:',result.stdout)
 if __name__=='__main__':unittest.main()
