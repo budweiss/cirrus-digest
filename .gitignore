@@ -136,3 +136,6 @@ data/halftime/
 
 # Full media transcripts, timestamps and resumable local inference artifacts.
 media/
+
+# S321: live research caches and unreviewed memory remain on the research host.
+alopecia/research-state/

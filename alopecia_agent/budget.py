@@ -50,7 +50,7 @@ def spent_this_month(creds=None) -> float:
     total = 0.0
     for row in llm_budget._read_ledger(ledger_path):
         ts = str(row.get("ts", ""))
-        if row.get("session_id") == TASK and ts.startswith(month):
+        if (row.get("session_id") == TASK or str(row.get("task", "")).startswith(TASK + ":")) and ts.startswith(month):
             total += float(row.get("cost", 0.0))
     return total
 

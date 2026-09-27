@@ -1,0 +1,119 @@
+{
+  "approval": "Buddy, September27 2026, S321: active multi-path investigation and podcast lead tracing approved. Existing cap/schedule retained; no external contact.",
+  "mission": "Investigate drivers, childhood onset and durable ways to stop follicle-directed immune attack. Generate falsifiable research hypotheses; distinguish initiation, persistence and relapse. Do not assume one identifiable trigger or infer an individual cause from age. Propose research directions, not patient interventions.",
+  "paths": [
+    {
+      "id": "thymus",
+      "question": "Thymus and self-tolerance",
+      "queries": [
+        "pm-thymus-aa",
+        "pm-apeced-alopecia",
+        "pm-cultured-thymus",
+        "pm-thymic-regeneration-autoimmune"
+      ]
+    },
+    {
+      "id": "childhood",
+      "question": "Why childhood onset? Timing, predisposition and alternatives",
+      "queries": [
+        "childhood",
+        "genetic",
+        "environment",
+        "negative"
+      ]
+    },
+    {
+      "id": "regulation",
+      "question": "Immune regulation and restoring tolerance",
+      "queries": [
+        "pm-treg-aa",
+        "pm-gd-treg-cell-therapy"
+      ]
+    },
+    {
+      "id": "follicle",
+      "question": "Failure of local follicle protection",
+      "queries": [
+        "pm-immune-privilege",
+        "genetic"
+      ]
+    },
+    {
+      "id": "memory",
+      "question": "What maintains disease after a trigger disappears?",
+      "queries": [
+        "pm-memory-t-aa",
+        "pm-vitiligo-driver-control"
+      ]
+    },
+    {
+      "id": "triggers",
+      "question": "Competing environmental/immune trigger hypotheses",
+      "queries": [
+        "environment",
+        "negative",
+        "childhood"
+      ]
+    },
+    {
+      "id": "durability",
+      "question": "Research directions toward remission after treatment withdrawal",
+      "queries": [
+        "durable",
+        "pm-treg-aa",
+        "pm-memory-t-aa"
+      ]
+    },
+    {
+      "id": "podcast-labs",
+      "question": "Follow the podcast to public lab research",
+      "queries": [
+        "pm-thymmune",
+        "pm-manley-thymus",
+        "pm-zandstra-thymic",
+        "pm-sykes-thymus",
+        "pm-lionakis-apeced"
+      ]
+    }
+  ],
+  "queries": {
+    "pm-thymus-aa": "\"alopecia areata\"[tiab] AND (thymus[tiab] OR thymic[tiab] OR thymoma[tiab] OR thymectomy[tiab] OR \"central tolerance\"[tiab] OR AIRE[tiab])",
+    "pm-apeced-alopecia": "(APECED[tiab] OR \"autoimmune polyendocrine syndrome type 1\"[tiab] OR \"autoimmune polyendocrinopathy\"[tiab]) AND alopecia[tiab]",
+    "pm-cultured-thymus": "\"cultured thymus tissue\"[tiab] OR \"thymus tissue implantation\"[tiab]",
+    "pm-treg-aa": "\"alopecia areata\"[tiab] AND (treg*[tiab] OR \"regulatory T\"[tiab] OR \"interleukin-2\"[tiab] OR \"IL-2\"[tiab] OR rezpegaldesleukin[tiab])",
+    "pm-memory-t-aa": "\"alopecia areata\"[tiab] AND (\"resident memory\"[tiab] OR \"memory T\"[tiab] OR TRM[tiab] OR CD122[tiab] OR \"IL-15\"[tiab] OR \"IL-7\"[tiab])",
+    "pm-immune-privilege": "\"immune privilege\"[tiab] AND (\"hair follicle\"[tiab] OR \"hair follicles\"[tiab])",
+    "pm-gd-treg-cell-therapy": "\"alopecia areata\"[tiab] AND (\"cell therapy\"[tiab] OR \"cell-based therapy\"[tiab] OR \"CAR-T\"[tiab] OR \"CAR Treg\"[tiab] OR gammadelta[tiab] OR \"gamma delta\"[tiab] OR \"\u03b3\u03b4\"[tiab] OR \"adoptive transfer\"[tiab])",
+    "pm-thymic-regeneration-autoimmune": "(thymus[ti] OR thymic[ti]) AND (regenerat*[tiab] OR \"induced pluripotent\"[tiab] OR iPSC[tiab] OR FOXN1[tiab]) AND autoimmun*[tiab]",
+    "pm-vitiligo-driver-control": "vitiligo[tiab] AND (\"resident memory\"[tiab] OR CD122[tiab] OR \"IL-15\"[tiab] OR \"interleukin-15\"[tiab])",
+    "pm-thymmune": "Thymmune[ad] OR \"THY-100\"[tiab]",
+    "pm-sykes-thymus": "Sykes M[au] AND (thymus[tiab] OR thymic[tiab] OR tolerance[tiab])",
+    "pm-manley-thymus": "Manley NR[au] AND (thymus[tiab] OR thymic[tiab])",
+    "pm-zandstra-thymic": "Zandstra PW[au] AND (thymus[tiab] OR thymic[tiab] OR \"T cell\"[tiab] OR \"T-cell\"[tiab])",
+    "pm-lionakis-apeced": "Lionakis MS[au] AND (APECED[tiab] OR AIRE[tiab] OR \"autoimmune polyendocrine\"[tiab])",
+    "childhood": "\"alopecia areata\" AND (childhood OR pediatric OR prepubertal) AND (onset OR risk OR trigger OR longitudinal)",
+    "genetic": "\"alopecia areata\" AND (genetic OR HLA OR autoantigen OR \"T cell receptor\")",
+    "environment": "\"alopecia areata\" AND (infection OR \"molecular mimicry\" OR microbiome OR stress) AND (causal OR longitudinal OR prospective OR mechanism)",
+    "durable": "\"alopecia areata\" AND (withdrawal OR relapse OR \"treatment free\" OR tolerance OR remission) AND (follow-up OR durability OR maintenance)",
+    "negative": "\"alopecia areata\" AND (\"no association\" OR \"negative results\" OR contradictory OR confounding)"
+  },
+  "lead_sources": [
+    {
+      "name": "Moonshots EP290",
+      "status": "lead only; prior claim review September22",
+      "url": "https://www.youtube.com/watch?v=2uiIEdmL040"
+    },
+    {
+      "name": "Podcast-derived public research watchlist",
+      "path": "alopecia/watchlist.json"
+    },
+    {
+      "name": "Historical claim ledger and caveats",
+      "path": "alopecia/research-inputs/EP290-CLAIM-LEDGER.md"
+    },
+    {
+      "name": "Historical labs register",
+      "path": "alopecia/research-inputs/LABS-REGISTER.md"
+    }
+  ]
+}

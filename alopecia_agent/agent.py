@@ -33,7 +33,7 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from alopecia_agent import budget, tools           # noqa: E402
+from alopecia_agent import budget, tools, research           # noqa: E402
 from alopecia_agent.ledger import ledger_append, STATE_DIR  # noqa: E402
 
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
@@ -52,7 +52,7 @@ def _load_creds():
     return json.loads(CREDS_PATH.read_text())
 
 
-def _build_mcp_tools(dry_run=False):
+def _build_mcp_tools(dry_run=False, no_send=False):
     @tool("read_kb", "Query the grounded Alopecia foundation KB (read-only)",
           {"question": str, "top_k": int})
     async def _read_kb(args):
@@ -142,21 +142,56 @@ def _build_mcp_tools(dry_run=False):
                               "text": tools.request_guidance(args["issue"],
                                                              args["question"])}]}
 
+    def response(value):
+        return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+
+    @tool("read_research_agenda", "Open questions, previous investigations and next path. Read this EVERY run, even with no new collector items.", {})
+    async def _agenda(args):
+        return response(research.agenda())
+
+    @tool("investigate_research_path", "Search a reviewed condition-level research path and retrieve indexed abstracts (may include reviews). path_id must come from agenda. Bounded daily network quota.", {"path_id": str})
+    async def _investigate(args):
+        return response(research.investigate(args["path_id"]))
+
+    @tool("read_research_lead", "Read historical podcast/labs notes, or fetch fixed official sources: niams research overview, unither company announcements. lead_id: podcast, labs, niams or unither. Company statements are leads, not efficacy evidence.", {"lead_id": str})
+    async def _lead(args):
+        return response(research.read_lead(args["lead_id"]))
+
+    @tool("retrieve_research_source", "Fetch a public PubMed record by source_id pmid:NUMBER cited in a lead; includes abstract-only and retraction flags.", {"source_id": str})
+    async def _source(args):
+        return response(research.retrieve_source(args["source_id"]))
+
+    @tool("follow_related_research", "Follow NCBI related articles from an already retrieved PMID. These are NOT verified citation links.", {"source_id": str})
+    async def _related(args):
+        return response(research.follow_related(args["source_id"]))
+
+    @tool("extract_research_evidence", "Have C2 MedGemma extract checked quotations from newly retrieved abstracts. source_ids_json is a JSON list of1–3 retrieved pmid IDs.", {"question": str, "source_ids_json": str})
+    async def _extract(args):
+        return response(research.extract_evidence(args["question"],json.loads(args["source_ids_json"])))
+
+    @tool("record_research_step", "Save an UNREVIEWED research proposal, not a ranking change. step_json has path_id, hypothesis, supporting/contradicting lists of {source_id,quote}, uncertainties, falsifier, next_step, solution_direction. Quotes must match retrieved sources; empty evidence needs a recorded zero-result search.", {"step_json": str})
+    async def _step(args):
+        return response(research.record_step(json.loads(args["step_json"])))
+
+    research_tools=[_agenda,_investigate,_lead,_source,_related,_extract]
     if dry_run:
-        return [_read_kb, _read_new_etiology_items, _read_hypothesis_state, _call_local, _call_council]
-    return [_read_kb, _read_new_etiology_items, _read_hypothesis_state,
-            _write_hypothesis, _mark_run_processed, _call_local, _call_council,
-            _append_to_brief_draft, _send_telegram_summary, _request_guidance]
+        return research_tools + [_read_kb, _read_new_etiology_items, _read_hypothesis_state, _call_local, _call_council]
+    writable = research_tools + [_step, _read_kb, _read_new_etiology_items,
+            _read_hypothesis_state, _call_local, _call_council, _append_to_brief_draft]
+    if no_send:
+        return writable  # Manual research: no sends, ranking writes or collector cursor.
+    return writable + [_write_hypothesis, _mark_run_processed, _send_telegram_summary, _request_guidance]
 
 
-async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
+async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool = False) -> float:
     """Runs one claude-agent-sdk reasoning pass. Returns cost in USD.
 
     Dry runs expose only read/reasoning tools. Audit, transcript and paid
     usage records are retained; project mutations and sends are unavailable.
     """
     creds = _load_creds()
-    mcp_tools = _build_mcp_tools(dry_run=dry_run)
+    mcp_tools = _build_mcp_tools(dry_run=dry_run, no_send=no_send)
+    steps_before = len(research.load(research.STATE / "steps.json", []))
     server = create_sdk_mcp_server(name="alopecia", tools=mcp_tools)
     allowed = [f"mcp__alopecia__{t.name}" for t in mcp_tools]
 
@@ -175,14 +210,20 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
         setting_sources=["project"],  # loads CLAUDE.md from cwd (APP_DIR)
     )
 
-    prompt = f"Daily run triggered because: {reason}."
+    prompt = (f"Daily run triggered because: {reason}. "
+              "Buddy approved active multi-path research on September27. Read the research agenda. "
+              "Advance ONE open path even if there are no new collector items: retrieve evidence, "
+              "use MedGemma for source extraction, challenge your hypothesis, identify a falsifier "
+              "and the next discriminating research step. Consider drivers, childhood onset, "
+              "maintenance and durable remission separately. Do not assume a single trigger. "
+              "Never present an untested proposal as a finding or individual treatment advice.")
     if dry_run:
         prompt += (" THIS IS A DRY RUN: read and reason as normal, but do "
                    "NOT call write_hypothesis, mark_run_processed, "
                    "append_to_brief_draft, or send_telegram_summary this "
                    "pass -- describe what you WOULD do instead, so Buddy "
                    "can review the reasoning before anything is written.")
-    guidance = None if dry_run else tools.consume_guidance()
+    guidance = None if (dry_run or no_send) else tools.consume_guidance()
     if guidance:
         prompt += (f" NOTE: Buddy replied to your prior request_guidance "
                    f"escalation with: \"{guidance}\" -- act on this before "
@@ -229,6 +270,8 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False) -> float:
     parts += ["", "## Final summary", "",
              final_result or "_(ResultMessage carried no .result text)_"]
     transcript_path.write_text("\n\n".join(parts) + "\n")
+    if not dry_run and len(research.load(research.STATE / "steps.json", [])) <= steps_before:
+        raise RuntimeError("active_research_step_missing; transcript saved for inspection")
     return cost, transcript_path
 
 
