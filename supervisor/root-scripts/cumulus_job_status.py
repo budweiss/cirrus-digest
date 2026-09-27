@@ -183,6 +183,17 @@ def main():
     jobs["runtimeconfig"] = {"ok": config_ok, "epoch": int(time.time()),
                              "note": "valid" if config_ok else "invalid host configuration"}
 
+    # Fleet sidecar is monitored through the existing fixed, read-only feed.
+    # A missing/stale status after installation must not look healthy.
+    if Path("/home/buddy/.config/systemd/user/fleet-controller.service").exists():
+        try:
+            import fleet_status
+            fleet = fleet_status.check()
+        except Exception:
+            fleet = {"ok": False, "reason": "fleet status adapter unavailable"}
+        jobs["fleetcontroller"] = {"ok": fleet["ok"], "epoch": int(time.time()),
+                                   "note": fleet["reason"]}
+
     # The cadence table, from the one place it is maintained. A second copy
     # would drift, and the first symptom of that drift would be the supervisor's
     # cadence check going quiet.

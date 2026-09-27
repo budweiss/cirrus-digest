@@ -124,7 +124,7 @@ def parse_claims(raw, source, dropped=None):
 
 
 def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
-            caller=complete, counter=token_count, metadata=None, report=None):
+            caller=complete, counter=token_count, metadata=None, report=None, progress=None):
     if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware', 'articles-infra'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
@@ -133,6 +133,8 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
                           json.dumps(metadata or {},sort_keys=True)).encode()).hexdigest()
     folder = Path(root) / 'media' / domain / key
     folder.mkdir(parents=True, exist_ok=True)
+    if report is not None:
+        report['folder'] = str(folder)
     (folder / 'transcript.txt').write_text(text)
     atomic_json(folder/'metadata.json', {'source':metadata or {},'domain':domain,
                  'model':MODEL,'pipeline_version':VERSION,'archived_at':datetime.now().isoformat()})
@@ -171,6 +173,8 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
                 all_claims.append(claim)
         atomic_json(state_path, {'model': MODEL, 'characters': len(text), 'sections': len(spans),
                      'completed': i+1, 'complete': False, 'spans': spans})
+        if progress is not None:
+            progress(i+1)
     if claims:
         if dropped:
             atomic_json(folder / 'dropped-claims.json', dropped)
@@ -349,6 +353,9 @@ def dispatch(payload):
     with lease(ROOT/'logs/media/worker.lock', timeout=7200):
         action = payload['action']
         if action == 'analyze':
+            if payload.get('domain') == 'articles-infra' and (ROOT/'config/fleet-media.enabled').exists():
+                from fleet_media import run_analysis
+                return run_analysis(payload)
             return analyze(payload['text'],payload['instructions'],payload.get('domain','ai'),
                            payload.get('claims',False),metadata=payload.get('metadata'))
         if action == 'prompt':

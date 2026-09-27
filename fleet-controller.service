@@ -1,0 +1,16 @@
+[Unit]
+Description=Skywarden fleet observation and qualified pilot controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/model-serving/fleet
+ExecStart=/usr/bin/python3 %h/model-serving/fleet/fleet_controller.py serve
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

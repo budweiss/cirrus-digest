@@ -254,6 +254,21 @@ def log_error_rates(now=None, log_dir=None):
     return findings
 
 
+def fleet_controller_health():
+    """Independent observation only; never fail over or restart another controller."""
+    try:
+        r = subprocess.run([
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "buddy@192.168.0.204",
+            "/usr/bin/python3 /home/buddy/cirrus-digest/fleet_status.py"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode:
+            return False
+        return json.loads(r.stdout).get("ok") is True
+    except Exception:
+        return False
+
+
 def check_and_heal():
     """Returns (status, notes:list). status: ok | repaired | degraded."""
     try:
@@ -262,6 +277,8 @@ def check_and_heal():
         state = {}
     st = launchctl_state()
     findings, repairs = [], []
+    if (PROJECT_DIR / "config/fleet-observer.enabled").exists() and not fleet_controller_health():
+        findings.append("CUMULUS fleet controller unavailable/degraded; observation only, no failover")
     try:
         from runtime_config import check_all
         check_all(Path(__file__).resolve().parent / "config")
@@ -497,6 +514,7 @@ def _selftest():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+    if sys.argv[1:] in (["selftest"], ["--selftest"]):
         sys.exit(0 if _selftest() else 1)
+    if sys.argv[1:]:raise SystemExit("usage: cirrus_watchdog.py [selftest|--selftest]")
     main()

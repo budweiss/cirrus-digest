@@ -538,6 +538,7 @@ RULES = {
 # completeness skips). If a job can write a third note meaning "ran fine,
 # produced nothing", it does not belong here — it needs a rule.
 NO_ZERO_STATE = {
+    "fleetcontroller": "Live fleet sidecar freshness and both worker identities are validated by the fixed status feed.",
     "runtimeconfig": "Host configuration is validated live by the status feed.",
     "accesscheck": "Connectivity is binary; failures and cadence are checked.",
     "intake": "A quiet inbox is valid; successful polls and failure status are checked.",
@@ -1627,6 +1628,7 @@ def selftest() -> bool:
 
 if __name__ == "__main__":
     import sys
-    if "--selftest" in sys.argv:
+    if sys.argv[1:] in (["selftest"], ["--selftest"]):
         raise SystemExit(0 if selftest() else 1)
+    if sys.argv[1:]:raise SystemExit("usage: completeness.py [selftest|--selftest]")
     print(json.dumps(check(), indent=2))
