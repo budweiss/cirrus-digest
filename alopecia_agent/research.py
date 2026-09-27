@@ -231,7 +231,7 @@ def retrieve_source(source_id):
 
 SITE_LEADS = {
     'naaf': ('https://www.naaf.org/registry/', 'registry history and public research leads, not patient-level data'),
-    'geo68801': ('https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE68801', 'public expression dataset metadata; age/onset coverage unverified'),
+    'geo68801': ('https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE68801&targ=self&form=text&view=full', 'public expression dataset metadata; age/onset coverage unverified'),
     'niams': ('https://www.niams.nih.gov/health-topics/alopecia-areata/more-info', 'institutional research overview'),
     'unither': ('https://ir.unither.com/press-releases', 'company announcements, not independent efficacy evidence'),
 }
@@ -260,6 +260,8 @@ def fetch_site(lead_id):
     if len(raw)>2_000_000:raise ValueError('source_too_large')
     parser=PageText();parser.feed(raw.decode('utf-8',errors='replace'));text=' '.join(parser.parts)
     if len(text)<100:raise ValueError('source_text_unavailable')
+    if lead_id=='geo68801' and '^SERIES = GSE68801' not in text:
+        raise ValueError('source_metadata_unavailable')
     record={'id':'site:'+lead_id,'title':kind,'url':url,'text':text[:20000],
             'publication_types':[kind],'abstract_only':False,'truncated':len(text)>20000,
             'retraction_flag':False,'fetched_utc':datetime.now(timezone.utc).isoformat()}

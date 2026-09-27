@@ -21,6 +21,20 @@ class ResearchTests(unittest.TestCase):
           'falsifier':'A controlled comparison would contradict the proposed pathway.',
           'next_step':'Retrieve a study that tests the opposite prediction.',
           'solution_direction':'Research direction only: identify a discriminating mechanism test.'}
+    def test_geo_rejects_challenge_page_and_accepts_dataset_metadata(self):
+        from unittest.mock import MagicMock
+        opener=MagicMock()
+        response=opener.open.return_value.__enter__.return_value
+        response.read.return_value=b'<html>Please verify your browser. '+b'x'*150+b'</html>'
+        with patch.object(r.urllib.request,'build_opener',return_value=opener):
+            with self.assertRaisesRegex(ValueError,'source_metadata_unavailable'):
+                r.fetch_site('geo68801')
+            self.assertFalse((self.state/'sources/site-geo68801.json').exists())
+            response.read.return_value=b'^SERIES = GSE68801\n!Series_title = Human Alopecia Areata Skin Biopsy Samples\n'+b'Public metadata '*10
+            result=r.fetch_site('geo68801')
+        self.assertIn('Human Alopecia',result['text'])
+        self.assertIn('form=text',result['url'])
+
     def test_parse_provenance_and_retraction(self):
         self.assertTrue(self.record['abstract_only']);self.assertFalse(self.record['retraction_flag'])
         retracted=XML.replace(b'Journal Article',b'Retracted Publication')
