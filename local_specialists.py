@@ -47,6 +47,13 @@ def status(name, cfg):
     spec = cfg['specialists'].get(name)
     if not spec or not spec.get('enabled'):
         raise Unavailable('specialist_not_enabled')
+    if spec.get('remote_endpoint'):
+        if spec['remote_endpoint'] != 'http://192.168.100.11:8012':
+            raise Unavailable('unapproved_medical_worker')
+        state = request(spec['remote_endpoint'], '/health')
+        if state.get('host') != 'cumulus2' or state.get('model') != spec['model'] or state.get('protocol') != 1:
+            raise Unavailable('invalid_worker_identity')
+        return state
     model = spec['model']
     installed = {r['name'] for r in request(cfg['endpoint'], '/api/tags')['models']}
     loaded = {r['name'] for r in request(cfg['endpoint'], '/api/ps')['models']}
@@ -66,6 +73,8 @@ def status(name, cfg):
 
 def generate(name, messages, *, root=ROOT, creds=None, output_schema=None):
     cfg = configuration(root)
+    if cfg['specialists'].get(name, {}).get('remote_endpoint'):
+        raise Unavailable('use_medical_evidence_route')
     directory = Path(root) / 'logs/local-specialists'
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / 'lease.lock').open('a') as lock:

@@ -132,7 +132,7 @@ translation from evidence to action, exactly as the spec requires.
 Before reviewing new etiology items, call `call_local` once with
 `task_class="medical_evidence"` and a short question about the relevant
 foundation mechanism or trigger evidence. This retrieves the foundation KB,
-loads MedGemma locally on demand, returns exact source quotes with full passage
+loads MedGemma on Cumulus2 over the dedicated private link on demand, returns exact source quotes with full passage
 context, and releases its memory. An abstention means the foundation does not
 answer the question. `SPECIALIST_UNAVAILABLE` means skip that specialist and
 use `read_kb` and the existing routine/council paths; report the degraded step in

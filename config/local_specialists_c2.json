@@ -1,10 +1,8 @@
 {
-  "host": "cumulus1",
+  "host": "cumulus2",
   "endpoint": "http://127.0.0.1:11434",
-  "protected_models": [
-    "gpt-oss:120b"
-  ],
-  "max_loaded_models": 2,
+  "protected_models": [],
+  "max_loaded_models": 1,
   "specialists": {
     "medical_evidence": {
       "enabled": true,
@@ -12,8 +10,7 @@
       "minimum_available_gib": 40,
       "num_ctx": 8192,
       "num_predict": 1024,
-      "timeout_seconds": 240,
-      "remote_endpoint": "http://192.168.100.11:8012"
+      "timeout_seconds": 240
     }
   }
 }

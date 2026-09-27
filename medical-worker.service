@@ -1,0 +1,18 @@
+[Unit]
+Description=Private C2 medical evidence worker
+After=network-online.target medical-ollama.service qwen-local.service
+Requires=medical-ollama.service
+[Service]
+ExecStart=/usr/bin/python3 %h/model-serving/medical/medical_worker.py
+WorkingDirectory=%h/model-serving/medical
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=330
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/model-serving/medical/logs
+[Install]
+WantedBy=default.target
