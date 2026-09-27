@@ -40,7 +40,8 @@ def agenda():
     cfg=catalog();steps=load(STATE/'steps.json',[])
     last={s['path_id']:s['created'] for s in steps}
     paths=sorted(cfg['paths'],key=lambda p:last.get(p['id'],''))
-    return {'mission':cfg['mission'],'paths':paths,'recent_steps':steps[-6:],
+    from alopecia_agent import notebook
+    return {'notebook':notebook.summary(),'mission':cfg['mission'],'paths':paths,'recent_steps':steps[-6:],
             'suggested_path':paths[0]['id'],'lead_sources':cfg['lead_sources'],
             'scope':'Research hypotheses, not established causes or individual treatment advice.'}
 
@@ -91,11 +92,14 @@ def get_articles(ids, origin):
     for record in records:
         record['origin']=origin
         save(STATE/'sources'/(record['id'].replace(':','-')+'.json'),record)
+        digest=hashlib.sha256(record['text'].encode()).hexdigest()
+        save(STATE/'source-versions'/(record['id'].replace(':','-')+'-'+digest+'.json'),record)
     return records
 
 
 def source(source_id):
-    if not re.fullmatch(r'(pmid:\d{1,9}|site:(niams|unither))',source_id):raise ValueError('unknown_source')
+    if not re.fullmatch(r'(pmid:\d{1,9}|site:[a-z0-9-]+)',source_id):raise ValueError('unknown_source')
+    if source_id.startswith('site:') and source_id.split(':')[1] not in SITE_LEADS:raise ValueError('unknown_source')
     p=STATE/'sources'/(source_id.replace(':','-')+'.json')
     if not p.exists():raise ValueError('source_not_retrieved')
     return load(p,{})
@@ -159,7 +163,8 @@ def extract_evidence(question, source_ids):
 
 def record_step(data):
     required={'path_id','hypothesis','supporting','contradicting','uncertainties','falsifier','next_step','solution_direction'}
-    if not isinstance(data,dict) or set(data)!=required:raise ValueError('invalid_step_fields')
+    extra={'avenue_id','compare_to','comparison','study_context'}
+    if not isinstance(data,dict) or set(data) not in (required,required|extra):raise ValueError('invalid_step_fields')
     if data['path_id'] not in {p['id'] for p in catalog()['paths']}:raise ValueError('unknown_research_path')
     for field in ['hypothesis','uncertainties','falsifier','next_step','solution_direction']:
         if not isinstance(data[field],str) or not 15<=len(data[field])<=2500:raise ValueError('incomplete_'+field)
@@ -172,9 +177,13 @@ def record_step(data):
             if not isinstance(claim,dict) or set(claim)!={'source_id','quote'}:raise ValueError('invalid_quote')
             record=source(claim['source_id']);quote=claim['quote']
             if record['retraction_flag'] or not isinstance(quote,str) or len(quote)<30 or quote not in record['text']:raise ValueError('unverified_quote')
+    if 'avenue_id' in data:
+        from alopecia_agent import notebook
+        notebook.validate_comparison(data)
     if not data['supporting'] and not data['contradicting']:
         search=load(STATE/'latest-search.json',{})
-        if search.get('path_id')!=data['path_id'] or search.get('count')!=0:raise ValueError('evidence_or_zero_result_required')
+        frontier_zero=any(s.get('avenue_id')==data.get('avenue_id') and s.get('status')=='ok' and s.get('count')==0 for s in load(STATE/'searches.json',[])) if 'avenue_id' in data else False
+        if not frontier_zero and (search.get('path_id')!=data['path_id'] or search.get('count')!=0):raise ValueError('evidence_or_zero_result_required')
     snapshots={}
     for claim in data['supporting']+data['contradicting']:
         record=source(claim['source_id'])
@@ -184,8 +193,10 @@ def record_step(data):
     STATE.mkdir(parents=True,exist_ok=True)
     with (STATE/'steps.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
-        steps=load(STATE/'steps.json',[]);steps.append(data);save(STATE/'steps.json',steps)
-    return {'saved':True,'status':data['status'],'path_id':data['path_id']}
+        steps=load(STATE/'steps.json',[]);data['step_id']='step-%05d' % (len(steps)+1);steps.append(data);save(STATE/'steps.json',steps)
+    from alopecia_agent import notebook
+    notebook.write_report()
+    return {'saved':True,'step_id':data['step_id'],'status':data['status'],'path_id':data['path_id']}
 
 
 def read_lead(lead_id):
@@ -205,6 +216,8 @@ def retrieve_source(source_id):
 
 
 SITE_LEADS = {
+    'naaf': ('https://www.naaf.org/registry/', 'registry history and public research leads, not patient-level data'),
+    'geo68801': ('https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE68801', 'public expression dataset metadata; age/onset coverage unverified'),
     'niams': ('https://www.niams.nih.gov/health-topics/alopecia-areata/more-info', 'institutional research overview'),
     'unither': ('https://ir.unither.com/press-releases', 'company announcements, not independent efficacy evidence'),
 }

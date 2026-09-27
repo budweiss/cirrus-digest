@@ -33,7 +33,7 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from alopecia_agent import budget, tools, research           # noqa: E402
+from alopecia_agent import budget, tools, research, notebook           # noqa: E402
 from alopecia_agent.ledger import ledger_append, STATE_DIR  # noqa: E402
 
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
@@ -153,7 +153,7 @@ def _build_mcp_tools(dry_run=False, no_send=False):
     async def _investigate(args):
         return response(research.investigate(args["path_id"]))
 
-    @tool("read_research_lead", "Read historical podcast/labs notes, or fetch fixed official sources: niams research overview, unither company announcements. lead_id: podcast, labs, niams or unither. Company statements are leads, not efficacy evidence.", {"lead_id": str})
+    @tool("read_research_lead", "Read historical podcast/labs notes, or fetch fixed official sources: niams research overview, unither company announcements. lead_id: podcast, labs, niams, naaf, geo68801 or unither. Company statements are leads, not efficacy evidence.", {"lead_id": str})
     async def _lead(args):
         return response(research.read_lead(args["lead_id"]))
 
@@ -169,14 +169,34 @@ def _build_mcp_tools(dry_run=False, no_send=False):
     async def _extract(args):
         return response(research.extract_evidence(args["question"],json.loads(args["source_ids_json"])))
 
-    @tool("record_research_step", "Save an UNREVIEWED research proposal, not a ranking change. step_json has path_id, hypothesis, supporting/contradicting lists of {source_id,quote}, uncertainties, falsifier, next_step, solution_direction. Quotes must match retrieved sources; empty evidence needs a recorded zero-result search.", {"step_json": str})
+    @tool("record_research_step", "Save an UNREVIEWED research proposal, not a ranking change. step_json has path_id, hypothesis, supporting/contradicting lists of {source_id,quote}, uncertainties, falsifier, next_step, solution_direction. Also include avenue_id, compare_to (prior step IDs), comparison (what changed vs earlier evidence), study_context (one per cited source: source_id, species, population, age_measure, design, temporality, cohort_key, limitations; use unknown where unreported). Quotes must match sources; empty evidence needs a recorded zero-result search.", {"step_json": str})
     async def _step(args):
         return response(research.record_step(json.loads(args["step_json"])))
 
-    research_tools=[_agenda,_investigate,_lead,_source,_related,_extract]
+    @tool("read_research_memory", "Read the persistent research notebook across all prior steps, including paused avenues and medical handoffs. query matches stored text; offset paginates. Never rely only on recent steps.", {"query": str, "offset": int})
+    async def _memory(args):
+        return response(notebook.memory(args["query"],args["offset"]))
+
+    @tool("update_research_avenue", "Create/update a hypothesis node. avenue_json fields: id (empty for new), parent_ids, question, path_id, concept_ids, construct (onset/diagnosis/severity/persistence/remission), prediction, alternative, next_action, status (active/blocked/parked/exhausted_current_sources), reason, reopen_when. IDs/concepts from memory; exhaustion needs two different successful searches and a saved comparison. Pausing never proves false.", {"avenue_json": str})
+    async def _avenue(args):
+        return response(notebook.update(json.loads(args["avenue_json"])))
+
+    @tool("search_research_avenue", "Run a focused public PubMed search linked to an avenue. Compose 1–3 concept IDs from memory, age_scope pediatric/adult/all, order relevance/date. Saves exact query, hits, novelty and failures. No arbitrary personal search terms.", {"avenue_id":str,"concept_ids_json":str,"age_scope":str,"order":str})
+    async def _search_avenue(args):
+        return response(notebook.search(args["avenue_id"],json.loads(args["concept_ids_json"]),args["age_scope"],args["order"]))
+
+    @tool("medical_research_handoff", "Research tracker sends actual retrieved passages and ONE focused question to C2 MedGemma. Saves packet before dispatch and checked evidence/rejection after. source_ids_json: 1–3 cached source IDs. No invented passages or medical conclusions.", {"avenue_id":str,"question":str,"source_ids_json":str})
+    async def _handoff(args):
+        return response(notebook.handoff(args["avenue_id"],args["question"],json.loads(args["source_ids_json"])))
+
+    @tool("consult_research_models", "Ask two independent configured foundation providers to challenge the research frontier; rotates the pool over time. Cached for seven days, monthly budget applies. Returned proposals are NOT evidence and never change rankings.", {})
+    async def _consult(args):
+        return response(notebook.consult_models())
+
+    research_tools=[_agenda,_memory,_investigate,_lead,_source,_related,_extract]
     if dry_run:
         return research_tools + [_read_kb, _read_new_etiology_items, _read_hypothesis_state, _call_local, _call_council]
-    writable = research_tools + [_step, _read_kb, _read_new_etiology_items,
+    writable = research_tools + [_step,_avenue,_search_avenue,_handoff,_consult, _read_kb, _read_new_etiology_items,
             _read_hypothesis_state, _call_local, _call_council, _append_to_brief_draft]
     if no_send:
         return writable  # Manual research: no sends, ranking writes or collector cursor.
@@ -192,6 +212,7 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
     creds = _load_creds()
     mcp_tools = _build_mcp_tools(dry_run=dry_run, no_send=no_send)
     steps_before = len(research.load(research.STATE / "steps.json", []))
+    handoffs_before = len(research.load(research.STATE / "handoffs.json", []))
     server = create_sdk_mcp_server(name="alopecia", tools=mcp_tools)
     allowed = [f"mcp__alopecia__{t.name}" for t in mcp_tools]
 
@@ -212,7 +233,7 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
 
     prompt = (f"Daily run triggered because: {reason}. "
               "Buddy approved active multi-path research on September27. Read the research agenda. "
-              "Advance ONE open path even if there are no new collector items: retrieve evidence, "
+              "Read the persistent notebook; use local research_brainstorm for alternative ideas. Advance ONE active avenue even if there are no new items: compare earlier studies, save a structured comparison with avenue_id and study_context, send a medical_research_handoff with actual sources, "
               "use MedGemma for source extraction, challenge your hypothesis, identify a falsifier "
               "and the next discriminating research step. Consider drivers, childhood onset, "
               "maintenance and durable remission separately. Do not assume a single trigger. "
@@ -272,6 +293,12 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
     transcript_path.write_text("\n\n".join(parts) + "\n")
     if not dry_run and len(research.load(research.STATE / "steps.json", [])) <= steps_before:
         raise RuntimeError("active_research_step_missing; transcript saved for inspection")
+    new_steps=research.load(research.STATE / "steps.json", [])[steps_before:]
+    if not dry_run and not any(s.get("avenue_id") and s.get("comparison") for s in new_steps):
+        raise RuntimeError("research_notebook_comparison_missing")
+    packets=research.load(research.STATE / "handoffs.json", [])[handoffs_before:]
+    if not dry_run and any(s.get("supporting") or s.get("contradicting") for s in new_steps) and not packets:
+        raise RuntimeError("research_medical_handoff_missing")
     return cost, transcript_path
 
 

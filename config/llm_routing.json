@@ -23,6 +23,17 @@
         "kimi"
       ],
       "max_cloud_providers": 2
+    },
+    "research_ideas": {
+      "cloud_order": [
+        "anthropic",
+        "gemini",
+        "kimi",
+        "openai",
+        "grok",
+        "deepseek"
+      ],
+      "max_cloud_providers": 2
     }
   },
   "tasks": {
@@ -103,6 +114,7 @@
     "privacy:triage": "research",
     "halftime:catalogue:variety": "research",
     "halftime:catalogue:for_hire_music": "research",
-    "halftime:catalogue:program": "research"
+    "halftime:catalogue:program": "research",
+    "alopecia-agent:brainstorm": "research_ideas"
   }
 }

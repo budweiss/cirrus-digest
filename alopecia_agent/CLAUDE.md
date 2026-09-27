@@ -180,7 +180,7 @@ local/council tools; an unreadable accounting configuration blocks a paid run.
 ## S321 — active research mandate, approved September27
 
 Do not stop merely because the daily collector has nothing new. Every daily run
-reads `read_research_agenda` and advances one least-recently-investigated path,
+reads `read_research_agenda` and the persistent notebook, then advances the current active avenue,
 or explicitly records the specific source/budget barrier. Existing05:50schedule
 and paid caps remain; this is one coordinator, not a set of new paid daemons.
 
@@ -200,12 +200,11 @@ queries, contact, enrolment or experimentation. Historical podcast verdicts must
 be checked against retrieved primary sources before carrying them forward.
 
 For ONE path per run:
-1. Read previous steps and select the agenda's least-covered path, unless a
+1. Read previous steps and follow the notebook's active focus, unless a
    concrete new finding justifies another. Follow the recorded next step; do not
    repeat the same generic summary. Search also for disconfirming evidence.
 2. Retrieve public papers behind a podcast/lab lead or related paper, preserving
-   dates, source identity, abstract-only limits and retraction flags. Start with
-   the podcast/thymus route, then cover childhood onset and other control points.
+   dates, source identity, abstract-only limits and retraction flags. Continue existing investigations. S322 begins with the age-distribution/ascertainment comparison; the podcast remains one lead among competing paths.
 3. Use MedGemma on fetched source IDs. Ask one focused factual extraction question at a time. Rejected output is not evidence: report the rejection, do not repeat the same request, and retain the source limits. It extracts evidence; it does not determine
    causation. Empty sources and absent reported values mean abstention. Never
    convert animal/transplant/other-disease results into demonstrated AA effects.
@@ -226,3 +225,65 @@ For ONE path per run:
 Dry runs may populate retrieval caches and network-accounting state but cannot
 record research steps, write hypotheses, advance cursors, append brief drafts or
 send messages. Initial verification uses no-send mode: it may save an unreviewed step and brief draft but cannot send, change rankings, or advance cursors.
+
+
+## S322 — dedicated research tracker and medical handoff
+
+Buddy authorized persistent brainstorming, foundation-model consultation and a
+specialty research tracker. The tracker is the notebook tool set, called within
+this coordinator; no separate paid daemon. It retains the evidence and questions
+between daily runs. Keep digging into a focused avenue until its next useful test
+is blocked, the available sources are exhausted, or evidence calls for revising
+it. Then explicitly pause it and branch to another avenue. Do not repeat the same
+summary or treat more papers as stronger evidence. Model ideas are not facts.
+
+Daily loop within the existing budget/15 turns:
+1. Read agenda and `read_research_memory`, querying an avenue/source/topic across
+   ALL saved steps (paginate if needed). Read paused and contradictory work before
+   inventing a new idea. Use `call_local(task_class="research_brainstorm")` to
+   propose alternatives, possible connections, cheapest discriminating next tests
+   and duplicate-cohort checks. Local ideas can inform a draft, not a rank change.
+2. `search_research_avenue` assembles focused searches from public concepts.
+   Preserve the exact query, IDs already seen, new sources and failures. Distinct
+   articles using the same cohort are not independent replications. Fewer new IDs
+   may indicate query saturation; it does not establish a biological dead end.
+3. For new sources call `medical_research_handoff`: tracker saves the question,
+   source IDs/content hashes and source versions, sends actual passages to C2
+   MedGemma, then saves verified quotes/abstention/rejection. Treat its answer as
+   extraction only. The returned packet is the report back to this coordinator;
+   subsequent memory reads expose it for cross-study comparisons. Failed calls
+   leave an explicit blocked packet; do not infer missing evidence from a failure.
+4. Save a research step INCLUDING avenue_id, compare_to (previous step IDs; empty
+   only if no prior relevant step), comparison (what actually changed), and
+   study_context for EACH cited source: source_id, species, population,
+   age_measure, design, temporality, cohort_key, limitations. Say UNKNOWN rather
+   than infer unreported fields. Mark these annotations as unreviewed. Compare
+   onset vs diagnosis, severity vs persistence, prospective vs retrospective,
+   human vs model evidence, and sample/selection differences. Do not equate a
+   model's agreement with corroboration. Keep contrary and null findings visible.
+5. Update the avenue's next_action when evidence changes it. Create at most two
+   genuinely new branches per run using update_research_avenue, linking parent_ids.
+   active = actionable next test; blocked = data/access/method missing;
+   parked = lower priority/needs reconsideration; exhausted_current_sources =
+   at least two distinct searches plus saved comparison have no useful next step.
+   NONE means proven false. Every pause requires a reason and a specific reopen
+   condition. Unknown/access-limited is NOT "no data exists." Reopen when new
+   evidence, access, a better test or another avenue changes the comparison.
+6. `consult_research_models` rotates TWO configured foundation providers per
+   review, cached for seven days, within the monthly cap. It asks for independent
+   challenges and overlooked avenues; full pool can participate over successive
+   reviews. It cannot change rankings. Use it when due or a serious disagreement
+   needs review; do not call the older council for routine brainstorming as well.
+   Keep the existing council + Buddy approval for proposed ranking changes.
+7. Tracker writes `alopecia/research-state/progress.md`, with avenue status,
+   comparisons, next steps and medical packet status. Append a concise unreviewed
+   progress section to the existing brief DRAFT. This is not an automatic email.
+   Each ordinary completed run must save a notebook-linked comparison; source or
+   budget failures remain explicitly recorded, never silently called findings.
+
+First discriminating question: do independent age-specific data support a unique
+8–12 onset window, after separating recognition/diagnosis and referral selection?
+Compare PMID35385065 (PEDSnet EHR incidence), PMID29334143 (self-enrolled registry),
+and independent cohorts. They do not identify the cause in a particular person.
+The general goal remains a testable path to durable remission, not a promise that
+LLMs can establish a cure without empirical research and clinical validation.

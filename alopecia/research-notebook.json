@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "approval": "Buddy S322: persistent research tracker, local synthesis, diversified foundation-model challenges and medical-specialist handoffs.",
+  "concepts": {
+    "onset": "onset OR incidence OR \"first symptoms\"",
+    "diagnosis": "diagnosis OR ascertainment OR referral OR \"diagnostic delay\"",
+    "age": "\"age at onset\" OR \"age of onset\" OR \"age-specific\" OR prepubertal",
+    "puberty": "puberty OR pubertal OR adrenarche OR \"Tanner stage\" OR androgen",
+    "genetics": "genetic OR HLA OR heritability OR polygenic OR twins",
+    "epigenetics": "epigenetic OR methylation OR penetrance",
+    "atopy": "atopy OR atopic OR eczema OR allergy OR asthma",
+    "infection": "infection OR viral OR microbial OR \"molecular mimicry\"",
+    "stress": "stress OR neuroimmune OR cortisol OR \"substance P\"",
+    "microbiome": "microbiome OR microbiota OR \"skin barrier\"",
+    "privilege": "\"immune privilege\" OR \"antigen presentation\" OR ULBP OR NKG2D",
+    "thymus": "thymus OR thymic OR AIRE OR thymoma OR TREC",
+    "regulation": "\"regulatory T\" OR Treg OR tolerance OR IL2 OR CTLA4",
+    "memory": "\"resident memory\" OR \"memory T\" OR IL15 OR IL7 OR CD122",
+    "remission": "remission OR relapse OR withdrawal OR \"treatment free\" OR durability",
+    "cohort": "cohort OR longitudinal OR prospective OR population OR registry",
+    "controls": "control OR matched OR comparator OR confounding",
+    "negative": "\"no association\" OR \"no difference\" OR \"null result\" OR \"negative result\"",
+    "clonality": "clonotype OR clonality OR \"T cell receptor\" OR repertoire",
+    "follicle": "\"hair cycle\" OR anagen OR follicle OR melanocyte",
+    "cytokines": "interferon OR IFNG OR JAK OR STAT OR cytotoxic",
+    "severity": "severity OR universalis OR totalis OR persistence",
+    "autoimmunity": "autoimmune OR thyroid OR vitiligo OR diabetes",
+    "early": "\"new onset\" OR \"newly diagnosed\" OR pretreatment OR untreated",
+    "population": "epidemiology OR incidence OR population OR prevalence",
+    "dataset": "transcriptome OR \"single cell\" OR \"gene expression\" OR biobank"
+  },
+  "seeds": [
+    {
+      "id": "a-age-pattern",
+      "parent_ids": [],
+      "question": "Do onset and diagnosis show a reproducible age-8-to-12 pattern, or a broader childhood distribution?",
+      "path_id": "childhood",
+      "concept_ids": [
+        "age",
+        "population"
+      ],
+      "construct": "onset",
+      "prediction": "A specific age window should recur across independent cohorts using comparable onset definitions.",
+      "alternative": "Referral, recall and diagnostic coding can create apparent timing patterns.",
+      "next_action": "Compare PEDSnet PMID35385065 with Registry PMID29334143; preserve denominators and age definitions.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-puberty-window",
+      "parent_ids": [],
+      "question": "Does developmental stage explain onset timing better than chronological age?",
+      "path_id": "childhood",
+      "concept_ids": [
+        "puberty",
+        "onset"
+      ],
+      "construct": "onset",
+      "prediction": "An association with measured developmental stage should survive sex and referral adjustment.",
+      "alternative": "Chronological age may be incidental; prepubertal cases challenge a necessary puberty mechanism.",
+      "next_action": "Search for measured puberty or adrenal-development markers; do not infer them from age ten.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-genetic-threshold",
+      "parent_ids": [],
+      "question": "Could inherited susceptibility interact with accumulated exposures rather than one birthday trigger?",
+      "path_id": "triggers",
+      "concept_ids": [
+        "genetics",
+        "age"
+      ],
+      "construct": "onset",
+      "prediction": "Age-at-onset associations should differ from susceptibility-only associations.",
+      "alternative": "Familial ascertainment and shared environment may explain an apparent genetic timing effect.",
+      "next_action": "Compare family/twin and population designs, marking whether onset age is actually measured.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-atopy-timing",
+      "parent_ids": [],
+      "question": "Does atopy precede AA onset, or correlate mainly with severity and care-seeking?",
+      "path_id": "regulation",
+      "concept_ids": [
+        "atopy",
+        "cohort"
+      ],
+      "construct": "onset",
+      "prediction": "Longitudinal pre-onset atopy would be more informative than contemporaneous comorbidity.",
+      "alternative": "Shared genetics, referral intensity and reverse timing can explain an association.",
+      "next_action": "Compare PMID39152872 with contrary PMID21692870; inspect age, design and chronology.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-exposure-window",
+      "parent_ids": [],
+      "question": "Do exposures before first hair loss distinguish cases from appropriate controls?",
+      "path_id": "triggers",
+      "concept_ids": [
+        "infection",
+        "cohort"
+      ],
+      "construct": "onset",
+      "prediction": "Prospectively recorded exposure timing should precede onset and exceed background exposure.",
+      "alternative": "Recall bias, common childhood infections, or consequences of disease can mimic a trigger.",
+      "next_action": "Seek controlled temporal evidence; compare stress, microbial and infectious alternatives without assuming any caused disease.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-follicle-context",
+      "parent_ids": [],
+      "question": "Could local follicle vulnerability change the threshold for an immune attack?",
+      "path_id": "follicle",
+      "concept_ids": [
+        "privilege",
+        "follicle"
+      ],
+      "construct": "onset",
+      "prediction": "Local pre-onset changes would distinguish initiating vulnerability from consequences of inflammation.",
+      "alternative": "Adult diseased-tissue changes may reflect established disease and cannot identify a childhood trigger.",
+      "next_action": "Review human vs model-system evidence and available public expression-dataset metadata.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    },
+    {
+      "id": "a-persistence-switch",
+      "parent_ids": [],
+      "question": "What maintains follicle-directed immunity after an initiating exposure is gone?",
+      "path_id": "memory",
+      "concept_ids": [
+        "memory",
+        "remission"
+      ],
+      "construct": "persistence",
+      "prediction": "Evidence that separates initiation from persistent immune memory could change durability research priorities.",
+      "alternative": "Ongoing exposure or incomplete suppression could also explain relapse.",
+      "next_action": "Compare relapse/withdrawal findings with immune-memory evidence and note adult-to-child applicability limits.",
+      "status": "active",
+      "reason": "S322 research question; not a supported causal conclusion.",
+      "reopen_when": "Revisit when direct evidence, a different population or a new discriminating method changes this question."
+    }
+  ],
+  "source_sites": [
+    {
+      "id": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/",
+      "use": "Primary records and abstracts; not all full texts."
+    },
+    {
+      "id": "europepmc",
+      "url": "https://europepmc.org/RestfulWebService",
+      "use": "Verified public API for literature and available open-access full text; access is not comprehensive."
+    },
+    {
+      "id": "naaf",
+      "url": "https://www.naaf.org/registry/",
+      "use": "Registry publications and research leads; original registry2000\u20132015 is closed. No patient-level access assumed."
+    },
+    {
+      "id": "geo",
+      "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE68801",
+      "use": "Public scalp-biopsy expression dataset metadata. Age/onset metadata and confounding must be checked before analysis."
+    },
+    {
+      "id": "gwas",
+      "url": "https://www.ebi.ac.uk/gwas/",
+      "use": "Genetic association leads, not onset or causal proof; a web search showing zero results is not an absence finding."
+    },
+    {
+      "id": "trials",
+      "url": "https://clinicaltrials.gov/",
+      "use": "Registered designs/results via existing collector; selected trial populations do not estimate general onset age."
+    },
+    {
+      "id": "niams",
+      "url": "https://www.niams.nih.gov/health-topics/alopecia-areata/more-info",
+      "use": "Institutional research overview, not a primary cohort."
+    }
+  ]
+}

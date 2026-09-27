@@ -187,12 +187,13 @@ def call_local(task_class: str, prompt: str) -> str:
                 result += ": " + str(exc)[:100]
             _log("action", "call_local", task_class, result)
             return result
-    system = ("You are a research-literature assistant helping cluster and "
+    brainstorming = task_class == "research_brainstorm"
+    system = ("Generate and challenge tentative research hypotheses, never medical findings or advice. Compare the saved evidence, consider alternatives and discriminating tests. Do not invent citations. " if brainstorming else "") + ("You are a research-literature assistant helping cluster and "
              "extract claims from alopecia areata research items. Be terse "
              "and factual.")
     try:
         result, tier = llm_providers.call_local_first(
-            system, prompt, creds, max_tokens=1024, task="alopecia-agent")
+            system, prompt, creds, max_tokens=2048 if brainstorming else 1024, task="alopecia-agent")
     except llm_providers.ProviderError as e:
         result, tier = f"ERROR: {e}", "none"
     _log("action", "call_local", f"{task_class}: {prompt[:80]}", f"[{tier}] {result[:120]}")
