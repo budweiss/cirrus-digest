@@ -44,12 +44,12 @@ class SpecialistTests(unittest.TestCase):
             return {'done': True}
         raise AssertionError(path)
 
-    def generate(self):
+    def generate(self, **kwargs):
         with patch.object(specialists, 'configuration', return_value=self.cfg), \
              patch.object(specialists, 'request', side_effect=self.api), \
              patch.object(specialists, 'available_gib', return_value=44), \
              patch('llm_budget.record_call'):
-            return specialists.generate('medical_evidence', [], root=self.root)
+            return specialists.generate('medical_evidence', [], root=self.root, **kwargs)
 
     def test_success_releases_only_specialist(self):
         self.generate()
@@ -104,6 +104,25 @@ class SpecialistTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             medical.validate(raw.replace('S1', 'S99'), source)
         self.assertTrue(medical.validate('{"claims":[],"abstain":true}', {})['abstain'])
+
+    def test_evidence_schema_reaches_backend(self):
+        schema = medical.evidence_schema(['S1', 'S2'])
+        self.generate(output_schema=schema)
+        body = next(body for path, body in self.calls if path == '/api/chat')
+        self.assertEqual(body['format'], schema)
+        self.assertEqual(body['format']['required'], ['claims', 'abstain'])
+        self.assertEqual(body['format']['properties']['claims']['items']['properties']['source_id']['enum'], ['S1', 'S2'])
+
+    def test_medical_route_requests_constrained_output(self):
+        hit = {'text': 'This observational study does not establish causation.', 'source': 'fixture', 'section': 'limits', 'similarity': .8}
+        with patch.object(medical.alopecia_kb, 'query', return_value=[hit]), \
+             patch.object(specialists, 'generate', return_value='{"claims":[],"abstain":true}') as generate, \
+             patch.object(specialists, 'configuration', return_value=self.cfg):
+            result = json.loads(medical.extract('What is established?', root=self.root))
+        self.assertTrue(result['abstain'])
+        schema = generate.call_args.kwargs['output_schema']
+        self.assertEqual(schema['properties']['claims']['items']['properties']['source_id']['enum'], ['S1'])
+        self.assertFalse(schema['additionalProperties'])
 
     def test_no_hits_never_loads_model(self):
         with patch.object(medical.alopecia_kb, 'query', return_value=[]), \

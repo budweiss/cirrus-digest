@@ -13,6 +13,19 @@ Preserve uncertainty and study limitations. If sources do not answer the
 question return {"claims": [], "abstain": true}. Do not paraphrase quotes.'''
 
 
+def evidence_schema(source_ids):
+    """Constrain decoding; literal-source validation still decides acceptance."""
+    return {'type': 'object', 'additionalProperties': False,
+            'properties': {
+                'claims': {'type': 'array', 'maxItems': 3, 'items': {
+                    'type': 'object', 'additionalProperties': False,
+                    'properties': {'source_id': {'type': 'string', 'enum': list(source_ids)},
+                                   'quote': {'type': 'string', 'minLength': 30, 'maxLength': 600}},
+                    'required': ['source_id', 'quote']}},
+                'abstain': {'type': 'boolean'}},
+            'required': ['claims', 'abstain']}
+
+
 def validate(raw, passages):
     data = json.loads(raw)
     claims = data.get('claims')
@@ -41,7 +54,7 @@ def extract(question, *, root=local_specialists.ROOT, creds=None):
     raw = local_specialists.generate('medical_evidence', [
         {'role': 'system', 'content': SYSTEM},
         {'role': 'user', 'content': json.dumps({'question': question, 'passages': passages})}
-    ], root=root, creds=creds)
+    ], root=root, creds=creds, output_schema=evidence_schema(passages))
     data = validate(raw, passages)
     # Return full supporting context so downstream review can see omissions.
     data['sources'] = passages

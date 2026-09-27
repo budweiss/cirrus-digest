@@ -64,7 +64,7 @@ def status(name, cfg):
             'available_gib': round(free, 2), 'ready': reason is None, 'reason': reason}
 
 
-def generate(name, messages, *, root=ROOT, creds=None):
+def generate(name, messages, *, root=ROOT, creds=None, output_schema=None):
     cfg = configuration(root)
     directory = Path(root) / 'logs/local-specialists'
     directory.mkdir(parents=True, exist_ok=True)
@@ -85,7 +85,7 @@ def generate(name, messages, *, root=ROOT, creds=None):
         try:
             result = request(cfg['endpoint'], '/api/chat', {
                 'model': model, 'messages': messages, 'stream': False,
-                'format': 'json', 'keep_alive': 0,
+                'format': output_schema if output_schema is not None else 'json', 'keep_alive': 0,
                 'options': {'num_ctx': spec['num_ctx'], 'num_predict': spec['num_predict'], 'temperature': 0}
             }, timeout=spec['timeout_seconds'])
             import llm_budget
