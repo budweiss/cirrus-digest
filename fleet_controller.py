@@ -88,8 +88,12 @@ def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
 
 def render(data):
     esc=lambda x:html.escape(str(x))
-    rows=''.join('<tr>'+''.join('<td>'+esc(r.get(k,''))+'</td>' for k in ('project','worker','state','stage','progress','attempt','reason'))+'</tr>' for r in data['queue']['jobs'])
-    return '<!doctype html><meta charset="utf-8"><title>Cumulus supervision</title><style>body{font:16px system-ui;margin:40px;background:#f5f7fa;color:#152239}table{border-collapse:collapse;width:100%;background:white}td,th{padding:12px;text-align:left;border-bottom:1px solid #ccd}pre{white-space:pre-wrap}</style><h1>Cumulus supervision</h1><p>'+esc(data['mode'])+'</p><p>Observed UTC: '+time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(data['observed']))+'</p><table><tr><th>Project</th><th>Worker</th><th>State</th><th>Stage</th><th>Progress</th><th>Attempt</th><th>Reason</th></tr>'+rows+'</table><h2>Workers</h2><pre>'+esc(json.dumps(data['workers'],indent=2))+'</pre><h2>Unresolved observations</h2><pre>'+esc(json.dumps(data['errors']+data['unsettled'],indent=2))+'</pre><h2>Hermes proposal reviews</h2><pre>'+esc(json.dumps(data.get('hermes',{}),indent=2))+'</pre><p>Other production jobs remain observed-only; Skywarden retains their recovery authority.</p>'
+    rows=''
+    for r in data['queue']['jobs']:
+        worker=next((w for w in data['workers'] if w['worker']==r['worker']),{})
+        row=dict(r,model=worker.get('model','unobserved'),scheduler='CIRRUS learnwatch 01:15 ET' if r['project']=='articles-infra' else 'explicit no-delivery pilot',host='cumulus1 coordinator',created_utc=time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(r['created'])))
+        rows+='<tr>'+''.join('<td>'+esc(row.get(k,''))+'</td>' for k in ('project','scheduler','host','worker','model','state','stage','progress','attempt','reason','created_utc'))+'</tr>'
+    return '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="30"><title>Cumulus supervision</title><style>body{font:16px system-ui;margin:40px;background:#f5f7fa;color:#152239}table{border-collapse:collapse;width:100%;background:white}td,th{padding:12px;text-align:left;border-bottom:1px solid #ccd}pre{white-space:pre-wrap}</style><h1>Cumulus supervision</h1><p>'+esc(data['mode'])+'</p><p>Observed UTC: '+time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(data['observed']))+'</p><table><tr><th>Project</th><th>Scheduler</th><th>Execution host</th><th>Worker</th><th>Observed model</th><th>State</th><th>Stage</th><th>Progress</th><th>Attempt</th><th>Reason</th><th>Submitted UTC</th></tr>'+rows+'</table><h2>Workers</h2><pre>'+esc(json.dumps(data['workers'],indent=2))+'</pre><h2>Unresolved observations</h2><pre>'+esc(json.dumps(data['errors']+data['unsettled'],indent=2))+'</pre><h2>Recent admission and recovery events</h2><pre>'+esc(json.dumps(data['queue']['events'],indent=2))+'</pre><h2>Hermes proposal reviews</h2><pre>'+esc(json.dumps(data.get('hermes',{}),indent=2))+'</pre><p>Other production jobs remain observed-only; Skywarden retains their recovery authority.</p>'
 
 
 class HermesReview:
@@ -175,7 +179,8 @@ def main():
         review=HermesReview(args.state)
         while not stop:
             data=snapshot(q)
-            try:review.tick(data)
+            try:
+                if args.action=="serve":review.tick(data)
             except Exception as exc:
                 atomic(args.state/'hermes-error.json',{'observed':time.time(),'error':type(exc).__name__})
             data['hermes']={'enabled':(args.state/'hermes.enabled').exists(),
