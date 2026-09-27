@@ -7,6 +7,8 @@
       "question": "Thymus and self-tolerance",
       "queries": [
         "pm-thymus-aa",
+        "thymic-output",
+        "thymoma-clonality",
         "pm-apeced-alopecia",
         "pm-cultured-thymus",
         "pm-thymic-regeneration-autoimmune"
@@ -95,7 +97,9 @@
     "genetic": "\"alopecia areata\" AND (genetic OR HLA OR autoantigen OR \"T cell receptor\")",
     "environment": "\"alopecia areata\" AND (infection OR \"molecular mimicry\" OR microbiome OR stress) AND (causal OR longitudinal OR prospective OR mechanism)",
     "durable": "\"alopecia areata\" AND (withdrawal OR relapse OR \"treatment free\" OR tolerance OR remission) AND (follow-up OR durability OR maintenance)",
-    "negative": "\"alopecia areata\" AND (\"no association\" OR \"negative results\" OR contradictory OR confounding)"
+    "negative": "\"alopecia areata\" AND (\"no association\" OR \"negative results\" OR contradictory OR confounding)",
+    "thymic-output": "\"alopecia areata\" AND (TREC OR \"T-cell receptor excision circles\" OR \"T cell receptor excision circles\" OR \"recent thymic emigrants\" OR \"thymic output\")",
+    "thymoma-clonality": "(thymoma OR thymic) AND \"alopecia areata\" AND (clonotype OR clonality OR \"T cell receptor\" OR repertoire OR sequencing)"
   },
   "lead_sources": [
     {
