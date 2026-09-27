@@ -12,7 +12,9 @@ Return JSON {"claims": [{"source_id": "S1", "quote": "exact verbatim passage"}],
 Preserve uncertainty and study limitations. If sources do not answer the
 question return {"claims": [], "abstain": true}. A statement that a requested
 value was not reported is missing evidence: return empty claims and abstain,
-rather than quoting that statement as an answer. Do not paraphrase quotes.'''
+rather than quoting that statement as an answer. Do not paraphrase quotes. The abstain flag MUST be false whenever claims are
+nonempty. If you abstain for any reason, claims MUST be an empty array. Never
+return a quotation together with abstain=true.'''
 
 
 def evidence_schema(source_ids):

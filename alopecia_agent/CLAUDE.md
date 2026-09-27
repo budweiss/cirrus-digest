@@ -206,7 +206,7 @@ For ONE path per run:
 2. Retrieve public papers behind a podcast/lab lead or related paper, preserving
    dates, source identity, abstract-only limits and retraction flags. Start with
    the podcast/thymus route, then cover childhood onset and other control points.
-3. Use MedGemma on fetched source IDs. It extracts evidence; it does not determine
+3. Use MedGemma on fetched source IDs. Ask one focused factual extraction question at a time. Rejected output is not evidence: report the rejection, do not repeat the same request, and retain the source limits. It extracts evidence; it does not determine
    causation. Empty sources and absent reported values mean abstention. Never
    convert animal/transplant/other-disease results into demonstrated AA effects.
 4. Develop a tentative causal chain and a competing explanation. State which

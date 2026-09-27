@@ -119,6 +119,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, extract(data))
         except specialists.Unavailable:
             self.reply(503, {'error': 'specialist_unavailable'})
+        except ValueError as exc:
+            known = {'invalid_evidence_schema', 'inconsistent_abstention', 'unsupported_quote'}
+            reason = str(exc) if str(exc) in known else 'invalid_evidence_output'
+            self.reply(422, {'error': 'evidence_rejected', 'reason': reason})
         except Exception:
             self.reply(503, {'error': 'medical_evidence_failed'})
 

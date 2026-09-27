@@ -106,6 +106,8 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(code('/evidence',b'{}'),400)
                 extract.assert_not_called()
                 self.assertEqual(code('/evidence',json.dumps(DATA).encode()),200)
+                extract.side_effect=ValueError('inconsistent_abstention')
+                self.assertEqual(code('/evidence',json.dumps(DATA).encode()),422)
         finally:server.shutdown();thread.join();server.server_close()
 
 if __name__=='__main__':unittest.main()

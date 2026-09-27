@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -138,9 +139,20 @@ def extract_evidence(question, source_ids):
     if any(r['retraction_flag'] for r in records):raise ValueError('retracted_evidence_refused')
     passages={'S'+str(i+1):{'text':r['text'][:5000]} for i,r in enumerate(records) if r['text']}
     if not passages:return {'claims':[],'abstain':True,'reason':'no_abstract_text'}
-    result=specialist.request('http://192.168.100.11:8012','/evidence',{'question':question,'passages':passages},timeout=300)
+    try:
+        result=specialist.request('http://192.168.100.11:8012','/evidence',{'question':question,'passages':passages},timeout=300)
+    except urllib.error.HTTPError as exc:
+        if exc.code!=422:raise
+        try:rejection=json.loads(exc.read(2048))
+        finally:exc.close()
+        reasons={'invalid_evidence_schema','inconsistent_abstention','unsupported_quote','invalid_evidence_output'}
+        if rejection.get('error')!='evidence_rejected' or rejection.get('reason') not in reasons:raise ValueError('invalid_rejection_receipt')
+        audit={'status':'rejected','reason':rejection['reason'],'source_ids':source_ids,'at':datetime.now(timezone.utc).isoformat()}
+        save(STATE/'latest-extraction.json',audit)
+        return dict(audit,claims=[],abstain=True,instruction='Model output rejected; no accepted evidence. Do not retry the same question. Retain the limitation; use one focused question on a later investigation.')
     if result.get('host')!='cumulus2' or result.get('model')!='medgemma-text:27b-q8_0' or result.get('unloaded') is not True:raise ValueError('invalid_worker_receipt')
     evidence=medical.validate(json.dumps(result['evidence']),passages)
+    save(STATE/'latest-extraction.json',{'status':'validated','source_ids':source_ids,'at':datetime.now(timezone.utc).isoformat(),'model':result['model'],'unloaded':True,'claim_count':len(evidence['claims']),'abstain':evidence['abstain']})
     evidence.update(source_mapping={'S'+str(i+1):r['id'] for i,r in enumerate(records)},scope='Retrieved source text only; preserve abstract-only, institutional and company-statement distinctions',model=result['model'])
     return evidence
 

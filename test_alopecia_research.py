@@ -73,6 +73,16 @@ class ResearchTests(unittest.TestCase):
             evidence=r.extract_evidence('What was shown?',['pmid:123'])
         self.assertEqual(request.call_args.args[2]['passages']['S1']['text'],QUOTE)
         self.assertEqual(evidence['source_mapping']['S1'],'pmid:123')
+    def test_rejected_extraction_is_not_outage_or_accepted_evidence(self):
+        import io,urllib.error,local_specialists
+        body=io.BytesIO(b'{"error":"evidence_rejected","reason":"inconsistent_abstention"}')
+        error=urllib.error.HTTPError('http://worker',422,'rejected',{},body)
+        with patch.object(local_specialists,'request',side_effect=error) as request:
+            result=r.extract_evidence('One question',['pmid:123'])
+        self.assertEqual(request.call_count,1)
+        self.assertEqual(result['status'],'rejected');self.assertEqual(result['claims'],[])
+        self.assertEqual(r.load(self.state/'latest-extraction.json',{})['reason'],'inconsistent_abstention')
+
     def test_site_redirect_and_script_filter(self):
         import urllib.request
         handler=r.SameHostRedirect()
