@@ -2,6 +2,7 @@
 import json
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -13,7 +14,25 @@ def merge_findings(previous, body):
     marker = '<!-- yt-batch:' + hashlib.sha256(body.encode()).hexdigest() + ' -->'
     if marker in previous or previous == body or previous.startswith(body + '\n'):
         return previous
-    batch = marker + '\n' + body
+    # A crash between findings and cursor writes can replay a *changed* batch.
+    # Deduplicate only identical rendered video sections; changed claims/errors
+    # remain separate evidence rather than being discarded by video ID alone.
+    section_rx = re.compile(r'^## .+?(?=^## |^# YT-WATCH findings|^<!-- yt-batch:|\Z)',
+                            re.MULTILINE | re.DOTALL)
+    known = {match.group(0).rstrip() for match in section_rx.finditer(previous)}
+    omitted = [0]
+    def keep_section(match):
+        section = match.group(0)
+        if section.rstrip() in known:
+            omitted[0] += 1
+            return ''
+        known.add(section.rstrip())
+        return section
+    fresh = section_rx.sub(keep_section, body)
+    if omitted[0]:
+        fresh = ('_%d identical video section(s) from this batch already appear above; '
+                  'batch totals describe the original attempt._\n\n' % omitted[0]) + fresh
+    batch = marker + '\n' + fresh
     return previous.rstrip() + '\n\n' + batch if previous else batch
 
 
