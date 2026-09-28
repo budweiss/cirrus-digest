@@ -134,6 +134,15 @@ class Corrections(unittest.TestCase):
         with patch.object(completeness,'supervisor_feed',return_value=None),patch.object(tools,'ledger_append'):
             self.assertFalse(json.loads(tools.check_service_status('fleetcontroller'))['ok'])
 
+    def test_session_ticket_owner_is_cowork_not_builder(self):
+        from types import SimpleNamespace
+        result=SimpleNamespace(returncode=0,stdout=json.dumps({'id':'example-ticket','status':'session','tier':1}),stderr='')
+        with patch.object(tools.subprocess,'run',return_value=result),patch.object(tools,'ledger_append'), \
+             patch.object(tools,'INCIDENT_ACTIONS',[]):
+            tools.file_repair_ticket('cirrus-billsnow.service','diagnosed failure with sufficient evidence and an existing ticket')
+            self.assertEqual(tools.INCIDENT_ACTIONS[-1]['owner'],'Cowork')
+            self.assertEqual(tools.INCIDENT_ACTIONS[-1]['ticket_id'],'example-ticket')
+
     def test_new_coverage_is_explicit(self):
         keys=['foundationrenewalcumulus','foundationrenewal','immaculatewednesdayreport']
         self.assertEqual(completeness.unmonitored_jobs(dict.fromkeys(keys,{})),[])

@@ -661,7 +661,7 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
                   f"this one needs a working session with Buddy.")
     ledger_append({"event": "action", "tool": "file_repair_ticket",
                    "tier_name": "auto", "detail": unit, "result": result})
-    INCIDENT_ACTIONS.append({"owner": "dev-loop", "unit": unit, "action": "verify ticket outcome", "evidence": result})
+    INCIDENT_ACTIONS.append({"owner": "dev-loop" if d.get("status") == "queued" and not d.get("error") else "Cowork", "unit": unit, "action": "verify ticket outcome", "ticket_id": d.get("id"), "evidence": result})
     return result
 
 
