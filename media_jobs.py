@@ -1,10 +1,20 @@
 """Schedule adapters; existing delivery/cursor owners remain authoritative."""
 import json
+import hashlib
 import os
 import sys
 from pathlib import Path
 
 import media_pipeline as media
+
+
+def merge_findings(previous, body):
+    """Keep earlier same-day batches, and deduplicate exact replayed evidence."""
+    marker = '<!-- yt-batch:' + hashlib.sha256(body.encode()).hexdigest() + ' -->'
+    if marker in previous or previous == body or previous.startswith(body + '\n'):
+        return previous
+    batch = marker + '\n' + body
+    return previous.rstrip() + '\n\n' + batch if previous else batch
 
 
 def youtube():
@@ -35,7 +45,8 @@ def youtube():
                     raise ValueError('invalid_findings_filename')
                 yt.OUT_DIR.mkdir(parents=True,exist_ok=True)
                 p=yt.OUT_DIR/name
-                temp=p.with_suffix('.tmp');temp.write_text(body);temp.replace(p)
+                previous=p.read_text() if p.exists() else ''
+                temp=p.with_suffix('.tmp');temp.write_text(merge_findings(previous,body));temp.replace(p)
             media.atomic_json(yt.SEEN_PATH,response['seen'])
         return response['stats']
     yt.run = remote_run

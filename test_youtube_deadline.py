@@ -133,6 +133,8 @@ class CursorTests(unittest.TestCase):
     def exercise(self,failure=None,dry=False):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
             root=Path(tmp);seen=root/'seen.json';seen.write_text('{"video_ids":["old-video"]}');out=root/'findings';original=seen.read_bytes()
+            if not failure and not dry:
+                out.mkdir();(out/'yt-watch-2026-09-28.md').write_text('earlier batch\n')
             for name,value in [('SEEN_PATH',seen),('OUT_DIR',out),('run',yt.run)]:stack.enter_context(patch.object(yt,name,value))
             stack.enter_context(patch.object(yt,'load_channels',return_value=[]))
             stack.enter_context(patch.object(socket.socket,'connect',side_effect=AssertionError('network forbidden')))
@@ -155,9 +157,11 @@ class CursorTests(unittest.TestCase):
                 if dry:self.assertEqual(seen.read_bytes(),original);self.assertFalse(out.exists())
                 else:
                     self.assertEqual(json.loads(seen.read_text()),response['seen'])
-                    self.assertEqual((out/'yt-watch-2026-09-28.md').read_text(),'one finding')
+                    self.assertIn('one finding',(out/'yt-watch-2026-09-28.md').read_text())
+                    self.assertIn('earlier batch',(out/'yt-watch-2026-09-28.md').read_text())
                     media_jobs.youtube()
                     self.assertEqual(len(list(out.iterdir())),1);self.assertEqual(json.loads(seen.read_text()),response['seen'])
+                    self.assertEqual((out/'yt-watch-2026-09-28.md').read_text().count('one finding'),1)
                 record.assert_not_called()
     def test_failure(self):
         for failure in [RuntimeError('offline'),m.YouTubeDeadline('expired'),RuntimeError('youtube_deferred_busy_window'),subprocess.TimeoutExpired('ssh',1)]:
@@ -165,5 +169,16 @@ class CursorTests(unittest.TestCase):
     def test_dry_failure(self):self.exercise(RuntimeError('offline'),True)
     def test_replay(self):self.exercise()
     def test_dry_success(self):self.exercise(dry=True)
+    def test_second_batch_keeps_first_and_replays_once(self):
+        first=media_jobs.merge_findings('', '# Day\n\nFirst video\n')
+        both=media_jobs.merge_findings(first, '# Day\n\nSecond video\n')
+        self.assertIn('First video',both);self.assertIn('Second video',both)
+        self.assertEqual(media_jobs.merge_findings(both,'# Day\n\nSecond video\n'),both)
+        self.assertEqual(media_jobs.merge_findings(both,'# Day\n\nFirst video\n'),both)
+    def test_legacy_batch_survives_and_replays_once(self):
+        legacy='# Day\n\nLegacy finding\n'
+        both=media_jobs.merge_findings(legacy,'# Day\n\nNew finding\n')
+        self.assertTrue(both.startswith(legacy))
+        self.assertEqual(media_jobs.merge_findings(both,legacy),both)
 
 if __name__=='__main__':unittest.main()
