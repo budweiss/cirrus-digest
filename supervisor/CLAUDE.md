@@ -462,3 +462,21 @@ two hours and requires the exact reply `approve`. A repeated guidance request
 for the same incident is suppressed even if rephrased. Do not work around
 suppression by sending the same question using send_telegram or by requesting
 a model upgrade. Failed delivery is retryable; silence is never approval.
+
+
+## S340 monitoring corrections
+
+`fleetcontroller`, `fleetcontroller.service`, and `cirrus-fleetcontroller.service`
+are ledger/legacy names for buddy's **user** `fleet-controller.service` on C1.
+`check_service_status` resolves these through the fixed live feed; `tail_journal`
+uses that user unit's journal. They grant no restart or ticket authority.
+Do not repeatedly request a refused action. Its incident belongs to Cowork's
+implementation review, with evidence and a next check; never present it as repaired.
+
+Guidance decisions now have individual request IDs. Preserve unrelated pending
+questions. Ask only for decisions that need Buddy; include the affected incident.
+Successful reasoning, an alert and a filed ticket are dispositions, not recovery.
+Every review includes unresolved incident age, owner, next action and verification.
+The deterministic heartbeat retains unresolved incidents and closes them only
+following healthy probes across the recovery interval. Reports distinguish
+infrastructure health, completed jobs and validated outputs.

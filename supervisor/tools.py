@@ -13,6 +13,7 @@ Design rules (CUMULUS.md sec 8a, sec 4):
   - Every call — success or failure — is ledgered.
 """
 import json
+import opus_approval
 import subprocess
 import sys
 import urllib.error
@@ -99,11 +100,27 @@ def _run(cmd: list, timeout: int = 20) -> subprocess.CompletedProcess:
 
 # ── Read-only checks ─────────────────────────────────────────────────────────
 
+FLEET_ALIASES = {"fleetcontroller.service", "cirrus-fleetcontroller.service", "fleet-controller.service"}
+
+
+def _fleet_status():
+    import completeness
+    feed = completeness.supervisor_feed(force=True)
+    row = (feed or {}).get('jobs', {}).get('fleetcontroller')
+    return json.dumps({'host': 'cumulus1', 'scope': 'user', 'owner': 'buddy',
+                       'unit': 'fleet-controller.service', 'status': row,
+                       'ok': bool(row and row.get('ok')),
+                       'authority': 'read-only; no restart or repair-ticket authority'})
+
+
 def check_service_status(unit: str) -> str:
     """Report a systemd unit's current load/active/sub state. Read-only, no sudo."""
     unit = _normalize_unit(unit)
-    r = _run(["systemctl", "status", unit, "--no-pager", "-l"])
-    out = (r.stdout or r.stderr).strip()
+    if unit in FLEET_ALIASES:
+        out = _fleet_status()
+    else:
+        r = _run(["systemctl", "status", unit, "--no-pager", "-l"])
+        out = (r.stdout or r.stderr).strip()
     ledger_append({"event": "check", "tool": "check_service_status",
                    "tier_name": "read-only", "detail": unit,
                    "result": out[:200]})
@@ -440,7 +457,13 @@ def tail_journal(unit: str, lines: int = 40) -> str:
     is in the systemd-journal group, no sudo needed."""
     unit = _normalize_unit(unit)
     lines = max(1, min(int(lines), 200))
-    r = _run(["journalctl", "-u", unit, "-n", str(lines), "--no-pager"])
+    if unit in FLEET_ALIASES:
+        import pwd
+        uid = str(pwd.getpwnam('buddy').pw_uid)
+        r = _run(["journalctl", "_UID=" + uid, "_SYSTEMD_USER_UNIT=fleet-controller.service",
+                  "-n", str(lines), "--no-pager"])
+    else:
+        r = _run(["journalctl", "-u", unit, "-n", str(lines), "--no-pager"])
     out = (r.stdout or r.stderr).strip()
     ledger_append({"event": "check", "tool": "tail_journal",
                    "tier_name": "read-only", "detail": f"{unit} (-n {lines})",
@@ -592,9 +615,10 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
     # restart/reset tools use. Refuse rather than fall back to a default.
     if unit not in ticket_units():
         result = (f"REFUSED: '{unit}' is not on the repair-ticket unit list. "
-                  f"Use request_guidance for anything outside it.")
+                  f"Assigned to Cowork implementation review; no automatic repair authority.")
         ledger_append({"event": "action", "tool": "file_repair_ticket",
                        "tier_name": "refused", "detail": unit, "result": result})
+        INCIDENT_ACTIONS.append({"owner": "Cowork", "unit": unit, "action": "implementation review", "evidence": result})
         return result
     body = (diagnosis or "").strip()
     if len(body) < 40:
@@ -603,6 +627,7 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
                   "failing line from tail_journal, and what you already tried.")
         ledger_append({"event": "action", "tool": "file_repair_ticket",
                        "tier_name": "refused", "detail": unit, "result": result})
+        INCIDENT_ACTIONS.append({"owner": "Cowork", "unit": unit, "action": "implementation review", "evidence": result})
         return result
 
     # Argument-free by design: the payload goes on stdin so the sudoers grant is
@@ -636,12 +661,16 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
                   f"this one needs a working session with Buddy.")
     ledger_append({"event": "action", "tool": "file_repair_ticket",
                    "tier_name": "auto", "detail": unit, "result": result})
+    INCIDENT_ACTIONS.append({"owner": "dev-loop", "unit": unit, "action": "verify ticket outcome", "evidence": result})
     return result
 
+
+INCIDENT_ACTIONS = []
 
 ALERT_CONTEXT = ""  # stable incident-generation context, supplied by the run loop
 
 
+@opus_approval.locked
 def request_opus_upgrade(reason: str) -> str:
     """S64: ask Buddy's permission to use Opus for the rest of THIS reasoning
     pass onward — call this if a task genuinely seems to need deeper
@@ -665,6 +694,7 @@ def request_opus_upgrade(reason: str) -> str:
     return result
 
 
+@opus_approval.locked
 def request_guidance(issue: str, question: str) -> str:
     """S65: ask Buddy for actual direction, not just a yes/no — call this
     ONLY when genuinely stuck: you've tried your allowed diagnostics/fixes
@@ -686,7 +716,10 @@ def request_guidance(issue: str, question: str) -> str:
     file_repair_ticket, not this. An unanswered request re-fires on every wake
     and costs a reasoning pass each time -- see CLAUDE.md section 2."""
     import opus_approval
-    text = opus_approval.create_guidance_request(issue, question, context=ALERT_CONTEXT)
+    contexts = ALERT_CONTEXT.split('|') if ALERT_CONTEXT else []
+    matching = [c for c in contexts if c.split('@')[0].split(':')[-1].replace('.service','') in issue]
+    context = '|'.join(matching) if matching else ALERT_CONTEXT + '|' + ' '.join(issue.lower().split())
+    text = opus_approval.create_guidance_request(issue, question, context=context)
     if text is None:
         result = "SUPPRESSED: existing request or unchanged incident already asked; do not rephrase and resend"
         ledger_append({"event": "guidance-suppressed", "tool": "request_guidance",

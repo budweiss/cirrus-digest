@@ -262,6 +262,14 @@ def compose():
 
     lines.append("**Skywarden (CUMULUS supervisor)**")
     lines += sky
+    try:
+        incidents = json.loads(_sudo_cat(SKY_STATE_DIR / 'heartbeat-incidents.json'))['incidents']
+        lines.append(f"Unresolved incidents: {len(incidents)} (reviewed is not resolved)")
+        for key, row in sorted(incidents.items()):
+            age = max(0, (datetime.now().timestamp()-row['first_seen'])/3600)
+            lines.append(f"  {key}: {row.get('state','unresolved')}; {age:.1f}h; owner {row.get('owner','unassigned')}; next check {row.get('next_check','unknown')}")
+    except (ValueError, KeyError, TypeError):
+        lines.append("Incident follow-through UNKNOWN: state could not be read.")
     lines.append("")
     lines.append("*Composed by CUMULUS on-box (cumulus_daily_brief.py) — deterministic, no LLM call.*")
 

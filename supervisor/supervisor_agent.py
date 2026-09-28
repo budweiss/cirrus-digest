@@ -320,17 +320,24 @@ def main_loop():
     policy = IncidentPolicy(STATE_DIR / 'heartbeat-incidents.json')
     while True:
         hb = heartbeat.run_heartbeat()
-        opus_approval.check_for_reply()
-        hb['reply_id'] = opus_approval.ready_reply_id()
+        try:
+            opus_approval.retry_failed_deliveries(tools.send_telegram)
+            opus_approval.check_for_reply()
+            hb['reply_id'] = opus_approval.ready_reply_id()
+        except (OSError, ValueError, TypeError, KeyError):
+            hb['scan_degraded'] = True
+            hb['detail'] += '; decision state unreadable; preserved for recovery'
         due = policy.observe(hb, time.time())
         daily = _daily_check_due()
         if due or daily:
             tools.ALERT_CONTEXT = policy.context()
+            tools.INCIDENT_ACTIONS = []
             reason = ("heartbeat new/retry incidents: " + ', '.join(due) +
                       "; " + hb['detail']) if due else "scheduled daily check"
             # One pass can satisfy today's daily review as well as a new incident.
+            reason += '\nUnresolved incident state: ' + json.dumps(policy.summary(time.time()))
             success = _handle_trigger(reason, is_daily=daily)
-            policy.complete(success, time.time())
+            policy.complete(success, time.time(), tools.INCIDENT_ACTIONS)
         time.sleep(HEARTBEAT_INTERVAL_SEC)
 
 

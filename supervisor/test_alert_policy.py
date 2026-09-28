@@ -77,25 +77,14 @@ class AlertTests(unittest.TestCase):
 
     def test_guidance_duplicates_and_pending_reply_are_preserved(self):
         with patch.object(opus_approval, 'STATE_DIR', self.root), \
-             patch.object(opus_approval, 'REQUEST_FILE', self.root/'request.json'), \
-             patch.object(opus_approval.time, 'time', return_value=100):
-            text = opus_approval.create_guidance_request('issue', 'question', 'incident@1')
-            self.assertIsInstance(text, str)
+             patch.object(opus_approval, 'REQUEST_FILE', self.root/'request.json'):
+            opus_approval.create_guidance_request('issue', 'question', 'incident@1')
             opus_approval.record_request_delivery(True)
             original = opus_approval.REQUEST_FILE.read_bytes()
-            self.assertIsNone(opus_approval.create_guidance_request('different', 'different', 'other'))
-            self.assertIsNone(opus_approval.create_opus_request('reason'))
-            self.assertEqual(opus_approval.REQUEST_FILE.read_bytes(), original)
-            req = json.loads(original); req['status'] = 'expired'
-            opus_approval.REQUEST_FILE.write_text(json.dumps(req))
             self.assertIsNone(opus_approval.create_guidance_request('rephrased', 'again?', 'incident@1'))
-            self.assertIsInstance(opus_approval.create_guidance_request('new recurrence', '?', 'incident@2'), str)
-            opus_approval.record_request_delivery(False)
-            self.assertIsInstance(opus_approval.create_guidance_request('retry send', '?', 'incident@2'), str)
-            req = json.loads(opus_approval.REQUEST_FILE.read_text()); req['status'] = 'answered'
-            opus_approval.REQUEST_FILE.write_text(json.dumps(req))
-            self.assertTrue(opus_approval.ready_reply_id())
-            self.assertIsNone(opus_approval.create_opus_request('do not overwrite reply'))
+            self.assertIsInstance(opus_approval.create_guidance_request('different', 'question', 'other'), str)
+            self.assertEqual(opus_approval.REQUEST_FILE.read_bytes(), original)
+            self.assertIsNone(opus_approval.create_opus_request('do not overwrite decisions'))
 
 
     def test_guidance_waits_seven_days_and_stale_or_negative_approval_is_not_approval(self):

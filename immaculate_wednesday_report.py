@@ -305,4 +305,8 @@ def selftest() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(selftest() if "selftest" in sys.argv else main())
+    if sys.argv[1:] in (["selftest"], ["--selftest"]):
+        sys.exit(selftest())
+    if sys.argv[1:]:
+        sys.exit("unknown arguments; use selftest or --selftest for offline checks")
+    sys.exit(main())

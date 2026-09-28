@@ -1,6 +1,8 @@
 """Two-way approval/guidance flow for the CUMULUS supervisor (Skywarden) — S64/S65.
 
-Two request kinds share one pending-request slot. Skywarden ends every run
+Legacy primary request plus bounded incident-keyed decision files.
+Two request kinds share a compatibility reader; unrelated guidance cannot block.
+Previously, two request kinds shared one pending-request slot. Skywarden ends every run
 with exactly one send_telegram call (CLAUDE.md sec 6), so in practice only
 one ask is outstanding at a time. An unanswered or unconsumed request is
 never overwritten; repeated guidance for the same incident is suppressed:
@@ -20,6 +22,9 @@ deliberately NOT a persistent long-poll listener like cirrus_bot.py, since
 Skywarden's process model is wake/check/sleep, not a standing service.
 """
 import json
+import fcntl
+import functools
+import threading
 import hashlib
 import os
 import tempfile
@@ -66,176 +71,203 @@ def _api_call(method: str, params: dict, token: str, timeout: int = 10):
         return json.loads(resp.read().decode())
 
 
+_THREAD_LOCK = threading.RLock()
+_LOCK_DEPTH = 0
+
+
+def locked(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        global _LOCK_DEPTH
+        with _THREAD_LOCK:
+            if _LOCK_DEPTH:
+                return fn(*args, **kwargs)
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with (STATE_DIR/'decisions.lock').open('a') as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                _LOCK_DEPTH += 1
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _LOCK_DEPTH -= 1
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+    return wrapped
+
+
+# Legacy primary request remains in place for rollback and old replies. Extra
+# decisions live in separate atomic files, bounded to 32 outstanding requests.
+LAST_REQUEST_PATH = None
+
+
+def requests():
+    paths = ([REQUEST_FILE] if REQUEST_FILE.exists() else [])
+    paths += sorted((STATE_DIR / 'pending-requests').glob('*.json'))
+    return [(p, json.loads(p.read_text())) for p in paths]
+
+
 def _request_slot_busy():
-    if not REQUEST_FILE.exists():
-        return False
-    req = json.loads(REQUEST_FILE.read_text())
-    return (req.get('status') in ('answered', 'approved') or
-            (req.get('status') == 'pending' and
-             time.time() - req.get('requested_at', 0) < _expiry(req)))
+    return any(r.get('status') in ('answered', 'approved') or
+               (r.get('status') == 'pending' and time.time()-r.get('requested_at', 0)<_expiry(r))
+               for _, r in requests())
 
 
 def ready_reply_id():
-    if not REQUEST_FILE.exists():
-        return ''
-    try:
-        req = json.loads(REQUEST_FILE.read_text())
-    except (OSError, ValueError):
-        return ''
-    if req.get('status') in ('answered', 'approved'):
-        return str(req.get('kind')) + ':' + str(req.get('requested_at'))
-    return ''
+    return '|'.join(str(r.get('request_id', r.get('requested_at'))) for _, r in requests()
+                    if r.get('status') in ('answered', 'approved'))
 
 
+@locked
 def record_request_delivery(sent):
-    req = json.loads(REQUEST_FILE.read_text())
+    path = LAST_REQUEST_PATH or REQUEST_FILE
+    req = json.loads(path.read_text())
+    req['delivery_attempted_at'] = time.time()
     if not sent:
         req['status'] = 'delivery_failed'
-        _write_json(REQUEST_FILE, req)
-    elif req.get('kind') == 'guidance':
-        path = STATE_DIR / 'guidance-history.json'
-        history = json.loads(path.read_text()) if path.exists() else {}
-        history[req['dedup_key']] = time.time()
-        # Bounded history; incident context changes after confirmed recovery.
-        history = dict(sorted(history.items(), key=lambda x: x[1])[-256:])
-        _write_json(path, history)
+    else:
+        req['status'] = 'pending'
+        if req.get('kind') == 'guidance':
+            histpath = STATE_DIR / 'guidance-history.json'
+            history = json.loads(histpath.read_text()) if histpath.exists() else {}
+            history[req['dedup_key']] = time.time()
+            _write_json(histpath, dict(sorted(history.items(), key=lambda x:x[1])[-256:]))
+    _write_json(path, req)
 
 
-def create_opus_request(reason: str) -> str:
-    """Called by tools.request_opus_upgrade(). Writes the pending marker and
-    returns the Telegram text to send."""
+def _create(req):
+    global LAST_REQUEST_PATH
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    rows = requests()
+    if sum(r.get('status') in ('pending','answered','approved','delivery_failed') for _,r in rows)>=32:
+        raise ValueError('guidance queue full; existing decisions preserved')
+    req['request_id'] = hashlib.sha256((str(req['requested_at'])+req.get('dedup_key',req.get('reason',''))).encode()).hexdigest()[:12]
+    # Never overwrite the legacy request, even after expiry; preserve history.
+    if not REQUEST_FILE.exists():
+        path = REQUEST_FILE
+    else:
+        directory = STATE_DIR / 'pending-requests'; directory.mkdir(exist_ok=True)
+        path = directory / (req['request_id']+'.json')
+    _write_json(path, req)
+    LAST_REQUEST_PATH = path
+    return req['request_id']
+
+
+@locked
+def create_opus_request(reason):
     if _request_slot_busy():
         return None
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _write_json(REQUEST_FILE, {
-        "kind": "opus_upgrade", "reason": reason,
-        "requested_at": time.time(), "status": "pending",
-    })
-    return (f"Skywarden is requesting an Opus upgrade for: {reason}\n\n"
-            f"Reply \"approve\" within 2 hours to allow ONE upgraded pass. "
-            f"No reply = stays on Sonnet, no action needed.")
+    rid = _create(dict(kind='opus_upgrade',reason=reason,requested_at=time.time(),status='pending'))
+    return f'Skywarden requests one Opus pass: {reason}\nReply "{rid} approve" within 2 hours.'
 
 
-def create_guidance_request(issue: str, question: str, context: str = "") -> str:
-    """Called by tools.request_guidance(). Writes the pending marker and
-    returns the Telegram text to send."""
-    if _request_slot_busy():
+@locked
+def create_guidance_request(issue, question, context=''):
+    identity = context or ' '.join((issue+' '+question).lower().split())
+    key = hashlib.sha256(identity.encode()).hexdigest()
+    rows = requests()
+    if any(r.get('dedup_key')==key and r.get('status') in ('pending','answered','consumed') for _,r in rows):
         return None
-    identity = context or ' '.join((issue + ' ' + question).lower().split())
-    dedup_key = hashlib.sha256(identity.encode()).hexdigest()
-    history_path = STATE_DIR / 'guidance-history.json'
-    history = json.loads(history_path.read_text()) if history_path.exists() else {}
-    if dedup_key in history:
+    hp = STATE_DIR/'guidance-history.json'
+    if hp.exists() and key in json.loads(hp.read_text()):
         return None
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _write_json(REQUEST_FILE, {
-        "kind": "guidance", "issue": issue, "question": question,
-        "dedup_key": dedup_key,
-        "requested_at": time.time(), "status": "pending",
-    })
-    return (f"Skywarden is stuck and needs direction:\n\n{issue}\n\n"
-            f"{question}\n\nReply with what you'd like done (within 7 "
-            f"days) — Skywarden will read your reply on its next run. "
-            f"No reply = it holds off; it will not repeat this same request.")
+    # Retry failed delivery at most once per six hours, using the same identity.
+    for path,r in rows:
+        if r.get('dedup_key')==key and r.get('status')=='delivery_failed':
+            if time.time()-r.get('delivery_attempted_at',0)<6*3600:
+                return None
+            global LAST_REQUEST_PATH
+            LAST_REQUEST_PATH=path
+            return f"Skywarden needs direction [{r['request_id']}]:\n{issue}\n{question}\nReply with {r['request_id']} followed by your direction."
+    rid=_create(dict(kind='guidance',issue=issue,question=question,dedup_key=key,
+                     requested_at=time.time(),status='pending'))
+    return f'Skywarden needs direction [{rid}]:\n{issue}\n{question}\nReply with {rid} followed by your direction within 7 days.'
 
 
-def check_for_reply() -> None:
-    """Cheap, called every ~60s heartbeat tick. No-ops instantly if there's
-    no pending request -- costs nothing on the vast majority of ticks."""
-    if not REQUEST_FILE.exists():
-        return
+@locked
+def answer(request_id, text, at=None):
+    now=time.time() if at is None else at
+    for path,r in requests():
+        rid=str(r.get('request_id',r.get('requested_at')))
+        if rid != str(request_id): continue
+        if r.get('status')!='pending' or not r.get('requested_at',0)<=now<=r.get('requested_at',0)+_expiry(r):
+            return False
+        if r['kind']=='opus_upgrade':
+            if text.strip().lower()!='approve': return False
+            r['status']='approved'
+        else:
+            if not text.strip(): return False
+            r.update(status='answered',reply=text.strip())
+        _write_json(path,r); return True
+    return False
+
+
+@locked
+def check_for_reply():
+    rows=requests()  # corrupt evidence raises; never delete an unreadable decision
+    now=time.time()
+    for path,r in rows:
+        if r.get('status')=='pending' and now-r.get('requested_at',0)>_expiry(r):
+            r['status']='expired'; _write_json(path,r)
+    pending=[r for _,r in rows if r.get('status')=='pending']
+    if not pending: return
     try:
-        req = json.loads(REQUEST_FILE.read_text())
-    except Exception:
-        REQUEST_FILE.unlink(missing_ok=True)
+        secrets=_load_secrets()
+        token,chat_id=secrets['telegram_bot_token'],str(secrets['telegram_user_id'])
+        offset=int(UPDATE_OFFSET_FILE.read_text()) if UPDATE_OFFSET_FILE.exists() else 0
+        result=_api_call('getUpdates',{'offset':offset,'timeout':0},token)
+    except (OSError, ValueError, KeyError, urllib.error.URLError, TimeoutError):
         return
-    if req.get("status") != "pending":
-        return
-    if time.time() - req.get("requested_at", 0) > _expiry(req):
-        req["status"] = "expired"
-        _write_json(REQUEST_FILE, req)
-        return
-
-    try:
-        secrets = _load_secrets()
-        token, chat_id = secrets["telegram_bot_token"], str(secrets["telegram_user_id"])
-    except Exception:
-        return
-
-    offset = 0
-    if UPDATE_OFFSET_FILE.exists():
-        try:
-            offset = int(UPDATE_OFFSET_FILE.read_text().strip())
-        except ValueError:
-            pass
-
-    try:
-        # timeout=0: a quick poll, not cirrus_bot.py's 30s long-poll -- this
-        # runs inline in the 60s heartbeat loop and must return fast.
-        result = _api_call("getUpdates", {"offset": offset, "timeout": 0}, token)
-    except (urllib.error.URLError, TimeoutError):
-        return
-
-    reply_text = None
-    max_update_id = offset - 1
-    for update in result.get("result", []):
-        max_update_id = max(max_update_id, update["update_id"])
-        msg = update.get("message", {})
-        if str(msg.get("from", {}).get("id", "")) != chat_id:
-            continue  # only Buddy's own replies count
-        if msg.get("date", 0) < req.get("requested_at", 0):
-            continue  # never consume messages from before this request
-        text = (msg.get("text") or "").strip()
-        if text:
-            reply_text = text  # last non-empty message from Buddy in this batch wins
-
-    if max_update_id >= offset:
-        UPDATE_OFFSET_FILE.write_text(str(max_update_id + 1))
-
-    if reply_text is None:
-        return
-
-    if req["kind"] == "opus_upgrade":
-        if reply_text.strip().lower() == "approve":
-            req["status"] = "approved"
-            _write_json(REQUEST_FILE, req)
-    elif req["kind"] == "guidance":
-        req["status"] = "answered"
-        req["reply"] = reply_text
-        _write_json(REQUEST_FILE, req)
+    max_id=offset-1
+    for update in result.get('result',[]):
+        max_id=max(max_id,update['update_id']); msg=update.get('message',{})
+        if str(msg.get('from',{}).get('id',''))!=chat_id: continue
+        text=(msg.get('text') or '').strip(); date=msg.get('date',0)
+        for r in pending:
+            rid=str(r.get('request_id',r.get('requested_at')))
+            if text.startswith(rid+' '):
+                answer(rid,text[len(rid)+1:],at=date); break
+        else:
+            # Bare replies accepted only for the pre-migration legacy request.
+            # New requests always require ID: an old reply cannot approve a new ask.
+            legacy=[r for r in pending if not r.get('request_id')]
+            if len(legacy)==1:
+                answer(legacy[0].get('requested_at'),text,at=date)
+    if max_id>=offset:
+        UPDATE_OFFSET_FILE.write_text(str(max_id+1))
 
 
-def consume_opus_approval() -> bool:
-    """Called once per reasoning-pass invocation. Returns True (and marks
-    the request consumed) exactly once per approval -- the NEXT pass after
-    that reverts to Sonnet automatically, matching 'ONE upgraded pass'."""
-    if not REQUEST_FILE.exists():
-        return False
-    try:
-        req = json.loads(REQUEST_FILE.read_text())
-    except Exception:
-        return False
-    if req.get("kind") != "opus_upgrade" or req.get("status") != "approved":
-        return False
-    req["status"] = "consumed"
-    _write_json(REQUEST_FILE, req)
-    return True
+@locked
+def _consume(kind,status):
+    for path,r in requests():
+        if r.get('kind')==kind and r.get('status')==status:
+            r['status']='consumed'; _write_json(path,r); return r
+    return None
+
+
+def consume_opus_approval():
+    return bool(_consume('opus_upgrade','approved'))
 
 
 def consume_guidance():
-    """Called once at the start of a reasoning pass. Returns Buddy's reply
-    text if a guidance request was answered since the last run, else None.
-    Consumed immediately so the same guidance can't be silently re-applied
-    to a later, unrelated issue."""
-    if not REQUEST_FILE.exists():
-        return None
-    try:
-        req = json.loads(REQUEST_FILE.read_text())
-    except Exception:
-        return None
-    if req.get("kind") != "guidance" or req.get("status") != "answered":
-        return None
-    reply = req.get("reply")
-    req["status"] = "consumed"
-    _write_json(REQUEST_FILE, req)
-    return reply
+    r=_consume('guidance','answered')
+    if r:
+        return f"Request {r.get('request_id',r.get('requested_at'))}: {r.get('issue','')}\nDirection: {r.get('reply','')}"
+    return None
+
+
+@locked
+def retry_failed_deliveries(sender):
+    global LAST_REQUEST_PATH
+    for path,r in requests():
+        if r.get('status')!='delivery_failed' or time.time()-r.get('delivery_attempted_at',0)<6*3600:
+            continue
+        if time.time()-r.get('requested_at',0)>_expiry(r):
+            r['status']='expired';_write_json(path,r);continue
+        LAST_REQUEST_PATH=path
+        # Persist reservation before network call, including interrupted sends.
+        r['delivery_attempted_at']=time.time();_write_json(path,r)
+        rid=r.get('request_id',str(r.get('requested_at')))
+        text=f"Skywarden request {rid}: {r.get('issue',r.get('reason',''))}\n{r.get('question','')}\nReply with {rid} followed by your direction."
+        try: sent=sender(text)=='sent'
+        except Exception: sent=False
+        record_request_delivery(sent)
+        break  # at most one delivery attempt per heartbeat
