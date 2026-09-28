@@ -90,6 +90,12 @@ class IncidentPolicy:
             self.active.setdefault(key, {'first_seen': now, 'reviewed': False, 'next_attempt': 0})
             row = self.active[key]
             row['last_seen'] = now
+            # Existing reviewed incidents predate ownership/disposition fields.
+            # Migrate them without another paid pass or claiming recovery.
+            if row.get('reviewed') and not row.get('disposition'):
+                action = 'implementation review: legacy review has no verified repair'
+                row.update(state='action pending', owner='Cowork', action=action,
+                           disposition=[{'owner':'Cowork', 'action':action}])
             row.setdefault('state', 'detected')
             row.setdefault('owner', 'Skywarden')
             row.setdefault('action', 'diagnose; safe repair or evidence-backed escalation')

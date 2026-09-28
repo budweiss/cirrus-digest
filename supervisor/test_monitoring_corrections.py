@@ -50,6 +50,45 @@ class Corrections(unittest.TestCase):
         self.assertEqual(len(approval.requests()),1)
         self.assertIsNone(approval.create_guidance_request('same','reworded','one'))
 
+    def test_telegram_id_routing_ignores_bare_and_stale_replies(self):
+        with patch.object(approval.time,'time',return_value=100):
+            approval.create_guidance_request('one','?','one')
+            approval.create_guidance_request('two','?','two')
+        rows=approval.requests();rid=rows[0][1]['request_id']
+        messages=[('bare reply',101), (rid+' too early',99), (rid+' investigate',101)]
+        updates={'result':[{'update_id':i,'message':{'from':{'id':7},'text':text,'date':date}}
+                           for i,(text,date) in enumerate(messages)]}
+        with patch.object(approval.time,'time',return_value=102), \
+             patch.object(approval,'_load_secrets',return_value={'telegram_bot_token':'fake','telegram_user_id':7}), \
+             patch.object(approval,'_api_call',return_value=updates):
+            approval.check_for_reply()
+        self.assertEqual(json.loads(rows[0][0].read_text())['reply'],'investigate')
+        self.assertEqual(json.loads(rows[1][0].read_text())['status'],'pending')
+        self.assertEqual(approval.UPDATE_OFFSET_FILE.read_text(),'3')
+
+    def test_automatic_retry_once_and_no_real_send(self):
+        with patch.object(approval.time,'time',return_value=100):
+            approval.create_guidance_request('one','?','one');approval.record_request_delivery(False)
+        from unittest.mock import Mock
+        sender=Mock(return_value='sent')
+        with patch.object(approval.time,'time',return_value=200): approval.retry_failed_deliveries(sender)
+        sender.assert_not_called()
+        with patch.object(approval.time,'time',return_value=21701):
+            approval.retry_failed_deliveries(sender);approval.retry_failed_deliveries(sender)
+        sender.assert_called_once();self.assertEqual(approval.requests()[0][1]['status'],'pending')
+
+    def test_concurrent_requests_and_interrupted_atomic_write(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda i:approval.create_guidance_request(str(i),'?',str(i)),range(12)))
+        rows=approval.requests();self.assertEqual(len(rows),12)
+        self.assertEqual(len({r['request_id'] for _,r in rows}),12)
+        path,original=rows[0]
+        with patch.object(approval.os,'replace',side_effect=OSError('simulated interruption')):
+            with self.assertRaises(OSError): approval._write_json(path,{'status':'lost'})
+        self.assertEqual(json.loads(path.read_text()),original)
+        self.assertEqual(len(list(self.root.glob('.request-*'))),0)
+
     def test_corruption_never_deletes_request(self):
         approval.REQUEST_FILE.write_text('{bad')
         with self.assertRaises(ValueError): approval.check_for_reply()
@@ -71,6 +110,14 @@ class Corrections(unittest.TestCase):
         p.observe(hb(),260);p.observe(hb(),380)
         self.assertEqual(p.active,{});self.assertEqual(p.resolved[-1]['state'],'resolved')
         self.assertIn('healthy probes',p.resolved[-1]['recovery_evidence'])
+
+    def test_legacy_review_gets_disposition_without_paid_retry(self):
+        path=self.root/'incidents.json'
+        path.write_text(json.dumps({'incidents':{'unit:bad.service':{'first_seen':100,'reviewed':True,'next_attempt':0}}}))
+        p=IncidentPolicy(path);self.assertEqual(p.observe(hb(['bad.service']),1000),[])
+        row=p.summary(1000)[0]
+        self.assertEqual(row['state'],'action pending');self.assertEqual(row['owner'],'Cowork')
+        self.assertFalse(row['disposition_overdue']);self.assertTrue(row['disposition'])
 
     def test_failed_model_keeps_monitor_and_backoff(self):
         p=IncidentPolicy(self.root/'incidents.json');p.observe(hb(['bad.service']),100);p.complete(False,101)

@@ -32,7 +32,7 @@ CADENCE_H = {
     "accesscheck":    2,        # every 30 min on cumulus1 (S101) — watches all
                                 # three boxes at BOTH layers and is the only thing
                                 # that watches cumulus2 at all
-    "ytwatch":       26,        # daily 00:30 (YT-WATCH claim extractor)
+    "ytwatch":       26,        # daily 05:30 (YT-WATCH claim extractor)
     "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
     "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)
     "foundationrenewalcumulus": 26,  # daily 04:40 CUMULUS (S316; cloud + GPT-OSS + HOA)
