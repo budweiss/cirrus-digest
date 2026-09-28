@@ -249,41 +249,14 @@ def decide():
         # S141: keep the hint, so a hint we could not BUILD is reported as our
         # own missing config rather than as "this caller wanted no draft".
         _hint = _local_hint()
-        # S245: was max_tokens=8000. On 2026-09-21 both Anthropic and Gemini hit
-        # stop_reason=max_tokens with ZERO usable text -- adaptive thinking (S177's
-        # anthropic_effort=max, {"type":"adaptive"} with no explicit budget_tokens)
-        # drew from the same max_tokens ceiling as the answer and consumed all of
-        # it, leaving nothing for the JSON reply.
-        #
-        # First attempt raised this to 16384 (dev_agent.py's dev-agent-repair
-        # precedent) -- that CLEARED the truncation but pushed the council+judge
-        # cost estimate (ensemble._estimate_cost sums max_tokens across all 5
-        # members + the judge) over CUMULUS's live per-call budget cap ($1.00,
-        # not the $10 default in config/llm_pricing.json -- only found by reading
-        # the dry-run's own "budget: ... using baseline" line). That silently
-        # degraded every week to a single-provider fallback, quietly discarding
-        # the whole point of the 5-way cross-check.
-        #
-        # 12000 is sized from two REAL measured (max_tokens, est_cost) points on
-        # this exact prompt -- \$0.6294 at 8000, \$1.1434 at 16384 -- solved for
-        # ~\$0.87, comfortably under the \$1.00 cap with margin for the prompt
-        # growing further. 50% more headroom than the original 8000; verify with
-        # `cumulus-billsnow-council-dryrun` after any future change here, since
-        # both the truncation risk AND the budget cap move if the prompt grows.
-        #
-        # S245: even 12000 wasn't enough -- a direct timing probe gave Anthropic
-        # 300s (2.5x the normal 120s ceiling) and it still burned the ENTIRE
-        # 12000-token budget on adaptive thinking (anthropic_effort=max) and
-        # returned 0 chars of text. Confirmed at 8000, 12000 AND 16384: this
-        # prompt makes "max" effort think without bound, so no max_tokens ceiling
-        # we'd reasonably set leaves room for an answer. Stripping anthropic_effort
-        # for just this call turns off adaptive thinking (no budget for it to
-        # consume) so Anthropic can actually contribute to the council/judge steps
-        # again -- a copy, so the rest of decide() (budget_session, send_bid_email)
-        # keeps using the real creds unchanged.
+        # S340: 6000 output tokens fits the reviewed two-member panel plus
+        # synthesis under the existing $1 aggregate cap. All 14 saved normal,
+        # no-evidence, disagreement and long-context provider fixtures passed
+        # without truncation at this limit. Admission still refuses oversized
+        # inputs/prices; never drop a reviewer or truncate evidence to fit.
         council_creds = dict(creds)
         council_creds.pop("anthropic_effort", None)
-        meta, text = ensemble.best_answer(SYSTEM, prompt, council_creds, max_tokens=12000,
+        meta, text = ensemble.best_answer(SYSTEM, prompt, council_creds, max_tokens=6000,
                                           task="billsnow", local=_hint, session_id=budget_session,
                                           app_dir=str(DIGEST_DIR), mode=mode_override)
         # S131: `draft=` names the engine that wrote the local draft (vllm | ollama
@@ -311,7 +284,11 @@ def decide():
             print(f"[llm] DRAFT DEGRADED: {meta['draft_error']}")
     except Exception as e:
         return {"material_change": False, "error": True,
-                "reason": f"LLM call failed: {e}"}, urls
+                "reason": "LLM call failed: " + (
+                    str(e.__cause__) if str(e.__cause__) in {
+                        'route budget exhausted', 'aggregate budget denied',
+                        'foundation contract changed; review required',
+                        'input exceeds reviewed scope'} else str(e))}, urls
     # Extract the JSON object (be tolerant of surrounding text / code fences)
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not m:

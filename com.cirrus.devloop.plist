@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/buddy/projects/cirrus-digest/dev_agent.py</string>
+        <string>/Users/buddy/projects/cirrus-digest/dev_nightly.py</string>
         <string>nightly</string>
     </array>
     <key>StartCalendarInterval</key>
