@@ -14,8 +14,21 @@ def youtube():
         if any(k in kwargs for k in ('feed_fn','transcript_fn','extract_fn')):
             return original_run(**kwargs)  # injected offline tests
         state = yt.load_json(yt.SEEN_PATH, {'video_ids':[]})
-        response = media.call('youtube', channels=yt.load_channels(),seen=state,
-                              limit=kwargs.get('limit') or yt.DEFAULT_LIMIT)
+        try:
+            response = media.call('youtube', channels=yt.load_channels(),seen=state,
+                                  limit=kwargs.get('limit') or yt.DEFAULT_LIMIT)
+        except (Exception, media.YouTubeDeadline) as exc:
+            if not kwargs.get('dry_run'):
+                import job_status
+                reason = 'worker_failed'
+                if isinstance(exc, media.YouTubeDeadline):
+                    reason = 'deadline_expired'
+                elif isinstance(exc, media.subprocess.TimeoutExpired):
+                    reason = 'ssh_timeout'
+                elif isinstance(exc, RuntimeError) and str(exc) == 'youtube_deferred_busy_window':
+                    reason = 'deferred_busy_window'
+                job_status.record('ytwatch', False, reason + '; cursor preserved')
+            raise
         if not kwargs.get('dry_run'):
             for name, body in response['files'].items():
                 if not __import__('re').fullmatch(r'yt-watch-\d{4}-\d{2}-\d{2}\.md',name):

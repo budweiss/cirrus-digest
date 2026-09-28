@@ -7,8 +7,10 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -17,11 +19,89 @@ import time
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+from runtime_window import BUSY_DAYS, BUSY_START_H, BUSY_END_H
 
 ROOT = Path(__file__).resolve().parent
 MODEL = 'qwen3.8-27b-fp8'
 ENDPOINT = 'http://192.168.100.11:8000'
 VERSION = 's307-v3'  # S307: contiguous-quote rule in the claims prompt
+
+
+class YouTubeDeadline(BaseException):
+    """Not swallowed by per-video Exception handlers: end the entire worker."""
+
+
+def youtube_deadline(now=None):
+    """90 minutes including queue wait; leave five minutes before weekday 08:00."""
+    now = now or datetime.now(ZoneInfo('America/New_York'))
+    now = now.astimezone(ZoneInfo('America/New_York'))
+    deadline = now.timestamp() + 90 * 60
+    if now.weekday() in BUSY_DAYS:
+        cutoff = now.replace(hour=BUSY_START_H, minute=0, second=0, microsecond=0) - timedelta(minutes=5)
+        if cutoff <= now < now.replace(hour=BUSY_END_H, minute=0, second=0, microsecond=0):
+            raise RuntimeError('youtube_deferred_busy_window')
+        if now < cutoff:
+            deadline = min(deadline, cutoff.timestamp())
+    return deadline
+
+
+@contextlib.contextmanager
+def youtube_time_limit(deadline):
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+        raise ValueError('invalid_youtube_deadline')
+    remaining = min(deadline, youtube_deadline()) - time.time()
+    if remaining <= 0:
+        raise YouTubeDeadline('youtube_deadline_expired')
+    def expired(signum, frame):
+        raise YouTubeDeadline('youtube_deadline_expired')
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, remaining)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def supervised_youtube(payload):
+    """Independent parent enforces the deadline even if a child swallows SIGALRM."""
+    budget = payload.get('budget_seconds', 90 * 60)
+    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget):
+        raise ValueError('invalid_youtube_budget')
+    remaining = min(budget, youtube_deadline() - time.time())
+    if remaining <= 0:
+        raise YouTubeDeadline('youtube_deadline_expired')
+    # Only parent and child on this host share an absolute deadline. Fleet
+    # clock skew cannot extend the relative request budget.
+    payload = dict(payload, deadline=time.time() + remaining - min(5, remaining / 2))
+    child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--youtube-worker'],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=True)
+    try:
+        stdout, stderr = child.communicate(json.dumps(payload), timeout=remaining)
+    except BaseException as exc:
+        # The dedicated group contains this request only, never other media jobs.
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            child.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            # An uninterruptible OS wait is not proof the worker has stopped.
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                if pipe:
+                    pipe.close()
+            raise RuntimeError('youtube_worker_cleanup_unconfirmed') from None
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise YouTubeDeadline('youtube_deadline_expired') from None
+        raise
+    if child.returncode:
+        if child.returncode == 75:
+            raise YouTubeDeadline('youtube_deadline_expired')
+        raise RuntimeError('youtube_worker_failed_exit_%d' % child.returncode)
+    return json.loads(stdout)['result']
 
 
 def enabled():
@@ -350,6 +430,8 @@ def youtube(payload):
 def dispatch(payload):
     if socket.gethostname() != 'cumulus1':
         raise RuntimeError('media_worker_requires_cumulus1')
+    if payload['action'] == 'youtube':
+        return supervised_youtube(payload)
     with lease(ROOT/'logs/media/worker.lock', timeout=7200):
         action = payload['action']
         if action == 'analyze':
@@ -365,32 +447,46 @@ def dispatch(payload):
             return transcribe(payload['url'])
         if action == 'weekly-fetch':
             return weekly_fetch(payload)
-        if action == 'youtube':
-            return youtube(payload)
         raise ValueError('unknown_media_action')
 
 
 def call(action, **kwargs):
     payload = dict(kwargs,action=action)
+    timeout = 28800
+    if action == 'youtube':
+        # Reserve 30 seconds for SSH setup/response within the caller's limit.
+        payload['budget_seconds'] = youtube_deadline() - time.time() - 30
+        if payload['budget_seconds'] <= 0:
+            raise YouTubeDeadline('youtube_deadline_expired')
+        timeout = payload['budget_seconds'] + 30
     if socket.gethostname() == 'cumulus1':
         return dispatch(payload)
     remote = '/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/media_pipeline.py --request'
     p = subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=15',
         '-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6','buddy@192.168.0.204',remote],
-        input=json.dumps(payload),text=True,capture_output=True,timeout=28800)
+        input=json.dumps(payload),text=True,capture_output=True,timeout=timeout)
     if p.returncode:
+        if action == 'youtube' and p.returncode == 75:
+            raise YouTubeDeadline('youtube_deadline_expired')
         raise RuntimeError('Cumulus_media_worker_failed: '+p.stderr[-300:])
     return json.loads(p.stdout)['result']
 
 
 if __name__ == '__main__':
-    if sys.argv[1:] != ['--request']:
+    if sys.argv[1:] not in (['--request'], ['--youtube-worker']):
         raise SystemExit('use --request with JSON on stdin')
     payload = json.load(sys.stdin)
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            result = dispatch(payload)
+            if sys.argv[1:] == ['--youtube-worker']:
+                if socket.gethostname() != 'cumulus1' or payload['action'] != 'youtube':
+                    raise RuntimeError('invalid_youtube_worker_request')
+                with youtube_time_limit(payload.get('deadline', youtube_deadline())):
+                    with lease(ROOT/'logs/media/worker.lock', timeout=7200):
+                        result = youtube(payload)
+            else:
+                result = dispatch(payload)
         print(json.dumps({'result':result},ensure_ascii=False))
-    except Exception as exc:
+    except (Exception, YouTubeDeadline) as exc:
         print('media worker failed: '+type(exc).__name__,file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(75 if isinstance(exc, YouTubeDeadline) else 1)
