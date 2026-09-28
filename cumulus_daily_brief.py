@@ -87,20 +87,28 @@ def gather_client_events():
 
 def gather_job_lines():
     """Today's job status, one line per job, grouped by client."""
-    status = _read_json(JOBS_STATUS_PATH)
+    try:
+        status = json.loads(JOBS_STATUS_PATH.read_text())
+        if not isinstance(status, dict):
+            raise ValueError('invalid job status map')
+    except (OSError, ValueError):
+        return {'Monitoring coverage': ['  ⚠️ Job evidence UNKNOWN: status file missing, unreadable or malformed.']}
     out = {}
     for client, job_names in CLIENT_JOBS.items():
         lines = []
         for name in job_names:
             rec = status.get(name)
-            if not rec:
+            if (not isinstance(rec, dict) or type(rec.get('ok')) is not bool
+                    or not isinstance(rec.get('last_run'), str) or not rec['last_run']):
+                lines.append(f"  ⚠️ {name}: evidence UNKNOWN — missing or malformed job record.")
                 continue
-            ran_today = str(rec.get("last_run", "")).startswith(TODAY)
+            ran_today = rec['last_run'].startswith(TODAY)
+            note = f" — {rec['note']}" if rec.get('note') else ""
             if not ran_today:
+                lines.append(f"  ⏸ {name}: no run recorded today; last {rec['last_run']} (cadence not evaluated here){note}")
                 continue
-            mark = "✅" if rec.get("ok") else "⚠️"
-            note = f" — {rec['note']}" if rec.get("note") else ""
-            lines.append(f"  {mark} {name}: {rec.get('last_run', '')[11:16]}{note}")
+            mark = "✅" if rec['ok'] else "⚠️"
+            lines.append(f"  {mark} {name}: {rec['last_run'][11:16]}{note}")
         if lines:
             out[client] = lines
     return out
@@ -273,7 +281,7 @@ def compose():
         lines.append(f"Unresolved incidents: {len(incidents)} (reviewed is not resolved)")
         for key, row in sorted(incidents.items()):
             age = max(0, (datetime.now().timestamp()-row['first_seen'])/3600)
-            lines.append(f"  {key}: {row.get('state','unresolved')}; {age:.1f}h; owner {row.get('owner','unassigned')}; next check {row.get('next_check','unknown')}")
+            lines.append(f"  {key}: {row.get('state','unresolved')}; {age:.1f}h; owner {row.get('owner','unassigned')}; next check {row.get('next_check','unknown')}; next action {row.get('next_action','not recorded')}")
     except (ValueError, KeyError, TypeError):
         lines.append("Incident follow-through UNKNOWN: state could not be read.")
     lines.append("")
