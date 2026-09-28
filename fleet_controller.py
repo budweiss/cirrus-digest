@@ -55,7 +55,11 @@ def observe_worker(worker):
     rows=request(s['endpoint'],'/v1/models',timeout=5)['data']
     model=next(r for r in rows if r['id']==s['model'])
     resource=facts() if worker=='cumulus1-gptoss' else request('http://192.168.100.11:8011','/health',timeout=5)
-    if not 0 <= time.time()-resource['observed'] <= 30:raise RuntimeError('stale_resource_observation')
+    received=time.time()
+    # S339: independent host clocks can differ by sub-milliseconds. Bound skew
+    # and timestamp queue health on this controller's clock after validation.
+    if not -1 <= received-resource['observed'] <= 30:raise RuntimeError('stale_resource_observation')
+    resource={**resource,'source_observed':resource['observed'],'observed':received}
     if resource['host'] != ('cumulus1' if worker=='cumulus1-gptoss' else 'cumulus2'):raise RuntimeError('wrong_host')
     return {'worker':worker,'model':model['id'],'context':model['max_model_len'],**resource,
             'busy':vllm_busy(s['endpoint']) if worker=='cumulus2-qwen' else False,

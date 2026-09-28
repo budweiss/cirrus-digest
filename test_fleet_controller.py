@@ -35,6 +35,20 @@ class ObserverTests(unittest.TestCase):
    def read(self):return b'not metrics'
   with patch.object(f.urllib.request,'urlopen',return_value=Response()):
    with self.assertRaises(RuntimeError):f.vllm_busy('http://fixture')
+class ResourceClockTests(unittest.TestCase):
+ def observe(self,stamp):
+  responses=[{'data':[{'id':'qwen3.8-27b-fp8','max_model_len':65536}]},
+             {'host':'cumulus2','observed':stamp,'available_mib':60000}]
+  with patch.object(f,'request',side_effect=responses),patch.object(f.time,'time',return_value=1000),patch.object(f,'vllm_busy',return_value=False):
+   return f.observe_worker('cumulus2-qwen')
+ def test_small_positive_skew_uses_local_receipt_time(self):
+  result=self.observe(1000.0006)
+  self.assertEqual(result['observed'],1000)
+  self.assertEqual(result['source_observed'],1000.0006)
+ def test_stale_large_future_and_nan_refused(self):
+  for stamp in [969,1002,float('nan')]:
+   with self.subTest(stamp=stamp),self.assertRaisesRegex(RuntimeError,'stale_resource'):self.observe(stamp)
+
 class HermesReviewTests(unittest.TestCase):
  def test_disabled_busy_and_once_per_incident(self):
   from unittest.mock import Mock
