@@ -125,7 +125,7 @@ class Corrections(unittest.TestCase):
         self.assertTrue(p.summary(1100)[0]['owner'])
 
     def test_actual_fleet_aliases_use_fixed_feed_and_no_systemctl(self):
-        with patch.object(completeness,'supervisor_feed',return_value={'jobs':{'fleetcontroller':{'ok':True}}}), \
+        with patch.object(completeness,'supervisor_feed',return_value={'jobs':{'fleetcontroller':{'ok':True,'epoch':approval.time.time()}}}), \
              patch.object(tools,'ledger_append'),patch.object(tools,'_run') as run:
             for name in tools.FLEET_ALIASES:
                 result=json.loads(tools.check_service_status(name))
@@ -142,6 +142,17 @@ class Corrections(unittest.TestCase):
             tools.file_repair_ticket('cirrus-billsnow.service','diagnosed failure with sufficient evidence and an existing ticket')
             self.assertEqual(tools.INCIDENT_ACTIONS[-1]['owner'],'Cowork')
             self.assertEqual(tools.INCIDENT_ACTIONS[-1]['ticket_id'],'example-ticket')
+
+    def test_fleet_diagnostics_reject_bad_and_stale_feed(self):
+        rows=[None,[],{'jobs':[]},{'jobs':{'fleetcontroller':[]}},
+              {'jobs':{'fleetcontroller':{'ok':True,'epoch':800}}},
+              {'jobs':{'fleetcontroller':{'ok':True,'epoch':1001}}},
+              {'jobs':{'fleetcontroller':{'ok':'false','epoch':999}}}]
+        with patch.object(tools.time,'time',return_value=1000),patch.object(tools,'ledger_append'):
+            for feed in rows:
+                with self.subTest(feed=feed),patch.object(completeness,'supervisor_feed',return_value=feed):
+                    out=json.loads(tools.check_service_status('fleet-controller.service'))
+                    self.assertFalse(out['ok']);self.assertEqual(out['scope'],'user')
 
     def test_new_coverage_is_explicit(self):
         keys=['foundationrenewalcumulus','foundationrenewal','immaculatewednesdayreport']

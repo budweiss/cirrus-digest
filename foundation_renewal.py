@@ -389,7 +389,7 @@ def main(force=False):
         msg = ("Approval renewal still pending on %s: packet %s is waiting for review; approvals expire %s "
                "(in %.0f h). Start a Cowork session: 'review the renewal packet'." % (host, state.get("last_dir"), when, hours))
         delivery = notify(msg)
-        ok = hours > 0 and "fail" not in str(delivery).lower()
+        ok = hours > 0 and delivery == "sent"
         note = ("EXPIRED; " if hours <= 0 else "") + "reminded: " + str(delivery)
     else:
         out_dir, fixtures, bad, missing = run_all(creds, providers, served, projects)
@@ -397,14 +397,14 @@ def main(force=False):
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps(state, indent=2))
         expired = hours <= 0
-        ok = not expired and bad == 0 and not missing
+        ok = not expired and fixtures > 0 and bad == 0 and not missing
         msg = ("%sApproval renewal tests ran on %s: %d fixtures, %d gate failure(s)%s. Review packet: %s/PACKET.txt. "
                "Approvals expire %s (%s). Start a Cowork session and say 'review the renewal packet'." % (
                    "EXPIRED -- " if expired else "", host, fixtures, bad,
                    ", %d record(s) missing evidence" % len(missing) if missing else "", out_dir, when,
                    "ALREADY EXPIRED" if expired else "in %.0f h" % hours))
         delivery = notify(msg)
-        ok = ok and "fail" not in str(delivery).lower()
+        ok = ok and delivery == "sent"
         note = "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
     log(note)
     return ok, note

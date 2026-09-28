@@ -19,6 +19,7 @@ Usage:
   python3 cumulus_daily_brief.py --dry-run  # compose + PRINT, send nothing
 """
 import json
+import math
 import subprocess
 import sys
 import urllib.parse
@@ -264,6 +265,11 @@ def compose():
     lines += sky
     try:
         incidents = json.loads(_sudo_cat(SKY_STATE_DIR / 'heartbeat-incidents.json'))['incidents']
+        if not isinstance(incidents, dict):
+            raise ValueError('invalid incident map')
+        for row in incidents.values():
+            if not isinstance(row, dict) or not isinstance(row.get('first_seen'), (int, float)) or not math.isfinite(row['first_seen']):
+                raise ValueError('invalid incident record')
         lines.append(f"Unresolved incidents: {len(incidents)} (reviewed is not resolved)")
         for key, row in sorted(incidents.items()):
             age = max(0, (datetime.now().timestamp()-row['first_seen'])/3600)

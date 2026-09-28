@@ -13,6 +13,7 @@ Design rules (CUMULUS.md sec 8a, sec 4):
   - Every call — success or failure — is ledgered.
 """
 import json
+import time
 import opus_approval
 import subprocess
 import sys
@@ -106,10 +107,14 @@ FLEET_ALIASES = {"fleetcontroller.service", "cirrus-fleetcontroller.service", "f
 def _fleet_status():
     import completeness
     feed = completeness.supervisor_feed(force=True)
-    row = (feed or {}).get('jobs', {}).get('fleetcontroller')
+    jobs = feed.get('jobs') if isinstance(feed, dict) else None
+    row = jobs.get('fleetcontroller') if isinstance(jobs, dict) else None
+    valid = isinstance(row, dict) and type(row.get('epoch')) in (int, float)
+    fresh = valid and 0 <= time.time()-row['epoch'] <= 180
     return json.dumps({'host': 'cumulus1', 'scope': 'user', 'owner': 'buddy',
                        'unit': 'fleet-controller.service', 'status': row,
-                       'ok': bool(row and row.get('ok')),
+                       'ok': bool(fresh and row.get('ok') is True),
+                       'evidence': 'fresh controller observation' if fresh else 'missing, malformed or stale controller observation',
                        'authority': 'read-only; no restart or repair-ticket authority'})
 
 

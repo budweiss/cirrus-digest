@@ -12,7 +12,7 @@ def check(path=PATH,now=None):
         data=json.loads(Path(path).read_text())
         if not 0 <= now-data['observed'] <= 180:
             return {'ok':False,'reason':'fleet controller heartbeat stale'}
-        if len(data['workers'])!=2 or not data.get('ok'):
+        if not isinstance(data['workers'], list) or len(data['workers'])!=2 or data.get('ok') is not True:
             return {'ok':False,'reason':'fleet controller reports degraded resources or unresolved pilot'}
         return {'ok':True,'reason':'both workers observed; production recovery remains with Skywarden'}
     except (OSError,ValueError,KeyError,TypeError):
