@@ -440,7 +440,7 @@ def _declared(now, names, path=None, write=True):
     return data
 
 
-def summarize(_local=None, _node=None, _fetch=None, _declared_path=None):
+def summarize(_local=None, _node=None, _fetch=None, _declared_path=None, _paused=None):
     """Return (lines, all_ok).
 
     S111: the three underscore parameters are TEST SEAMS and default to the
@@ -469,7 +469,8 @@ def summarize(_local=None, _node=None, _fetch=None, _declared_path=None):
                        or {}).get(n)]
     seen_first = _declared(now, missing, path=_declared_path)
     from intake_maintenance import held
-    paused = held(Path(__file__).resolve().parent, 'paused_jobs')
+    # S348: _paused is a test seam like the others; None reads the real maintenance file.
+    paused = held(Path(__file__).resolve().parent, 'paused_jobs') if _paused is None else set(_paused)
     for name, cad_h in CADENCE_H.items():
         if name in paused:
             lines.append(f"⏸ {name}: planned maintenance; not executed")
@@ -520,6 +521,35 @@ def _selftest_record(ck):
            and "intake" in _j.loads(g["STATUS_PATH"].read_text()))
         for c in d.glob("jobs-status.json.corrupt-*"):
             c.unlink()
+
+        # S348. last_success is what a monitor reads to say "last good run was
+        #   N hours ago" after failures; L310/L316 survived every mutation.
+        g["STATUS_PATH"].write_text("{}")
+        record("snow", True, "good")
+        _row1 = _j.loads(g["STATUS_PATH"].read_text())["snow"]
+        ck("record: a successful run stamps last_success = its own last_run",
+           _row1.get("last_success") == _row1["last_run"]
+           and _row1.get("last_success_epoch") == _row1["epoch"])
+        _good = dict(_row1, last_success="2026-01-01T00:00:00", last_success_epoch=111)
+        g["STATUS_PATH"].write_text(_j.dumps({"snow": _good}))
+        record("snow", False, "broke")
+        _row2 = _j.loads(g["STATUS_PATH"].read_text())["snow"]
+        ck("record: a failed run keeps the PREVIOUS last_success, not its own time",
+           _row2["ok"] is False and _row2.get("last_success") == "2026-01-01T00:00:00"
+           and _row2.get("last_success_epoch") == 111)
+        g["STATUS_PATH"].write_text(_j.dumps(
+            {"snow": {"last_run": "2025-12-31T09:00:00", "epoch": 99, "ok": True, "note": ""}}))
+        record("snow", False, "broke")
+        _row3 = _j.loads(g["STATUS_PATH"].read_text())["snow"]
+        ck("record: a legacy ok row (no last_success) seeds it from its last_run",
+           _row3.get("last_success") == "2025-12-31T09:00:00"
+           and _row3.get("last_success_epoch") == 99)
+        g["STATUS_PATH"].write_text(_j.dumps(
+            {"snow": {"last_run": "2025-12-31T09:00:00", "epoch": 99, "ok": False, "note": ""}}))
+        record("snow", False, "still broken")
+        ck("record: a job that has never succeeded gets NO last_success field",
+           "last_success" not in _j.loads(g["STATUS_PATH"].read_text())["snow"]
+           and "last_success_epoch" not in _j.loads(g["STATUS_PATH"].read_text())["snow"])
 
         # 2. Corruption is preserved, never silently replaced.
         g["STATUS_PATH"].write_text("{not json at all")
@@ -985,7 +1015,7 @@ def selftest():
         # second when you mean the first is how a dead monitor looks like a
         # late one.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: None, _declared_path=_dp)
+                                _fetch=lambda: None, _declared_path=_dp, _paused=set())
         _rline = [l for l in _lines if _rj in l]
         ck("an unreachable CUMULUS renders the remote job as can't-confirm",
            _rline and "unreachable — can't confirm" in _rline[0])
@@ -995,7 +1025,7 @@ def selftest():
 
         # The inverse: reachable box -> a real row, not the excuse line.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: {_rj: _fresh}, _declared_path=_dp)
+                                _fetch=lambda: {_rj: _fresh}, _declared_path=_dp, _paused=set())
         _rline = [l for l in _lines if _rj in l]
         ck("...while a REACHABLE CUMULUS produces a real row instead",
            _rline and "can't confirm" not in _rline[0]
@@ -1003,22 +1033,32 @@ def selftest():
 
         # A remote job that FAILED must still fail the run.
         _lines, _ok = summarize(_local={_lj: _fresh}, _node="CIRRUS",
-                                _fetch=lambda: {_rj: _failed}, _declared_path=_dp)
+                                _fetch=lambda: {_rj: _failed}, _declared_path=_dp, _paused=set())
         ck("a FAILED remote job makes the whole run not-ok", _ok is False)
 
         # On CUMULUS nothing is fetched remotely at all.
         _called = []
         summarize(_local={_lj: _fresh}, _node="CUMULUS",
-                  _fetch=lambda: _called.append(1), _declared_path=_dp)
+                  _fetch=lambda: _called.append(1), _declared_path=_dp, _paused=set())
         ck("on CUMULUS the remote fetch is never attempted", _called == [])
 
     # all_ok aggregation, both directions.
-    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS", _declared_path=_dp)
+    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS", _declared_path=_dp,
+                            _paused=set())
     ck("one failed LOCAL job makes the run not-ok", _ok is False)
     _lines, _ok = summarize(_local={n: _fresh for n in CADENCE_H},
-                            _node="CUMULUS", _declared_path=_dp)
+                            _node="CUMULUS", _declared_path=_dp, _paused=set())
     ck("...and an all-healthy ledger is ok — or the flag is stuck off",
        _ok is True)
+    # S348: planned maintenance (L474 survived both ways). A paused job is shown
+    # as paused, is not judged, and so cannot fail the run -- while the SAME
+    # failed row still fails it when the job is not paused.
+    _lines, _ok = summarize(_local={_lj: _failed}, _node="CUMULUS", _declared_path=_dp,
+                            _paused={_lj})
+    ck("a paused job renders as planned maintenance, not as its failed row",
+       any(l.startswith("⏸ %s: planned maintenance" % _lj) for l in _lines)
+       and not any(_lj in l and not l.startswith("⏸") for l in _lines))
+    ck("...and its failed row does not fail the run while it is paused", _ok is True)
     __import__("shutil").rmtree(_dpdir, ignore_errors=True)
 
     # _fetch_remote: the branch that decides "unreachable" vs "garbage".
@@ -1045,11 +1085,25 @@ def selftest():
 
     _selftest_record(ck)
     _selftest_sources(ck)
+    # S348 (T118): an unknown argument must be refused, never run the suite or
+    # exit 0 silently. The child is marked so a mutant that runs the suite for
+    # every argument cannot recurse into this check again.
+    if not os.environ.get("JOB_STATUS_CLI_PROBE"):
+        import subprocess as _sp, sys as _sys
+        _cli = _sp.run([_sys.executable, str(Path(__file__).resolve()), "--bogus"],
+                       env=dict(os.environ, JOB_STATUS_CLI_PROBE="1"),
+                       capture_output=True, text=True, timeout=120)
+        ck("an unknown CLI argument is refused non-zero and never runs the suite",
+           _cli.returncode != 0 and "PASS" not in _cli.stdout and "usage" in _cli.stderr)
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 
 
 if __name__ == "__main__":
     import sys
-    if "selftest" in sys.argv:
+    # S348 (T118): exactly the two selftest spellings run the suite; anything
+    # else is refused non-zero. It used to be `"selftest" in sys.argv`, so an
+    # unknown argument exited 0 in silence -- the trap check_can_fail met here.
+    if sys.argv[1:] in (["selftest"], ["--selftest"]):
         sys.exit(selftest())
+    sys.exit("usage: job_status.py selftest|--selftest  (a library module; no other CLI)")
