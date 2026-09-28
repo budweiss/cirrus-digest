@@ -135,10 +135,14 @@ def gather_actions():
     }
 
 def gather_pending():
+    """Pending /accept items, or None when the queue could not be read (S348:
+    an unreadable file used to render as "queue is clear")."""
     try:
         items = json.loads(PENDING_FILE.read_text())
     except Exception:
-        return []
+        return None
+    if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+        return None
     pend = [i for i in items if i.get("status") == "pending"]
     out = []
     for it in pend:
@@ -153,7 +157,9 @@ def gather_awaiting_builds():
     try:
         builds = json.loads(BUILDS_FILE.read_text())
     except Exception:
-        return []
+        return None                       # S348: unknown, not "nothing awaiting"
+    if not isinstance(builds, list) or not all(isinstance(b, dict) for b in builds):
+        return None
     out = []
     for b in builds:
         if b.get("status") == "awaiting-confirm":
@@ -394,6 +400,24 @@ def compose():
     att = gather_attention()
     tm_line, tm_ok = gather_timemachine()
 
+    # S348 (O03): a source that could not be read is UNKNOWN, never "clear".
+    # Each one becomes a named attention flag, so the existing verdict and
+    # next-action rules already refuse to call the box healthy on it.
+    pend_unknown, awaiting_unknown = pend is None, awaiting is None
+    pend, awaiting = pend or [], awaiting or []
+    if pend_unknown:
+        att.append("pending-approvals file unreadable — /accept queue state UNKNOWN")
+    if awaiting_unknown:
+        att.append("dev-loop builds file unreadable — builds awaiting ship/discard UNKNOWN")
+    # scheduled-jobs status (did the CIRRUS jobs run & succeed) — from job_status ledger.
+    # Read BEFORE the verdict, so an unreadable ledger can count against it.
+    try:
+        import job_status
+        jlines, _jok = job_status.summarize()
+    except Exception:
+        jlines, _jok = ["• ⚠️ job ledger could not be read — scheduled-job status UNKNOWN"], None
+        att.append("scheduled-job ledger unreadable — job status UNKNOWN")
+
     healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 
     lines = [f"# ☀️ CIRRUS Morning Brief — {DAY_NAME}", "", f"**{verdict}**", "",
@@ -402,8 +426,10 @@ def compose():
         lines.append("Notable: " + "; ".join(dig["notable"]))
     lines.append("")
 
-    lines.append(f"**Pending decisions ({len(pend)})**")
-    if pend:
+    lines.append(f"**Pending decisions ({'?' if pend_unknown else len(pend)})**")
+    if pend_unknown:
+        lines.append("- ⚠️ UNKNOWN — pending_approvals.json could not be read")
+    elif pend:
         lines += [f"- {p}" for p in pend[:6]]
         if len(pend) > 6:
             lines.append(f"- …and {len(pend) - 6} more")
@@ -438,12 +464,6 @@ def compose():
     lines.append(tm_line)
     lines.append("")
 
-    # scheduled-jobs status (did the CIRRUS jobs run & succeed) — from job_status ledger
-    try:
-        import job_status
-        jlines, _jok = job_status.summarize()
-    except Exception:
-        jlines = []
     if jlines:
         lines.append("**Scheduled jobs**")
         lines += jlines
