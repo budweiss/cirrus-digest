@@ -67,6 +67,9 @@ def gather_client_events():
     for client, projects in CLIENT_KB_PROJECTS.items():
         lines = []
         for proj in projects:
+            if not (entity_kb.DATA_DIR / (proj + ".db")).is_file():
+                lines.append(f"  ⚠️ CRM coverage UNKNOWN: source database missing for {proj}.")
+                continue
             events = entity_kb.get_events(proj, since=f"{TODAY} 00:00:00")
             if not events:
                 continue
@@ -101,6 +104,11 @@ def gather_job_lines():
             if (not isinstance(rec, dict) or type(rec.get('ok')) is not bool
                     or not isinstance(rec.get('last_run'), str) or not rec['last_run']):
                 lines.append(f"  ⚠️ {name}: evidence UNKNOWN — missing or malformed job record.")
+                continue
+            try:
+                datetime.fromisoformat(rec['last_run'])
+            except ValueError:
+                lines.append(f"  ⚠️ {name}: evidence UNKNOWN — invalid job timestamp.")
                 continue
             ran_today = rec['last_run'].startswith(TODAY)
             note = f" — {rec['note']}" if rec.get('note') else ""
@@ -175,10 +183,16 @@ def gather_skywarden():
     """
     rows, all_rows = [], []
     cutoff = (datetime.now() - timedelta(days=RECURRENCE_DAYS)).strftime("%Y-%m-%d")
-    for line in _sudo_cat(SKY_STATE_DIR / "ledger.jsonl").splitlines():
+    ledger_text = _sudo_cat(SKY_STATE_DIR / "ledger.jsonl")
+    invalid_rows = 0
+    for line in ledger_text.splitlines():
         try:
             r = json.loads(line)
+            if not isinstance(r, dict) or not isinstance(r.get("ts"), str):
+                raise ValueError("invalid ledger row")
+            datetime.fromisoformat(r["ts"])
         except Exception:
+            invalid_rows += 1
             continue
         ts = str(r.get("ts", ""))
         if ts[:10] >= cutoff:
@@ -194,6 +208,9 @@ def gather_skywarden():
 
     lines = [f"  {len(checks)} routine check(s), {len(issues)} anomaly/issue "
              f"flag(s), {len(guidance)} escalation(s) to you"]
+    if not rows or invalid_rows:
+        lines.append("  ⚠️ Supervisor ledger coverage UNKNOWN or incomplete: "
+                     "no current-day rows or malformed records; counts are observed only.")
     # S96: STAMP THE TIME. These rows are today's LEDGER — a record of what
     # happened during the day, not a reading of current state. Without a clock
     # the reader cannot tell a failure that is happening NOW from one that was
@@ -204,11 +221,14 @@ def gather_skywarden():
     # hours after the unit had gone back to status=0/SUCCESS.
     # Today's repairs, so an anomaly can say whether it was actually fixed.
     repairs = [r for r in rows if str(r.get("event", "")) == "action"
-               and str(r.get("tool", "")) in REPAIR_TOOLS]
+               and str(r.get("tool", "")) in REPAIR_TOOLS
+               and r.get("result") in ("restarted", "cleared")]
     # How many DISTINCT DAYS in the window each repaired unit needed repair.
     repair_days = {}
     for r in all_rows:
-        if str(r.get("event", "")) == "action" and str(r.get("tool", "")) in REPAIR_TOOLS:
+        if (str(r.get("event", "")) == "action"
+                and str(r.get("tool", "")) in REPAIR_TOOLS
+                and r.get("result") in ("restarted", "cleared")):
             repair_days.setdefault(str(r.get("detail", "")), set()).add(
                 str(r.get("ts", ""))[:10])
 
@@ -217,17 +237,18 @@ def gather_skywarden():
         detail = str(r.get("detail", ""))
         lines.append(f"  ⚠️ [{when}] {detail[:100]}")
         # Was it repaired today, and is this a habit?
-        fixed = [x for x in repairs if _unit_in(detail, str(x.get("detail", "")))]
+        fixed = [x for x in repairs if _unit_in(detail, str(x.get("detail", "")))
+                 and str(x.get("ts", "")) >= str(r.get("ts", ""))]
         if fixed:
             unit = str(fixed[0].get("detail", ""))
             at = str(fixed[-1].get("ts", ""))[11:16] or "??:??"
             days = len(repair_days.get(unit, ()))
             if days >= 3:
-                lines.append(f"       ↳ healed {at} — but repaired on {days} of "
+                lines.append(f"       ↳ repair completed {at} — but repaired on {days} of "
                              f"the last {RECURRENCE_DAYS} days. RECURRING: the "
-                             f"restart is holding a real fault together.")
+                             f"restart is holding a real fault together. Recovery requires healthy probes.")
             else:
-                lines.append(f"       ↳ healed {at} by Skywarden"
+                lines.append(f"       ↳ repair completed {at} by Skywarden (recovery requires healthy probes)"
                              + (f" ({days}d in {RECURRENCE_DAYS})" if days > 1 else ""))
         else:
             # No repair. Either Skywarden judged it non-transient (hoaleads,
@@ -238,14 +259,25 @@ def gather_skywarden():
         lines.append(f"  🆘 {str(r.get('detail', r.get('result', '')))[:100]}")
 
     spend_today = 0.0
-    for line in _sudo_cat(SKY_STATE_DIR / "spend-ledger.jsonl").splitlines():
+    spend_text = _sudo_cat(SKY_STATE_DIR / "spend-ledger.jsonl")
+    spend_known = bool(spend_text.strip())
+    for line in spend_text.splitlines():
         try:
             row = json.loads(line)
-        except Exception:
-            continue
-        if str(row.get("ts", "")).startswith(TODAY):
-            spend_today += float(row.get("cost_usd", 0))
-    lines.append(f"  ${spend_today:.2f} spent today")
+            if not isinstance(row, dict) or not isinstance(row.get("ts"), str):
+                raise ValueError("invalid spend row")
+            datetime.fromisoformat(row["ts"])
+            amount = float(row["cost_usd"])
+            if not math.isfinite(amount) or amount < 0:
+                raise ValueError("invalid spend amount")
+            if row["ts"].startswith(TODAY):
+                spend_today += amount
+        except (ValueError, TypeError, KeyError):
+            spend_known = False
+    if spend_known:
+        lines.append(f"  ${spend_today:.2f} spent today")
+    else:
+        lines.append("  Spend coverage UNKNOWN: ledger missing, empty or malformed.")
     return lines
 
 
@@ -272,7 +304,8 @@ def compose():
     lines.append("**Skywarden (CUMULUS supervisor)**")
     lines += sky
     try:
-        incidents = json.loads(_sudo_cat(SKY_STATE_DIR / 'heartbeat-incidents.json'))['incidents']
+        state = json.loads(_sudo_cat(SKY_STATE_DIR / 'heartbeat-incidents.json'))
+        incidents = state['incidents']
         if not isinstance(incidents, dict):
             raise ValueError('invalid incident map')
         for row in incidents.values():
@@ -282,7 +315,16 @@ def compose():
         for key, row in sorted(incidents.items()):
             age = max(0, (datetime.now().timestamp()-row['first_seen'])/3600)
             lines.append(f"  {key}: {row.get('state','unresolved')}; {age:.1f}h; owner {row.get('owner','unassigned')}; next check {row.get('next_check','unknown')}; next action {row.get('next_action','not recorded')}")
-    except (ValueError, KeyError, TypeError):
+        resolved = state.get('resolved', [])
+        if not isinstance(resolved, list):
+            raise ValueError('invalid recovery history')
+        for row in resolved:
+            if not isinstance(row, dict):
+                raise ValueError('invalid recovery record')
+            at = row.get('resolved_at')
+            if isinstance(at, (int, float)) and math.isfinite(at) and datetime.fromtimestamp(at).strftime('%Y-%m-%d') == TODAY:
+                lines.append(f"  Recovered {row.get('incident', 'unknown')}: {row.get('recovery_evidence', 'evidence not recorded')}")
+    except (ValueError, KeyError, TypeError, OverflowError):
         lines.append("Incident follow-through UNKNOWN: state could not be read.")
     lines.append("")
     lines.append("*Composed by CUMULUS on-box (cumulus_daily_brief.py) — deterministic, no LLM call.*")
@@ -402,7 +444,7 @@ def selftest() -> int:
         {"ts": f"{ago(2)} 05:31:00", "event": "action", "tool": "restart_service",
          "detail": "cirrus-modelhealth.service", "result": "restarted"},
         {"ts": f"{ago(6)} 05:31:00", "event": "action", "tool": "reset_failed",
-         "detail": "cirrus-modelhealth.service", "result": "ok"},
+         "detail": "cirrus-modelhealth.service", "result": "cleared"},
         {"ts": f"{ago(8)} 05:31:00", "event": "action", "tool": "restart_service",
          "detail": "cirrus-modelhealth.service", "result": "restarted"},
         # Flagged and deliberately NOT repaired — Skywarden judged it
@@ -422,7 +464,7 @@ def selftest() -> int:
     finally:
         _sudo_cat, TODAY = saved_cat, saved_today
 
-    ck("a healed one-off says so, with a time", "healed 09:06 by Skywarden" in out)
+    ck("a healed one-off says so, with a time", "repair completed 09:06 by Skywarden (recovery requires healthy probes)" in out)
     ck("...and is NOT hidden (a healed failure is still a failure)",
        "cirrus-pedagogy.service" in out)
     ck("...and is not shouted about — no RECURRING on a one-off",

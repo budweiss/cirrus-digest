@@ -78,10 +78,14 @@ def _db_path(project: str, db_path: str = None) -> Path:
 
 def _connect(project: str, db_path: str = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(project, db_path)))
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    _migrate(conn)
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+        _migrate(conn)
+        return conn
+    except Exception:
+        conn.close()
+        raise
 
 
 def _migrate(conn) -> None:

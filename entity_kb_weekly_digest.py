@@ -248,6 +248,11 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
     unclassified = {}
 
     for kb_project in kb_projects:
+        # Read-only report: SQLite would otherwise create an absent source and
+        # turn missing evidence into a misleading "nothing to report" result.
+        source = Path(db_path) if db_path else entity_kb.DATA_DIR / (kb_project + ".db")
+        if not source.is_file():
+            raise FileNotFoundError("weekly digest source database missing: " + kb_project)
         events = entity_kb.get_events(kb_project, since=since, db_path=db_path)
         if not events:
             continue
