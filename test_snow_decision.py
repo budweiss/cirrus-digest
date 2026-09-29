@@ -35,7 +35,7 @@ class Decision(unittest.TestCase):
         original={'llm_budget':{'per_session_usd':100,'per_call_usd':10,'per_day_usd':200}}
         scoped, session=s.weekly_budget(original,datetime(2026,9,21))
         self.assertEqual(session,'billsnow:2026-W39')
-        self.assertEqual(scoped['llm_budget'],{'per_session_usd':2,'per_call_usd':1,'per_day_usd':200})
+        self.assertEqual(scoped['llm_budget'],{'per_session_usd':5,'per_call_usd':5,'per_day_usd':200})
         self.assertEqual(original['llm_budget']['per_session_usd'],100)
         lower,_=s.weekly_budget({'llm_budget':{'per_session_usd':0.5,'per_call_usd':0.1}})
         self.assertEqual(lower['llm_budget']['per_session_usd'],0.5)
@@ -43,6 +43,29 @@ class Decision(unittest.TestCase):
         self.assertEqual(s.weekly_budget({},datetime(2026,9,27))[1],session)
         self.assertNotEqual(s.weekly_budget({},datetime(2026,9,28))[1],session)
         with self.assertRaises(ValueError):s.weekly_budget({'llm_budget':{'per_session_usd':float('nan')}})
+
+    def test_five_dollar_admission_and_weekly_retry_limit(self):
+        import tempfile
+        from datetime import datetime
+        from pathlib import Path
+        import llm_budget
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'pricing.json').write_text(json.dumps({'models':{}, 'caps_usd':{
+                'per_call':10, 'per_session':100, 'per_day':200}}))
+            creds={'llm_budget':{'pricing_path':'pricing.json', 'ledger_path':'spend.jsonl'}}
+            scoped,session=s.weekly_budget(creds,datetime(2026,9,28))
+            cfg,box,ledger=llm_budget.resolve(scoped,app_dir=str(root))
+            def allowed(cost,session_id=session):
+                return llm_budget.allow(session_id,cost,cfg,box=box,ledger_path=ledger)[0]
+            self.assertTrue(allowed(4.99))
+            self.assertTrue(allowed(5.00))
+            self.assertFalse(allowed(5.01))
+            Path(ledger).write_text(json.dumps({'session_id':session,'cost':3.00})+'\n')
+            self.assertTrue(allowed(2.00))
+            self.assertFalse(allowed(2.01))
+            _,next_week=s.weekly_budget(creds,datetime(2026,10,5))
+            self.assertTrue(allowed(5.00,next_week))
 
     def test_every_snow_stage_has_paid_call_governance(self):
         import llm_routing

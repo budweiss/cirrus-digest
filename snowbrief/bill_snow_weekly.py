@@ -210,11 +210,11 @@ def validate_decision(data):
 
 
 def weekly_budget(creds, now=None):
-    """Scope all council/draft/judge calls to one bounded ISO calendar week."""
+    """S350: Buddy approved $5; bound all Snow calls/retries to that ISO week."""
     import math
     scoped = dict(creds)
     budget = dict(creds.get("llm_budget") or {})
-    for key, ceiling in (("per_session_usd", 2.0), ("per_call_usd", 1.0)):
+    for key, ceiling in (("per_session_usd", 5.0), ("per_call_usd", 5.0)):
         value = float(budget.get(key, ceiling))
         if not math.isfinite(value) or value < 0:
             raise ValueError("invalid snow budget")
@@ -225,7 +225,8 @@ def weekly_budget(creds, now=None):
 
 
 def decide():
-    creds, budget_session = weekly_budget(json.load(open(CREDS_PATH)))
+    with open(CREDS_PATH) as source:
+        creds, budget_session = weekly_budget(json.load(source))
     try:
         import llm_providers as L
     except Exception as e:
@@ -250,7 +251,7 @@ def decide():
         # own missing config rather than as "this caller wanted no draft".
         _hint = _local_hint()
         # S340: 6000 output tokens fits the reviewed two-member panel plus
-        # synthesis under the existing $1 aggregate cap. All 14 saved normal,
+        # synthesis under the then-$1 aggregate cap. All 14 saved normal,
         # no-evidence, disagreement and long-context provider fixtures passed
         # without truncation at this limit. Admission still refuses oversized
         # inputs/prices; never drop a reviewer or truncate evidence to fit.
