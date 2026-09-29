@@ -417,6 +417,13 @@ def compose():
     except Exception:
         jlines, _jok = ["• ⚠️ job ledger could not be read — scheduled-job status UNKNOWN"], None
         att.append("scheduled-job ledger unreadable — job status UNKNOWN")
+    if _jok is False:
+        # S348: a job whose LAST run failed, or that is overdue, is actionable and
+        # counts against the verdict (it used to render "healthy" beside a FAILED
+        # row). Held (⏸ paused_jobs), unconfirmable and not-yet-run rows are
+        # neutral in summarize(), and a job whose last run succeeded is ✅.
+        bad = [l[1:].strip(" ️").split(":", 1)[0] for l in jlines if l.startswith("⚠")]
+        att.append(f"scheduled job(s) failed or overdue: {', '.join(bad) or 'see list'} — see Scheduled jobs")
 
     healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 

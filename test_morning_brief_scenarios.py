@@ -27,6 +27,7 @@ _stub.load_sources = lambda path: {"digest": {"output_dir": str(Path(_HOME) / "o
 sys.modules["runtime_config"] = _stub
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import morning_brief as mb  # noqa: E402
+import job_status as real_job_status  # noqa: E402  (before any test swaps the module)
 
 
 def _no_send(*a, **k):
@@ -126,6 +127,47 @@ class MorningBriefScenarios(unittest.TestCase):
         with patch.object(mb, "gather_stalls", lambda: (["- ⚠️ stall check could not run (boom)"], False)):
             body = self.body()
         self.assertIn("- ⚠️ stall check could not run (boom)", body)
+        self.assertIn("✅ CIRRUS healthy", body)
+
+    def real_ledger(self, rows, paused=(), node="CUMULUS", fetch=None):
+        """The REAL job_status.summarize over a temp ledger (no live file, no SSH)."""
+        js = real_job_status
+        declared = self.tmp / "declared.json"
+        self.ledger.summarize = lambda: js.summarize(_local=rows, _node=node, _fetch=fetch,
+                                                     _declared_path=declared, _paused=set(paused))
+
+    def row(self, ok, age_h=1.0, note=""):
+        import time
+        return {"last_run": "2026-09-28T06:00:00", "epoch": int(time.time() - age_h * 3600),
+                "ok": ok, "note": note}
+
+    def test_failed_or_overdue_job_is_not_healthy_and_is_named(self):
+        # S348: the live brief printed "healthy" (bar a Dev-Loop build) beside
+        # "⚠️ ytwatch ... FAILED" and "⚠️ billsnow (CUMULUS) ... FAILED".
+        for label, rows, name in (
+                ("failed", {"ytwatch": self.row(False, note="HTTPError 404")}, "ytwatch"),
+                ("overdue", {"daily": self.row(True, age_h=30)}, "daily")):
+            with self.subTest(label):
+                self.real_ledger(rows)
+                body = self.body()
+                self.assertIn("⚠️ Needs a look", body)
+                self.assertIn(f"scheduled job(s) failed or overdue: {name} — see Scheduled jobs", body)
+                self.assertIn("**Next:** Check the attention flag(s) above.", body)
+        self.real_ledger({"billsnow": self.row(False)}, node="CIRRUS",
+                         fetch=lambda: {"billsnow": self.row(False)})
+        self.assertIn("failed or overdue: billsnow (CUMULUS) — see", self.body())
+
+    def test_resolved_held_and_unconfirmable_jobs_stay_healthy(self):
+        self.real_ledger({"ytwatch": self.row(True, note="recovered after yesterday's 404s"),
+                          "daily": self.row(False)}, paused={"daily"})
+        body = self.body()
+        self.assertIn("✅ CIRRUS healthy", body)
+        self.assertIn("⏸ daily: planned maintenance; not executed", body)
+        self.assertIn("✅ ytwatch", body)
+        self.assertNotIn("failed or overdue", body)
+        self.real_ledger({}, node="CIRRUS", fetch=lambda: None)     # CUMULUS unreachable: neutral (S57)
+        body = self.body()
+        self.assertIn("(CUMULUS): unreachable — can't confirm", body)
         self.assertIn("✅ CIRRUS healthy", body)
 
     def test_missing_backup_outranks_everything_but_the_digest(self):
