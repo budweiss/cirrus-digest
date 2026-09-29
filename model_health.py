@@ -944,6 +944,87 @@ MODEL_DRIFT_STATE = HERE / "logs" / "model-drift.json"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_REGISTRY = "https://registry.ollama.ai/v2/%s/manifests/%s"
 
+# S349 — the serving regression's signature. /usr/local/bin/ollama is what the
+# serve daemon launches, and the Ollama.app auto-updater can silently repoint
+# that link at the app bundle. The bundle's own binary was 0.24.0 (May build)
+# while the full 0.33.3 runtime stayed in /usr/local/ollama-0.33.3 — so the
+# server came up, answered /api/tags, and 500'd on every configured-model load
+# with "unknown model architecture". Detection-only, same policy as the drift
+# check above: the upgrade stays a decision.
+SERVE_LINK_STATE = HERE / "logs" / "serve-link.json"
+SERVE_LINK = "/usr/local/bin/ollama"
+
+
+def check_serving_link(link=SERVE_LINK,
+                       runtime_glob="/usr/local/ollama-*"):
+    """(line, should_notify). Says WHICH binary the serving CLI link resolves
+    to, whenever that is not the installed full-runtime layout.
+
+    Deliberately narrow. It only speaks on a box that USES the
+    /usr/local/ollama-* full-runtime repair layout (CIRRUS's), so Linux nodes
+    — where the binary is installed by a different mechanism — get no line at
+    all and their daily output is untouched.
+
+    Event semantics, not standing: a load failure already notifies EVERY run
+    (S137) and the drift line already nags weekly (S141). Both fire on this
+    exact regression — which is how S349 was finally caught — so a third
+    voice repeating it daily is how an alert channel gets muted (T9). This
+    check notifies ONCE per new non-runtime target: enough to turn "the model
+    cannot load" into "this is the repoint, here is where, here is the
+    repair" the same morning it happens.
+    """
+    import glob as _glob
+    roots = sorted({
+        os.path.dirname(os.path.realpath(g))
+        for g in _glob.glob(runtime_glob)
+        if os.path.isdir(g)
+    })
+    if not roots:
+        return ("", False)
+    try:
+        if not os.path.exists(link):
+            line = (f"{link} MISSING — the daemon has no CLI to launch; "
+                    f"full runtime(s) present under {roots[0]}")
+        else:
+            target = os.path.realpath(link)
+            in_runtime = any(
+                target == r or target.startswith(r + os.sep) for r in roots)
+            if in_runtime:
+                # Serving the full runtime as intended. Clear the event state
+                # so a FUTURE repoint notifies, even if the target comes back.
+                try:
+                    SERVE_LINK_STATE.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
+                return ("", False)
+            line = (f"{link} -> {target} — NOT a "
+                    f"/usr/local/ollama-* runtime ({roots[0]} present); an app "
+                    f"bundle may have repointed the serving CLI. The S349 "
+                    f"shape: server up, /api/tags fine, load 500s with "
+                    f"'unknown model architecture'. Repair: restore the link "
+                    f"and restart the serve unit (runner cirrus-ollama-upgrade "
+                    f"args.mode=apply does both).")
+    except Exception as e:  # noqa: BLE001
+        return (f"serving-link check failed: {type(e).__name__}: {e}", False)
+    prev = {}
+    try:
+        prev = json.loads(SERVE_LINK_STATE.read_text())
+    except Exception:
+        pass
+    notify = prev.get("last_flagged") != line
+    if notify:
+        try:
+            SERVE_LINK_STATE.parent.mkdir(parents=True, exist_ok=True)
+            SERVE_LINK_STATE.write_text(json.dumps(
+                {"last_flagged": line,
+                 "at": datetime.now().strftime("%Y-%m-%d %H:%M")},
+                indent=2) + "\n")
+        except Exception:
+            pass
+    return (line, notify)
+
 
 def _registry_digest(name):
     """sha256 of the registry's CURRENT manifest for this tag, or "" if unknown.
@@ -1465,6 +1546,7 @@ def main():
             broken.append(f"{p}={shown}: no working replacement found ({err[:80]})")
 
     runtime_line, runtime_notify = check_local_runtime()
+    sl_line, sl_notify = check_serving_link()                     # S349
     models_line, models_notify = check_model_drift()
     cloud_line, cloud_notify = check_cloud_model_releases(creds)
     dl_line, dl_notify = check_configured_model_delisted(creds)   # S146
@@ -1486,6 +1568,8 @@ def main():
     print(f"  detach:  {dj_line}")
     print(f"  tailnet: {tn_line}")
     print(f"  runtime: {runtime_line}")
+    if sl_line:
+        print(f"  servebin: {sl_line}")
     print(f"  {models_line}")
     print(f"  {dl_line}")
     print(f"  {cloud_line}")
@@ -1498,7 +1582,7 @@ def main():
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify or pe_notify
-            or ep_notify or dj_notify or dl_notify or tn_notify):
+            or ep_notify or dj_notify or dl_notify or tn_notify or sl_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -1507,6 +1591,17 @@ def main():
                       "_Told EVERY run until it loads: this is an outage, not drift. "
                       "On CIRRUS the fix was the runner's cirrus-ollama-upgrade "
                       "(args.mode=apply); on CUMULUS check `ollama ps` / the unit._"]
+        if sl_notify:
+            # S349. The load alarm says WHAT (cannot load); this says WHY,
+            # which is what made the last repair an hour of forensics.
+            lines += ["*THE SERVING CLI IS NOT THE FULL RUNTIME:*",
+                      f"• {sl_line}",
+                      "_The daemon launches /usr/local/bin/ollama; a link into "
+                      "an app bundle is the 2026-09-29 shape — server up, "
+                      "/api/tags fine, every configured-model load 500s. "
+                      "Restore the link into /usr/local/ollama-* and restart "
+                      "the serve unit (runner cirrus-ollama-upgrade "
+                      "args.mode=apply does both)._"]
         if fb_notify:
             # S141. The model may LOAD perfectly and still not be getting the
             # work -- a fallback chain that never recovers, a budget that
@@ -1648,6 +1743,76 @@ def _selftest_runtime(ck):
             RUNTIME_STATE = _saved_state
             globals()["_latest_ollama"] = _saved_latest
             globals()["_installed_ollama"] = _saved_installed
+
+
+def _selftest_serve_link(ck):
+    """S349 — the serving-CLI link check. Uses real temp dirs and symlinks so
+    the resolution path (realpath, not lstat) is what is actually tested."""
+    import tempfile as _tf
+    global SERVE_LINK_STATE
+    _saved_state = SERVE_LINK_STATE
+    with _tf.TemporaryDirectory() as td:
+        SERVE_LINK_STATE = Path(td, "logs") / "serve-link.json"
+        try:
+            # A box without the full-runtime layout (CUMULUS): silent, always.
+            line, notify = check_serving_link(
+                link=Path(td, "no-such", "ollama"),
+                runtime_glob=str(Path(td, "runtimes", "*")))
+            ck("a box without a /usr/local/ollama-* layout stays silent",
+               line == "" and not notify)
+
+            rtree = Path(td, "runtimes", "ollama-0.33.3")
+            rtree.mkdir(parents=True)
+            real = rtree / "ollama"
+            real.write_text("#runtime")
+            bin = Path(td, "bin")
+            bin.mkdir()
+            link = bin / "ollama"
+
+            ok_target = str(real)
+            app_dir = Path(td, "Ollama.app", "Contents", "Resources")
+            app_dir.mkdir(parents=True)
+            app_bin = app_dir / "ollama"
+            app_bin.write_text("#app bundle")
+            app_target = str(app_bin)
+
+            link.symlink_to(ok_target)
+            line, notify = check_serving_link(
+                link=link, runtime_glob=str(rtree.parent / "*"))
+            ck("a link into the full runtime is silent", line == "" and not notify)
+
+            link.unlink()
+            link.symlink_to(app_target)
+            line, notify = check_serving_link(
+                link=link, runtime_glob=str(rtree.parent / "ollama-*"))
+            ck("an app-bundle repoint IS said out loud AND notified (S349 case)",
+               "Ollama.app" in line and "NOT a" in line and notify)
+            line, notify = check_serving_link(
+                link=link, runtime_glob=str(rtree.parent / "ollama-*"))
+            ck("  ...but NOT notified again for the same target (event, not standing)",
+               line != "" and not notify)
+
+            link.unlink()
+            link.symlink_to(ok_target)
+            line, notify = check_serving_link(
+                link=link, runtime_glob=str(rtree.parent / "ollama-*"))
+            ck("once restored it reads silent, and clears the event state",
+               line == "" and not notify and not SERVE_LINK_STATE.exists())
+
+            link.unlink()
+            link.symlink_to(app_target)  # SAME target as the first regression
+            line, notify = check_serving_link(
+                link=link, runtime_glob=str(rtree.parent / "ollama-*"))
+            ck("a repeat regression after a repair re-notifies (state was cleared)",
+               "Ollama.app" in line and notify)
+
+            line, notify = check_serving_link(
+                link=Path(td, "bin", "gone-ollama"),
+                runtime_glob=str(rtree.parent / "ollama-*"))
+            ck("a MISSING serving link is said out loud as a NEW event",
+               "MISSING" in line and notify)
+        finally:
+            SERVE_LINK_STATE = _saved_state
 
 
 def _selftest_local_load(ck):
@@ -1915,6 +2080,7 @@ def selftest():
             os.environ["TARGET_ENV"] = _orig_target_env
 
     _selftest_runtime(ck)
+    _selftest_serve_link(ck)     # S349: does the serving CLI point at the runtime?
     _selftest_local_load(ck)     # S137: does the configured local model LOAD?
     _selftest_fallback(ck)       # S141: is the WORK actually going there?
     _selftest_truncation(ck)     # S141: did WE cut the local model off?
