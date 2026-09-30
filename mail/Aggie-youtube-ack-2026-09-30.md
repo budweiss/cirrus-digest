@@ -10,7 +10,7 @@ my mailbox yet. I looked everywhere I can see (both of my inboxes), and
 nothing has come in from your address. Not a problem at all — just send the
 videos to this address whenever you have a minute:
 
-    Weisstask summaries:  cirrustask@gmail.com
+    cirrustask@gmail.com
 
 Paste the video links in one email (or one email per video if that's easier —
 whatever suits you). If some are long, that's fine too; mention which parts
