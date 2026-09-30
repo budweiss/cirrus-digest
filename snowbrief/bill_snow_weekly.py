@@ -211,11 +211,11 @@ def validate_decision(data):
 
 
 def weekly_budget(creds, now=None):
-    """S350: Buddy approved $5; bound all Snow calls/retries to that ISO week."""
+    """S350: Buddy approved $20 per ISO week; retain the $5 per-run ceiling."""
     import math
     scoped = dict(creds)
     budget = dict(creds.get("llm_budget") or {})
-    for key, ceiling in (("per_session_usd", 5.0), ("per_call_usd", 5.0)):
+    for key, ceiling in (("per_session_usd", 20.0), ("per_call_usd", 5.0)):
         value = float(budget.get(key, ceiling))
         if not math.isfinite(value) or value < 0:
             raise ValueError("invalid snow budget")

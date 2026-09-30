@@ -45,7 +45,7 @@ class Decision(unittest.TestCase):
         original={'llm_budget':{'per_session_usd':100,'per_call_usd':10,'per_day_usd':200}}
         scoped, session=s.weekly_budget(original,datetime(2026,9,21))
         self.assertEqual(session,'billsnow:2026-W39')
-        self.assertEqual(scoped['llm_budget'],{'per_session_usd':5,'per_call_usd':5,'per_day_usd':200})
+        self.assertEqual(scoped['llm_budget'],{'per_session_usd':20,'per_call_usd':5,'per_day_usd':200})
         self.assertEqual(original['llm_budget']['per_session_usd'],100)
         lower,_=s.weekly_budget({'llm_budget':{'per_session_usd':0.5,'per_call_usd':0.1}})
         self.assertEqual(lower['llm_budget']['per_session_usd'],0.5)
@@ -54,7 +54,7 @@ class Decision(unittest.TestCase):
         self.assertNotEqual(s.weekly_budget({},datetime(2026,9,28))[1],session)
         with self.assertRaises(ValueError):s.weekly_budget({'llm_budget':{'per_session_usd':float('nan')}})
 
-    def test_five_dollar_admission_and_weekly_retry_limit(self):
+    def test_five_dollar_admission_and_twenty_dollar_weekly_limit(self):
         import tempfile
         from datetime import datetime
         from pathlib import Path
@@ -72,8 +72,14 @@ class Decision(unittest.TestCase):
             self.assertTrue(allowed(5.00))
             self.assertFalse(allowed(5.01))
             Path(ledger).write_text(json.dumps({'session_id':session,'cost':3.00})+'\n')
+            self.assertTrue(allowed(5.00))
+            Path(ledger).write_text(json.dumps({'session_id':session,'cost':15.00})+'\n')
+            self.assertTrue(allowed(5.00))
+            Path(ledger).write_text(json.dumps({'session_id':session,'cost':18.00})+'\n')
             self.assertTrue(allowed(2.00))
             self.assertFalse(allowed(2.01))
+            Path(ledger).write_text(json.dumps({'session_id':session,'cost':20.00})+'\n')
+            self.assertFalse(allowed(0.01))
             _,next_week=s.weekly_budget(creds,datetime(2026,10,5))
             self.assertTrue(allowed(5.00,next_week))
 
