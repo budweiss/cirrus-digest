@@ -4,6 +4,16 @@ from unittest.mock import patch, mock_open
 from snowbrief import bill_snow_weekly as s
 
 class Decision(unittest.TestCase):
+    def test_reviewed_system_is_node_independent_but_task_keeps_sender(self):
+        # Cloud review evidence is shared between the two hosts. Do not bake
+        # NODE into its exact system-prompt hash; the task carries the sender.
+        self.assertNotIn('CIRRUS',s.SYSTEM)
+        self.assertNotIn('CUMULUS',s.SYSTEM)
+        self.assertIn("sending node named in the task's voice instructions",s.SYSTEM)
+        for node in ['CIRRUS','CUMULUS']:
+            with patch.object(s,'NODE',node),patch.object(s,'_read',return_value='fixture'):
+                self.assertIn('sign as '+node,s.build_prompt('synthetic evidence',[]))
+
     def test_valid_quiet_and_material(self):
         self.assertTrue(s.validate_decision(dict(material_change=False, reason='unchanged', refresh_md='', email_subject='', email_body='')))
         self.assertTrue(s.validate_decision(dict(material_change=True, reason='changed', refresh_md='outlook', email_subject='update', email_body='body')))
