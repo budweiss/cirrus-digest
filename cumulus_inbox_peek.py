@@ -70,7 +70,15 @@ def body_text(msg, limit):
 
 
 def load_creds():
-    config = json.loads(CONFIG_PATH.read_text())
+    # S182: the effective config is the tracked file PLUS the box's untracked
+    # overlays — intake.py reads it through runtime_config.load_sources, and so
+    # must this (raw JSON misses the real account entirely).
+    sys.path.insert(0, str(REPO))
+    try:
+        from runtime_config import load_sources
+        config = load_sources(CONFIG_PATH)
+    except Exception:
+        config = json.loads(CONFIG_PATH.read_text())
     creds = json.loads(CREDS_PATH.read_text())
     account = next((a for a in config.get("email", {}).get("accounts", [])
                     if a.get("label") == ACCOUNT_LABEL), None)
