@@ -294,3 +294,122 @@ class Queue:
         # sqlite online backup, never an unsafe copy of a live database.
         with contextlib.closing(sqlite3.connect(self.path)) as source, contextlib.closing(sqlite3.connect(path)) as dest:
             source.backup(dest)
+
+
+def selftest():
+    """Exercise the queue's decision-making functions with explicit inputs and
+    expected outputs. Purely in temporary directories; no live queue touched."""
+    import sys
+    import tempfile
+    checks = []
+    def check(name, cond):
+        checks.append((name, bool(cond)))
+    policy = {
+        'workers': {'w1': {'model': 'm1', 'min_available_mib': 100}},
+        'projects': {
+            'proj': {'workers': ['w1'], 'model_ids': {'w1': 'm1'},
+                     'validator': 'fixture_json', 'max_retries': 1,
+                     'stall_seconds': 30, 'heartbeat_seconds': 10,
+                     'max_input_bytes': 100000, 'max_output_tokens': 100,
+                     'qualification_until': 2000.0, 'contract': 'c1',
+                     'mode': 'pilot', 'owner': 'o1', 'resource': 'r1'},
+        },
+    }
+    check('digest deterministic', digest({'a': 1, 'b': 2}) == digest({'b': 2, 'a': 1}))
+    check('digest sensitive to value', digest({'a': 1}) != digest({'a': 2}))
+    with tempfile.TemporaryDirectory() as d:
+        bad = json.loads(json.dumps(policy))
+        del bad['projects']['proj']['resource']
+        try:
+            Queue(Path(d) / 'bad.db', bad, clock=lambda: 1000.0, monotonic=lambda: 50.0)
+            check('incomplete policy refused', False)
+        except Refused:
+            check('incomplete policy refused', True)
+        q = Queue(Path(d) / 'q.db', policy, clock=lambda: 1000.0, monotonic=lambda: 50.0)
+        job = q.submit('proj', 'rk1', {'x': 1}, 'c1')
+        check('submit returns job id', isinstance(job, str) and len(job) == 32)
+        check('resubmit same payload idempotent', q.submit('proj', 'rk1', {'x': 1}, 'c1') == job)
+        try:
+            q.submit('proj', 'rk1', {'x': 2}, 'c1')
+            check('dedup key reuse refused', False)
+        except Refused:
+            check('dedup key reuse refused', True)
+        try:
+            q.submit('proj', 'rk2', {'x': 1}, 'wrong-contract')
+            check('wrong contract refused', False)
+        except Refused:
+            check('wrong contract refused', True)
+        check('claim without health returns None', q.claim('w1') is None)
+        q.health('w1', 'm1', 200000, 500)
+        row = q.claim('w1')
+        check('claim returns running job', row is not None and row['id'] == job and row['state'] == 'running')
+        fence = row['fence']
+        check('second claim while active returns None', q.claim('w1') is None)
+        q.progress(job, fence, 5)
+        try:
+            q.progress(job, fence, 3)
+            check('progress decrease refused', False)
+        except Refused:
+            check('progress decrease refused', True)
+        good = {'model': 'm1', 'finish_reason': 'stop',
+                'data': {'sample': 12, 'control_group': False, 'trial_date': None}, 'coverage': 1}
+        check('valid fixture completion accepted', q.complete(job, fence, good) is True)
+        check('job recorded succeeded', q.status()['jobs'][0]['state'] == 'succeeded')
+        job2 = q.submit('proj', 'rk3', {'y': 2}, 'c1')
+        row2 = q.claim('w1')
+        check('second job claimable after completion', row2 is not None and row2['id'] == job2)
+        check('invalid fixture completion rejected', q.complete(job2, row2['fence'], {'model': 'm1'}) is False)
+        check('failed job recorded', [j for j in q.status()['jobs'] if j['id'] == job2][0]['state'] == 'failed')
+        q.control('pause')
+        check('pause reflected in status', q.status()['paused'] is True)
+        check('claim while paused returns None', q.claim('w1') is None)
+        q.control('resume')
+        check('resume reflected in status', q.status()['paused'] is False)
+        try:
+            q.control('bogus')
+            check('unsupported control refused', False)
+        except Refused:
+            check('unsupported control refused', True)
+        # Lease-expiry path: monitor must flag the attempt unknown, then the
+        # cancel/stopped/retry reconciliation chain must behave in order.
+        mono = [50.0]
+        q2 = Queue(Path(d) / 'q2.db', policy, clock=lambda: 1000.0, monotonic=lambda: mono[0])
+        j = q2.submit('proj', 'rk9', {'z': 9}, 'c1')
+        q2.health('w1', 'm1', 200000, 500)
+        r = q2.claim('w1')
+        check('q2 claim succeeds', r is not None and r['id'] == j)
+        f = r['fence']
+        try:
+            q2.cancel(j, f, q2.hash, confirmed_stall=False)
+            check('cancel without stall confirmation refused', False)
+        except Refused:
+            check('cancel without stall confirmation refused', True)
+        mono[0] += 200.0
+        q2.monitor()
+        state = [x for x in q2.status()['jobs'] if x['id'] == j][0]['state']
+        check('monitor flags expired lease unknown', state == 'unknown')
+        q2.cancel(j, f, q2.hash, confirmed_stall=True)
+        check('confirmed cancel moves to cancelling',
+              [x for x in q2.status()['jobs'] if x['id'] == j][0]['state'] == 'cancelling')
+        try:
+            q2.stopped(j, f, confirmed=True, backend_idle=False)
+            check('stopped without idle backend refused', False)
+        except Refused:
+            check('stopped without idle backend refused', True)
+        q2.stopped(j, f, confirmed=True, backend_idle=True)
+        check('reconciled stop cancelled',
+              [x for x in q2.status()['jobs'] if x['id'] == j][0]['state'] == 'cancelled')
+        check('retry within budget accepted', q2.retry(j, q2.hash) is True)
+        check('retried job in retry_wait',
+              [x for x in q2.status()['jobs'] if x['id'] == j][0]['state'] == 'retry_wait')
+    failed = [n for n, ok in checks if not ok]
+    for name, ok in checks:
+        print(('PASS' if ok else 'FAIL'), name)
+    print('selftest: %d/%d checks passed' % (len(checks) - len(failed), len(checks)))
+    return not failed
+
+
+if __name__ == '__main__':
+    import sys
+    if '--selftest' in sys.argv:
+        sys.exit(0 if selftest() else 1)
