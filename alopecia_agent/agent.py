@@ -266,6 +266,15 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
     cost = 0.0
     final_result = ""
     narrative = []
+    # S358, rule 3a: today's run failed with ONLY "SDK reasoning pass failed;
+    # its cost was recorded" in the journal -- the raise fired before the
+    # transcript write, so the narrative was discarded AND the underlying SDK
+    # error text was never recorded anywhere. On an error result we now BREAK
+    # (cost already recorded above), write the transcript with the bounded
+    # error detail, and raise with the error _subtype_ only -- subtypes are a
+    # fixed SDK vocabulary, safe for the journal; the free-text stays in the
+    # transcript file, capped, where the other transcripts' free text lives.
+    error_detail = None
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
@@ -278,7 +287,9 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
             llm_budget.record_sdk_cost(creds, cost, task="alopecia-agent:coordinator",
                                        run_id=run_id, app_dir=str(PROJECT_DIR))
             if getattr(msg, "is_error", False):
-                raise RuntimeError("SDK reasoning pass failed; its cost was recorded")
+                error_detail = {"subtype": str(getattr(msg, "subtype", "") or "unknown"),
+                                "text": str(msg.result or "")[:600]}
+                break
             final_result = msg.result or ""
 
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -290,7 +301,14 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
                             "with no intervening text)_"])
     parts += ["", "## Final summary", "",
              final_result or "_(ResultMessage carried no .result text)_"]
+    if error_detail is not None:
+        parts += ["", "## SDK error (bounded capture)", "",
+                  f"subtype: {error_detail['subtype']}", "",
+                  error_detail["text"] or "_(no .result text on the error result)_"]
     transcript_path.write_text("\n\n".join(parts) + "\n")
+    if error_detail is not None:
+        raise RuntimeError("SDK reasoning pass failed; its cost was recorded "
+                           f"(subtype: {error_detail['subtype']}); transcript saved for inspection")
     if not dry_run and len(research.load(research.STATE / "steps.json", [])) <= steps_before:
         raise RuntimeError("active_research_step_missing; transcript saved for inspection")
     new_steps=research.load(research.STATE / "steps.json", [])[steps_before:]
