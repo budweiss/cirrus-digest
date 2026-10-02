@@ -152,5 +152,91 @@ def availability(root=ROOT):
     return states
 
 
+def selftest():
+    """Exercise status() decision branches and configuration() gating offline.
+
+    request() and available_gib() are monkeypatched so no Ollama or network
+    is touched; originals are restored in the finally block.
+    """
+    import tempfile
+    real_request, real_available = request, available_gib
+    installed = {'alpha:1', 'delta:1', 'guard:1'}
+    loaded = {'guard:1'}
+    free_gib = [8.0]
+    try:
+        globals()['request'] = lambda endpoint, path, body=None, timeout=10: (
+            {'models': [{'name': n} for n in sorted(installed)]} if path == '/api/tags'
+            else {'models': [{'name': n} for n in sorted(loaded)]} if path == '/api/ps'
+            else (_ for _ in ()).throw(AssertionError('unexpected path ' + path)))
+        globals()['available_gib'] = lambda: free_gib[0]
+        cfg = {'host': socket.gethostname(), 'endpoint': 'http://127.0.0.1:11434',
+               'protected_models': ['guard:1'], 'max_loaded_models': 1,
+               'specialists': {
+                   'alpha': {'enabled': True, 'model': 'alpha:1', 'minimum_available_gib': 4},
+                   'delta': {'enabled': True, 'model': 'delta:1', 'minimum_available_gib': 4},
+                   'guard': {'enabled': True, 'model': 'guard:1', 'minimum_available_gib': 4},
+                   'off': {'enabled': False, 'model': 'off:1', 'minimum_available_gib': 0}}}
+        # Happy path: installed, not loaded, slot logic reached -> ready.
+        loaded.clear(); loaded.add('guard:1'); cfg['max_loaded_models'] = 3
+        s = status('alpha', cfg)
+        assert s == {'model': 'alpha:1', 'installed': True, 'loaded': False,
+                     'available_gib': 8.0, 'ready': True, 'reason': None}, s
+        # Not installed -> model_not_installed.
+        installed.discard('alpha:1')
+        s = status('alpha', cfg)
+        assert s['ready'] is False and s['reason'] == 'model_not_installed', s
+        installed.add('alpha:1')
+        # Protected model can never be a specialist.
+        s = status('guard', cfg)
+        assert s['ready'] is False and s['reason'] == 'protected_model_cannot_be_specialist', s
+        # Resident slots full (delta not loaded, max=1 already held by guard).
+        cfg['max_loaded_models'] = 1
+        s = status('delta', cfg)
+        assert s['ready'] is False and s['reason'] == 'resident_slots_full', s
+        # Insufficient memory once a slot is free.
+        cfg['max_loaded_models'] = 3
+        free_gib[0] = 2.0
+        s = status('delta', cfg)
+        assert s['ready'] is False and s['reason'] == 'insufficient_memory', s
+        assert s['available_gib'] == 2.0, s
+        # Disabled specialist raises.
+        try:
+            status('off', cfg)
+            raise AssertionError('disabled specialist did not raise')
+        except Unavailable as e:
+            assert str(e) == 'specialist_not_enabled', e
+        # configuration() from a temp root: matching host passes, other host fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'config').mkdir()
+            conf = Path(tmp) / 'config/local_specialists.json'
+            conf.write_text(json.dumps(cfg))
+            assert configuration(tmp)['endpoint'] == cfg['endpoint']
+            bad = dict(cfg, host='no-such-host')
+            conf.write_text(json.dumps(bad))
+            try:
+                configuration(tmp)
+                raise AssertionError('wrong host did not raise')
+            except Unavailable as e:
+                assert str(e) == 'specialists_not_enabled_on_this_host', e
+            bad = dict(cfg, endpoint='http://example:11434')
+            conf.write_text(json.dumps(bad))
+            try:
+                configuration(tmp)
+                raise AssertionError('non-local endpoint did not raise')
+            except Unavailable as e:
+                assert str(e) == 'specialists_require_local_ollama', e
+    finally:
+        globals()['request'], globals()['available_gib'] = real_request, real_available
+    print('local_specialists selftest OK')
+
+
 if __name__ == '__main__':
-    print(json.dumps(availability(), indent=2))
+    import sys
+    if '--selftest' in sys.argv[1:]:
+        try:
+            selftest()
+        except Exception as e:
+            print('local_specialists.py selftest failed: ' + repr(e), file=sys.stderr)
+            sys.exit(1)
+    else:
+        print(json.dumps(availability(), indent=2))
