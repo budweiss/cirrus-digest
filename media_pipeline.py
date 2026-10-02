@@ -472,7 +472,184 @@ def call(action, **kwargs):
     return json.loads(p.stdout)['result']
 
 
+def selftest():
+    """Exercise decision-making functions with explicit inputs/outputs. No network, no GPU."""
+    import io
+
+    # --- youtube_deadline: busy-window deferral and weekday math ---
+    tz = ZoneInfo('America/New_York')
+    # A weekday well inside the busy window should raise.
+    busy_day = next(d for d in range(1, 8) if datetime(2024, 1, d, tzinfo=tz).weekday() in BUSY_DAYS)
+    inside_busy = datetime(2024, 1, busy_day, BUSY_START_H, 30, tzinfo=tz)
+    try:
+        youtube_deadline(inside_busy)
+        raise AssertionError('expected youtube_deferred_busy_window')
+    except RuntimeError as exc:
+        assert str(exc) == 'youtube_deferred_busy_window', exc
+
+    # A weekday shortly before the busy window should cap the deadline at cutoff.
+    before_busy = datetime(2024, 1, busy_day, BUSY_START_H - 1, 0, tzinfo=tz)
+    cutoff = before_busy.replace(hour=BUSY_START_H, minute=0, second=0, microsecond=0) - timedelta(minutes=5)
+    deadline = youtube_deadline(before_busy)
+    assert abs(deadline - cutoff.timestamp()) < 1, (deadline, cutoff.timestamp())
+
+    # A weekend day (not in BUSY_DAYS) should never raise and use the full 90 minutes.
+    weekend_day = next(d for d in range(1, 8) if datetime(2024, 1, d, tzinfo=tz).weekday() not in BUSY_DAYS)
+    weekend = datetime(2024, 1, weekend_day, 12, 0, tzinfo=tz)
+    deadline = youtube_deadline(weekend)
+    assert abs(deadline - (weekend.timestamp() + 90 * 60)) < 1
+
+    # --- youtube_time_limit: invalid deadline types/values rejected ---
+    for bad in (True, False, 'x', None, float('nan'), float('inf')):
+        try:
+            with youtube_time_limit(bad):
+                raise AssertionError('should not enter context for %r' % (bad,))
+        except ValueError as exc:
+            assert str(exc) == 'invalid_youtube_deadline', (bad, exc)
+
+    # An already-past deadline must raise YouTubeDeadline immediately.
+    try:
+        with youtube_time_limit(time.time() - 1):
+            raise AssertionError('expected YouTubeDeadline')
+    except YouTubeDeadline:
+        pass
+
+    # --- enabled(): env flag gate ---
+    old = os.environ.pop('CUMULUS_MEDIA', None)
+    try:
+        assert enabled() is False
+        os.environ['CUMULUS_MEDIA'] = '1'
+        assert enabled() is True
+        os.environ['CUMULUS_MEDIA'] = '0'
+        assert enabled() is False
+    finally:
+        if old is None:
+            os.environ.pop('CUMULUS_MEDIA', None)
+        else:
+            os.environ['CUMULUS_MEDIA'] = old
+
+    # --- split_text: deterministic fake token counter, no network ---
+    def fake_count(s):
+        return len(s)  # 1 char == 1 token, simplest deterministic model
+    text = 'x' * 50
+    spans = split_text(text, count=fake_count, limit=20, overlap=5)
+    assert spans[0][0] == 0
+    assert spans[-1][1] == len(text)
+    # Spans must cover the whole string with no gaps.
+    covered = set()
+    for a, b in spans:
+        covered.update(range(a, b))
+    assert covered == set(range(len(text))), 'split_text left a gap'
+    # Each span must respect the token limit under fake_count.
+    for a, b in spans:
+        assert fake_count(text[a:b]) <= 20
+
+    # A single character exceeding the token budget must raise.
+    try:
+        split_text('y', count=lambda s: 999, limit=20)
+        raise AssertionError('expected ValueError for oversized single char')
+    except ValueError as exc:
+        assert str(exc) == 'one character exceeds token budget'
+
+    # --- source_quote: validation and verbatim span recovery ---
+    source = 'The quick brown fox jumps over the lazy dog near the riverbank today.'
+    quote = 'quick brown fox jumps over the lazy dog'
+    matched, start, end = source_quote(quote, source)
+    assert matched == source[start:end]
+    assert 'quick brown fox' in matched
+
+    # Too-short / too-long quotes rejected before any search.
+    try:
+        source_quote('short', source)
+        raise AssertionError('expected invalid_source_quote')
+    except ValueError as exc:
+        assert str(exc) == 'invalid_source_quote'
+    try:
+        source_quote('x' * 701, source)
+        raise AssertionError('expected invalid_source_quote for long quote')
+    except ValueError as exc:
+        assert str(exc) == 'invalid_source_quote'
+
+    # A quote not present verbatim (stitched fragments) must be rejected.
+    stitched = 'quick brown fox jumps over the hyperactive sloth animal creature'
+    try:
+        source_quote(stitched, source)
+        raise AssertionError('expected unsupported_media_quote')
+    except ValueError as exc:
+        assert str(exc) == 'unsupported_media_quote'
+
+    # --- parse_claims: schema enforcement, quote dropping ---
+    good_quote = 'quick brown fox jumps over the lazy dog near the riverbank today'
+    raw_good = json.dumps({'claims': [{'claim': 'c', 'why_it_applies': 'w',
+        'how_to_test': 'h', 'quote': good_quote}]})
+    claims = parse_claims(raw_good, source)
+    assert len(claims) == 1
+    assert claims[0]['quote'] == source[claims[0]['source_start']:claims[0]['source_end']]
+
+    # Fenced code block wrapper must be stripped.
+    fenced = '```json\n' + raw_good + '\n```'
+    claims2 = parse_claims(fenced, source)
+    assert len(claims2) == 1
+
+    # More than 6 claims must raise.
+    too_many = json.dumps({'claims': [{'claim': 'c', 'why_it_applies': 'w',
+        'how_to_test': 'h', 'quote': good_quote}] * 7})
+    try:
+        parse_claims(too_many, source)
+        raise AssertionError('expected too_many_media_claims')
+    except ValueError as exc:
+        assert str(exc) == 'too_many_media_claims'
+
+    # A claim missing a required string field must raise invalid_media_claim.
+    bad_claim = json.dumps({'claims': [{'claim': 'c', 'why_it_applies': 'w',
+        'how_to_test': 'h'}]})
+    try:
+        parse_claims(bad_claim, source)
+        raise AssertionError('expected invalid_media_claim')
+    except ValueError as exc:
+        assert str(exc) == 'invalid_media_claim'
+
+    # A stitched/unsupported quote with no `dropped` list provided re-raises.
+    raw_stitched = json.dumps({'claims': [{'claim': 'c', 'why_it_applies': 'w',
+        'how_to_test': 'h', 'quote': stitched}]})
+    try:
+        parse_claims(raw_stitched, source)
+        raise AssertionError('expected unsupported_media_quote to propagate')
+    except ValueError as exc:
+        assert str(exc) == 'unsupported_media_quote'
+
+    # With a dropped list supplied, the bad claim is recorded and skipped, not raised.
+    dropped = []
+    kept = parse_claims(raw_stitched, source, dropped)
+    assert kept == []
+    assert len(dropped) == 1
+    assert dropped[0]['reason'] == 'unsupported_media_quote'
+
+    # --- youtube_instructions: lane-specific text branches ---
+    hw = youtube_instructions('hardware')
+    news = youtube_instructions('news')
+    assert 'hardware tests relevant to this stack' in hw
+    assert 'news that changes a concrete action' in news
+    assert 'GPT-OSS120B' in hw and 'GPT-OSS120B' in news
+
+    # --- atomic_json: round trip through a temp file ---
+    with tempfile.TemporaryDirectory(prefix='media-selftest-') as tmp:
+        target = Path(tmp) / 'sub' / 'out.json'
+        atomic_json(target, {'a': 1})
+        assert json.loads(target.read_text()) == {'a': 1}
+        assert not target.with_suffix('.tmp').exists()
+
+    print('media_pipeline selftest OK', file=sys.stderr)
+
+
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--selftest']:
+        try:
+            selftest()
+        except Exception as exc:
+            print('media_pipeline.py selftest failed: ' + repr(exc), file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
     if sys.argv[1:] not in (['--request'], ['--youtube-worker']):
         raise SystemExit('use --request with JSON on stdin')
     payload = json.load(sys.stdin)
