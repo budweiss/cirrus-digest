@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -92,6 +93,9 @@ BILLING_ERR = re.compile(
     r"(insufficient[_ ]?(quota|balance|funds|credit)|no credits|credit balance|"
     r"out of (credits|balance)|billing|payment required|add (funds|credits)|"
     r"purchase|top ?up|402|quota exceeded|exceeded your current quota)", re.I)
+
+TRANSIENT_RESET = re.compile(
+    r"(connection reset by peer|remote end closed connection|connection aborted)", re.I)
 
 
 def load():
@@ -178,25 +182,28 @@ def save_field(field, value, creds_path=None, secrets_dir=None):
 
 
 def test_model(provider, creds, model):
-    """Live 5-token call forcing `model`. Returns (ok, err_str)."""
+    """Live probe forcing `model`; confirm one transport reset before alerting."""
     c = dict(creds)
     c[MODEL_FIELD[provider]] = model
     if provider == "anthropic":
         c["claude_dev_model"] = ""      # ensure claude_model is the one used
-    try:
-        r = L.call(provider, "health check", "Reply with the single word OK.",
-                   c, max_tokens=PROBE_TOKENS, retries=1)
-        txt = (r or "").strip()
-        if txt:
-            return (True, "")
-        # The call SUCCEEDED but returned no text. This used to return
-        # ("", False) — an empty err matches neither MODEL_ERR nor BILLING_ERR,
-        # so it fell through to `errored` and printed a reason-less failure.
-        # Say what happened, so the next reader is not left guessing.
-        return (False, f"empty response at max_tokens={PROBE_TOKENS} — the "
-                       f"call succeeded but the model emitted no text")
-    except Exception as e:
-        return (False, str(e))
+    for attempt in range(2):
+        try:
+            r = L.call(provider, "health check", "Reply with the single word OK.",
+                       c, max_tokens=PROBE_TOKENS, retries=1)
+            txt = (r or "").strip()
+            if txt:
+                return (True, "")
+            # An empty reply is a real probe failure; another try cannot
+            # distinguish it from a model that exhausted its output budget.
+            return (False, f"empty response at max_tokens={PROBE_TOKENS} — the "
+                           f"call succeeded but the model emitted no text")
+        except Exception as e:
+            err = str(e)
+            if attempt == 0 and TRANSIENT_RESET.search(err):
+                time.sleep(2)
+                continue
+            return (False, err)
 
 
 # ── provider model-list fetchers (return ordered candidate model ids) ──────────
@@ -2059,6 +2066,38 @@ def selftest():
         nonlocal fails
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
+
+    # A one-off socket reset is not enough evidence to fail a provider; a
+    # second reset is. Auth errors are never retried.
+    old_call, old_sleep = L.call, time.sleep
+    try:
+        time.sleep = lambda _: None
+        attempts = []
+        def once_then_ok(*args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise L.ProviderError("[Errno 54] Connection reset by peer")
+            return "OK"
+        L.call = once_then_ok
+        ck("one socket reset recovers without a false provider alert",
+           test_model("openai", {}, "gpt-4.1") == (True, "") and len(attempts) == 2)
+        attempts.clear()
+        def always_reset(*args, **kwargs):
+            attempts.append(1)
+            raise L.ProviderError("[Errno 54] Connection reset by peer")
+        L.call = always_reset
+        ok, err = test_model("openai", {}, "gpt-4.1")
+        ck("two socket resets still fail the provider",
+           not ok and "Connection reset" in err and len(attempts) == 2)
+        attempts.clear()
+        def bad_key(*args, **kwargs):
+            attempts.append(1)
+            raise L.ProviderError("HTTP 401: invalid key")
+        L.call = bad_key
+        ck("authentication failure is never retried",
+           not test_model("openai", {}, "gpt-4.1")[0] and len(attempts) == 1)
+    finally:
+        L.call, time.sleep = old_call, old_sleep
 
     # S232 — node_name() now delegates to node_info.node_name() instead of
     # keeping its own copy of the TARGET_ENV lookup (a second copy of that

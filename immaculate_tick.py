@@ -175,6 +175,12 @@ def _run(argv, timeout):
         return 124, f"timed out after {timeout}s"
 
 
+def _mail_failure_class(out):
+    """Keep the useful error type; never copy SMTP text or addresses into alerts."""
+    m = re.search(r"mail send FAILED[^\n]*?: ([A-Za-z_][A-Za-z_0-9]*):", out)
+    return m.group(1) if m else "unclassified"
+
+
 def main(dry=False):
     from immaculate_agent import send_telegram
     import immaculate_espn
@@ -214,8 +220,9 @@ def main(dry=False):
                 notes.append(f"recap emailed for {what}")
             else:
                 ok = False
+                failure_class = _mail_failure_class(out)
                 sent = tell(f"Immaculate: the recap email for {what} FAILED to send; retrying at the next 9am/9pm check.")
-                notes.append(f"recap email FAILED for {what}"
+                notes.append(f"recap email FAILED ({failure_class}) for {what}"
                              + ("" if sent == "sent" else f"; its Telegram alert FAILED too ({why(sent)})"))
 
     # ── contest: look until found, then rest until the game is played ────────
@@ -292,6 +299,10 @@ def selftest():
        not plan(rows, {"found": {"e3": {}}}, tue)["watch"])
     ck("under 36h, nothing found -> one heads-up", plan(rows, {}, sat)["heads_up"])
     ck("...and only once", not plan(rows, {"warned": ["e3"]}, sat)["heads_up"])
+    ck("mail failure keeps the class without SMTP detail",
+       _mail_failure_class("mail send FAILED to x@example.test: "
+                           "SMTPAuthenticationError: private server detail")
+       == "SMTPAuthenticationError")
 
     # S292: a failed send must change nothing, so the next tick tries again
     down, up = (lambda m: "FAILED: URLError"), (lambda m: "sent")
