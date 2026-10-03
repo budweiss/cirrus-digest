@@ -1286,6 +1286,8 @@ def score_article_url(url: str, subject_words: list[str]) -> int:
 
 def ollama_summarize(prompt, timeout=120):
     """Send a prompt to local Ollama and return the response."""
+    import time as _time
+    t0 = _time.monotonic()
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
@@ -1294,9 +1296,30 @@ def ollama_summarize(prompt, timeout=120):
             timeout=timeout
         )
         resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        body = resp.json()
     except Exception as e:
         return f"[Summarization error: {e}]"
+    text = (body.get("response") or "").strip()
+    # S364: ledger the local call's real token counts + engine timings so
+    # encode/decode speed and context use are visible in the reports.
+    # Best effort only -- a ledger failure must never break the digest.
+    try:
+        if _LB is not None:
+            _peng_ms = body.get("prompt_eval_duration")
+            _deng_ms = body.get("eval_duration")
+            _LB.record_call(_load_creds(), "ollama", MODEL, len(prompt), len(text),
+                            task="cirrus_daily", tier="local",
+                            app_dir=str(Path(__file__).resolve().parent),
+                            in_tok=body.get("prompt_eval_count"),
+                            out_tok=body.get("eval_count"),
+                            cached_tok=body.get("prompt_eval_cached_count"),
+                            prompt_eval_seconds=(_peng_ms / 1e9) if _peng_ms else None,
+                            eval_seconds=(_deng_ms / 1e9) if _deng_ms else None,
+                            wall_seconds=round(_time.monotonic() - t0, 3),
+                            num_ctx=NUM_CTX)
+    except Exception:
+        pass
+    return text
 
 # ── Web RSS Fetcher ───────────────────────────────────────────────────────────
 

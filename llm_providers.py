@@ -119,7 +119,9 @@ def _record(provider, system, user, reply, creds, task):
                        task=(task or DEFAULT_TASK), session_id=getattr(_LAST, "session_id", None),
                        app_dir=str(Path(__file__).resolve().parent),
                        in_tok=getattr(_LAST, "usage", {}).get("input"),
-                       out_tok=getattr(_LAST, "usage", {}).get("output"))
+                       out_tok=getattr(_LAST, "usage", {}).get("output"),
+                       cached_tok=getattr(_LAST, "cached_tok", None),
+                       wall_seconds=getattr(_LAST, "wall_seconds", None))
     except Exception:
         pass
 
@@ -256,12 +258,14 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
                          {"role": "user", "content": user}]}
     if extra:
         body.update(extra)
+    started = time.monotonic()   # S364: client-measured wall for this attempt
     resp = _http_post(
         url,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         body,
         timeout=timeout,
     )
+    _LAST.wall_seconds = round(time.monotonic() - started, 3)
     _LAST.model = resp.get("model")  # response identity, never the requested alias
     # S141. finish_reason was read off the wire and dropped on the floor. It is
     # the single most useful field on this response: "length" means the model
@@ -273,6 +277,9 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
     # anywhere recorded it; it had to be reproduced by hand to be seen at all.
     usage = resp.get("usage") or {}
     _LAST.usage = {"input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens")}
+    # S364: cached-prefix tokens (Ollama /v1 compat reports them here; 0 is a
+    # real value). None on APIs that do not report them.
+    _LAST.cached_tok = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
     _note_finish(resp["choices"][0].get("finish_reason"), model)
     return resp["choices"][0]["message"]["content"]
 
@@ -752,6 +759,8 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     reply = ""
     for _ in range(retries + 1):
         _LAST.usage = {}
+        _LAST.wall_seconds = None   # S364: no stale timing may survive a retry
+        _LAST.cached_tok = None
         reply = ""
         try:
             reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""

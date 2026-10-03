@@ -99,10 +99,16 @@ def generate(name, messages, *, root=ROOT, creds=None, output_schema=None):
             }, timeout=spec['timeout_seconds'])
             import llm_budget
             content = result.get('message', {}).get('content', '')
+            _peng_ms = result.get('prompt_eval_duration')
+            _deng_ms = result.get('eval_duration')
             llm_budget.record_call(creds or {}, 'ollama', model,
                 len(json.dumps(messages)), len(content), task='specialist:' + name,
                 tier='local', app_dir=str(root), in_tok=result.get('prompt_eval_count'),
-                out_tok=result.get('eval_count'))
+                out_tok=result.get('eval_count'),
+                num_ctx=spec.get('num_ctx'),
+                cached_tok=result.get('prompt_eval_cached_count'),
+                prompt_eval_seconds=(_peng_ms / 1e9) if _peng_ms else None,
+                eval_seconds=(_deng_ms / 1e9) if _deng_ms else None)
             if result.get('model') != model or not result.get('done') or result.get('done_reason') != 'stop':
                 raise Unavailable('incomplete_or_wrong_model_response')
             outcome = 'completed'

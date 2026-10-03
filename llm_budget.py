@@ -184,7 +184,7 @@ def allow(session_id, est_cost, cfg, *, box="unknown", ledger_path=None):
 
 def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
            ledger_path=None, batch=False, cache_read_frac=0.0, task="", tier="",
-           strict=True, usage_basis="unspecified"):
+           strict=True, usage_basis="unspecified", extras=None):
     """Append one call to the ledger and return the row (with computed cost).
     Call AFTER a successful API call using its ACTUAL usage.input_tokens/output_tokens.
 
@@ -211,6 +211,10 @@ def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
         "cost": round(cost, 6), "task": task, "tier": tier,
         "usage_basis": usage_basis, "cost_basis": "configured_rates",
     }
+    if extras:
+        # S364: optional per-request engine metrics (timings, context, cache).
+        # Only non-None extras are written, so pre-existing row shape is unchanged.
+        row.update({k: v for k, v in extras.items() if v is not None})
     if unpriced:
         row["unpriced"] = True
     if ledger_path:
@@ -221,7 +225,9 @@ def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
 
 
 def record_call(creds, provider, model, in_chars, out_chars, *, task="",
-                session_id=None, tier="", app_dir=None, in_tok=None, out_tok=None):
+                session_id=None, tier="", app_dir=None, in_tok=None, out_tok=None,
+                num_ctx=None, cached_tok=None, prompt_eval_seconds=None,
+                eval_seconds=None, wall_seconds=None):
     """S132: best-effort ledger row for ONE completed model call. Never raises: a
     broken ledger must not break a client job. Returns the row, or None when
     nothing was written (recording off, no pricing file, unwritable path).
@@ -240,10 +246,24 @@ def record_call(creds, provider, model, in_chars, out_chars, *, task="",
             return None
         i = int(in_tok) if in_tok is not None else max(0, int(in_chars)) // 4
         o = int(out_tok) if out_tok is not None else max(0, int(out_chars)) // 4
+        # S364: timing/context extras the caller read off the engine response.
+        # Seconds rounded to 3dp so the ledger stays a stable shape; None extras
+        # are simply omitted from the row by record().
+        extras = {}
+        if num_ctx is not None:
+            extras["num_ctx"] = int(num_ctx)
+        if cached_tok is not None:
+            extras["cached_tok"] = int(cached_tok)
+        for name, v in (("prompt_eval_seconds", prompt_eval_seconds),
+                        ("eval_seconds", eval_seconds),
+                        ("wall_seconds", wall_seconds)):
+            if v is not None and float(v) >= 0:
+                extras[name] = round(float(v), 3)
         return record(session_id or task or "untagged", provider, model or "?",
                       max(0, i), max(0, o), cfg,
                       box=box, ledger_path=ledger, task=task or "", tier=tier,
-                      strict=False, usage_basis=("provider_tokens" if in_tok is not None and out_tok is not None else "character_estimate"))
+                      strict=False, usage_basis=("provider_tokens" if in_tok is not None and out_tok is not None else "character_estimate"),
+                      extras=extras)
     except Exception:
         return None
 
