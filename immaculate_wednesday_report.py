@@ -21,6 +21,7 @@ Sections: season tally (correct/wrong/outstanding for Q1-Q24, including the
 Q18-Q24 informational leader snapshots), the most recently seeded weekly
 mini-contest compared to reality, and a week-ahead status line.
 """
+import argparse
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -214,6 +215,15 @@ def main():
     return 0 if ok else 1
 
 
+def _parse_run_args(argv):
+    """Accept the flags the tick actually passes, but reject unknown ones."""
+    p = argparse.ArgumentParser(description="Project Immaculate post-game recap")
+    p.add_argument("--window", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--game")
+    return p.parse_args(argv)
+
+
 def selftest() -> int:
     fails = 0
 
@@ -245,6 +255,15 @@ def selftest() -> int:
        "CIN @ PIT" in gs and "POST-GAME RECAP: Week 3" in gb)
     ck("body includes both major sections",
        "SEASON ENTRY" in body and "WEEKLY CONTEST" in body)
+    parsed = _parse_run_args(["--window", "--game", "Week 4 PIT @ CLE", "--dry-run"])
+    ck("tick's actual recap flags are accepted",
+       parsed.window and parsed.dry_run and parsed.game == "Week 4 PIT @ CLE")
+    try:
+        _parse_run_args(["--window", "--game"])
+    except SystemExit as e:
+        ck("missing game label is refused", e.code == 2)
+    else:
+        ck("missing game label is refused", False)
 
     def _d(y, m, d):
         return datetime(y, m, d, 13, 5, tzinfo=timezone.utc)
@@ -307,6 +326,5 @@ def selftest() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] in (["selftest"], ["--selftest"]):
         sys.exit(selftest())
-    if sys.argv[1:]:
-        sys.exit("unknown arguments; use selftest or --selftest for offline checks")
+    _parse_run_args(sys.argv[1:])
     sys.exit(main())

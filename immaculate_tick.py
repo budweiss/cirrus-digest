@@ -177,6 +177,8 @@ def _run(argv, timeout):
 
 def _mail_failure_class(out):
     """Keep the useful error type; never copy SMTP text or addresses into alerts."""
+    if "unknown arguments" in out or "unrecognized arguments" in out:
+        return "ArgumentsRejected"
     m = re.search(r"mail send FAILED[^\n]*?: ([A-Za-z_][A-Za-z_0-9]*):", out)
     return m.group(1) if m else "unclassified"
 
@@ -303,6 +305,8 @@ def selftest():
        _mail_failure_class("mail send FAILED to x@example.test: "
                            "SMTPAuthenticationError: private server detail")
        == "SMTPAuthenticationError")
+    ck("recap CLI rejection is classified without child output",
+       _mail_failure_class("unknown arguments; use selftest") == "ArgumentsRejected")
 
     # S292: a failed send must change nothing, so the next tick tries again
     down, up = (lambda m: "FAILED: URLError"), (lambda m: "sent")
