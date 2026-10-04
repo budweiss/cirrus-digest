@@ -32,7 +32,7 @@ class Corrections(unittest.TestCase):
 
     def test_legacy_preserved_and_bare_reply_not_applied_to_new_request(self):
         old={'kind':'guidance','issue':'old','requested_at':100,'status':'pending'}
-        approval.REQUEST_FILE.write_text(json.dumps(old))
+        (self.root/'request.json').write_text(json.dumps(old))  # the temp path setUp patched into REQUEST_FILE
         with patch.object(approval.time,'time',return_value=101):
             approval.create_guidance_request('new','next?','new')
         self.assertEqual(json.loads(approval.REQUEST_FILE.read_text()),old)
@@ -90,7 +90,7 @@ class Corrections(unittest.TestCase):
         self.assertEqual(len(list(self.root.glob('.request-*'))),0)
 
     def test_corruption_never_deletes_request(self):
-        approval.REQUEST_FILE.write_text('{bad')
+        (self.root/'request.json').write_text('{bad')  # the temp path setUp patched into REQUEST_FILE
         with self.assertRaises(ValueError): approval.check_for_reply()
         self.assertEqual(approval.REQUEST_FILE.read_text(),'{bad')
 

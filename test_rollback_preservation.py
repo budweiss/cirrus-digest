@@ -98,7 +98,7 @@ class RollbackPreservation(unittest.TestCase):
         with patch.object(approval.time, 'time', return_value=1100):
             approval.create_guidance_request('third', 'next?', 'third')
             approval.record_request_delivery(True)
-        approval.UPDATE_OFFSET_FILE.write_text('99')
+        (self.state / 'telegram-update-offset.txt').write_text('99')  # the temp path setUp patched into UPDATE_OFFSET_FILE
         before = {str(p.relative_to(self.state)): p.read_bytes()
                   for p in state_checkpoint.state_files(self.state)}
         self.old_policy.IncidentPolicy(self.incidents).save()

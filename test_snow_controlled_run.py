@@ -107,7 +107,7 @@ class ControlledSnow(unittest.TestCase):
         self.assertIsNone(send_guard.already_sent_today('billsnow'))
 
     def test_corrupt_receipt_preserves_explicit_fail_open_policy(self):
-        path = send_guard.stamp_path('billsnow')
+        path = send_guard.stamp_path('billsnow', root=self.root / 'receipts')  # explicit root = the temp dir setUp patched into STAMP_DIR
         path.parent.mkdir(parents=True)
         path.write_text('{broken')
         self.run_job()

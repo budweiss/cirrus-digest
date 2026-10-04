@@ -59,17 +59,24 @@ def _safe_names(fn, seeds=()) -> set:
     Path(td) / "x") because that is how every honest test in this tree is
     written. Being generous here is the right trade -- a false NEGATIVE costs a
     missed lint, a false POSITIVE costs trust in the whole check, and a lint
-    nobody trusts gets muted.
+    nobody trusts gets muted. The `self` seed (seeded from the test function's
+    parameters) makes every self.<attr> reference taint its assignee, which
+    covers class-setUp temp roots; S366 adds the same one-hop rule for `for`
+    loop targets over an already-tainted iterable (lock files iterated and
+    written in test_cowork_deploy).
     """
     names, changed = set(seeds), True
     while changed:
         changed = False
         for node in ast.walk(fn):
-            if not isinstance(node, (ast.Assign, ast.withitem)):
+            if not isinstance(node, (ast.Assign, ast.withitem, ast.For)):
                 continue
             if isinstance(node, ast.withitem):
                 targets = [node.optional_vars] if node.optional_vars else []
                 value = node.context_expr
+            elif isinstance(node, ast.For):
+                targets = [node.target]
+                value = node.iter
             else:
                 targets, value = node.targets, node.value
             src = ast.dump(value) if value is not None else ""
@@ -229,6 +236,12 @@ def selftest() -> bool:
     ck("mod.NAME patched to a temp path is safe inside the with", 13 not in lines)
     ck("...but patched to a LITERAL live path is still a hit", 16 in lines)
     ck("an unpatched module attribute write is still a hit", 18 in lines)
+    h = hits_for(unit + (
+        "    def test_e(self):\n        for lock in (self.root/'w'/'index.lock',):\n            lock.write_text('x')\n"
+        "    def test_f(self):\n        for live in (Path('/etc/live.lock'),):\n            live.write_text('x')\n"))
+    lines = sorted(x[0] for x in h)
+    ck("for loop over a temp-derived iterable is safe (S366)", 21 not in lines)
+    ck("...but over a live literal is still a hit (S366)", 24 in lines)
     print("\n%s" % ("PASS" if ok else "FAIL"))
     return ok
 
