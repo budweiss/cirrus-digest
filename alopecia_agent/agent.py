@@ -224,7 +224,11 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
         permission_mode="bypassPermissions",
         system_prompt=SYSTEM_PROMPT,
         model="sonnet",
-        max_turns=15,
+        # S366, measured: the Oct 4 run died with error_max_turns AT CLOSE-OUT
+        # ("about to append the progress note to the brief draft") — the work
+        # was done, the wrap-up needed 1-2 more turns. 15 is the bottleneck,
+        # not a cost guard; max_budget_usd stays on as the real cost guard.
+        max_turns=20,
         max_budget_usd=EST_COST_PER_RUN_USD,
         env={"ANTHROPIC_API_KEY": creds["anthropic_api_key"]},
         cwd=str(APP_DIR),
