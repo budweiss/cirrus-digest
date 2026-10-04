@@ -91,5 +91,37 @@ def run(root, allow_existing=False):
     print(json.dumps({'passed':all(r['passed'] for r in results),'request_overlap_seconds':overlap,'timings':[{k:r[k] for k in ('worker','start','end','passed')} for r in results],'gpu_sample_count':len(samples)}))
     if not all(r['passed'] for r in results) or overlap<=0:raise SystemExit(1)
 
+def selftest():
+    p = policy()
+    assert set(p['workers']) == {'cumulus1-gptoss', 'cumulus2-qwen'}, p['workers']
+    assert p['workers']['cumulus1-gptoss']['model'] == 'gpt-oss:120b'
+    assert p['workers']['cumulus2-qwen']['model'] == 'qwen3.8-27b-fp8'
+    for w, s in WORKERS.items():
+        proj = p['projects'][w]
+        assert proj['workers'] == [w], proj
+        assert proj['model_ids'][w] == s['model']
+        assert proj['validator'] == 'fixture_json'
+        assert proj['delivery'] == 'none'
+        assert proj['resource'] == w
+    media = p['projects']['articles-infra']
+    assert media['workers'] == ['cumulus2-qwen']
+    assert media['model_ids']['cumulus2-qwen'] == 'qwen3.8-27b-fp8'
+    assert media['validator'] == 'media_manifest'
+    assert media['delivery'] == 'none'
+    assert media['contract'] == 'media-s307-v3'
+    assert MESSAGES[0]['role'] == 'system'
+    assert MESSAGES[1]['role'] == 'user'
+    assert 'JSON object only' in MESSAGES[0]['content']
+    print('fleet_pilot selftest OK')
+
+
 if __name__=='__main__':
+    import sys
+    if '--selftest' in sys.argv:
+        try:
+            selftest()
+        except AssertionError as e:
+            print('SELFTEST FAILED:', e)
+            raise SystemExit(1)
+        raise SystemExit(0)
     a=argparse.ArgumentParser();a.add_argument('output',type=Path);run(a.parse_args().output)
