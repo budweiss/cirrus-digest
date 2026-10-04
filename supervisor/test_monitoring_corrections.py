@@ -139,7 +139,8 @@ class Corrections(unittest.TestCase):
         result=SimpleNamespace(returncode=0,stdout=json.dumps({'id':'example-ticket','status':'session','tier':1}),stderr='')
         with patch.object(tools.subprocess,'run',return_value=result),patch.object(tools,'ledger_append'), \
              patch.object(tools,'INCIDENT_ACTIONS',[]):
-            tools.file_repair_ticket('cirrus-billsnow.service','diagnosed failure with sufficient evidence and an existing ticket')
+            res = tools.file_repair_ticket('cirrus-billsnow.service','diagnosed failure with sufficient evidence and an existing ticket')
+            self.assertFalse(str(res).startswith('FAILED'), res)
             self.assertEqual(tools.INCIDENT_ACTIONS[-1]['owner'],'Cowork')
             self.assertEqual(tools.INCIDENT_ACTIONS[-1]['ticket_id'],'example-ticket')
 
