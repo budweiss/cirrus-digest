@@ -42,6 +42,15 @@
       "lane": "hardware",
       "why": "Buddy-requested source for local LLM production serving, speed versus accuracy, privacy, and RAG. Review reported GPT-OSS 120B preference and retrieval workflows as testable leads for Cirrus/Cumulus, not established recommendations.",
       "verified": "2026-09-18: live RSS title Rob Braxman Tech; recent privacy/AI titles inspected"
+    },
+    {
+      "name": "2GuysTek",
+      "handle": "@2GuysTek",
+      "channel_id": "UCZy4S2PF9OraTjNpYV-8K3w",
+      "lane": "hardware",
+      "why": "Buddy-requested 2026-10-03 (approved prop-2026-10-03-520). Homelab/local-AI builds; his 'Truly Private AI: The Full Software Setup' stack is parsed into Cowork yt-watch findings. Buddy joined the YouTube MEMBERSHIP (members-only reviews), goal: our own private AI system.",
+      "verified": "2026-10-03: live RSS via channel_id UCZy4S2PF9OraTjNpYV-8K3w, title '2GuysTek'",
+      "trap": "Members-only videos do NOT appear in the public RSS feed; until cookies/auth are wired, member reviews are an occasional MANUAL pull, not automatic."
     }
   ]
 }
