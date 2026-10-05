@@ -77,13 +77,26 @@ def merge(base, overlay):
     if 'ollama_model' in paths and (not isinstance(paths['ollama_model'], str) or not paths['ollama_model'].strip()):
         raise ValueError('runtime ollama_model must be a nonempty string')
     result.setdefault('digest', {}).update(paths)
-    for account in overlay.get('email', {}).get('accounts', []):
+    email_overlay = overlay.get('email', {})
+    if set(email_overlay) - {'accounts', 'newsletter_allowlist'}:
+        # S373: unsupported email overlay keys were silently dropped before,
+        # which is how the Stock Pickers newsletter allowlist never shipped
+        # despite the "box overlay" design note in stock-pickers/sources.md.
+        raise ValueError('unsupported runtime email overlay field: %s'
+                         % sorted(set(email_overlay) - {'accounts', 'newsletter_allowlist'}))
+    for account in email_overlay.get('accounts', []):
         accounts = result.setdefault('email', {}).setdefault('accounts', [])
         label = account.get('label')
         if not label:
             raise ValueError('runtime account requires a label')
         accounts[:] = [a for a in accounts if a.get('label') != label]
         accounts.append(copy.deepcopy(account))
+    allow = email_overlay.get('newsletter_allowlist')
+    if allow is not None:
+        if (not isinstance(allow, list) or not allow
+                or not all(isinstance(e, str) and e.strip() for e in allow)):
+            raise ValueError('runtime newsletter_allowlist must be a nonempty list of senders')
+        result.setdefault('email', {})['newsletter_allowlist'] = [e.strip() for e in allow]
     return result
 
 
@@ -156,6 +169,22 @@ def selftest():
     try:
         merge(base, {'email': {'accounts': [{'enabled': True}]}})
         raise AssertionError('merge should reject accounts missing a label')
+    except ValueError:
+        pass
+
+    # merge: newsletter_allowlist overlay replaces the email allowlist wholesale
+    merged3 = merge(base, {'email': {'newsletter_allowlist': ['.seekingalpha.com', 'finance@finance.comms.yahoo.net']}})
+    assert merged3['email']['newsletter_allowlist'] == ['.seekingalpha.com', 'finance@finance.comms.yahoo.net']
+    assert 'newsletter_allowlist' not in base['email'], 'merge must not mutate base email'
+    for bad in ([], ['ok@x.com', '  '], ['ok@x.com', 3], 'not-a-list'):
+        try:
+            merge(base, {'email': {'newsletter_allowlist': bad}})
+            raise AssertionError('merge should reject invalid newsletter_allowlist: %r' % (bad,))
+        except ValueError:
+            pass
+    try:
+        merge(base, {'email': {'bogus_email_key': 'x'}})
+        raise AssertionError('merge should reject unsupported email overlay keys')
     except ValueError:
         pass
 
