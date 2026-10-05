@@ -407,13 +407,20 @@ def youtube(payload):
         def captions(video_id):
             if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
                 return '', 'invalid video id'
-            try:
-                from youtube_transcript_api import YouTubeTranscriptApi
-                fetched = YouTubeTranscriptApi().fetch(video_id, languages=['en','en-US','en-GB'])
-                atomic_json(ROOT/'media/youtube-captions'/(video_id+'.json'), fetched.to_raw_data())
-                return ' '.join(s.text for s in fetched), ''
-            except Exception as exc:
-                return '', type(exc).__name__
+            last_reason = 'unknown'
+            for attempt in range(3):
+                try:
+                    from youtube_transcript_api import YouTubeTranscriptApi
+                    fetched = YouTubeTranscriptApi().fetch(video_id, languages=['en','en-US','en-GB'])
+                    atomic_json(ROOT/'media/youtube-captions'/(video_id+'.json'), fetched.to_raw_data())
+                    return ' '.join(s.text for s in fetched), ''
+                except Exception as exc:
+                    last_reason = type(exc).__name__
+                    if not yt.is_transient(last_reason):
+                        break                      # permanent (no captions, bad id): never retried
+                    if attempt < 2:
+                        time.sleep(8)              # S168: transient YouTube blocks are minute-scale
+            return '', last_reason
         stats = yt.run(limit=payload.get('limit',6), channels=payload['channels'],
             seen_path=seen,out_dir=out,extract_fn=extract,transcript_fn=captions,pause=4,feed_pause=5)
         # Existing watcher marks extraction errors seen; undo those additions so
