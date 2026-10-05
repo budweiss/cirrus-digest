@@ -43,6 +43,7 @@ from claude_agent_sdk import (
 import budget
 from alert_policy import IncidentPolicy
 import heartbeat
+import local_reason
 import opus_approval
 import tools
 from ledger import ledger_append
@@ -337,6 +338,21 @@ def main_loop():
             # One pass can satisfy today's daily review as well as a new incident.
             reason += '\nUnresolved incident state: ' + json.dumps(policy.summary(time.time()))
             success = _handle_trigger(reason, is_daily=daily)
+            # S375 Phase 1 (Buddy): deterministic shadow second opinion. The
+            # production pass above is unchanged; this only RECORDS a free
+            # local-model verdict beside it for agreement measurement. Marker-
+            # gated (state/shadow-reason.enabled); must never affect the run.
+            try:
+                shadow = local_reason.maybe_shadow(
+                    "incident review" if due else "daily check",
+                    reason, json.dumps({'heartbeat': hb, 'policy': policy.summary(time.time())}),
+                    key=','.join(due)[:64])
+                ledger_append({"event": "shadow-reason", "tool": "local_reason",
+                               "tier_name": "auto", "detail": ("due=" + ','.join(due)) if due else "daily",
+                               "result": (f"ok={shadow.get('ok')} ep={shadow.get('endpoint')}"
+                                          if shadow.get("ran") else "off")})
+            except Exception:
+                pass  # shadow must never break the heartbeat loop
             policy.complete(success, time.time(), tools.INCIDENT_ACTIONS)
         time.sleep(HEARTBEAT_INTERVAL_SEC)
 

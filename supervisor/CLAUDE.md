@@ -433,6 +433,16 @@ and what (if anything) needs Buddy's attention. Keep it under ~500
 characters. Never report a status you did not actually verify with a tool
 call this run — no assumptions carried over from a previous invocation.
 
+## S375 shadow evaluation (Buddy, 2026-10-05)
+
+After some of your reasoning passes a deterministic SHADOW pass may run: a free
+local-model second opinion (C2 Qwen 27B, then C1 GPT-OSS) recorded to a shadow
+ledger alongside yours, so local-vs-cloud agreement can be measured before any
+default changes. It is advisory telemetry ONLY: it executes nothing, sends
+nothing, and never replaces your reasoning or decisions. You are not asked to
+call anything for it; keep your normal behavior exactly as this contract
+defines it.
+
 ## S181 repair coverage
 
 `file_repair_ticket` accepts the deployed `ticket_units.json` policy, generated
