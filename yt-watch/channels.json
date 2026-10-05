@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated watch list. Channel identity and live RSS checked on each entry\u2019s verified date. Lane drives claim review; see YT-WATCH-SPEC.md.",
+  "_comment": "Curated watch list. Channel identity and live RSS checked on each entry’s verified date. Lane drives claim review; see YT-WATCH-SPEC.md.",
   "channels": [
     {
       "name": "Alex Ziskind",
@@ -51,6 +51,22 @@
       "why": "Buddy-requested 2026-10-03 (approved prop-2026-10-03-520). Homelab/local-AI builds; his 'Truly Private AI: The Full Software Setup' stack is parsed into Cowork yt-watch findings. Buddy joined the YouTube MEMBERSHIP (members-only reviews), goal: our own private AI system.",
       "verified": "2026-10-03: live RSS via channel_id UCZy4S2PF9OraTjNpYV-8K3w, title '2GuysTek'",
       "trap": "Members-only videos do NOT appear in the public RSS feed; until cookies/auth are wired, member reviews are an occasional MANUAL pull, not automatic."
+    },
+    {
+      "name": "Joseph Carlson",
+      "handle": "@JosephCarlsonShow",
+      "channel_id": "UCbta0n8i6Rljh0obO7HzG9A",
+      "lane": "investing",
+      "why": "added by runner watch-add 2026-10-04; session fills in the 'why' when it mirrors the repo copy",
+      "verified": "2026-10-04 (page-og:title (feed 404 - known YouTube flake)): title 'Joseph Carlson', unknown videos in feed"
+    },
+    {
+      "name": "GenExDividendInvestor",
+      "handle": "@GenExDividendInvestor",
+      "channel_id": "UCuOS-UH_s4KGhArN6HdRB0Q",
+      "lane": "investing",
+      "why": "added by runner watch-add 2026-10-04; session fills in the 'why' when it mirrors the repo copy",
+      "verified": "2026-10-04 (page-og:title (feed 404 - known YouTube flake)): title 'GenExDividendInvestor', unknown videos in feed"
     }
   ]
 }
