@@ -1,5 +1,6 @@
 """Source-bound specialist extraction for alopecia; no hypothesis decisions."""
 import json
+import sys
 
 import alopecia_kb
 import local_specialists
@@ -15,6 +16,54 @@ value was not reported is missing evidence: return empty claims and abstain,
 rather than quoting that statement as an answer. Do not paraphrase quotes. The abstain flag MUST be false whenever claims are
 nonempty. If you abstain for any reason, claims MUST be an empty array. Never
 return a quotation together with abstain=true.'''
+
+
+def selftest():
+    """Exercise schema generation and validation logic with explicit inputs/outputs."""
+    schema = evidence_schema(['S1', 'S2'])
+    assert schema['properties']['claims']['items']['properties']['source_id']['enum'] == ['S1', 'S2'], 'schema_enum_mismatch'
+    assert schema['properties']['claims']['maxItems'] == 3, 'schema_maxitems_mismatch'
+
+    passages = {'S1': {'text': 'This is a verbatim thirty-plus character passage about alopecia treatment.'}}
+
+    # Valid: non-empty claims, abstain False, quote present verbatim in source.
+    good_raw = json.dumps({
+        'claims': [{'source_id': 'S1', 'quote': 'This is a verbatim thirty-plus character passage about alopecia treatment.'}],
+        'abstain': False})
+    result = validate(good_raw, passages)
+    assert result['claims'][0]['source_id'] == 'S1', 'valid_case_failed'
+
+    # Valid: empty claims with abstain True.
+    abstain_raw = json.dumps({'claims': [], 'abstain': True})
+    result = validate(abstain_raw, passages)
+    assert result['claims'] == [] and result['abstain'] is True, 'abstain_case_failed'
+
+    # Invalid: abstain True but claims non-empty.
+    try:
+        validate(json.dumps({
+            'claims': [{'source_id': 'S1', 'quote': 'This is a verbatim thirty-plus character passage about alopecia treatment.'}],
+            'abstain': True}), passages)
+        raise AssertionError('expected_inconsistent_abstention_not_raised')
+    except ValueError as exc:
+        assert str(exc) == 'inconsistent_abstention', 'wrong_error_for_inconsistent_abstention'
+
+    # Invalid: quote not present verbatim in source text.
+    try:
+        validate(json.dumps({
+            'claims': [{'source_id': 'S1', 'quote': 'This quote does not appear anywhere in the source passage text.'}],
+            'abstain': False}), passages)
+        raise AssertionError('expected_unsupported_quote_not_raised')
+    except ValueError as exc:
+        assert str(exc) == 'unsupported_quote', 'wrong_error_for_unsupported_quote'
+
+    # Invalid: malformed schema (abstain not a bool).
+    try:
+        validate(json.dumps({'claims': [], 'abstain': 'nope'}), passages)
+        raise AssertionError('expected_invalid_evidence_schema_not_raised')
+    except ValueError as exc:
+        assert str(exc) == 'invalid_evidence_schema', 'wrong_error_for_invalid_schema'
+
+    return True
 
 
 def evidence_schema(source_ids):
@@ -79,3 +128,13 @@ def extract(question, *, root=local_specialists.ROOT, creds=None):
     data['worker_host'] = 'cumulus2' if endpoint else 'cumulus1'
     data['scope'] = 'Foundation KB evidence only; not evidence about newly collected studies.'
     return json.dumps(data, ensure_ascii=False)
+
+
+if __name__ == '__main__':
+    if '--selftest' in sys.argv:
+        try:
+            selftest()
+            print('OK')
+        except Exception as exc:
+            print('FAIL: %r' % (exc,))
+            sys.exit(1)
