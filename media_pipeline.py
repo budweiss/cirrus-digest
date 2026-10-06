@@ -459,7 +459,16 @@ def dispatch(payload):
 
 def call(action, **kwargs):
     payload = dict(kwargs,action=action)
-    timeout = 28800
+    # S377: action-specific ssh ceilings. The digest's prompt lane (summarise
+    # + named-reference extraction) hung SILENTLY for hours because the
+    # generic ceiling was 28800 s -- a stalled/leased media worker made the
+    # daily digest wait silently with no error line (Oct 4/5 runs; the log
+    # just ends mid-run). A prompt completion is bounded work: 15 min hard
+    # cap, then the ssh subprocess times out, the caller's except catches it
+    # and the digest proceeds. Longer-lived lanes keep their ceilings
+    # (youtube carries its own budget; transcribe/analyze/weekly-fetch can
+    # legitimately run 1-2 h behind the 7200 s worker lease).
+    timeout = {'prompt': 900}.get(action, 28800)
     if action == 'youtube':
         # Reserve 30 seconds for SSH setup/response within the caller's limit.
         payload['budget_seconds'] = youtube_deadline() - time.time() - 30
