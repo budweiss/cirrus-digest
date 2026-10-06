@@ -46,21 +46,48 @@ def append(name, value):
         path=r.STATE/name; values=r.load(path, []);values.append(value);r.save(path, values)
 
 
+def avenue_index(nodelist=None):
+    """Bounded per-avenue view (S377). Full nodes made the memory read emit a
+    fixed multi-100k-char dump regardless of query/offset once the ledger grew
+    past the model's token-output limit -- the 2026-10-06 run could not read
+    its own agenda and skipped the close-out step write as a result."""
+    idx=[]
+    for n in nodelist if nodelist is not None else nodes():
+        idx.append({'id':n['id'],'status':n['status'],'construct':n.get('construct',''),
+                    'question':str(n.get('question',''))[:160],
+                    'next_action':str(n.get('next_action',''))[:120]})
+    return {'avenue_index':idx,'avenue_count':len(idx)}
+
+
+def _bound(x, cap=400):
+    """Read-side text cap (S377): the DURABLE record on disk stays complete;
+    only the memory READ truncates so a page can never exceed the agent's
+    token-output limit. Verbatim quotes for new comparisons come from the
+    source cache via retrieve_research_source, not from a memory read."""
+    if isinstance(x,str):return x[:cap]
+    if isinstance(x,list):return [_bound(v,cap) for v in x]
+    if isinstance(x,dict):return {k:_bound(v,cap) for k,v in x.items()}
+    return x
+
+
 def memory(query='', offset=0):
     if not isinstance(query,str) or len(query)>200 or not isinstance(offset,int) or offset<0:
         raise ValueError('invalid_memory_request')
     matches=[s for s in steps() if query.lower() in json.dumps(s,ensure_ascii=False).lower()]
-    avenues=nodes();history=r.load(r.STATE/'searches.json', [])
+    history=r.load(r.STATE/'searches.json', [])
     events=r.load(r.STATE/'avenue-events.json', [])
     handoffs=r.load(r.STATE/'handoffs.json', [])
     page=matches[offset:offset+10]
-    return {'avenues':avenues, 'steps':page, 'total_steps_matching':len(matches),
-            'next_offset':offset+10 if offset+10<len(matches) else None,
-            'searches':[s for s in history if query.lower() in json.dumps(s).lower()][-15:],
-            'recent_transitions':events[-10:], 'recent_handoffs':handoffs[-5:],
-            'concepts':config()['concepts'], 'sources':config()['source_sites'],
-            'model_reviews':r.load(r.STATE/'model-reviews.json', [])[-1:],
-            'scope':'Hypotheses, comparisons and study context are unreviewed; model agreement is not evidence.'}
+    out={'steps':[_bound(s) for s in page], 'total_steps_matching':len(matches),
+         'next_offset':offset+10 if offset+10<len(matches) else None,
+         'searches':[s for s in history if query.lower() in json.dumps(s).lower()][-15:],
+         'recent_transitions':events[-10:], 'recent_handoffs':handoffs[-5:],
+         'concepts':config()['concepts'], 'sources':config()['source_sites'],
+         'record_complete_on_disk':'read-side text bound; retrieve_research_source for verbatim quotes',
+         'model_reviews':r.load(r.STATE/'model-reviews.json', [])[-1:],
+         'scope':'Hypotheses, comparisons and study context are unreviewed; model agreement is not evidence.'}
+    out.update(avenue_index())
+    return out
 
 
 def summary():
@@ -69,7 +96,8 @@ def summary():
     history=r.load(r.STATE/'searches.json', [])
     focus=next((s.get('avenue_id') for s in reversed(ss) if any(n['id']==s.get('avenue_id') for n in active)),None)
     if focus:active.sort(key=lambda n:n['id']!=focus)
-    return {'active':active, 'suggested_avenue':active[0]['id'] if active else None,
+    return {'active':avenue_index(active)['avenue_index'],
+            'suggested_avenue':active[0]['id'] if active else None,
             'needs_new_avenue':not active, 'states':{s:sum(n['status']==s for n in ns) for s in STATUSES},
             'total_saved_steps':len(ss), 'compared_steps':sum(bool(s.get('compare_to')) for s in ss),
             'distinct_searches':len({s['query'] for s in history}),

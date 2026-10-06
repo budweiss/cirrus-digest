@@ -48,7 +48,21 @@ def agenda():
     last={s['path_id']:s['created'] for s in steps}
     paths=sorted(cfg['paths'],key=lambda p:last.get(p['id'],''))
     from alopecia_agent import notebook
-    return {'notebook':notebook.summary(),'mission':cfg['mission'],'paths':paths,'recent_steps':steps[-6:],
+    # S377: cap recent_steps to a compact projection -- the full step records
+    # (quotes + study_context) made this read emit a fixed ~86k-char dump that
+    # exceeded the agent's token-output limit, so run-20261006 could not read
+    # its own agenda and the close-out step-write invariant tripped.
+    # Full step text stays in the notebook via read_research_memory.
+    compact=[]
+    for s in steps[-6:]:
+        compact.append({'step_id':s.get('step_id',''),
+                        'avenue_id':s.get('avenue_id',''),
+                        'path_id':s.get('path_id',''),
+                        'created':s.get('created',''),
+                        'hypothesis':str(s.get('hypothesis',''))[:200],
+                        'comparison':str(s.get('comparison',''))[:200],
+                        'next_step':str(s.get('next_step',''))[:160]})
+    return {'notebook':notebook.summary(),'mission':cfg['mission'],'paths':paths,'recent_steps':compact,
             'suggested_path':paths[0]['id'],'lead_sources':cfg['lead_sources'],
             'scope':'Research hypotheses, not established causes or individual treatment advice.'}
 

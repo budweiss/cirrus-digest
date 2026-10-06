@@ -23,6 +23,27 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(n.memory('unique marker')['steps'][0]['step_id'],'step-00001')
         self.assertEqual(n.memory()['next_offset'],10)
         self.assertEqual(len(n.memory(offset=10)['steps']),2)
+    def test_reads_are_bounded_regardless_of_ledger_size(self):
+        # S377 regression: a grown ledger made read_research_agenda and
+        # read_research_memory emit a fixed ~86k-char dump the agent could
+        # not read under its token-output limit (run-20261006 skipped the
+        # close-out step write). Reads must now stay bounded.
+        big='x'*8000
+        ss=[dict(self.saved_step('step-%05d'%i),hypothesis=big,comparison=big,
+                 supporting=[{'source_id':'pmid:1','quote':big}]) for i in range(1,13)]
+        r.save(self.state/'steps.json',ss)
+        nodes=n.nodes()
+        for node in nodes:node['question']=big;node['next_action']=big
+        r.save(self.state/'avenues.json',nodes)
+        import json as js
+        self.assertLess(len(js.dumps(n.memory(),default=str)),40_000)
+        agenda=r.agenda()
+        self.assertLess(len(js.dumps(agenda,default=str)),40_000)
+        # compact projections keep the pointer fields the agent needs
+        self.assertEqual(agenda['recent_steps'][-1]['step_id'],'step-00012')
+        self.assertTrue(all('study_context' not in s for s in agenda['recent_steps']))
+        self.assertIn('avenue_index',n.memory())
+        self.assertLessEqual(len(n.memory()['avenue_index'][0]['question']),160)
     def test_duplicate_and_false_finality_refused(self):
         data=dict(self.node,id='')
         with self.assertRaisesRegex(ValueError,'duplicate'):n.update(data)
