@@ -67,6 +67,14 @@
       "lane": "investing",
       "why": "added by runner watch-add 2026-10-04; session fills in the 'why' when it mirrors the repo copy",
       "verified": "2026-10-04 (page-og:title (feed 404 - known YouTube flake)): title 'GenExDividendInvestor', unknown videos in feed"
+    },
+    {
+      "name": "Fisher Investments",
+      "handle": "@FisherInvestments",
+      "channel_id": "UCSzEl_17ueZesYmYVZqJq_w",
+      "lane": "investing",
+      "why": "Buddy-requested 2026-10-06: Fisher's market-outlook/trend content (weekly '3 Things You Need to Know This Week' Mondays, 'This Week in Review' Fridays, Ken Fisher mid/high-year Market Updates). Forward-looking trend references for future picks. Review as testable leads, not recommendations (their funds have interests of their own).",
+      "verified": "2026-10-06 (watch-add, live RSS): title 'Fisher Investments', 15 videos in feed"
     }
   ]
 }
