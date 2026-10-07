@@ -776,7 +776,6 @@ def selftest_chunks():
     def case(name, cond):
         cases.append((name, bool(cond)))
     case("short body stays one part", tg_chunks("short body") == ["short body"])
-    case("short body stays one part", tg_chunks("short body") == ["short body"])
     flat = tg_chunks("y" * 9000)
     case("9000 flat chars -> 3 parts, all <=3900, nothing lost",
          len(flat) == 3 and all(len(p) <= 3900 for p in flat)
