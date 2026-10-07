@@ -415,6 +415,8 @@ Return JSON only with exactly these fields:
  "would_change_view":"what evidence would change this assessment",
  "horizon_days":90}
 Use exactly three paragraphs, each with 1-3 evidence references. Quotes 30-500 characters.
+Copy quotations exactly. Never join nonadjacent table cells or insert ellipses (...).
+Prefer complete prose sentences or the compact SEC financial-period lines for numeric evidence.
 Every factual claim must be supported by its cited quote. Clearly label your interpretations.
 Do not use numerical forecasts of your own. Prefer qualitative language in this pilot.
 Do not put current share prices or price moves in these paragraphs; the report adds them separately.
@@ -495,19 +497,25 @@ def make_draft(company, docs, quote, previous, at, caller=None, audit=None):
         answer = call(SYSTEM, prompt, 'stock-research-draft')
         shown = [dict(d, text=d['text'][:18000]) for d in docs[:4]]
         for attempt in range(2):
-            draft = parse_draft(answer, shown)
-            if draft['consider'] not in ('wait', 'hold_for_review'):
-                raise ValueError('valuation_missing_action_gate')
-            if company['role'] != 'held' and draft['consider'] == 'hold_for_review':
-                raise ValueError('cannot_hold_unheld_company')
-            review = review_verdict(call(REVIEW_SYSTEM, packed({'evidence_packet': json.loads(prompt),
-                                        'draft': draft}), 'stock-research-review'))
-            if review['passed']:
-                return draft
+            try:
+                draft = parse_draft(answer, shown)
+                if draft['consider'] not in ('wait', 'hold_for_review'):
+                    raise ValueError('valuation_missing_action_gate')
+                if company['role'] != 'held' and draft['consider'] == 'hold_for_review':
+                    raise ValueError('cannot_hold_unheld_company')
+                review = review_verdict(call(REVIEW_SYSTEM, packed({'evidence_packet': json.loads(prompt),
+                                            'draft': draft}), 'stock-research-review'))
+                if review['passed']:
+                    return draft
+                issues, failure = review['issues'], 'interpretation_review_failed'
+            except ValueError as exc:
+                failure = error_code(exc)
+                issues = [failure + ': Correct every reference and use exact contiguous source quotations; '
+                          'never combine table cells or invent missing valuation. Preserve the required schema.']
             if attempt == 0:
-                answer = call(SYSTEM, packed({'original_packet': json.loads(prompt), 'draft_to_correct': draft,
-                                             'reviewer_issues': review['issues']}), 'stock-research-repair')
-        raise ValueError('interpretation_review_failed')
+                answer = call(SYSTEM, packed({'original_packet': json.loads(prompt), 'draft_to_correct': answer,
+                                             'reviewer_issues': issues}), 'stock-research-repair')
+        raise ValueError(failure)
 
     if caller is None:
         if not socket.gethostname().lower().startswith('cumulus1'):

@@ -168,6 +168,18 @@ class ResearchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.review_verdict('{"passed":true,"issues":["Contradictory approval"]}')
 
+    def test_table_elision_repaired_without_relaxing_quote_match(self):
+        invalid = draft()
+        invalid['paragraphs'][0]['evidence'][0]['quote'] = 'The company reported ... higher construction costs.'
+        calls = []
+        def caller(system, text, task):
+            calls.append(task)
+            if task == 'stock-research-draft':
+                return json.dumps(invalid)
+            return json.dumps({'passed': True, 'issues': []} if task == 'stock-research-review' else draft())
+        self.assertEqual(s.make_draft(COMPANY, [document()], None, None, AT, caller)['outlook'], 'mixed')
+        self.assertEqual(calls, ['stock-research-draft', 'stock-research-repair', 'stock-research-review'])
+
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
         self.assertEqual(s.import_legacy(self.conn, text), 1)
