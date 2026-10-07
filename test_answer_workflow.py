@@ -315,6 +315,15 @@ class BotTests(MemoryTests):
 
 
 class IntakeTests(MemoryTests):
+    def test_unknown_intake_option_cannot_start_live_processing(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, str(Path(aw.__file__).parent / "intake.py"),
+                                 "--not-a-command"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unknown option", result.stderr)
+        self.assertNotIn("no configured senders", result.stdout)
+
     def test_email_exception_is_sanitized_and_uncertain_send_is_held(self):
         import task_solver as ts
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "send-error",

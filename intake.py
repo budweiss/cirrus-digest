@@ -1099,6 +1099,15 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         f"({r['tier_reason'].rpartition(': ')[2]})")
             elif r.get("kind") == "feedback":
                 flag = "💬 FEEDBACK reply — review in logs/intake/"
+            elif r.get("kind") == "answer" and r.get("solved", {}).get("request_id"):
+                solved = r["solved"]
+                request_id = solved["request_id"]
+                if solved.get("answered"):
+                    flag = f"✅ Answer delivered — request {request_id}"
+                else:
+                    flag = (f"✋ Answer held for local review — request {request_id}: "
+                            f"{solved.get('reason', 'Review required.')} "
+                            f"Saved packet: data/conversations/{request_id}-review.json")
             elif r.get("kind") == "deliverable" and r.get("contact_list_run"):
                 flag = (f"📋 LIST request — research job {r['contact_list_run']} running; "
                         f"its review email comes to you, reply SEND to deliver")
@@ -1739,8 +1748,11 @@ def requeue(name_filter: str) -> int:
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    allowed_flags = {"--selftest", "--peek", "--requeue", "--dry-run", "--rescan"}
+    if any(a.startswith("-") and a not in allowed_flags for a in args):
+        sys.exit("Unknown option; use selftest, --peek, --requeue, --dry-run or --rescan")
     names = [a for a in args if not a.startswith("-")]
-    if "selftest" in args:
+    if "selftest" in args or "--selftest" in args:
         sys.exit(selftest())
     if "--peek" in args:
         sys.exit(peek(names[0] if names else ""))
