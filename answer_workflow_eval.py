@@ -54,7 +54,8 @@ def score(case, raw, payload):
         lead = text.split(".", 1)[0]
         return ("friday" in lead and "2" in lead and "thursday" not in lead
                 and any(e["source"] == "correction" for e in result["evidence"]))
-    return ("thursday" in text and "10" in text and "saturday" not in text
+    lead = text.split(".", 1)[0]
+    return ("thursday" in lead and "10" in lead and "saturday" not in lead
             and "fake_success" not in text and "deleted" not in text)
 
 

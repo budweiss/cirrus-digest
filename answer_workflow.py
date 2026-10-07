@@ -51,7 +51,7 @@ def parse(raw, sources):
             quote = item["quote"]
             if not isinstance(quote, str) or len(quote.strip()) < 4 or quote not in sources.get(item["source"], ""):
                 return None
-        if result["kind"] == "grounded" and not evidence:
+        if result["kind"] == "grounded" and not evidence and result["verdict"] == "pass":
             return None
         if re.search(r"(?i)\b(api[_ -]?key|password|bearer|secret)\s*[:=]\s*\S{8,}", answer):
             return None

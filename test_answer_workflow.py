@@ -116,6 +116,21 @@ class WorkflowTests(MemoryTests):
         data = json.loads(output())
         data["evidence"] = []
         self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
+
+    def test_qualification_accepts_corrected_history_and_honest_abstention(self):
+        import answer_workflow_eval as evaluation
+        cases = dict(evaluation.fixtures())
+        data = json.loads(output())
+        data["answer"] = "Friday at 2 PM is the new time. Thursday at 10 AM was superseded."
+        data["evidence"] = [{"source": "correction", "quote": cases["correction"]["sources"]["correction"]}]
+        self.assertTrue(evaluation.score("correction", json.dumps(data), cases["correction"]))
+        data = json.loads(output())
+        data["answer"] += " The Saturday claim is unsupported and rejected."
+        self.assertTrue(evaluation.score("reconcile", json.dumps(data), cases["reconcile"]))
+        data = json.loads(output(False))
+        data["answer"] = "The supplied material does not establish an address."
+        data["evidence"] = []
+        self.assertTrue(evaluation.score("missing", json.dumps(data), cases["missing"]))
         data["confidence"] = True
         self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
 
@@ -240,7 +255,7 @@ class IntakeTests(MemoryTests):
                "body_head": question[:2000], "conversation_body": question}
         row = aw.intake_record(self.root, rec, "Original question", "LOCAL_ONLY")
         packet = json.loads(self.m.review_packet(row).read_text())
-        self.assertEqual(packet["original_question"], question)
+        self.assertEqual(packet["original_question"], question.strip())
 
     def test_real_email_adapter_records_answer_and_suppresses_replay(self):
         import task_solver as ts
