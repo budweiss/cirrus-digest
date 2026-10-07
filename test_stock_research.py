@@ -186,6 +186,25 @@ class ResearchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'use_period_dates'):
             s.parse_draft(json.dumps(value), [document()])
 
+    def test_reviewer_cannot_confuse_previous_draft_with_current(self):
+        seen = []
+        def caller(system, text, task):
+            if task == 'stock-research-review':
+                packet = json.loads(text)
+                seen.append(packet)
+                self.assertEqual(set(packet), {'company', 'sources', 'draft_to_review'})
+                self.assertNotIn('old erroneous assertion', text)
+                return '{"passed":true,"issues":[]}'
+            return json.dumps(draft())
+        s.make_draft(COMPANY, [document()], None, {'old': 'old erroneous assertion'}, AT, caller)
+        self.assertEqual(len(seen), 1)
+
+    def test_selected_quarter_does_not_claim_to_be_latest(self):
+        value = draft()
+        value['paragraphs'][0]['text'] = 'The most recent standalone quarter generated substantial revenue.'
+        with self.assertRaisesRegex(ValueError, 'name_quarter_end'):
+            s.parse_draft(json.dumps(value), [document()])
+
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
         self.assertEqual(s.import_legacy(self.conn, text), 1)

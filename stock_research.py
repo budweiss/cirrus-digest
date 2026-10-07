@@ -334,7 +334,7 @@ def error_code(exc):
     # Never print third-party exception strings (can contain request URLs/headers).
     if isinstance(exc, urllib.error.HTTPError):
         return f'http_{exc.code}'
-    if isinstance(exc, ValueError) and re.fullmatch(r'[a-z_]{5,80}', str(exc)):
+    if isinstance(exc, (ValueError, RuntimeError)) and re.fullmatch(r'[a-z_]{5,80}', str(exc)):
         return str(exc)
     return type(exc).__name__
 
@@ -406,6 +406,7 @@ Company announcements reflect management's claims. Financial periods have differ
 do not compare a year with a quarter or GAAP with adjusted results. Old publications are background.
 Use the actual period-end date. Do not invent fiscal-year or fiscal-quarter labels from calendar dates.
 Do not use the word fiscal in the written paragraphs or follow-up checks: state the period-end date.
+Do not call a quarter latest or most recent; identify it by its ending date.
 An annual report may not include the newest standalone quarter in these selected facts; do not call
 the newest quarterly row the company's latest quarter unless the sources establish that.
 Cash flow can include customer prepayments or working-capital timing; do not assume it is recurring
@@ -443,7 +444,35 @@ profitability; prepayments may explain it. Forecasts and acquisition plans must 
 Interpretations and future tests may be proposed if clearly conditional. Do not reject ordinary
 plain-language paraphrases, legitimate rounding or an explicit admission that evidence is missing.
 Reject invented, overstated, unsupported or contradictory claims. Quote matching alone is insufficient.
-Be concise. At most five issues. Do not propose new facts from your own knowledge.'''
+Review only draft_to_review, not an older assessment. Be concise: at most five issues,
+each under 300 characters. Do not propose new facts from your own knowledge.'''
+
+
+def structured_review(system, text, task):
+    """Constrain the local review's shape so rambling output cannot truncate JSON."""
+    from media_pipeline import request, token_count, MODEL
+    if token_count(system + text) + 1800 > 32768:
+        raise ValueError('review_context_budget_exceeded')
+    schema = {'type': 'object', 'additionalProperties': False,
+              'required': ['passed', 'issues'], 'properties': {
+                  'passed': {'type': 'boolean'},
+                  'issues': {'type': 'array', 'maxItems': 5,
+                             'items': {'type': 'string', 'maxLength': 300}}}}
+    result = request('/v1/chat/completions', {'model': MODEL,
+        'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
+        'temperature': 0, 'max_tokens': 1500, 'chat_template_kwargs': {'enable_thinking': False},
+        'response_format': {'type': 'json_schema', 'json_schema': {
+            'name': 'stock_research_review', 'strict': True, 'schema': schema}}})
+    choice = result['choices'][0]
+    answer = choice['message'].get('content') or ''
+    import llm_budget
+    usage = result.get('usage', {})
+    llm_budget.record_call({}, 'vllm', result.get('model', '?'), len(system) + len(text),
+        len(answer), task=task, tier='local', app_dir=ROOT,
+        in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'))
+    if result.get('model') != MODEL or choice.get('finish_reason') != 'stop' or not answer.strip():
+        raise RuntimeError('incomplete_or_wrong_review_model')
+    return answer
 
 
 def review_verdict(answer):
@@ -485,6 +514,9 @@ def parse_draft(answer, docs):
     prose = [p['text'] for p in draft['paragraphs']] + [draft['next_check'], draft['would_change_view']]
     if any(re.search(r'\bfiscal\b', text, re.I) for text in prose):
         raise ValueError('use_period_dates_not_fiscal_labels')
+    if any(re.search(r'\b(?:latest|most recent) (?:reported |standalone )?quarter(?:ly)?\b', text, re.I)
+           for text in prose):
+        raise ValueError('name_quarter_end_not_latest')
     return draft
 
 
@@ -512,8 +544,10 @@ def make_draft(company, docs, quote, previous, at, caller=None, audit=None):
                     raise ValueError('valuation_missing_action_gate')
                 if company['role'] != 'held' and draft['consider'] == 'hold_for_review':
                     raise ValueError('cannot_hold_unheld_company')
-                review = review_verdict(call(REVIEW_SYSTEM, packed({'evidence_packet': json.loads(prompt),
-                                            'draft': draft}), 'stock-research-review'))
+                # Do not send previous drafts to the critic: it can accidentally
+                # judge their old errors instead of the current revision.
+                review = review_verdict(call(REVIEW_SYSTEM, packed({'company': company['name'],
+                    'sources': excerpts, 'draft_to_review': draft}), 'stock-research-review'))
                 if review['passed']:
                     return draft
                 issues, failure = review['issues'], 'interpretation_review_failed'
@@ -530,9 +564,11 @@ def make_draft(company, docs, quote, previous, at, caller=None, audit=None):
         if not socket.gethostname().lower().startswith('cumulus1'):
             raise ValueError('live_inference_runs_on_cumulus1_only')
         from media_pipeline import complete, lease
+        def local_call(system, text, task):
+            return structured_review(system, text, task) if task == 'stock-research-review' else complete(system, text, task)
         # Same shared lease as existing C2 media jobs. Short wait, no second worker.
         with lease(ROOT / 'logs/media/worker.lock', timeout=45):
-            return generate(complete)
+            return generate(local_call)
     else:
         return generate(caller)
 
