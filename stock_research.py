@@ -596,7 +596,8 @@ def main(argv=None):
     r.add_argument('--slot', choices=('am', 'pm', 'trial'), default='trial')
     r.add_argument('--collect-only', action='store_true')
     sub.add_parser('status')
-    sub.add_parser('report')
+    report_parser = sub.add_parser('report')
+    report_parser.add_argument('--run-id', type=int)
     sub.add_parser('import-legacy', help='Read existing calls CSV on stdin; do not rewrite it.')
     args = p.parse_args(argv)
     try:
@@ -615,7 +616,16 @@ def main(argv=None):
         elif args.command == 'status':
             status(args.home)
         elif args.command == 'report':
-            print((args.home / 'reports/latest.md').read_text())
+            if args.run_id is None:
+                path = args.home / 'reports/latest.md'
+            else:
+                conn = database(args.home)
+                row = conn.execute('SELECT report FROM runs WHERE id=? AND finished IS NOT NULL',
+                                   (args.run_id,)).fetchone()
+                if not row:
+                    raise ValueError('completed_run_not_found')
+                path = Path(row['report'])
+            print(path.read_text())
         else:
             conn = database(args.home)
             with conn:
