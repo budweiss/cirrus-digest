@@ -148,6 +148,26 @@ class ResearchTests(unittest.TestCase):
             s.make_draft(dict(COMPANY, role='competitor'), [document()], None, None, AT,
                          lambda *args: json.dumps(value))
 
+    def test_failed_interpretation_review_repairs_once_then_abstains(self):
+        calls = []
+        def caller(system, text, task):
+            calls.append(task)
+            if task == 'stock-research-review':
+                return json.dumps({'passed': False, 'issues': ['The fiscal period is not supported.']})
+            return json.dumps(draft())
+        with self.assertRaisesRegex(ValueError, 'interpretation_review_failed'):
+            s.make_draft(COMPANY, [document()], None, None, AT, caller)
+        self.assertEqual(calls, ['stock-research-draft', 'stock-research-review',
+                                 'stock-research-repair', 'stock-research-review'])
+
+    def test_source_and_interpretation_checks_both_required(self):
+        def caller(system, text, task):
+            return json.dumps({'passed': True, 'issues': []} if task == 'stock-research-review' else draft())
+        result = s.make_draft(COMPANY, [document()], None, None, AT, caller)
+        self.assertEqual(result['outlook'], 'mixed')
+        with self.assertRaises(ValueError):
+            s.review_verdict('{"passed":true,"issues":["Contradictory approval"]}')
+
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
         self.assertEqual(s.import_legacy(self.conn, text), 1)
