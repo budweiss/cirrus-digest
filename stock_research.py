@@ -562,7 +562,8 @@ def render_company(company, docs, quote, draft, previous, issues, unchanged):
     if draft:
         label = 'Same evidence as the previous draft; no new independent pick.' if unchanged else (
             'First research baseline; publications below are not necessarily new.' if not previous else
-            'Updated evidence set; compare this draft with the previous saved assessment.')
+            'Assessment refreshed from the dated sources below. This may reflect a correction or '
+            'interpretation change; it does not by itself mean there is new company news.')
         lines += [label, '', f"Business outlook: **{draft['outlook'].replace('_', ' ')}**. "
                   f"Move to consider: **{draft['consider'].replace('_', ' ')}** (unreviewed paper research).", '']
         if previous and not unchanged:
