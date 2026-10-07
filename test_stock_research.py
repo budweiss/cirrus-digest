@@ -13,7 +13,7 @@ import stock_research as s
 
 AT = '2026-10-07T16:00:00+00:00'
 COMPANY = {'ticker': 'ACME', 'cik': '123', 'name': 'Acme Test Company',
-           'hosts': ['investors.example.com'], 'seeds': []}
+           'role': 'held', 'hosts': ['investors.example.com'], 'seeds': []}
 TEXT = 'The company reported revenue growth while management expects higher construction costs.'
 
 
@@ -134,6 +134,13 @@ class ResearchTests(unittest.TestCase):
         long_doc = dict(document(), text='x' * 18001 + TEXT)
         with self.assertRaisesRegex(ValueError, 'unmatched_source_quote'):
             s.make_draft(COMPANY, [long_doc], None, None, AT, lambda *args: json.dumps(draft()))
+
+    def test_competitor_cannot_be_reported_as_a_holding(self):
+        value = draft()
+        value['consider'] = 'hold_for_review'
+        with self.assertRaisesRegex(ValueError, 'cannot_hold_unheld'):
+            s.make_draft(dict(COMPANY, role='competitor'), [document()], None, None, AT,
+                         lambda *args: json.dumps(value))
 
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'

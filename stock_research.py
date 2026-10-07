@@ -95,8 +95,10 @@ def validate_manifest(value):
         raise ValueError('manifest_needs_1_to_40_companies')
     seen = set()
     for c in value['companies']:
-        if set(c) != {'ticker', 'cik', 'name', 'hosts', 'seeds'}:
+        if set(c) != {'ticker', 'cik', 'name', 'role', 'hosts', 'seeds'}:
             raise ValueError('company_fields_must_exclude_account_sizes_and_costs')
+        if c['role'] not in ('held', 'watchlist', 'competitor'):
+            raise ValueError('invalid_research_role')
         if not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,9}', c['ticker']) or c['ticker'] in seen:
             raise ValueError('invalid_or_duplicate_ticker')
         seen.add(c['ticker'])
@@ -386,6 +388,7 @@ Use exactly three paragraphs, each with 1-3 evidence references. Quotes 30-500 c
 Every factual claim must be supported by its cited quote. Clearly label your interpretations.
 Do not use numerical forecasts of your own. Prefer qualitative language in this pilot.
 Do not put current share prices or price moves in these paragraphs; the report adds them separately.
+Only a company with role held may have consider hold_for_review. Competitors and watchlist names must wait.
 Do not say something is new today merely because we first retrieved it today.
 If valuation or reliable current price is missing, consider must be wait or hold_for_review.
 Do not force a buy or sell suggestion just to fill the letter. Do not use tables or headings.
@@ -426,7 +429,8 @@ def make_draft(company, docs, quote, previous, at, caller=None):
     # Full sources stay archived. The model receives an explicitly limited excerpt.
     excerpts = [dict(id=d['id'], kind=d['kind'], published=d['published'], title=d['title'],
                      excerpt=d['text'][:18000], total_characters=len(d['text'])) for d in docs[:4]]
-    prompt = packed({'as_of': at, 'company': {'ticker': company['ticker'], 'name': company['name']},
+    prompt = packed({'as_of': at, 'company': {'ticker': company['ticker'], 'name': company['name'],
+                                             'role': company['role']},
                      'price_observation': quote, 'valuation_available': False,
                      'previous_unreviewed_draft': previous, 'sources': excerpts})
     if caller is None:
@@ -443,6 +447,8 @@ def make_draft(company, docs, quote, previous, at, caller=None):
     draft = parse_draft(answer, shown)
     if draft['consider'] not in ('wait', 'hold_for_review'):
         raise ValueError('valuation_missing_action_gate')
+    if company['role'] != 'held' and draft['consider'] == 'hold_for_review':
+        raise ValueError('cannot_hold_unheld_company')
     return draft
 
 
@@ -460,7 +466,8 @@ def latest_review(conn, ticker):
 
 
 def render_company(company, docs, quote, draft, previous, issues, unchanged):
-    lines = [f"## {company['name']} ({company['ticker']})", '']
+    lines = [f"## {company['name']} ({company['ticker']})", '',
+             'Research role: ' + company['role'] + '.', '']
     if quote:
         lines += [f"Observed regular-market price: **${quote['price']:.2f} USD**, "
                   f"quoted {quote['quoted_at']} ({quote['age_hours']:.1f} hours old). "
