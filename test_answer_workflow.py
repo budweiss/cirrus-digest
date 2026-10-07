@@ -184,6 +184,10 @@ class WorkflowTests(MemoryTests):
         data["answer"] = "Friday at 2 PM is the new time. Thursday at 10 AM was superseded."
         data["evidence"] = [{"source": "correction", "quote": cases["correction"]["sources"]["correction"]}]
         self.assertTrue(evaluation.score("correction", json.dumps(data), cases["correction"]))
+        data["answer"] = "The planning meeting has been moved to Friday at 2 PM (updated from the earlier Thursday 10 AM time)."
+        self.assertTrue(evaluation.score("correction", json.dumps(data), cases["correction"]))
+        data["answer"] = "Thursday at 10 AM is the time, not Friday at 2 PM."
+        self.assertFalse(evaluation.score("correction", json.dumps(data), cases["correction"]))
         data = json.loads(output())
         data["answer"] += " The Saturday claim is unsupported and rejected."
         self.assertTrue(evaluation.score("reconcile", json.dumps(data), cases["reconcile"]))

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -54,7 +55,10 @@ def score(case, raw, payload):
         # Explaining the obsolete time is valid; the current answer must lead
         # with the corrected time and cite the correction itself.
         lead = text.split(".", 1)[0]
-        return ("friday" in lead and "2" in lead and "thursday" not in lead
+        current_time = ("friday" in lead and "2" in lead and
+                        ("thursday" not in lead or
+                         bool(re.search(r"(?:moved|rescheduled|changed|updated) to friday at 2", lead))))
+        return (current_time
                 and any(e["source"] == "correction" for e in result["evidence"]))
     lead = text.split(".", 1)[0]
     return ("thursday" in lead and "10" in lead and "saturday" not in lead
@@ -174,6 +178,40 @@ def renewal_check():
                    ("; current approval expired" if expiry <= time.time() else ""))
 
 
+def rescore(provider):
+    """Operator-reviewed scorer repair only; unchanged application and prompt.
+
+    Preserve inference dates and old evidence. Missing completion metadata or
+    any application change requires fresh inference instead of this replay.
+    """
+    path = evidence_path(provider)
+    data = json.loads(path.read_text())
+    files, digest = contract()
+    cases = dict(fixtures())
+    if any(data["contract_files"].get(name) != value for name, value in files.items()
+           if name != "answer_workflow_eval.py"):
+        raise ValueError("application changed; fresh inference required")
+    if len(data["rows"]) != len(cases) or {r["case"] for r in data["rows"]} != set(cases):
+        raise ValueError("incomplete evaluation")
+    for row in data["rows"]:
+        if (row.get("system") != aw.SYSTEM or json.loads(row["user"]) != cases[row["case"]]
+                or row.get("actual_model") != data["model"] or "finish_reason" not in row
+                or row.get("task") != aw.TASK or row.get("max_tokens") != MAX_TOKENS
+                or row.get("provider") != provider):
+            raise ValueError("receipt changed or completion metadata missing")
+    archive = path.with_name(provider + "-before-rescore.json")
+    if not archive.exists():
+        save(archive, data)
+    for row in data["rows"]:
+        row["passed"] = (not row.get("error_type") and row["finish_reason"] != "length"
+                         and score(row["case"], row.get("raw", ""), cases[row["case"]]))
+    data.update(contract_files=files, contract_sha256=digest, rescored_at=time.time())
+    save(path, data)
+    print(provider, "saved public completions rescored; original inference dates retained:",
+          sum(r["passed"] for r in data["rows"]), "/", len(cases))
+    return all(r["passed"] for r in data["rows"])
+
+
 def check():
     data = json.loads((ROOT / "config/answer-workflow-capabilities.json").read_text())
     registry.contract_digest(data, ROOT)
@@ -188,7 +226,7 @@ def check():
 if __name__ == "__main__":
     try:
         cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
-        ok = run(sys.argv[2]) if cmd == "run" else install(sys.argv[2:]) if cmd == "install" else check() if cmd == "check" else False
+        ok = run(sys.argv[2]) if cmd == "run" else rescore(sys.argv[2]) if cmd == "rescore" else install(sys.argv[2:]) if cmd == "install" else check() if cmd == "check" else False
     except Exception as exc:
         print("Qualification stopped:", type(exc).__name__)
         ok = False
