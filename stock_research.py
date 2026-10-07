@@ -272,6 +272,11 @@ def financial_text(company, data, at):
                 if old is None or (old[0] == tag and value['filed'] > old[1]['filed']):
                     periods[key] = (tag, value, days)
         chosen = sorted(periods.values(), key=lambda v: (v[1]['end'], v[1]['start']), reverse=True)[:6]
+        quarter_ends = sorted({v['end'] for _, v, days in chosen if days <= 110}, reverse=True)
+        annual_ends = sorted({v['end'] for _, v, days in chosen if days >= 300}, reverse=True)
+        lines.append(f"{label} coverage: selected standalone quarter ends {', '.join(quarter_ends) or 'none'}; "
+                     f"selected annual ends {', '.join(annual_ends) or 'none'}. "
+                     'An annual row does not supply its last standalone quarter.')
         for tag, v, days in chosen:
             val = v['val']
             if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
@@ -609,7 +614,8 @@ def refresh(home, slot, collect_only=False):
         try:
             docs, quote, issues = collect(conn, home, company, at)
             conn.commit()  # Keep acquired evidence even if inference fails.
-            evidence_key = digest(packed([(d['id'], d['sha']) for d in docs]) + VERSION)
+            evidence_key = digest(packed([(d['id'], d['sha']) for d in docs]) + VERSION +
+                                  SYSTEM + REVIEW_SYSTEM + company['role'])
             if not collect_only:
                 evidence_ready(docs, at)
                 # Repetition does not manufacture confidence or consume a new model call.
