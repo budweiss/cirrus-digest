@@ -56,7 +56,7 @@ class Memory:
         now = time.time()
         with self.connect() as db:
             db.execute("INSERT OR IGNORE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (key, owner, client, project, thread, question[:12000], privacy,
+                       (key, owner, client, project, thread, question, privacy,
                         state, "", json.dumps(meta or {}), now, now))
         return self.get(key)
 

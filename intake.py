@@ -858,6 +858,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         rec = classify(entry["name"], entry["projects"], subject, body)
         rec["from"] = from_addr
         rec["from_email"] = from_addr
+        rec["conversation_body"] = body
         rec["message_id"] = mid
         rec["kind"] = entry["request_kind"]
         # Research senders: a REPLY without an explicit REQUEST: subject is

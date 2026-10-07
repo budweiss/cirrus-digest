@@ -203,7 +203,7 @@ def intake_record(root, rec, subject, privacy):
     project = "|".join(sorted(rec.get("projects") or ["general"]))
     return cm.Memory(root).add(owner="intake", client=rec["requester"], project=project,
         thread=client_promises.thread_key(subject), message_id=rec["message_id"],
-        question=task_solver.strip_quoted_reply(rec.get("body_head") or rec.get("title") or "(empty)"),
+        question=task_solver.strip_quoted_reply(rec.get("conversation_body") or rec.get("body_head") or rec.get("title") or "(empty)"),
         privacy=privacy, state="observed", meta={"kind": rec.get("kind", "")})
 
 

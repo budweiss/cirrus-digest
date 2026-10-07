@@ -234,6 +234,14 @@ class BotTests(MemoryTests):
 
 
 class IntakeTests(MemoryTests):
+    def test_full_original_question_retained_for_local_review(self):
+        question = "Explain this supplied material: " + "detail " * 2000
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "long",
+               "body_head": question[:2000], "conversation_body": question}
+        row = aw.intake_record(self.root, rec, "Original question", "LOCAL_ONLY")
+        packet = json.loads(self.m.review_packet(row).read_text())
+        self.assertEqual(packet["original_question"], question)
+
     def test_real_email_adapter_records_answer_and_suppresses_replay(self):
         import task_solver as ts
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "mail-1",

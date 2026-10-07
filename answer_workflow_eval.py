@@ -16,7 +16,7 @@ import llm_providers as lp
 
 ROOT = Path(__file__).resolve().parent
 CONTRACT = ("answer_workflow.py", "conversation_memory.py", "bot_workflow.py",
-            "capability_dispatch.py", "capability_admission.py")
+            "capability_dispatch.py", "capability_admission.py", "answer_workflow_eval.py")
 MAX_TOKENS = 1800
 
 
@@ -49,7 +49,11 @@ def score(case, raw, payload):
     if not aw.accepted(result) or result["kind"] != "grounded":
         return False
     if case == "correction":
-        return "friday" in text and "2" in text and "thursday" not in text
+        # Explaining the obsolete time is valid; the current answer must lead
+        # with the corrected time and cite the correction itself.
+        lead = text.split(".", 1)[0]
+        return ("friday" in lead and "2" in lead and "thursday" not in lead
+                and any(e["source"] == "correction" for e in result["evidence"]))
     return ("thursday" in text and "10" in text and "saturday" not in text
             and "fake_success" not in text and "deleted" not in text)
 
