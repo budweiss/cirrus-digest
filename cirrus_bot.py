@@ -439,6 +439,10 @@ def cmd_help():
 /proposals — list generated implementation proposals (numbered)
 /accept <N|name> — approve an open proposal (from /proposals)
 /knowledge — show RAG knowledge base stats
+/work <question> — tracked answer with local memory and verification
+/workpublic <question> — public information; allow qualified cloud backup
+/reply <request ID> <correction> — continue a tracked conversation
+/workstatus [request ID] — view saved results and progress
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
 /research <topic> — search the web, fetch ~5 sources, and reply with a research brief (runs in background)
 /todo <text> — add a new item to the work queue (shows up in /approve)
@@ -2211,6 +2215,9 @@ def handle_approval_reply(text: str, chat_id: str) -> str:
 def handle_message(message, chat_id):
     text = message.get("text", "").strip()
     cmd  = text.lower().split()[0] if text else ""
+    if cmd in ("/work", "/workpublic", "/reply", "/workstatus"):
+        import bot_workflow
+        return bot_workflow.handle(message, chat_id, root=PROJECT_DIR, allowed_id=ALLOWED_ID)
 
     # Normalize a leading "/" so "/approve 8" behaves the same as "approve 8".
     # Without this, "/approve 8" matched the "/approve" branch below (which
@@ -2301,14 +2308,22 @@ def run_bot():
     log(f"Allowed user ID: {ALLOWED_ID}")
 
     offset = 0
+    import bot_workflow
+    def workflow_notice(chat_id, text):
+        # Plain text, one attempt: a timeout is not proof that Telegram did not
+        # deliver it. Saved answers can always be retrieved using /workstatus.
+        return bool(api_call("sendMessage", {"chat_id": chat_id, "text": text[:3900]}).get("ok"))
+    bot_workflow.kick(PROJECT_DIR, CREDS, workflow_notice)
     while True:
         try:
             result = api_call("getUpdates", {"offset": offset, "timeout": 30})
             updates = result.get("result", [])
 
             for update in updates:
-                offset = update["update_id"] + 1
                 message = update.get("message", {})
+                workflow_update = message.get("text", "").split(" ", 1)[0].lower() in bot_workflow.COMMANDS
+                if not workflow_update:
+                    offset = update["update_id"] + 1
                 if not message:
                     continue
 
@@ -2318,16 +2333,25 @@ def run_bot():
 
                 # Security check — only respond to Buddy
                 if user_id != ALLOWED_ID:
+                    offset = update["update_id"] + 1
                     log(f"Ignored message from unauthorized user: {user_id}")
                     continue
 
-                log(f"Command from {user_id}: {text}")
+                if text.split(" ", 1)[0].lower() in bot_workflow.COMMANDS:
+                    log(f"Workflow command received ({len(text)} characters)")
+                else:
+                    log(f"Command from {user_id}: {text}")
                 response = handle_message(message, chat_id)
+                # A workflow update is acknowledged only after durable intake.
+                # Redelivery across a crash uses its message ID to deduplicate.
+                offset = update["update_id"] + 1
                 send_message(chat_id, response)
+                bot_workflow.kick(PROJECT_DIR, CREDS, workflow_notice)
 
             # MacBook watchdog staleness check (Session 35) — cheap, ~15 min
             try:
                 check_heartbeats()
+                bot_workflow.kick(PROJECT_DIR, CREDS, workflow_notice)
             except Exception as e:
                 log(f"heartbeat check error: {e}")
 

@@ -1,0 +1,277 @@
+"""Exercise persisted recovery, tenant boundaries, actual routing and send gates."""
+import ast
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+import answer_workflow as aw
+import bot_workflow as bw
+from conversation_memory import Memory
+
+SOURCE = {"note": "The planning meeting is Thursday at 10 AM."}
+
+
+def output(ok=True, answer="The planning meeting is Thursday at 10 AM.", quote=None):
+    return json.dumps({"answer": answer, "confidence": .95 if ok else .4,
+        "verdict": "pass" if ok else "needs_review", "kind": "grounded",
+        "evidence": [{"source": "note", "quote": quote or SOURCE["note"]}],
+        "reason": "The supplied note states the time."})
+
+
+class FakeModels:
+    def __init__(self, replies):
+        self.replies = iter(replies)
+        self.calls = []
+
+    def call(self, payload, **kwargs):
+        self.calls.append((json.loads(json.dumps(payload)), kwargs))
+        provider, raw = next(self.replies)
+        if isinstance(raw, BaseException):
+            raise raw
+        return {"provider": provider, "model": "fixture", "raw": raw}
+
+
+class MemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.m = Memory(self.root)
+
+    def add(self, n="1", **kwargs):
+        args = dict(owner="phone", client="buddy", project="test", thread="topic",
+                    message_id=n, question="When is the planning meeting?", privacy="CLOUD_ALLOWED")
+        args.update(kwargs)
+        return self.m.add(**args)
+
+    def test_tenant_and_host_boundaries(self):
+        self.add("a", client="bill")
+        self.add("b", project="other")
+        self.add("c", owner="intake")
+        self.add("d", thread="other")
+        row = self.add("e")
+        self.assertEqual(self.m.history(row), [])
+        self.assertEqual(len(self.m.history(row, same_thread=False)), 1)
+
+    def test_duplicate_and_atomic_claim(self):
+        row = self.add()
+        repeated = self.add(question="Different payload with the same message ID")
+        self.assertEqual(row["question"], repeated["question"])
+        other = Memory(self.root)
+        self.assertEqual(other.claim("phone")["id"], row["id"])
+        self.assertIsNone(self.m.claim("phone"))
+        self.assertTrue(other.transition(row["id"], "running", "ready"))
+        self.assertFalse(self.m.transition(row["id"], "running", "ready"))
+
+    def test_restart_states_and_private_permissions(self):
+        safe = self.add("safe", state="running", meta={"stages": {"local": {"parsed": None}}})
+        unknown = self.add("unknown", state="running", meta={"active_stage": "foundation"})
+        delivery = self.add("delivery", state="sending")
+        self.m.recover("phone")
+        self.assertEqual(self.m.get(safe["id"])["state"], "queued")
+        self.assertEqual(self.m.get(unknown["id"])["state"], "needs_review")
+        self.assertEqual(self.m.get(delivery["id"])["state"], "delivery_unknown")
+        self.assertEqual(self.m.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.m.directory.stat().st_mode & 0o777, 0o700)
+
+
+class WorkflowTests(MemoryTests):
+    def test_local_first_and_independent_review(self):
+        model = FakeModels([("ollama", output()), ("ollama", output())])
+        result = aw.compose(self.m, self.add(), model, SOURCE)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual([x[1]["pool"] for x in model.calls], ["local", "local"])
+        self.assertEqual(model.calls[-1][0]["mode"], "review")
+        self.assertTrue(result["answer"].endswith("Is this what you were looking for?"))
+
+    def test_foundation_reconciles_local_uncertainty(self):
+        model = FakeModels([("ollama", output(False)), ("kimi", output())])
+        result = aw.compose(self.m, self.add(), model, SOURCE)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual([x[1]["pool"] for x in model.calls], ["local", "cloud"])
+        self.assertEqual(model.calls[-1][0]["drafts"][0]["provider"], "ollama")
+
+    def test_panel_has_two_distinct_providers_and_local_reconciliation(self):
+        model = FakeModels([("ollama", output(False)), ("kimi", output(False)),
+                            ("anthropic", output()), ("ollama", output())])
+        result = aw.compose(self.m, self.add(), model, SOURCE)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(model.calls[2][1]["exclude"], ("kimi",))
+        self.assertEqual(len(model.calls[-1][0]["drafts"]), 3)
+        self.assertEqual(model.calls[-1][0]["mode"], "review")
+
+    def test_private_history_cannot_leak_to_cloud(self):
+        self.add("old", privacy="LOCAL_ONLY")
+        model = FakeModels([("ollama", output(False))])
+        result = aw.compose(self.m, self.add("new"), model, SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(model.calls[0][1]["privacy"], "LOCAL_ONLY")
+        self.assertTrue((self.m.directory / (result["id"] + "-review.json")).exists())
+
+    def test_bad_evidence_and_malformed_json_fail(self):
+        self.assertIsNone(aw.parse(output(quote="Friday at noon"), SOURCE))
+        self.assertIsNone(aw.parse("not JSON", SOURCE))
+        data = json.loads(output())
+        data["evidence"] = []
+        self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
+        data["confidence"] = True
+        self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
+
+    def test_same_provider_does_not_count_twice(self):
+        model = FakeModels([("ollama", output(False)), ("kimi", output(False)), ("kimi", output())])
+        result = aw.compose(self.m, self.add(), model, SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+
+    def test_checkpoint_replay_does_not_repeat_completed_inference(self):
+        parsed = aw.parse(output(), SOURCE)
+        row = self.add(meta={"stages": {"local": {"provider": "ollama", "parsed": parsed}}})
+        model = FakeModels([("ollama", output())])
+        result = aw.compose(self.m, row, model, SOURCE)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(model.calls[0][0]["mode"], "review")
+
+    def test_interruption_holds_unconfirmed_inference(self):
+        row = self.add(state="running")
+        with self.assertRaises(KeyboardInterrupt):
+            aw.compose(self.m, row, FakeModels([("ollama", KeyboardInterrupt())]), SOURCE)
+        self.m.recover("phone")
+        self.assertEqual(self.m.get(row["id"])["state"], "needs_review")
+
+    def test_no_headway_hold_and_one_progress_check(self):
+        for n in ("a", "b"):
+            row = self.add(n)
+            self.m.update(row["id"], state="delivered", answer="Earlier answer " + n)
+        result = aw.compose(self.m, self.add("c", question="Still wrong, the same answer again."),
+                            FakeModels([]), SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+        other = self.add("d", question="What about this instead?")
+        result = aw.compose(self.m, other, FakeModels([]), SOURCE)
+        self.assertTrue(result["meta"]["progress_check"])
+        result = aw.compose(self.m, self.add("e", question="Please try again"), FakeModels([]), SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+
+    def test_genuine_progress_is_not_stopped_by_turn_count(self):
+        for n in range(4):
+            row = self.add(str(n))
+            self.m.update(row["id"], state="delivered", answer="Earlier answer")
+        model = FakeModels([("ollama", output()), ("ollama", output())])
+        result = aw.compose(self.m, self.add("next", question="Closer, when is the meeting?"), model, SOURCE)
+        self.assertEqual(result["state"], "ready")
+
+    def test_correction_survives_new_instance_and_new_topic(self):
+        self.add("old", question="Correction: use plain paragraphs, not bullet lists.")
+        row = self.add("new", thread="another", question="Suggest a meeting summary.")
+        self.m = Memory(self.root)
+        model = FakeModels([("ollama", output()), ("ollama", output())])
+        aw.compose(self.m, row, model, SOURCE)
+        values = list(model.calls[0][0]["sources"].values())
+        self.assertIn("Correction: use plain paragraphs, not bullet lists.", values)
+
+    def test_provider_exception_is_sanitized_and_no_cloud_for_private(self):
+        model = FakeModels([("ollama", RuntimeError("private transport details"))])
+        result = aw.compose(self.m, self.add(privacy="LOCAL_ONLY"), model, SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+        self.assertNotIn("private transport details", json.dumps(result))
+
+
+class BotTests(MemoryTests):
+    def setUp(self):
+        super().setUp()
+        (self.root / "config").mkdir()
+        (self.root / "config/answer-workflow-phone.enabled").touch()
+
+    def message(self, text="/work When is the planning meeting?", mid=100, user=7):
+        return {"text": text, "message_id": mid, "from": {"id": user},
+                "chat": {"id": user, "type": "private"}}
+
+    def test_real_handler_queues_once_and_drains_to_saved_result(self):
+        # Execute the real bot's entry-point function without importing live config.
+        tree = ast.parse((Path(__file__).parent / "cirrus_bot.py").read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "handle_message")
+        scope = {"PROJECT_DIR": self.root, "ALLOWED_ID": 7}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "cirrus_bot.py", "exec"), scope)
+        text = scope["handle_message"](self.message(), 7)
+        self.assertIn("queued", text)
+        row = self.m.recent("phone", "telegram:7")[0]
+        model = FakeModels([("ollama", output()), ("ollama", output())])
+        notices = []
+        bw.drain(self.root, {}, lambda chat, msg: notices.append((chat, msg)) or True,
+                 models=model, get_sources=lambda *_: SOURCE)
+        self.assertEqual(self.m.get(row["id"])["state"], "ready")
+        self.assertEqual(len(notices), 1)
+        scope["handle_message"](self.message(), 7)
+        bw.drain(self.root, {}, lambda *_: self.fail("duplicate notification"), models=FakeModels([]))
+        self.assertIn("Thursday", bw.handle(self.message("/workstatus " + row["id"], 101), 7,
+                      root=self.root, allowed_id=7))
+        self.assertEqual(len(model.calls), 2)
+
+    def test_unauthorized_or_group_requests_never_queue(self):
+        bw.handle(self.message(user=9), 9, root=self.root, allowed_id=7)
+        msg = self.message()
+        msg["chat"]["type"] = "group"
+        bw.handle(msg, 7, root=self.root, allowed_id=7)
+        self.assertEqual(self.m.recent("phone", "telegram:7"), [])
+
+    def test_notification_failure_preserves_answer_without_resending(self):
+        bw.handle(self.message(), 7, root=self.root, allowed_id=7)
+        bw.drain(self.root, {}, lambda *_: False,
+            models=FakeModels([("ollama", output()), ("ollama", output())]), get_sources=lambda *_: SOURCE)
+        row = self.m.recent("phone", "telegram:7")[0]
+        self.assertFalse(row["meta"]["notice_confirmed"])
+        self.assertTrue(row["answer"])
+        bw.drain(self.root, {}, lambda *_: self.fail("retried uncertain notification"), models=FakeModels([]))
+
+    def test_public_mode_is_explicit_and_skips_private_retrieval(self):
+        bw.handle(self.message("/workpublic Which server owns live client work?"), 7,
+                  root=self.root, allowed_id=7)
+        row = self.m.recent("phone", "telegram:7")[0]
+        self.assertEqual(row["privacy"], "CLOUD_ALLOWED")
+        (self.root / "config/workflow-sources.json").write_text(json.dumps(SOURCE))
+        self.assertEqual(bw.sources(self.root, "meeting", public=True), SOURCE)
+
+
+class IntakeTests(MemoryTests):
+    def test_real_email_adapter_records_answer_and_suppresses_replay(self):
+        import task_solver as ts
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "mail-1",
+               "from_email": "fixture@example.invalid", "body_head": "When is the planning meeting?",
+               "kind": "answer", "title": "Meeting"}
+        good = json.loads(output())
+        good["evidence"][0]["source"] = "project-record"
+        model = FakeModels([("ollama", json.dumps(good)), ("ollama", json.dumps(good))])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "try_entity_kb_answer", return_value=SOURCE["note"]), \
+             patch.object(ts, "_send_mail", return_value=True) as send, \
+             patch.object(ts, "_record_promise"), patch.object(ts.dev_loop, "ledger_append"), \
+             patch.object(aw, "Models", return_value=model):
+            first = aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+            second = aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+        self.assertTrue(first["answered"])
+        self.assertTrue(second["answered"])
+        self.assertEqual(send.call_count, 1)
+        row = self.m.get(first["request_id"])
+        self.assertEqual(row["state"], "delivered")
+        self.assertIn("Thursday", row["answer"])
+
+    def test_unconfirmed_email_delivery_is_not_retried(self):
+        import task_solver as ts
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "mail-2",
+               "body_head": "When is the planning meeting?", "kind": "answer", "title": "Meeting"}
+        row = aw.intake_record(self.root, rec, "Meeting", "LOCAL_ONLY")
+        self.m.update(row["id"], state="ready", answer=SOURCE["note"])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "_send_mail", return_value=False) as send, \
+             patch.object(ts, "_fallback_to_ticket"):
+            first = aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+            second = aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+        self.assertFalse(first["answered"])
+        self.assertFalse(second["answered"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(self.m.get(row["id"])["state"], "delivery_unknown")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -24,6 +24,10 @@ config/credentials.json.age
 config/credentials.json.pre-encryption-backup
 # entity_kb per-project data (S65) — runtime data, not code; each box's copy is its own
 data/entity_kb/
+data/conversations/
+config/answer-workflow-capabilities.json
+config/answer-workflow-phone.enabled
+config/answer-workflow-intake.enabled
 
 # S66 business-idea pipeline runtime state (same reason as email_state.json /
 # intake_state.json above: per-box cursors and counters, never source).

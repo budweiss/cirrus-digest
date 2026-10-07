@@ -857,6 +857,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             continue
         rec = classify(entry["name"], entry["projects"], subject, body)
         rec["from"] = from_addr
+        rec["from_email"] = from_addr
         rec["message_id"] = mid
         rec["kind"] = entry["request_kind"]
         # Research senders: a REPLY without an explicit REQUEST: subject is
@@ -912,6 +913,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if not dry_run:
             bump_count(state, entry["name"])
             append_backlog(rec)
+            import answer_workflow
+            answer_workflow.intake_record(PROJECT_DIR, rec, subject,
+                                         task_solver.intake_privacy(rec, creds))
             dev_loop.ledger_append({
                 "event": "user-intake", "requester": entry["name"],
                 "title": rec["title"], "tier": rec["tier"],
@@ -1020,7 +1024,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
             if rec["kind"] == "answer" and rec["status"] != "refused":
                 try:
-                    solved = task_solver.solve_and_answer(rec, creds, from_addr, subject)
+                    if (PROJECT_DIR / "config/answer-workflow-intake.enabled").exists():
+                        solved = answer_workflow.solve_and_answer(rec, creds, from_addr, subject)
+                    else:
+                        solved = task_solver.solve_and_answer(rec, creds, from_addr, subject)
                 except Exception as e:
                     solved = {"answered": False, "reason": f"unhandled error: {e}"}
                 rec["solved"] = solved

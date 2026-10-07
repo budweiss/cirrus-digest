@@ -37,6 +37,7 @@
     }
   },
   "tasks": {
+    "conversation-answer": "research",
     "halftime_catalogue": "extraction",
     "halftime_routing": "extraction",
     "alopecia-agent": "research",

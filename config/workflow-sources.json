@@ -1,0 +1,4 @@
+{
+  "server-roles-2026-10-06": "CIRRUS is the development and self-improvement server. CUMULUS owns live client work. Each project has one execution owner; moving a job does not synchronize its data. Per-server infrastructure can run on both when its purpose is documented. Source: Cowork PROJECT-RUNTIME-REGISTRY.md, placement policy.",
+  "workflow-scope": "The phone answer pilot prepares answers and retains conversation history on CIRRUS. It has no shell execution, deployment, email-send or other action tools. A recorded request ID, saved result and confirmed delivery are distinct states. Client email memory stays on the server that handles that client's request."
+}
