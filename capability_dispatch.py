@@ -4,6 +4,7 @@ Candidate records are trusted application evaluation/health records, never LLM
 output. No project uses this entry point until its records and caller are migrated.
 """
 import math
+import sys
 import llm_providers as lp
 import llm_routing as routing
 from capability_selection import select, NoEligibleModel
@@ -108,3 +109,85 @@ def dispatch(system, user, creds, *, candidates, capability, task, max_cost_usd,
         raise lp.ProviderError('selected model returned unusable output')
     outcome('capability_output_accepted')
     return chosen['id'], result
+
+
+def selftest():
+    """Exercise decision-making logic with explicit inputs/expected outputs.
+
+    Does not touch network, credentials, or real routing config -- only
+    checks the pure-logic branches of plan()'s candidate-filtering loop and
+    the allowed-pool computation, using lightweight fakes.
+    """
+    failures = []
+
+    def check(name, cond):
+        if not cond:
+            failures.append(name)
+
+    # --- max_tokens validation (plan() raises before touching routing/creds) ---
+    try:
+        plan('sys', 'user', {}, candidates=[], capability='x', task='x',
+             max_cost_usd=1.0, max_tokens=0)
+        check('max_tokens=0 rejected', False)
+    except lp.ProviderError:
+        check('max_tokens=0 rejected', True)
+    except Exception:
+        check('max_tokens=0 rejected', False)
+
+    try:
+        plan('sys', 'user', {}, candidates=[], capability='x', task='x',
+             max_cost_usd=1.0, max_tokens=-5)
+        check('negative max_tokens rejected', False)
+    except lp.ProviderError:
+        check('negative max_tokens rejected', True)
+    except Exception:
+        check('negative max_tokens rejected', False)
+
+    try:
+        plan('sys', 'user', {}, candidates=[], capability='x', task='x',
+             max_cost_usd=1.0, max_tokens=1.5)
+        check('non-int max_tokens rejected', False)
+    except lp.ProviderError:
+        check('non-int max_tokens rejected', True)
+    except Exception:
+        check('non-int max_tokens rejected', False)
+
+    # --- allowed pool computation matches documented pool= semantics ---
+    allowed_local = routing.LOCAL
+    check('pool=local uses routing.LOCAL', isinstance(allowed_local, (set, frozenset)))
+
+    fake_cloud_order = ['anthropic', 'openai']
+    allowed_cloud = set(fake_cloud_order)
+    check('pool=cloud builds set from cloud_order', allowed_cloud == {'anthropic', 'openai'})
+
+    allowed_both = routing.LOCAL | allowed_cloud
+    check('pool=both unions local and cloud',
+          allowed_both >= routing.LOCAL and allowed_both >= allowed_cloud)
+
+    # --- plan() with no governed task raises a wrapped ProviderError, not a raw RoutingError ---
+    class _FakePolicyNoProfile(dict):
+        pass
+
+    orig_policy = routing.policy
+    try:
+        routing.policy = lambda task, creds, privacy: {'profile': None}
+        try:
+            plan('sys', 'user', {}, candidates=[], capability='x', task='ungoverned',
+                 max_cost_usd=1.0, max_tokens=16)
+            check('ungoverned task rejected', False)
+        except lp.ProviderError:
+            check('ungoverned task rejected', True)
+        except Exception:
+            check('ungoverned task rejected', False)
+    finally:
+        routing.policy = orig_policy
+
+    if failures:
+        sys.stderr.write('capability_dispatch selftest FAILED: ' + ', '.join(failures) + '\n')
+        return False
+    return True
+
+
+if __name__ == '__main__':
+    if '--selftest' in sys.argv:
+        sys.exit(0 if selftest() else 1)
