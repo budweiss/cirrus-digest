@@ -180,6 +180,12 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(s.make_draft(COMPANY, [document()], None, None, AT, caller)['outlook'], 'mixed')
         self.assertEqual(calls, ['stock-research-draft', 'stock-research-repair', 'stock-research-review'])
 
+    def test_period_label_error_cannot_pass_model_agreement(self):
+        value = draft()
+        value['paragraphs'][0]['text'] = 'The full fiscal year 2025 generated substantial cash flow.'
+        with self.assertRaisesRegex(ValueError, 'use_period_dates'):
+            s.parse_draft(json.dumps(value), [document()])
+
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
         self.assertEqual(s.import_legacy(self.conn, text), 1)

@@ -400,6 +400,7 @@ Separate business growth from share-price attractiveness. A fall alone does not 
 Company announcements reflect management's claims. Financial periods have different lengths;
 do not compare a year with a quarter or GAAP with adjusted results. Old publications are background.
 Use the actual period-end date. Do not invent fiscal-year or fiscal-quarter labels from calendar dates.
+Do not use the word fiscal in the written paragraphs or follow-up checks: state the period-end date.
 An annual report may not include the newest standalone quarter in these selected facts; do not call
 the newest quarterly row the company's latest quarter unless the sources establish that.
 Cash flow can include customer prepayments or working-capital timing; do not assume it is recurring
@@ -476,6 +477,9 @@ def parse_draft(answer, docs):
     for key in ('next_check', 'would_change_view'):
         if not isinstance(draft[key], str) or not 20 <= len(draft[key]) <= 1000:
             raise ValueError('followup_missing')
+    prose = [p['text'] for p in draft['paragraphs']] + [draft['next_check'], draft['would_change_view']]
+    if any(re.search(r'\bfiscal\b', text, re.I) for text in prose):
+        raise ValueError('use_period_dates_not_fiscal_labels')
     return draft
 
 
