@@ -484,37 +484,52 @@ def compose():
     return subject, "\n".join(lines)
 
 # ── Delivery ───────────────────────────────────────────────────────────────────
+def tg_chunks(text, limit=3900):
+    """S382: split a long body across SEQUENTIAL messages instead of clipping
+    the tail off. Telegram rejects any message above its 4096-char hard cap
+    (the brief's scheduled-jobs section pushed real bodies past the single
+    message limit), and the old shape only ever sent the first 3900 chars
+    with a "(truncated)" tag — everything Buddy did not see was lost. Split
+    on a line boundary where one exists so a table/list is not cut mid-row;
+    a boundary further from the cap than `limit` lets chunk[0] grow, so the
+    next chunk keeps its room."""
+    parts = []
+    while text:
+        if len(text) <= limit:
+            parts.append(text);
+            break
+        cut = text.rfind("\n", limit - 400, limit)
+        if cut <= 0:
+            cut = limit
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return parts or [""]
+
+
 def send_telegram(text):
     if not TG_TOKEN or not TG_USER:
         return "telegram: no token/user configured — skipped"
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    # keep well under Telegram's 4096 hard cap
-    chunk = text if len(text) <= 3900 else text[:3900] + "\n…(truncated)"
-    data = urllib.parse.urlencode({"chat_id": TG_USER, "text": chunk,
-                                   "parse_mode": "Markdown"}).encode()
-
-    # S66 fix: Telegram returns HTTP 400 (not a 200-with-ok:false) for
-    # malformed Markdown entities. urlopen() RAISES on a non-2xx status, so
-    # this used to jump straight to the outer except and skip the plain-text
-    # retry below entirely -- it only ever ran for the rarer 200-but-ok:false
-    # case. Catch the markdown attempt's own exception so the plain-text
-    # retry actually runs on both failure shapes. Same bug, same fix as
-    # cumulus_daily_brief.py's send_telegram (found live, S66).
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
-            ok = json.loads(r.read()).get("ok")
-        if ok:
-            return "telegram: sent"
-    except Exception:
-        pass
-
-    try:
-        data = urllib.parse.urlencode({"chat_id": TG_USER, "text": chunk}).encode()
-        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
-            ok = json.loads(r.read()).get("ok")
-        return "telegram: sent (plain)" if ok else "telegram: failed"
-    except Exception as e:
-        return f"telegram: error {e}"
+    parts = tg_chunks(text)
+    # S66 fix kept per-part: Telegram returns HTTP 400 (not a 200-with-ok:false)
+    # for malformed Markdown entities. urlopen() RAISES on a non-2xx status, so
+    # the plain-text retry below must run for BOTH failure shapes.
+    for chunk in parts:
+        for attempt, extra in (("Markdown", {"parse_mode": "Markdown"}), ("plain", {})):
+            data = urllib.parse.urlencode(dict({"chat_id": TG_USER, "text": chunk},
+                                               **extra)).encode()
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
+                    ok = json.loads(r.read()).get("ok")
+            except Exception:
+                ok = False
+            if ok:
+                break
+        else:
+            return "telegram: failed"
+    if len(parts) == 1:
+        return "telegram: sent"
+    return f"telegram: sent ({len(parts)} parts)"
 
 def send_all(subject, body):
     results = []
@@ -751,12 +766,47 @@ def selftest():
     return 1 if fail else 0
 
 
+def selftest_chunks():
+    """S382: pin the Telegram part-splitting. The pre-S382 send_telegram
+    clipped the body at 3900 chars with a "(truncated)" tag — the tail of the
+    real brief (past the scheduled-jobs section) never reached the phone.
+    These cases are offline: tg_chunks is a pure function."""
+    ok = fail = 0
+    cases = []
+    def case(name, cond):
+        cases.append((name, bool(cond)))
+    case("short body stays one part", tg_chunks("short body") == ["short body"])
+    case("short body stays one part", short == ["short body"])
+    flat = tg_chunks("y" * 9000)
+    case("9000 flat chars -> 3 parts, all <=3900, nothing lost",
+         len(flat) == 3 and all(len(p) <= 3900 for p in flat)
+         and "".join(flat) == "y" * 9000)
+    rows = "\n".join(f"- job row {i}" for i in range(800))
+    parts = tg_chunks(rows)
+    rejoined = parts[0] + "".join("\n" + p for p in parts[1:])
+    case("multiline body splits between rows, content intact",
+         all(len(p) <= 3900 for p in parts) and rejoined == rows
+         and not parts[0].endswith("row"))
+    case("empty body still one sendable part", tg_chunks("") == [""])
+    for name, cond in cases:
+        print(f"  {'PASS' if cond else 'FAIL'} {name}")
+        if cond: ok = ok + 1
+        else: fail = fail + 1
+    print(f"  {ok} passed, {fail} failed (chunks)")
+    return 1 if fail else 0
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     # T57: dispatch the subcommand BEFORE doing any work. A selftest that runs
     # after compose() is a selftest that sends mail on the way to being run.
     if "--selftest" in sys.argv:
-        raise SystemExit(selftest())
+        rc = selftest()
+        # S382: run the part-splitting cases with it — a selftest no entry
+        # point invokes is a test that gets deployed unrun.
+        if selftest_chunks():
+            rc = 1
+        raise SystemExit(rc)
     dry = "--dry-run" in sys.argv or "--dry" in sys.argv
     subject, body = compose()
     if dry:

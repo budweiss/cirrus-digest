@@ -140,5 +140,20 @@ class MediaTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'Cumulus_media_worker_failed'):
                 m.call('analyze',text='full text',instructions='test')
 
+    def test_lane_ceilings_bounded_work_is_capped(self):
+        # S382: the Oct 5 digest froze silently on the "Become a $1M/yr FDE"
+        # item and the 2026-10-07 run repeated the freeze ON item [10/10] —
+        # the analyze lane of the same story — because a0eeb54 capped only
+        # 'prompt'. Both digest model lanes are bounded; youtube keeps its
+        # budget-derived ceiling (assigned at call time) and the lanes that
+        # can legitimately run hours behind the 7200 s worker lease keep the
+        # generic 28800.
+        self.assertEqual(m.lane_ceiling('prompt'), 900)
+        self.assertEqual(m.lane_ceiling('analyze'), 1800)
+        self.assertEqual(m.lane_ceiling('transcribe'), 28800)
+        self.assertEqual(m.lane_ceiling('weekly-fetch'), 28800)
+        self.assertEqual(m.lane_ceiling('youtube'), 28800)
+        self.assertEqual(m.lane_ceiling('anything-else'), 28800)
+
 
 if __name__=='__main__':unittest.main()

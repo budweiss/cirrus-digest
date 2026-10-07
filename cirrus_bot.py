@@ -127,6 +127,19 @@ def _api_error_line(method, e, body):
     return f"API error ({method}): {e}" + (f" — {desc[:140]}" if desc else "")
 
 
+def tg_parts(text, limit=3900):
+    """S382: split a workflow answer into sequential message-sized parts.
+
+    Telegram rejects any sendMessage above its 4096-char hard cap; the old
+    call site sliced text[:3900] SILENTLY, so the tail of a long /work answer
+    was lost with no marker. Returns [] only for empty input."""
+    parts = []
+    while text:
+        parts.append(text[:limit])
+        text = text[limit:]
+    return parts
+
+
 def api_call(method, params=None):
     url = f"{API_URL}/{method}"
     if params:
@@ -2310,9 +2323,15 @@ def run_bot():
     offset = 0
     import bot_workflow
     def workflow_notice(chat_id, text):
-        # Plain text, one attempt: a timeout is not proof that Telegram did not
-        # deliver it. Saved answers can always be retrieved using /workstatus.
-        return bool(api_call("sendMessage", {"chat_id": chat_id, "text": text[:3900]}).get("ok"))
+        # Plain text, one attempt per part: a timeout is not proof that Telegram
+        # did not deliver it. Saved answers can always be retrieved using
+        # /workstatus. S382: a long answer is SENT IN PARTS (tg_parts), not
+        # silently clipped at 3900 chars — the tail of the answer was
+        # previously lost with no marker at all.
+        parts = tg_parts(text)
+        return bool(parts and all(
+            api_call("sendMessage", {"chat_id": chat_id, "text": part}).get("ok")
+            for part in parts))
     bot_workflow.kick(PROJECT_DIR, CREDS, workflow_notice)
     while True:
         try:

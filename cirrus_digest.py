@@ -583,14 +583,23 @@ def summarize_item(item):
     and any referenced external sources fetched via web search."""
     import media_pipeline
     if media_pipeline.enabled() and item.get('type') == 'podcast':
-        notes = media_pipeline.call('analyze', text=item['content'], domain='ai',
-            metadata={k:item.get(k,'') for k in ('source','subject','url','published')},
-            instructions='Create source-grounded evidence notes for an AI technology digest. '
-            'Preserve named tools, exact numbers, comparisons, limitations, security details and '
-            'concrete proposals. Distinguish speaker claims from verified evidence. '
-            'Cover the whole supplied source, including its ending. Do not invent facts. '
-            'At most 700 words. Source: '+item['source']+'; Title: '+item['subject'])
-        item = dict(item, content='[FULL EPISODE EVIDENCE NOTES]\n'+notes)
+        # S382: the analyze lane is capped in media_pipeline.call (1800 s).
+        # An expiry or worker failure must degrade ONE item — fall back to
+        # the raw transcript — never hang the digest and never kill the run
+        # mid-flight (the Oct 4 shape: run dead, no error line, no email).
+        try:
+            notes = media_pipeline.call('analyze', text=item['content'], domain='ai',
+                metadata={k:item.get(k,'') for k in ('source','subject','url','published')},
+                instructions='Create source-grounded evidence notes for an AI technology digest. '
+                'Preserve named tools, exact numbers, comparisons, limitations, security details and '
+                'concrete proposals. Distinguish speaker claims from verified evidence. '
+                'Cover the whole supplied source, including its ending. Do not invent facts. '
+                'At most 700 words. Source: '+item['source']+'; Title: '+item['subject'])
+        except Exception as e:
+            log(f"  analyze lane unavailable, summarizing raw content: {str(e)[:200]}")
+            notes = None
+        if notes:
+            item = dict(item, content='[FULL EPISODE EVIDENCE NOTES]\n'+notes)
     # Reference enrichment: find named papers/repos/models mentioned in the
     # content, search for each, fetch and append source material so qwen
     # summarizes with the original referenced content, not just a mention.

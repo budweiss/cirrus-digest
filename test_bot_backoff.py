@@ -124,6 +124,16 @@ def run_checks(repo):
 
     CONFLICT = {"ok": False, "error_code": 409, "description": "Conflict"}
 
+    # S382: tg_parts must split long answers into message-sized parts with
+    # nothing lost, so workflow_notice sends the WHOLE /work answer instead of
+    # silently dropping the tail (the pre-S382 shape: text[:3900], no marker).
+    ok("tg_parts keeps a short answer whole", B.tg_parts("hi there") == ["hi there"])
+    ok("tg_parts returns no parts for empty input", B.tg_parts("") == [])
+    parts = B.tg_parts("y" * 9000)
+    ok("tg_parts splits 9000 chars under the cap",
+       len(parts) == 3 and all(len(p) <= 3900 for p in parts)
+       and "".join(parts) == "y" * 9000)
+
     # The backoff being ABSENT is the exact pre-S84 state, so say that in words
     # rather than dying with an AttributeError eight checks later. A test whose
     # failure mode is a stack trace gets read as "the test is broken."

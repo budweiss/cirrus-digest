@@ -457,18 +457,32 @@ def dispatch(payload):
         raise ValueError('unknown_media_action')
 
 
+def lane_ceiling(action):
+    """S377/S382: action-specific ssh ceilings for cross-box media calls.
+
+    The digest's prompt lane (summarise + named-reference extraction) hung
+    SILENTLY for hours because the generic ceiling was 28800 s -- a stalled or
+    leased media worker made the daily digest wait silently with no error
+    line (Oct 4/5 runs; the log just ends mid-run). A prompt completion is
+    bounded work: 15 min hard cap.
+
+    S382: the same silent hang then moved to the ANALYZE lane — the Oct 5
+    run froze exactly at the "Become a $1M/yr FDE (Full Course)" item, and
+    the 2026-10-07 run (09:16 ET kick, with the prompt cap deployed) sailed
+    through items 1-9 past the old freeze point and then sat silently on
+    [10/10] (the same story) for 3.5 h: analyze of one episode/transcript
+    is ALSO bounded work, so 30 min covers the real analysis plus a short
+    lock wait, and a stalled worker degrades one item instead of hanging
+    the digest until the email never goes out. youtube keeps its
+    budget-derived ceiling; transcribe/weekly-fetch keep 28800 (the worker
+    lease is 7200 s and those lanes can legitimately run hours).
+    """
+    return {'prompt': 900, 'analyze': 1800}.get(action, 28800)
+
+
 def call(action, **kwargs):
     payload = dict(kwargs,action=action)
-    # S377: action-specific ssh ceilings. The digest's prompt lane (summarise
-    # + named-reference extraction) hung SILENTLY for hours because the
-    # generic ceiling was 28800 s -- a stalled/leased media worker made the
-    # daily digest wait silently with no error line (Oct 4/5 runs; the log
-    # just ends mid-run). A prompt completion is bounded work: 15 min hard
-    # cap, then the ssh subprocess times out, the caller's except catches it
-    # and the digest proceeds. Longer-lived lanes keep their ceilings
-    # (youtube carries its own budget; transcribe/analyze/weekly-fetch can
-    # legitimately run 1-2 h behind the 7200 s worker lease).
-    timeout = {'prompt': 900}.get(action, 28800)
+    timeout = lane_ceiling(action)
     if action == 'youtube':
         # Reserve 30 seconds for SSH setup/response within the caller's limit.
         payload['budget_seconds'] = youtube_deadline() - time.time() - 30

@@ -339,32 +339,42 @@ def send_telegram(text, creds):
     if not token or not user:
         return "telegram: no token/user configured — skipped"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    chunk = text if len(text) <= 3900 else text[:3900] + "\n…(truncated)"
-    data = urllib.parse.urlencode({"chat_id": user, "text": chunk, "parse_mode": "Markdown"}).encode()
-
-    # S66 fix: Telegram returns HTTP 400 (not a 200-with-ok:false) for
-    # malformed Markdown entities -- e.g. this brief's raw "board_contact"/
-    # "current_mgmt_co" field names read as unmatched italic underscores.
-    # urlopen() RAISES on a non-2xx status, so that used to jump straight to
-    # the outer except and skip the plain-text retry below entirely -- it
-    # only ever ran for the rarer 200-but-ok:false case. Catch the markdown
-    # attempt's own exception so the plain-text retry actually runs on both
-    # failure shapes.
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
-            ok = json.loads(r.read()).get("ok")
-        if ok:
-            return "telegram: sent"
-    except Exception:
-        pass
-
-    try:
-        data = urllib.parse.urlencode({"chat_id": user, "text": chunk}).encode()
-        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
-            ok = json.loads(r.read()).get("ok")
-        return "telegram: sent (plain)" if ok else "telegram: failed"
-    except Exception as e:
-        return f"telegram: error {e}"
+    # S382: same fix as morning_brief.py — send long bodies as SEQUENTIAL
+    # parts (split on a line boundary under the cap) instead of clipping the
+    # tail off at 3900 chars and tagging it "(truncated)".
+    parts = []
+    while text:
+        if len(text) <= 3900:
+            parts.append(text)
+            break
+        cut = text.rfind("\n", 3500, 3900)
+        if cut <= 0:
+            cut = 3900
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    parts = parts or [""]
+    for chunk in parts:
+        # S66 fix kept per-part: Telegram returns HTTP 400 (not a
+        # 200-with-ok:false) for malformed Markdown entities -- e.g. this
+        # brief's raw "board_contact"/"current_mgmt_co" field names read as
+        # unmatched italic underscores. urlopen() RAISES on a non-2xx status,
+        # so the plain-text retry must run for BOTH failure shapes.
+        for attempt in ("Markdown", "plain"):
+            extra = {"parse_mode": "Markdown"} if attempt == "Markdown" else {}
+            data = urllib.parse.urlencode(dict({"chat_id": user, "text": chunk},
+                                               **extra)).encode()
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30) as r:
+                    ok = json.loads(r.read()).get("ok")
+            except Exception:
+                ok = False
+            if ok:
+                break
+        else:
+            return "telegram: failed"
+    if len(parts) == 1:
+        return "telegram: sent"
+    return f"telegram: sent ({len(parts)} parts)"
 
 
 def main():
@@ -477,6 +487,32 @@ def selftest() -> int:
     ck("every anomaly line carries a clock", out.count("⚠️ [") == 3)
     ck("a repair older than the window does not inflate the count",
        "5 of the last 14" not in out)
+    # S382: send_telegram must SPLIT a long brief into sequential parts, not
+    # clip the tail at 3900 chars. Offline: urlopen is faked, nothing is sent.
+    import urllib.request as _urr
+    saved_urlopen = _urr.urlopen
+    sent = []
+    class _FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return _j.dumps({"ok": True}).encode()
+    def fake_urlopen(req, timeout=None):
+        sent.append(req.data.decode())
+        return _FakeResp()
+    try:
+        _urr.urlopen = fake_urlopen
+        result = send_telegram("y" * 9000,
+                               {"telegram_bot_token": "t", "telegram_user_id": 1})
+        sent_texts = [urllib.parse.parse_qs(q)["text"][0] for q in sent]
+        ck("a 9000-char body goes out as 3 full parts, nothing clipped",
+           result == "telegram: sent (3 parts)" and len(sent) == 3
+           and all(len(t) <= 3900 for t in sent_texts)
+           and "".join(sent_texts) == "y" * 9000
+           and all("truncated" not in t for t in sent_texts))
+    finally:
+        _urr.urlopen = saved_urlopen
+
     print()
     print("all daily-brief selftests passed" if not fail else f"{fail} FAILED")
     return 1 if fail else 0
