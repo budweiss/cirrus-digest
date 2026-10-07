@@ -154,6 +154,7 @@ class Page(HTMLParser):
     def __init__(self, html):
         super().__init__(convert_charrefs=True)
         self.parts, self.links, self.dates, self.titles = [], [], [], []
+        self.date_text, self.date_tag = [], None
         self.skip = []
         self.in_title = False
         self.feed(html)
@@ -164,6 +165,18 @@ class Page(HTMLParser):
         if not self.published:
             m = re.search(r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})', html)
             self.published = m.group(1) if m else None
+        if not self.published:
+            value = re.sub(r'\s+', ' ', ' '.join(self.date_text)).strip()
+            for pattern, fmt in ((r'[A-Za-z]+ \d{1,2}, \d{4}', '%B %d, %Y'),
+                                 (r'[A-Za-z]+ \d{1,2}, \d{4}', '%b %d, %Y'),
+                                 (r'\d{1,2}/\d{1,2}/\d{4}', '%m/%d/%Y')):
+                match = re.search(pattern, value)
+                if match:
+                    try:
+                        self.published = datetime.strptime(match.group(), fmt).date().isoformat()
+                        break
+                    except ValueError:
+                        pass
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -174,6 +187,9 @@ class Page(HTMLParser):
             self.dates.append(a.get('content', ''))
         if tag == 'time' and a.get('datetime'):
             self.dates.append(a['datetime'])
+        if tag == 'time' or set(a.get('class', '').split()) & {
+                'article-date', 'release-date', 'news-date', 'date', 'published', 'published-date', 'module_date-text'}:
+            self.date_tag = tag
         if tag == 'a' and a.get('href'):
             self.links.append(a['href'])
         if tag == 'title':
@@ -184,10 +200,14 @@ class Page(HTMLParser):
             self.skip.remove(tag)
         if tag == 'title':
             self.in_title = False
+        if tag == self.date_tag:
+            self.date_tag = None
 
     def handle_data(self, value):
         if self.in_title:
             self.titles.append(value)
+        if self.date_tag and not self.skip:
+            self.date_text.append(value)
         if not self.skip:
             self.parts.append(value)
 

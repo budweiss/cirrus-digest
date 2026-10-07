@@ -72,6 +72,12 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(page.published, '2025-11-03')
         self.assertNotIn('dateModified', page.text)
 
+    def test_official_release_visible_dateline(self):
+        page = s.Page('<title>Results</title><div class="article-date">August 26, 2026</div>'
+                      '<p>Guidance for October 27, 2026 is not a publication date.</p>')
+        self.assertEqual(page.published, '2026-08-26')
+        self.assertIsNone(s.Page('<p>A forecast for October 27, 2026.</p>').published)
+
     def test_duplicate_sources_and_revisions_keep_original(self):
         def save(text):
             return s.save_document(self.conn, self.home, 'ACME', document()['url'], 'article',
