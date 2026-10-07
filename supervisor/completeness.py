@@ -458,7 +458,7 @@ RULES = {
     "pedagogy": Rule(
         "pedagogy", [r"(\d+)\s+art", r"(\d+)\s+pod", r"(\d+)\s+topic",
                      r"(\d+)\s+sent", r"(\d+)\s+item"], max_zero_runs=5,
-        zero_phrases=("quiet day", "nothing to send"),
+        zero_phrases=("quiet day", "nothing to send", "empty digest — skipped (no content/spotlight)"),
         why="Alyssa's pedagogy digest has been quiet for five runs — check the "
             "literacy feeds and podcast transcription still produce.",
         # S150: build_note writes "FAILED: send failed: ..." when the send
@@ -1105,6 +1105,8 @@ def selftest() -> bool:
        RULES["billsnow"].productivity("no material change") == (0, True))
     ck("an EMPTY pedagogy digest still reads as zero",
        RULES["pedagogy"].productivity("sent: 0 art, 0 pod, 0 topic") == (0, True))
+    ck("pedagogy's real empty-send guard note is understood but unproductive",
+       RULES["pedagogy"].productivity("empty digest — skipped (no content/spotlight)") == (0, True))
 
     # ---- S142. billnewdev's quiet-week note now carries the sweep counts.
     # Changing a note format without a test that reads the NEW shape is exactly
