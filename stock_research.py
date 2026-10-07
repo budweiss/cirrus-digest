@@ -237,8 +237,8 @@ def save_document(conn, home, ticker, url, kind, title, published, text, raw, at
 
 
 def observation(conn, ticker, kind, data, at):
-    conn.execute('INSERT INTO observations (ticker,kind,recorded_at,data) VALUES (?,?,?,?)',
-                 (ticker, kind, at, packed(data)))
+    return conn.execute('INSERT INTO observations (ticker,kind,recorded_at,data) VALUES (?,?,?,?)',
+                        (ticker, kind, at, packed(data))).lastrowid
 
 
 def verify_identity(company, data):
@@ -650,6 +650,12 @@ def refresh(home, slot, collect_only=False):
         prev = latest_review(conn, company['ticker'])
         try:
             docs, quote, issues = collect(conn, home, company, at)
+            # Freeze the actual input, including the old price and previous view.
+            # Replays must not quietly introduce information learned afterward.
+            observation(conn, company['ticker'], 'research_packet', {
+                'run_id': run_id, 'as_of': at, 'company': company, 'documents': docs,
+                'quote': quote, 'benchmark': benchmark, 'previous': prev, 'issues': list(issues),
+            }, at)
             conn.commit()  # Keep acquired evidence even if inference fails.
             evidence_key = digest(packed([(d['id'], d['sha']) for d in docs]) + VERSION +
                                   SYSTEM + REVIEW_SYSTEM + company['role'])
@@ -698,6 +704,62 @@ def refresh(home, slot, collect_only=False):
     return 0 if not failures else 2
 
 
+def replay(home, run_id, ticker, caller=None):
+    """Evaluate today's analysis code against an immutable earlier input packet.
+
+    No acquisition, current-price refresh, review insertion or latest-report update.
+    This is a writing/reasoning experiment, never a new paper investment.
+    """
+    conn = database(home)
+    try:
+        row = conn.execute("SELECT id,data FROM observations WHERE kind='research_packet' "
+                           "AND ticker=? AND json_extract(data,'$.run_id')=? ORDER BY id DESC LIMIT 1",
+                           (ticker, run_id)).fetchone()
+        if not row:
+            raise ValueError('saved_research_packet_not_found')
+        packet = json.loads(row['data'])
+        evaluated_at, attempts, draft, failure = now(), [], None, None
+        try:
+            draft = make_draft(packet['company'], packet['documents'], packet['quote'],
+                               json.loads(packet['previous']['draft']) if packet['previous'] else None,
+                               packet['as_of'], caller=caller, audit=attempts.append)
+        except Exception as exc:
+            failure = error_code(exc)
+        original = conn.execute('SELECT draft,validation FROM reviews WHERE run_id=? AND ticker=?',
+                                (run_id, ticker)).fetchone()
+        prior = json.loads(original['draft']) if original else None
+        result = {'packet_id': row['id'], 'input_sha': digest(row['data']), 'run_id': run_id,
+                  'ticker': ticker, 'as_of': packet['as_of'], 'evaluated_at': evaluated_at,
+                  'version': VERSION, 'writer_sha': digest(SYSTEM), 'reviewer_sha': digest(REVIEW_SYSTEM),
+                  'draft': draft, 'failure': failure, 'attempts': attempts,
+                  'original_draft': prior, 'is_investment_pick': False}
+        label = 'passed automated checks' if draft else 'withheld: ' + failure
+        comparison = ('The original run had no accepted draft.' if not prior else
+                      'Original assessment: ' + prior['outlook'].replace('_', ' ') + '; ' +
+                      prior['consider'].replace('_', ' ') + '.')
+        report = '\n'.join([
+            '# Stock Pickers — saved-research rehearsal', '',
+            f"Evaluated {evaluated_at} using run {run_id}'s inputs as of {packet['as_of']}.", '',
+            '**Historical input only.** Prices, source availability and their ages below are frozen at '
+            'that earlier time. They are not current market information. This is not a new pick or an investment result.', '',
+            f'Rehearsal result: {label}. {comparison}', '',
+            'A changed or newly accepted draft does not establish that its investment judgment is better.', '',
+            render_company(packet['company'], packet['documents'], packet['quote'], draft,
+                           packet['previous'], packet['issues'] + ([failure] if failure else []), False),
+            '## Original draft from that run', '',
+            '\n\n'.join(p['text'] for p in prior['paragraphs']) if prior else 'No accepted original draft.', '',
+        ])
+        result['report'] = report
+        evaluation_id = observation(conn, ticker, 'replay_result', result, evaluated_at)
+        conn.commit()
+        print(packed({'evaluation_id': evaluation_id, 'run_id': run_id, 'ticker': ticker,
+                      'status': 'rehearsal_passed' if draft else 'rehearsal_withheld',
+                      'failure': failure, 'is_investment_pick': False}))
+        return 0 if draft else 2
+    finally:
+        conn.close()
+
+
 def import_legacy(conn, text):
     reader = csv.DictReader(io.StringIO(text))
     expected = ['date', 'run', 'ticker', 'call', 'price', 'reason_one_line', 'rules_fired']
@@ -718,6 +780,7 @@ def status(home):
               for t in ('documents', 'reviews', 'legacy_calls', 'source_candidates')}
     row = conn.execute('SELECT id,started,finished,status FROM runs ORDER BY id DESC LIMIT 1').fetchone()
     counts.update(latest_run=dict(row) if row else None, automatic_return_scoring=False, model_training=False)
+    counts['rehearsals'] = conn.execute("SELECT count(*) FROM observations WHERE kind='replay_result'").fetchone()[0]
     conn.close()
     print(packed(counts))
 
@@ -733,7 +796,12 @@ def main(argv=None):
     r.add_argument('--collect-only', action='store_true')
     sub.add_parser('status')
     report_parser = sub.add_parser('report')
-    report_parser.add_argument('--run-id', type=int)
+    report_ids = report_parser.add_mutually_exclusive_group()
+    report_ids.add_argument('--run-id', type=int)
+    report_ids.add_argument('--evaluation-id', type=int)
+    replay_parser = sub.add_parser('replay', help='Recheck frozen research; never creates a new pick.')
+    replay_parser.add_argument('--run-id', type=int, required=True)
+    replay_parser.add_argument('--ticker', required=True)
     sub.add_parser('import-legacy', help='Read existing calls CSV on stdin; do not rewrite it.')
     args = p.parse_args(argv)
     try:
@@ -751,7 +819,20 @@ def main(argv=None):
                 return refresh(args.home, args.slot, args.collect_only)
         elif args.command == 'status':
             status(args.home)
+        elif args.command == 'replay':
+            from media_pipeline import lease
+            with lease(args.home / 'refresh.lock', timeout=1):
+                return replay(args.home, args.run_id, args.ticker)
         elif args.command == 'report':
+            if args.evaluation_id is not None:
+                conn = database(args.home)
+                row = conn.execute("SELECT data FROM observations WHERE id=? AND kind='replay_result'",
+                                   (args.evaluation_id,)).fetchone()
+                conn.close()
+                if not row:
+                    raise ValueError('rehearsal_not_found')
+                print(json.loads(row['data'])['report'])
+                return 0
             if args.run_id is None:
                 path = args.home / 'reports/latest.md'
             else:

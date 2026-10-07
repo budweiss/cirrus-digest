@@ -246,6 +246,72 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(rows[1]['previous_id'], rows[0]['id'])
         self.assertIn('repeated_evidence', rows[1]['validation'])
         self.assertIn('no new independent pick', (self.home / 'reports/latest.md').read_text())
+        packets = [json.loads(r[0]) for r in self.conn.execute(
+            "SELECT data FROM observations WHERE kind='research_packet' ORDER BY id")]
+        self.assertEqual(len(packets), 2)
+        self.assertEqual(packets[0]['documents'], [document()])
+        self.assertIsNone(packets[0]['previous'])
+        self.assertEqual(packets[1]['previous']['id'], rows[0]['id'])
+
+    def saved_packet(self):
+        quote = {'price': 30, 'quoted_at': AT, 'retrieved_at': AT, 'age_hours': 0,
+                 'fresh_for_research': True}
+        packet = {'run_id': 7, 'as_of': AT, 'company': COMPANY, 'documents': [document()],
+                  'quote': quote, 'benchmark': None, 'previous': None, 'issues': []}
+        s.observation(self.conn, 'ACME', 'research_packet', packet, AT)
+        self.conn.commit()
+        reports = self.home / 'reports'
+        reports.mkdir()
+        (reports / 'latest.md').write_text('Latest current research stays here.')
+        return packet
+
+    def test_rehearsal_uses_frozen_inputs_and_does_not_create_new_picks(self):
+        packet = self.saved_packet()
+        seen = []
+        def caller(system, text, task):
+            if task == 'stock-research-draft':
+                seen.append(json.loads(text))
+            return json.dumps({'passed': True, 'issues': []} if task == 'stock-research-review' else draft())
+        with patch.object(s, 'now', return_value='2027-10-07T16:00:00+00:00'), \
+                patch.object(s, 'collect', side_effect=AssertionError('must not fetch')), \
+                patch.object(s, 'market_quote', side_effect=AssertionError('must not refresh prices')), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(s.replay(self.home, 7, 'ACME', caller), 0)
+        self.assertEqual(seen[0]['as_of'], AT)
+        self.assertEqual(seen[0]['price_observation'], packet['quote'])
+        self.assertIsNone(seen[0]['previous_unreviewed_draft'])
+        for table in ('runs', 'reviews', 'legacy_calls'):
+            self.assertEqual(self.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+        self.assertEqual((self.home / 'reports/latest.md').read_text(), 'Latest current research stays here.')
+        row = self.conn.execute("SELECT id,data FROM observations WHERE kind='replay_result'").fetchone()
+        result = json.loads(row['data'])
+        self.assertFalse(result['is_investment_pick'])
+        self.assertEqual(len(result['attempts']), 2)
+        self.assertIn('not current market information', result['report'])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute('DELETE FROM observations WHERE id=?', (row['id'],))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(s.main(['--home', str(self.home), 'report', '--evaluation-id', str(row['id'])]), 0)
+        self.assertIn('Historical input only', output.getvalue())
+
+    def test_rehearsal_preserves_failed_attempts(self):
+        self.saved_packet()
+        def caller(system, text, task):
+            return json.dumps({'passed': False, 'issues': ['Unsupported factual claim in the draft.']}
+                              if task == 'stock-research-review' else draft())
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(s.replay(self.home, 7, 'ACME', caller), 2)
+        row = self.conn.execute("SELECT data FROM observations WHERE kind='replay_result'").fetchone()
+        result = json.loads(row['data'])
+        self.assertIsNone(result['draft'])
+        self.assertEqual(result['failure'], 'interpretation_review_failed')
+        self.assertEqual(len(result['attempts']), 4)
+
+    def test_old_run_without_packet_is_not_reconstructed_from_new_evidence(self):
+        with self.assertRaisesRegex(ValueError, 'saved_research_packet_not_found'):
+            s.replay(self.home, 4, 'ACME', lambda *args: self.fail('no model calls'))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM observations').fetchone()[0], 0)
 
     def test_collection_failure_never_becomes_hold(self):
         rendered = s.render_company(COMPANY, [], None, None, None, ['http_403'], False)
