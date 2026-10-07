@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import types
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -204,6 +205,22 @@ class ResearchTests(unittest.TestCase):
         value['paragraphs'][0]['text'] = 'The most recent standalone quarter generated substantial revenue.'
         with self.assertRaisesRegex(ValueError, 'name_quarter_end'):
             s.parse_draft(json.dumps(value), [document()])
+
+    def test_structured_reviewer_refuses_wrong_or_incomplete_model(self):
+        response = {'model': 'fixture-local', 'choices': [{'finish_reason': 'stop',
+                    'message': {'content': '{"passed":true,"issues":[]}'}}]}
+        media = types.SimpleNamespace(MODEL='fixture-local', token_count=lambda text: 10,
+                                      request=lambda path, payload: response)
+        budget = types.SimpleNamespace(record_call=lambda *args, **kwargs: None)
+        with patch.dict('sys.modules', {'media_pipeline': media, 'llm_budget': budget}):
+            self.assertTrue(s.review_verdict(s.structured_review('system', 'data', 'fixture'))['passed'])
+            response['model'] = 'wrong-model'
+            with self.assertRaisesRegex(RuntimeError, 'incomplete_or_wrong_review_model'):
+                s.structured_review('system', 'data', 'fixture')
+            response['model'] = 'fixture-local'
+            response['choices'][0]['finish_reason'] = 'length'
+            with self.assertRaisesRegex(RuntimeError, 'incomplete_or_wrong_review_model'):
+                s.structured_review('system', 'data', 'fixture')
 
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
