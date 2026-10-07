@@ -117,6 +117,21 @@ class Memory:
                 (owner,))]
         return [row for row in rows if not row["meta"].get("notice_attempted")]
 
+    def thread_review(self, row, note=None):
+        """Operator-only review boundary; never called by a model or message."""
+        scope = (row["owner"], row["client"], row["project"], row["thread"])
+        with self.connect() as db:
+            rows = [self.row(x) for x in db.execute(
+                "SELECT * FROM turns WHERE owner=? AND client=? AND project=? AND thread=?", scope)]
+        if note is not None:
+            if not isinstance(note, str) or not note.strip():
+                raise ValueError("a review decision is required")
+            self.update(row["id"], meta={"buddy_reviewed_at": time.time(), "review_note": note})
+            return self.thread_review(row)
+        reviewed = max((x["meta"].get("buddy_reviewed_at", 0) for x in rows), default=0)
+        held = any(x["meta"].get("requires_buddy") and x["created"] > reviewed for x in rows)
+        return reviewed, held
+
     def recover(self, owner):
         """Call only while holding the worker lock; never assume an in-flight call failed."""
         with self.connect() as db:
@@ -155,4 +170,12 @@ def selftest():
 
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) == 4 and sys.argv[1] == "review":
+        memory = Memory(Path(__file__).resolve().parent)
+        row = memory.get(sys.argv[2])
+        if row is None:
+            sys.exit("Unknown request")
+        memory.thread_review(row, sys.argv[3])
+        print("Review recorded. Future follow-ups can proceed; no request was rerun or sent.")
+        sys.exit(0)
     sys.exit(0 if len(sys.argv) == 2 and sys.argv[1] == "--selftest" and selftest() else 1)

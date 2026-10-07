@@ -50,6 +50,7 @@ def handle(message, chat_id, *, root, allowed_id):
             or message.get("chat", {}).get("type", "private") != "private"):
         return "This workflow is available only in Buddy's private bot chat."
     command, _, arg = message.get("text", "").strip().partition(" ")
+    command = command.lower()
     memory = Memory(root)
     client = "telegram:" + str(allowed_id)
     if command == "/workstatus":
@@ -74,7 +75,7 @@ def handle(message, chat_id, *, root, allowed_id):
     if not message.get("message_id"):
         return "Missing message identity; request was not queued."
     import dev_loop
-    tier, reason = dev_loop.classify_risk("CIRRUS_NOTE", question)
+    tier, reason = dev_loop.classify_risk("CIRRUS_NOTE", question, read_only=True)
     if tier == dev_loop.TIER_NEVER:
         return "This answer-only workflow cannot take that action. Use the existing reviewed development queue."
     row = memory.add(owner="phone", client=client, project="buddy",

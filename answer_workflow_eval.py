@@ -46,7 +46,9 @@ def score(case, raw, payload):
     text = result["answer"].lower()
     if case == "missing":
         return result["verdict"] == "needs_review"
-    if not aw.accepted(result) or result["kind"] != "grounded":
+    # Qualification scores correctness; runtime independently applies the
+    # confidence threshold. Honest uncertainty must not be marked as a false fact.
+    if result["verdict"] != "pass" or result["kind"] != "grounded":
         return False
     if case == "correction":
         # Explaining the obsolete time is valid; the current answer must lead
@@ -96,7 +98,7 @@ def run(provider):
             raw = lp.call(provider, aw.SYSTEM, row["user"], creds, max_tokens=MAX_TOKENS,
                           retries=0, task=aw.TASK, session_id="s380-workflow-qualification",
                           privacy="LOCAL_ONLY" if local else "CLOUD_ALLOWED", strict_accounting=True)
-            row.update(raw=raw, actual_model=lp.last_model(),
+            row.update(raw=raw, actual_model=lp.last_model(), finish_reason=lp.last_finish_reason(),
                        passed=(lp.last_model() == expected and lp.last_finish_reason() != "length"
                                and score(case, raw, payload)))
         except Exception as exc:
@@ -111,6 +113,7 @@ def run(provider):
 
 def install(providers):
     files, digest = contract()
+    cases = dict(fixtures())
     records = []
     for provider in providers:
         data = json.loads(evidence_path(provider).read_text())
@@ -118,8 +121,14 @@ def install(providers):
         if (data["contract_sha256"] != digest or len(rows) != len(fixtures())
                 or {r["case"] for r in rows} != {n for n, _ in fixtures()}
                 or any(not r.get("passed") for r in rows)
-                or time.time() - data["completed"] > 86400):
+                or not 0 <= time.time() - data["completed"] <= 86400):
             raise ValueError("qualification evidence failed, stale or differs from current code: " + provider)
+        for row in rows:
+            if (row.get("actual_model") != data["model"] or row.get("system") != aw.SYSTEM
+                    or json.loads(row["user"]) != cases[row["case"]]
+                    or "finish_reason" not in row or row["finish_reason"] == "length"
+                    or not score(row["case"], row.get("raw", ""), cases[row["case"]])):
+                raise ValueError("saved completion does not pass current evidence checks: " + provider)
         now = data["completed"]
         records.append({"id": provider, "model": data["model"], "approved": True,
             "task": aw.TASK, "capability": aw.CAPABILITY,
@@ -134,6 +143,35 @@ def install(providers):
          {"enabled": True, "contract_files": files, "evaluations": records, "max_user_bytes": 12000})
     print("Installed measured qualifications:", ",".join(providers), "(7-day pilot; execution flags unchanged)")
     return True
+
+
+def renewal_check():
+    """Due check inside the existing daily renewal job. Never self-approve."""
+    path = ROOT / "config/answer-workflow-capabilities.json"
+    active = any((ROOT / ("config/answer-workflow-" + flag + ".enabled")).exists()
+                 for flag in ("phone", "intake"))
+    if not active:
+        return True, "answer workflow disabled"
+    data = json.loads(path.read_text())
+    _, current = contract()
+    records = data["evaluations"]
+    expiry = min(r["expires_at"] for r in records)
+    drift = any(r["contract_sha256"] != current for r in records)
+    if not drift and expiry - time.time() > 48 * 3600:
+        return True, "answer workflow qualifications current"
+    fresh = True
+    for record in records:
+        receipt = evidence_path(record["id"])
+        evidence = json.loads(receipt.read_text()) if receipt.exists() else {}
+        if evidence.get("contract_sha256") != current or time.time() - evidence.get("completed", 0) > 20 * 3600:
+            fresh = run(record["id"]) and fresh
+        else:
+            fresh = all(row.get("passed") for row in evidence.get("rows", [])) and fresh
+    # Approval remains a reviewing session's explicit install step. The existing
+    # job ledger/alert reports this condition before the route expires.
+    return False, ("answer workflow renewal needs review; public fixtures " +
+                   ("passed" if fresh else "have failures") +
+                   ("; current approval expired" if expiry <= time.time() else ""))
 
 
 def check():

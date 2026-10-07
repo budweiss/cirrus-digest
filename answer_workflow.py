@@ -5,7 +5,10 @@ authority. Existing privacy, reviewed-model admission and spend controls apply.
 """
 from __future__ import annotations
 import json
+import fcntl
 import re
+import time
+import urllib.request
 from pathlib import Path
 import conversation_memory as cm
 
@@ -41,10 +44,12 @@ def parse(raw, sources):
         result = json.loads(text)
         answer = result["answer"].strip()
         confidence = result["confidence"]
-        if not (20 <= len(answer) <= 2500 and type(confidence) in (int, float)
+        if not (0 <= len(answer) <= 2500 and type(confidence) in (int, float)
                 and 0 <= confidence <= 1 and result["verdict"] in ("pass", "needs_review")
                 and result["kind"] in ("grounded", "suggestion")
                 and isinstance(result["reason"], str) and isinstance(result["evidence"], list)):
+            return None
+        if result["verdict"] == "pass" and len(answer) < 20:
             return None
         evidence = result["evidence"]
         for item in evidence:
@@ -107,6 +112,22 @@ class Models:
                        and r["location"] == pool]
         observed = [(health.observe(self.creds, p) if pool == "local"
                      else health.observe_cloud(self.creds, p)) for p in sorted({r["id"] for r in evaluations})]
+        # Ollama's ordinary idle unloading is not a failed model. Warm only the
+        # configured, currently qualified model; no question or client data is
+        # included in the load request. Re-observe before normal admission.
+        for state in observed:
+            matching = [r for r in evaluations if r["id"] == "ollama"
+                        and r.get("model") == self.creds.get("ollama_model")
+                        and r.get("approved") is True
+                        and r.get("evaluated_at", float("inf")) <= time.time() < r.get("expires_at", 0)]
+            if state.get("id") == "ollama" and state.get("status") == "not_resident" and len(matching) == 1:
+                request = urllib.request.Request(self.creds["ollama_url"].rstrip("/") + "/api/generate",
+                    data=json.dumps({"model": self.creds["ollama_model"], "stream": False,
+                                     "keep_alive": "5m"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    response.read(1024)
+                state.update(health.observe(self.creds, "ollama"))
         records = admission.candidates(evaluations, observed, task=TASK, capability=CAPABILITY,
                                        system=SYSTEM, contract_sha256=contract)
         user = json.dumps(payload, ensure_ascii=False)
@@ -123,14 +144,15 @@ def compose(memory, row, models, sources=None):
     history, context, corrections, private = history_context(memory, row)
     sources = {**(sources or {}), **corrections, "user-provided-request": row["question"]}
     privacy = "LOCAL_ONLY" if private or row["privacy"] == "LOCAL_ONLY" else "CLOUD_ALLOWED"
-    previous_answers = [x for x in history if x["answer"]]
+    reviewed_at, thread_held = memory.thread_review(row)
+    previous_answers = [x for x in history if x["answer"] and x["created"] > reviewed_at]
     signal = feedback(row["question"])
-    if row["owner"] == "intake" and any(x["meta"].get("requires_buddy") for x in history):
+    if row["owner"] == "intake" and thread_held:
         return hold(memory, row, "This client thread is awaiting Buddy's review.", requires_buddy=True)
     if len(previous_answers) >= 2 and signal == "no_progress":
         return hold(memory, row, "Repeated answers are not making headway; Buddy review required.", requires_buddy=True)
     if len(previous_answers) >= 2 and signal == "unknown":
-        if any(x["meta"].get("progress_check") for x in history):
+        if any(x["meta"].get("progress_check") and x["created"] > reviewed_at for x in history):
             return hold(memory, row, "Progress remains unclear after the clarification; Buddy review required.", requires_buddy=True)
         return memory.update(row["id"], state="ready",
             answer="Before I try another answer: are we getting closer, or is the approach still wrong? Please name the one part that needs to change.",
@@ -210,6 +232,31 @@ def intake_record(root, rec, subject, privacy):
 def solve_and_answer(rec, creds, to_addr, subject):
     """Same send authorization as existing answer-kind intake; no new recipients."""
     import task_solver as ts
+    memory = cm.Memory(ts.PROJECT_DIR)
+    with (memory.directory / "intake-answer.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            ts._fallback_to_ticket(dict(rec, privacy=ts.intake_privacy(rec, creds)))
+            return {"answered": False, "reason": "Answer worker busy; queued for review."}
+        memory.recover("intake")
+        try:
+            return _solve_and_answer(rec, creds, to_addr, subject)
+        except Exception as exc:
+            row = intake_record(ts.PROJECT_DIR, rec, subject, ts.intake_privacy(rec, creds))
+            if row["state"] == "delivered":
+                return {"answered": True, "request_id": row["id"],
+                        "reason": "Delivered; follow-up recording needs review: " + type(exc).__name__}
+            state = "delivery_unknown" if row["state"] == "sending" else "needs_review"
+            row = memory.update(row["id"], state=state,
+                                meta={"reason": "Answer workflow interrupted: " + type(exc).__name__})
+            memory.review_packet(row)
+            ts._fallback_to_ticket(dict(rec, privacy=row["privacy"]))
+            return {"answered": False, "request_id": row["id"], "reason": row["meta"]["reason"]}
+
+
+def _solve_and_answer(rec, creds, to_addr, subject):
+    import task_solver as ts
     root = ts.PROJECT_DIR
     memory = cm.Memory(root)
     row = intake_record(root, rec, subject, ts.intake_privacy(rec, creds))
@@ -217,6 +264,9 @@ def solve_and_answer(rec, creds, to_addr, subject):
     if row["state"] == "delivered":
         return dict(result, answered=True, reason="Previously delivered; duplicate suppressed.")
     if row["state"] in ("sending", "delivery_unknown", "needs_review", "running"):
+        if not row["meta"].get("review_ticket_attempted"):
+            ts._fallback_to_ticket(dict(rec, privacy=row["privacy"]))
+            memory.update(row["id"], meta={"review_ticket_attempted": True})
         return dict(result, reason="Existing request requires review; no duplicate attempt.")
     if row["state"] != "ready":
         if not memory.transition(row["id"], row["state"], "running"):

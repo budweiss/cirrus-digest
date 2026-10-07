@@ -369,6 +369,15 @@ def notify(text):
 
 
 def main(force=False):
+    # The bounded answer pilot shares this existing maintenance window and
+    # status ledger. It generates evidence, never refreshes its own approval.
+    try:
+        import answer_workflow_eval
+        answer_ok, answer_note = answer_workflow_eval.renewal_check()
+    except Exception as exc:
+        answer_ok, answer_note = False, "answer workflow check failed: " + type(exc).__name__
+    if not answer_ok:
+        notify(answer_note + "; review on " + ("CUMULUS" if on_cumulus() else "CIRRUS"))
     creds = json.loads(CREDS.read_text())
     providers = providers_here()
     served = served_models(creds, providers)
@@ -406,8 +415,9 @@ def main(force=False):
         delivery = notify(msg)
         ok = ok and delivery == "sent"
         note = "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
+    note = answer_note + "; " + note
     log(note)
-    return ok, note
+    return ok and answer_ok, note
 
 
 # ── the install half (run by a reviewing session, never by the timer) ─────────

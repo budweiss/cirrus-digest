@@ -77,6 +77,66 @@ class MemoryTests(unittest.TestCase):
 
 
 class WorkflowTests(MemoryTests):
+    def test_operator_review_releases_future_client_followups_only(self):
+        row = self.add(owner="intake", state="needs_review", meta={"requires_buddy": True})
+        later = self.add("later", owner="intake")
+        held = aw.compose(self.m, later, FakeModels([]), SOURCE)
+        self.assertEqual(held["state"], "needs_review")
+        self.m.thread_review(later, "Reviewed the original question and corrected the source.")
+        model = FakeModels([("ollama", output()), ("ollama", output())])
+        next_row = self.add("after", owner="intake")
+        self.assertEqual(aw.compose(self.m, next_row, model, SOURCE)["state"], "ready")
+        self.assertEqual(self.m.get(row["id"])["state"], "needs_review")
+
+    def test_cold_qualified_model_is_warmed_without_question_data(self):
+        import capability_health as health
+        import capability_registry as registry
+        import capability_admission as admission
+        import capability_dispatch as dispatch
+        import time
+        config = self.root / "config"
+        config.mkdir()
+        (config / "answer-workflow-capabilities.json").write_text(json.dumps({
+            "enabled": True, "max_user_bytes": 12000, "evaluations": [{
+                "id": "ollama", "model": "fixture", "location": "local", "approved": True,
+                "evaluated_at": time.time()-1, "expires_at": time.time()+100}]}))
+        cold = {"id": "ollama", "status": "not_resident"}
+        warm = {"id": "ollama", "status": "ready_metadata", "healthy": True}
+        with patch.object(registry, "contract_digest", return_value="a"*64), \
+             patch.object(health, "observe", side_effect=[cold, warm]) as observe, \
+             patch.object(admission, "candidates", return_value=[warm]) as candidates, \
+             patch.object(dispatch, "dispatch", return_value=("ollama", output())), \
+             patch.object(aw.urllib.request, "urlopen") as urlopen:
+            model = aw.Models(self.root, {"ollama_model": "fixture", "ollama_url": "http://localhost:11434"})
+            result = model.call({"question": "PRIVATE FIXTURE"}, pool="local", exclude=(),
+                                privacy="LOCAL_ONLY", session_id="test")
+        self.assertEqual(result["provider"], "ollama")
+        self.assertEqual(observe.call_count, 2)
+        self.assertNotIn("PRIVATE FIXTURE", urlopen.call_args.args[0].data.decode())
+        self.assertTrue(candidates.call_args.args[1][0]["healthy"])
+
+    def test_renewal_is_quiet_until_due_and_never_auto_installs(self):
+        import answer_workflow_eval as evaluation
+        import time
+        config = self.root / "config"
+        config.mkdir()
+        (config / "answer-workflow-phone.enabled").touch()
+        path = config / "answer-workflow-capabilities.json"
+        record = {"id": "ollama", "contract_sha256": "current", "expires_at": time.time()+3*86400}
+        path.write_text(json.dumps({"evaluations": [record]}))
+        with patch.object(evaluation, "ROOT", self.root), \
+             patch.object(evaluation, "contract", return_value=({}, "current")), \
+             patch.object(evaluation, "run", return_value=True) as run, \
+             patch.object(evaluation, "install") as install:
+            self.assertTrue(evaluation.renewal_check()[0])
+            run.assert_not_called()
+            record["expires_at"] = time.time()+86400
+            path.write_text(json.dumps({"evaluations": [record]}))
+            self.assertFalse(evaluation.renewal_check()[0])
+            run.assert_called_once_with("ollama")
+            install.assert_not_called()
+        self.assertEqual(json.loads(path.read_text())["evaluations"][0], record)
+
     def test_local_first_and_independent_review(self):
         model = FakeModels([("ollama", output()), ("ollama", output())])
         result = aw.compose(self.m, self.add(), model, SOURCE)
@@ -130,6 +190,8 @@ class WorkflowTests(MemoryTests):
         data = json.loads(output(False))
         data["answer"] = "The supplied material does not establish an address."
         data["evidence"] = []
+        self.assertTrue(evaluation.score("missing", json.dumps(data), cases["missing"]))
+        data["answer"] = ""
         self.assertTrue(evaluation.score("missing", json.dumps(data), cases["missing"]))
         data["confidence"] = True
         self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
@@ -249,6 +311,21 @@ class BotTests(MemoryTests):
 
 
 class IntakeTests(MemoryTests):
+    def test_email_exception_is_sanitized_and_uncertain_send_is_held(self):
+        import task_solver as ts
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "send-error",
+               "body_head": "When is the planning meeting?", "kind": "answer", "title": "Meeting"}
+        row = aw.intake_record(self.root, rec, "Meeting", "LOCAL_ONLY")
+        self.m.update(row["id"], state="ready", answer=SOURCE["note"])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "_send_mail", side_effect=RuntimeError("sensitive fixture details")) as send, \
+             patch.object(ts, "_fallback_to_ticket"):
+            result = aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+            self.assertEqual(self.m.get(row["id"])["state"], "delivery_unknown")
+            self.assertNotIn("sensitive fixture", result["reason"])
+            aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
+            self.assertEqual(send.call_count, 1)
+
     def test_full_original_question_retained_for_local_review(self):
         question = "Explain this supplied material: " + "detail " * 2000
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "long",
