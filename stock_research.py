@@ -585,7 +585,7 @@ def refresh(home, slot, collect_only=False):
              'Coverage is limited to the pilot companies, selected financial periods and up to three official publications each.', '',
              'Prices are timestamped observations, not trading quotes. Portfolio size is not used as a sell trigger. '
              'No emails or trades are made by this process.', '']
-    accepted, failures = 0, 0
+    accepted, failures, coverage_gaps = 0, 0, 0
     try:
         benchmark = market_quote('SPY', started)
         observation(conn, 'SPY', 'quote', benchmark, started)
@@ -616,6 +616,7 @@ def refresh(home, slot, collect_only=False):
             failures += 1
             issues.append('Research not accepted: ' + error_code(exc))
         observation(conn, company['ticker'], 'coverage', {'issues': issues, 'documents': [d['id'] for d in docs]}, at)
+        coverage_gaps += len(issues)
         conn.commit()
         parts.append(render_company(company, docs, quote, draft, prev, issues, unchanged))
         print(packed({'ticker': company['ticker'], 'documents': len(docs), 'draft_accepted': bool(draft),
@@ -632,10 +633,13 @@ def refresh(home, slot, collect_only=False):
     path.write_text(report)
     (reports / 'latest.md').write_text(report)
     status = 'collected' if collect_only else ('draft_ready' if not failures else 'partial')
+    if status == 'draft_ready' and coverage_gaps:
+        status = 'draft_ready_with_gaps'
     conn.execute('UPDATE runs SET finished=?,status=?,report=? WHERE id=?', (now(), status, str(path), run_id))
     conn.commit()
+    conn.close()
     print(packed({'run_id': run_id, 'status': status, 'accepted_drafts': accepted, 'failed_companies': failures,
-                  'report': str(path)}))
+                  'coverage_gaps': coverage_gaps, 'report': str(path)}))
     return 0 if not failures else 2
 
 
@@ -659,6 +663,7 @@ def status(home):
               for t in ('documents', 'reviews', 'legacy_calls', 'source_candidates')}
     row = conn.execute('SELECT id,started,finished,status FROM runs ORDER BY id DESC LIMIT 1').fetchone()
     counts.update(latest_run=dict(row) if row else None, automatic_return_scoring=False, model_training=False)
+    conn.close()
     print(packed(counts))
 
 
@@ -698,6 +703,7 @@ def main(argv=None):
                 conn = database(args.home)
                 row = conn.execute('SELECT report FROM runs WHERE id=? AND finished IS NOT NULL',
                                    (args.run_id,)).fetchone()
+                conn.close()
                 if not row:
                     raise ValueError('completed_run_not_found')
                 path = Path(row['report'])
@@ -706,6 +712,7 @@ def main(argv=None):
             conn = database(args.home)
             with conn:
                 count = import_legacy(conn, sys.stdin.read())
+            conn.close()
             print(packed({'legacy_calls_added': count}))
         return 0
     except Exception as exc:
