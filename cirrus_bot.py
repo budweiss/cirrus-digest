@@ -2321,7 +2321,8 @@ def run_bot():
 
             for update in updates:
                 message = update.get("message", {})
-                workflow_update = message.get("text", "").split(" ", 1)[0].lower() in bot_workflow.COMMANDS
+                words = message.get("text", "").strip().split(maxsplit=1)
+                workflow_update = bool(words and words[0].lower() in bot_workflow.COMMANDS)
                 if not workflow_update:
                     offset = update["update_id"] + 1
                 if not message:
@@ -2337,7 +2338,7 @@ def run_bot():
                     log(f"Ignored message from unauthorized user: {user_id}")
                     continue
 
-                if text.split(" ", 1)[0].lower() in bot_workflow.COMMANDS:
+                if workflow_update:
                     log(f"Workflow command received ({len(text)} characters)")
                 else:
                     log(f"Command from {user_id}: {text}")

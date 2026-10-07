@@ -259,6 +259,23 @@ class WorkflowTests(MemoryTests):
 
 
 class BotTests(MemoryTests):
+    def test_padded_private_command_is_not_written_to_bot_log(self):
+        from unittest.mock import Mock
+        tree = ast.parse((Path(aw.__file__).parent / "cirrus_bot.py").read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_bot")
+        logs = []
+        update = {"update_id": 1, "message": {"text": "  /work private fixture note", "message_id": 1,
+                  "from": {"id": 7}, "chat": {"id": 7, "type": "private"}}}
+        scope = {"PROJECT_DIR": self.root, "ALLOWED_ID": 7, "CREDS": {}, "log": logs.append,
+                 "api_call": Mock(side_effect=[{"result": [update]}, KeyboardInterrupt()]),
+                 "handle_message": lambda *_: "saved", "send_message": lambda *_: None,
+                 "check_heartbeats": lambda: None}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "cirrus_bot.py", "exec"), scope)
+        with patch.object(bw, "kick"):
+            scope["run_bot"]()
+        self.assertTrue(any("Workflow command received" in line for line in logs))
+        self.assertFalse(any("private fixture" in line for line in logs))
+
     def setUp(self):
         super().setUp()
         (self.root / "config").mkdir()
