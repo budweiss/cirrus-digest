@@ -20,6 +20,7 @@ CLI guard: mode is whitelisted to exactly {dry-run, live}; anything else
 exits non-zero BEFORE any send path is touched (T118 shape).
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -29,6 +30,43 @@ PROJECT_DIR = Path(__file__).resolve().parent
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
 TO_EMAIL = "weiss_buddy@yahoo.com"
 MODES = ("dry-run", "live")
+
+
+def check_weekdays(md, now):
+    """Refuse internally inconsistent calendar labels before any delivery."""
+    from datetime import date
+    weekdays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+    months = {name: i for i, name in enumerate(
+        ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'], 1)}
+    text = md.replace('**', '').replace('__', '')
+    header = re.search(r'\b(20\d{2})-(\d{2})-(\d{2})\b', text.split('\n', 1)[0])
+    anchor = date(*map(int, header.groups())) if header else now.date()
+    day = r'\b(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\.?[,]?\s+'
+    month = r'(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+'
+    dates = []
+    for match in re.finditer(day + r'(20\d{2})-(\d{2})-(\d{2})\b', text, re.I):
+        label, year, mon, num = match.groups()
+        dates.append((label, date(int(year), int(mon), int(num))))
+    for match in re.finditer(day + month + r'(\d{1,2})(?:,?\s+(20\d{2}))?\b', text, re.I):
+        label, mon, num, year = match.groups()
+        if year:
+            value = date(int(year), months[mon[:3].lower()], int(num))
+        else:
+            # Nearby review dates can cross New Year; choose the nearest year.
+            candidates = []
+            for y in (anchor.year-1, anchor.year, anchor.year+1):
+                try:
+                    candidates.append(date(y, months[mon[:3].lower()], int(num)))
+                except ValueError:
+                    pass
+            if not candidates:
+                raise ValueError('invalid_calendar_date')
+            value = min(candidates, key=lambda d: abs((d-anchor).days))
+        dates.append((label, value))
+    for label, value in dates:
+        if weekdays.index(label[:3].lower()) != value.weekday():
+            raise ValueError('calendar_weekday_mismatch: %s is %s' %
+                             (value.isoformat(), value.strftime('%A')))
 
 
 def load_digest(stream) -> str:
@@ -45,6 +83,7 @@ def build_message(md: str, now=None, creds: dict = None):
     (mailer-message tuple, subject) so selftest can inspect without network."""
     from datetime import datetime
     now = now or datetime.now()
+    check_weekdays(md, now)
     subject = "Stock Pickers digest — %s (paper calls)" % now.strftime("%Y-%m-%d %H:%M ET")
     creds = creds or {}
     return mailer.build(creds["outlook_email"], TO_EMAIL, subject, md, creds=creds), subject
@@ -102,6 +141,13 @@ def selftest() -> int:
         return bool(cond)
 
     results = []
+    results.append(check("wrong_weekday_refused", _raises(
+        check_weekdays, '# Thursday 2026-10-08\nReview Tuesday Oct 29', datetime(2026, 10, 8))))
+    results.append(check("wrong_iso_weekday_refused", _raises(
+        check_weekdays, '# Wednesday 2026-10-08', datetime(2026, 10, 8))))
+    check_weekdays('# Thursday 2026-10-08\nReview Thu Oct 29; Thu Nov 5.', datetime(2026, 10, 8))
+    check_weekdays('# Thursday 2026-12-31\nFriday Jan 1', datetime(2026, 12, 31))
+    results.append(check("correct_calendar_and_year_boundary", True))
     results.append(check("empty_digest_refused",
                          (_raises(load_digest, io.StringIO("   ")))))
     md = "# digest\n\nBody row.\n"
