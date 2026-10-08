@@ -102,3 +102,78 @@ def valid(task, text, user=''):
         return False
     except (ValueError,TypeError,KeyError,AttributeError):
         return False
+
+
+def selftest():
+    failures = []
+
+    def check(desc, cond):
+        if not cond:
+            failures.append(desc)
+
+    # json_value: plain JSON
+    check('json_value plain', json_value('{"a": 1}') == {'a': 1})
+    # json_value: fenced code block
+    check('json_value fenced', json_value('```json\n{"a": 1}\n```') == {'a': 1})
+    # json_value: fenced without language tag
+    check('json_value fenced no-lang', json_value('```\n[1,2,3]\n```') == [1, 2, 3])
+
+    # valid: unknown task always False
+    check('valid unknown task', valid('no-such-task', 'hello') is False)
+    # valid: empty/non-string text always False
+    check('valid empty text', valid('intake-answer', '') is False)
+    check('valid non-str text', valid('intake-answer', None) is False)
+
+    # intake-answer: length gate
+    check('intake-answer too short', valid('intake-answer', 'short') is False)
+    check('intake-answer long enough', valid('intake-answer', 'x' * 80) is True)
+
+    # self-review-gate: regex shape
+    check('self-review-gate valid', valid('self-review-gate', 'SCORE: 7 | WHY: looks fine') is True)
+    check('self-review-gate invalid', valid('self-review-gate', 'SCORE: 11 | WHY: bad') is False)
+
+    # business-idea-gate: requires extra IDEA suffix
+    check('business-idea-gate valid', valid('business-idea-gate', 'SCORE: 5 | WHY: ok | IDEA: widget co') is True)
+    check('business-idea-gate missing idea', valid('business-idea-gate', 'SCORE: 5 | WHY: ok') is False)
+
+    # dev-agent-review: verdict regex
+    check('dev-agent-review valid', valid('dev-agent-review', 'VERDICT: approve | NOTES: looks good') is True)
+    check('dev-agent-review invalid', valid('dev-agent-review', 'VERDICT: maybe | NOTES: eh') is False)
+
+    # intake:promise_detect: dict shape with bool/str fields
+    check('promise_detect true', valid('intake:promise_detect', '{"promise": true, "what": "call back"}') is True)
+    check('promise_detect false no what', valid('intake:promise_detect', '{"promise": false, "what": ""}') is True)
+    check('promise_detect true empty what', valid('intake:promise_detect', '{"promise": true, "what": ""}') is False)
+    check('promise_detect bad shape', valid('intake:promise_detect', '{"promise": "yes", "what": "x"}') is False)
+
+    # yt-watch:extract: list-of-dicts with required string keys
+    good_claims = json.dumps({'claims': [{'claim': 'a', 'why_it_applies': 'b', 'how_to_test': 'c'}]})
+    check('yt-watch extract valid', valid('yt-watch:extract', good_claims) is True)
+    bad_claims = json.dumps({'claims': [{'claim': 'a'}]})
+    check('yt-watch extract invalid', valid('yt-watch:extract', bad_claims) is False)
+
+    # pedagogy-topic: word count + summarization-failure guard
+    check('pedagogy-topic valid', valid('pedagogy-topic', 'word ' * 10) is True)
+    check('pedagogy-topic too long', valid('pedagogy-topic', 'word ' * 500) is False)
+    check('pedagogy-topic summarization failure', valid('pedagogy-topic', '[Summarization failed]') is False)
+
+    # stratus:monthly: heading + min length
+    check('stratus monthly valid', valid('stratus:monthly', '### Title\n' + 'x' * 200) is True)
+    check('stratus monthly too short', valid('stratus:monthly', '### Title') is False)
+
+    # malformed JSON must be caught, not raise
+    check('valid malformed json caught', valid('intake:promise_detect', 'not json') is False)
+
+    if failures:
+        for f in failures:
+            print('FAIL:', f)
+        print('%d/%d checks failed' % (len(failures), len(failures) + 1))
+        return False
+    print('selftest OK')
+    return True
+
+
+if __name__ == '__main__':
+    import sys
+    if '--selftest' in sys.argv:
+        sys.exit(0 if selftest() else 1)
