@@ -27,6 +27,7 @@ data/entity_kb/
 data/conversations/
 # S383: private company research, draft judgments and original pick history.
 private/stock-research/
+private/stock-paper/
 config/answer-workflow-capabilities.json
 config/answer-workflow-phone.enabled
 config/answer-workflow-intake.enabled

@@ -23,6 +23,8 @@ import json
 import re
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import mailer
 
@@ -30,6 +32,89 @@ PROJECT_DIR = Path(__file__).resolve().parent
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
 TO_EMAIL = "weiss_buddy@yahoo.com"
 MODES = ("dry-run", "live")
+PAPER_HOME = PROJECT_DIR / 'private' / 'stock-paper'
+
+
+def check_paper_report(md, at=None, home=None):
+    """A letter must contain a recent, exact account section from the ledger."""
+    at = at or datetime.now(timezone.utc)
+    home = home or PAPER_HOME
+    matches = re.findall(r'<!-- stock-paper-report:([a-f0-9]{32}) -->', md)
+    if len(matches) != 1:
+        raise ValueError('one_current_independent_account_report_required')
+    report = json.loads((home / 'reports' / (matches[0] + '.json')).read_text())
+    created = datetime.fromisoformat(report['created_at'].replace('Z', '+00:00'))
+    age = (at - created).total_seconds()
+    if not -5 <= age <= 1800:
+        raise ValueError('paper_report_not_current_refresh_before_delivery')
+    if report['date'] != at.astimezone(ZoneInfo('America/New_York')).date().isoformat():
+        raise ValueError('paper_report_date_mismatch')
+    if report.get('slot') not in ('am', 'pm'):
+        raise ValueError('paper_report_needs_daily_slot')
+    if (report.get('account_id') != 'independent-200k-v1' or report.get('report_id') != matches[0]
+            or not report.get('account_section') or report['account_section'] not in md):
+        raise ValueError('canonical_paper_account_section_missing_or_modified')
+    from stock_paper_ledger import Ledger
+    with Ledger(home / 'ledger.sqlite3') as ledger:
+        trades = ledger.list_trades(10000)
+        saved_snapshot = ledger.get_snapshot(report['report_id'])
+        current = ledger.snapshot()
+    if report.get('snapshot') != saved_snapshot:
+        raise ValueError('paper_report_snapshot_does_not_match_ledger')
+    if any(current.get(key) != saved_snapshot.get(key) for key in ('trade_count', 'last_trade_id', 'event_count', 'last_event_id')):
+        raise ValueError('new_trade_after_snapshot_refresh_before_delivery')
+    from stock_paper import account_section
+    if report['account_section'] != account_section(saved_snapshot, trades, report['benchmark'], report['slot']):
+        raise ValueError('canonical_paper_account_section_invalid')
+    if any(datetime.fromisoformat(t['recorded_at'].replace('Z', '+00:00')) > created for t in trades):
+        raise ValueError('new_trade_after_snapshot_refresh_before_delivery')
+    return report
+
+
+def deliver_once(md, creds, subject, report, send_fn=None, home=None):
+    """Reserve one daily slot; an ambiguous SMTP outcome is never retried blindly."""
+    import fcntl
+    import hashlib
+    import os
+    home = home or PAPER_HOME
+    folder = home / 'delivery'
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    receipt = folder / (report['date'] + '-' + report['slot'] + '.json')
+    digest = hashlib.sha256(md.encode()).hexdigest()
+    with (folder / 'send.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if receipt.exists():
+            old = json.loads(receipt.read_text())
+            if old['status'] == 'sent' and old['body_sha256'] == digest:
+                print('already_sent_same_daily_report')
+                return True
+            raise ValueError('daily_slot_already_reserved_check_receipt_do_not_resend')
+        record = {'status': 'sending_outcome_unknown_until_confirmed', 'body_sha256': digest,
+                  'report_id': report['report_id'], 'reserved_at': datetime.now(timezone.utc).isoformat()}
+        with receipt.open('x') as out:
+            out.write(json.dumps(record))
+        os.chmod(receipt, 0o600)
+        sender = send_fn or mailer.send
+        ok = sender(creds['outlook_email'], creds['outlook_password'], TO_EMAIL, subject, md,
+                    creds=creds, on_error='raise', log=print)
+        if not ok:
+            raise ValueError('send_unconfirmed_receipt_requires_review')
+        record.update(status='sent', sent_at=datetime.now(timezone.utc).isoformat())
+        temporary = receipt.with_suffix('.tmp')
+        temporary.write_text(json.dumps(record))
+        os.chmod(temporary, 0o600)
+        temporary.replace(receipt)
+        return True
+
+
+def send_verified_once(md, creds, subject):
+    import fcntl
+    # Shares the workflow's operation lock: no fills can slip between this
+    # final snapshot check and SMTP submission.
+    with (PAPER_HOME / 'operation.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        report = check_paper_report(md)
+        return deliver_once(md, creds, subject, report)
 
 
 def check_weekdays(md, now):
@@ -82,9 +167,9 @@ def build_message(md: str, now=None, creds: dict = None):
     """Compose the message the same way the scheduled digests would. Returns
     (mailer-message tuple, subject) so selftest can inspect without network."""
     from datetime import datetime
-    now = now or datetime.now()
+    now = now or datetime.now(ZoneInfo('America/New_York'))
     check_weekdays(md, now)
-    subject = "Stock Pickers digest — %s (paper calls)" % now.strftime("%Y-%m-%d %H:%M ET")
+    subject = "Stock Pickers — %s (our paper portfolio)" % now.strftime("%Y-%m-%d %H:%M ET")
     creds = creds or {}
     return mailer.build(creds["outlook_email"], TO_EMAIL, subject, md, creds=creds), subject
 
@@ -116,6 +201,7 @@ def main(argv) -> int:
         return 3
     try:
         md = load_digest(sys.stdin)
+        report = check_paper_report(md)
         (msg, recipients), subject = build_message(md, creds=creds)
     except Exception as e:
         print("stock_digest_send: %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -125,8 +211,7 @@ def main(argv) -> int:
         mailer.send(from_email, "", TO_EMAIL, subject, md, creds=creds,
                     dry_run=True)
         return 0
-    ok = mailer.send(from_email, creds["outlook_password"], TO_EMAIL, subject, md,
-                     creds=creds, on_error="raise", log=print)
+    ok = send_verified_once(md, creds, subject)
     return 0 if ok else 5
 
 
