@@ -61,6 +61,13 @@ def fetch_quotes(home, symbols):
     return {symbol: get_quote(symbol, archive_dir=home / 'quotes') for symbol in sorted(set(symbols))}
 
 
+def delivery_receipts(home):
+    records = []
+    for path in sorted((home / 'delivery').glob('????-??-??-?m.json'), reverse=True)[:30]:
+        records.append(dict(json.loads(path.read_text()), slot_key=path.stem))
+    return records
+
+
 def initialize(home, ledger):
     result = ledger.initialize()
     path = home / 'benchmark.json'
@@ -170,7 +177,8 @@ def refresh(home, ledger, slot):
               'slot': slot, 'date': now().astimezone(NY).date().isoformat(),
               'created_at': snapshot['as_of'], 'snapshot': snapshot, 'benchmark': bench,
               'market': market_session(), 'quotes': quotes, 'trades': trades,
-              'decisions': decisions, 'order_outcomes': outcomes, 'account_section': section, 'marker': marker,
+              'decisions': decisions, 'order_outcomes': outcomes, 'deliveries': delivery_receipts(home),
+              'account_section': section, 'marker': marker,
               'report': marker + '\n\n' + section}
     save(home / 'reports' / (report_id + '.json'), result, True)
     save(home / 'latest.json', result)
@@ -327,7 +335,8 @@ def main(argv=None):
                     result = initialize(home, ledger)
                 elif args.action == 'status':
                     result = {'status': 'ok', 'snapshot': ledger.snapshot(), 'market': market_session(),
-                              'trades': ledger.list_trades(10000), 'decisions': ledger.list_decisions(10000)}
+                              'trades': ledger.list_trades(10000), 'decisions': ledger.list_decisions(10000),
+                              'deliveries': delivery_receipts(home)}
                 elif args.action == 'refresh':
                     result = refresh(home, ledger, args.slot)
                 elif args.action == 'apply':

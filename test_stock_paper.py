@@ -80,6 +80,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(restored.list_trades(), self.ledger.list_trades())
             self.assertEqual(restored.get_snapshot(report['report_id']), report['snapshot'])
 
+    def test_refresh_exposes_known_and_uncertain_delivery_without_sending(self):
+        folder = self.home / 'delivery'
+        folder.mkdir()
+        saved = {'status': 'sending_outcome_unknown_until_confirmed', 'report_id': 'synthetic-only'}
+        (folder / '2026-10-08-pm.json').write_text(json.dumps(saved))
+        report = workflow.refresh(self.home, self.ledger, 'pm')
+        self.assertEqual(report['deliveries'], [dict(saved, slot_key='2026-10-08-pm')])
+        self.assertEqual(json.loads((folder / '2026-10-08-pm.json').read_text()), saved)
+
     def test_request_replay_returns_original_outcome_without_refetch_or_cash_change(self):
         request = self.request()
         first = self.execute(request)
