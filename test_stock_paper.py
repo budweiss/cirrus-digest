@@ -70,6 +70,16 @@ class WorkflowTests(unittest.TestCase):
     def execute(self, request=None):
         return workflow.apply(self.home, self.ledger, request or self.request())
 
+    def test_consistent_backup_restores_cash_lots_and_original_trade(self):
+        self.execute()
+        report = workflow.refresh(self.home, self.ledger, 'pm')
+        with Ledger(self.home / 'ledger-backup.sqlite3', now=lambda: self.at) as restored:
+            recovered = restored.snapshot(report['quotes'])
+            for field in ('cash_cents', 'equity_cents', 'trade_count', 'last_trade_id', 'positions'):
+                self.assertEqual(recovered[field], report['snapshot'][field])
+            self.assertEqual(restored.list_trades(), self.ledger.list_trades())
+            self.assertEqual(restored.get_snapshot(report['report_id']), report['snapshot'])
+
     def test_request_replay_returns_original_outcome_without_refetch_or_cash_change(self):
         request = self.request()
         first = self.execute(request)

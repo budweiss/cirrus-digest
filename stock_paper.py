@@ -8,8 +8,10 @@ import io
 import json
 import os
 import re
+import sqlite3
 import sys
 import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
@@ -172,6 +174,15 @@ def refresh(home, ledger, slot):
               'report': marker + '\n\n' + section}
     save(home / 'reports' / (report_id + '.json'), result, True)
     save(home / 'latest.json', result)
+    # The existing nightly file backup can copy this consistent database even
+    # if the live SQLite WAL changes during its scan.
+    backup = home / 'ledger-backup.tmp.sqlite3'
+    with closing(sqlite3.connect(str(home / 'ledger.sqlite3'))) as source:
+        with closing(sqlite3.connect(str(backup))) as destination:
+            source.backup(destination)
+            if destination.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise ValueError('ledger_backup_integrity_failed')
+    backup.replace(home / 'ledger-backup.sqlite3')
     return result
 
 
