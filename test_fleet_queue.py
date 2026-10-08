@@ -77,6 +77,18 @@ class QueueTests(unittest.TestCase):
     def test_A02_policy_drift(self):
         self.p['projects'][self.w]['max_retries']=1
         with self.assertRaises(Refused):self.open()
+    def test_abandon_only_stale_never_started_work(self):
+        job=self.submit()
+        with self.assertRaises(Refused):self.q.abandon_queued(job,self.q.hash)
+        self.tick(1801)
+        with self.assertRaises(Refused):self.q.abandon_queued(job,'wrong')
+        self.q.abandon_queued(job,self.q.hash)
+        self.assertEqual(self.get(job)['state'],'cancelled')
+        self.assertEqual(self.get(job)['receipt'],'none')
+        self.assertIsNone(self.q.claim(self.w,job))
+        self.healthy();active=self.submit('active');self.q.claim(self.w,active)
+        self.tick(1801)
+        with self.assertRaises(Refused):self.q.abandon_queued(active,self.q.hash)
     def test_A07_wrong_identity(self):
         self.submit();self.q.health(self.w,'wrong',32768,20000);self.assertIsNone(self.q.claim(self.w))
     def test_B07_oversized_input(self):

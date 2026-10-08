@@ -243,6 +243,21 @@ class Queue:
             c.execute("UPDATE jobs SET state='cancelling',reason='awaiting verified termination' WHERE id=?",(job,))
             self.event(c,job,'cancel_requested',{'attempt':row['attempt']})
 
+    def abandon_queued(self,job,policy_hash):
+        """Operator closes orphaned, never-started work; history stays intact."""
+        if policy_hash != self.hash:
+            raise Refused('policy mismatch')
+        with self.db() as c:
+            row=c.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone()
+            if (not row or row['state']!='queued' or row['attempt']!=0
+                    or row['worker'] is not None or row['fence'] is not None
+                    or self.clock()-row['created']<=1800):
+                raise Refused('only stale never-started queued work may be abandoned')
+            if self.policy['projects'][row['project']].get('delivery')!='none':
+                raise Refused('delivery authority cannot be abandoned')
+            c.execute("UPDATE jobs SET state='cancelled',receipt='none',reason='operator closed orphaned queued request' WHERE id=?",(job,))
+            self.event(c,job,'abandoned_queued',{'attempt':0,'delivery':'none'})
+
     def stopped(self,job,fence,confirmed,backend_idle,delivery='none'):
         if not confirmed or not backend_idle:
             raise Refused('process and backend termination must both be verified')

@@ -3,7 +3,13 @@ from pathlib import Path
 from unittest.mock import patch
 import fleet_controller as f
 from fleet_queue import Queue
-from fleet_pilot import policy
+from fleet_pilot import policy as live_policy
+
+FIXTURE_EXPIRY=time.time()+3600
+def policy():
+ p=live_policy()
+ for r in p['projects'].values():r['qualification_until']=FIXTURE_EXPIRY
+ return p
 
 class ObserverTests(unittest.TestCase):
  def test_missing_worker_and_ledger_degraded(self):
@@ -21,6 +27,19 @@ class ObserverTests(unittest.TestCase):
    with patch.object(f,'observe_worker',side_effect=observation),patch.object(f,'units',return_value=[]):d=f.snapshot(q,root)
    self.assertTrue(d['ok']);self.assertNotIn('private',d['legacy_jobs']['job'])
    self.assertIn('observed-only',f.render(d))
+ def test_expired_enabled_research_and_orphan_queue_are_visible(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);(root/'logs').mkdir();(root/'logs/jobs-status.json').write_text('{}')
+   (root/'config').mkdir();(root/'config/fleet-media.enabled').touch()
+   p=policy();p['projects']['articles-infra']['qualification_until']=time.time()-1
+   q=Queue(root/'q.db',p)
+   job=q.submit('cumulus1-gptoss','orphan',{},'synthetic-v1')
+   with q.db() as c:c.execute('UPDATE jobs SET created=? WHERE id=?',(time.time()-1801,job))
+   def observation(w):return {'worker':w,'model':f.WORKERS[w]['model'],'context':32768,'available_mib':20000,'busy':False,'observed':time.time()}
+   with patch.object(f,'observe_worker',side_effect=observation),patch.object(f,'units',return_value=[]):d=f.snapshot(q,root)
+   self.assertFalse(d['ok'])
+   self.assertTrue(any('qualification expired' in e.get('error','') for e in d['errors']))
+   self.assertTrue(any(r['id']==job and r['state']=='queued' for r in d['unsettled']))
  def test_endpoint_failure_overrides_old_health(self):
   with tempfile.TemporaryDirectory() as tmp:
    q=Queue(Path(tmp)/'q.db',policy());w='cumulus1-gptoss'

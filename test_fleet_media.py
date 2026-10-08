@@ -4,11 +4,18 @@ from unittest.mock import patch
 import fleet_media as f
 import media_pipeline as m
 from fleet_queue import Queue,Refused
-from fleet_pilot import policy
+from fleet_pilot import policy as live_policy
 from learn_watch import INSTRUCTIONS
+
+FIXTURE_EXPIRY=time.time()+3600
+def policy():
+ p=live_policy()
+ for r in p['projects'].values():r['qualification_until']=FIXTURE_EXPIRY
+ return p
 
 class MediaAdmissionTests(unittest.TestCase):
  def setUp(self):
+  guard=patch.object(f,'policy',side_effect=policy);guard.start();self.addCleanup(guard.stop)
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
   self.root=Path(self.tmp.name);self.state=self.root/'state';self.state.mkdir()
   (self.state/'status.json').write_text(json.dumps({'ok':True,'observed':time.time(),'workers':[{},{}]}))

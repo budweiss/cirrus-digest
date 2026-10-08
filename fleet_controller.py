@@ -86,8 +86,19 @@ def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
     except Exception as e:jobs={};errors.append({'job_ledger':type(e).__name__})
     state=q.status()
     unsettled=[{'id':r['id'],'state':r['state']} for r in state['jobs'] if r['state'] in ('unknown','suspected_stall','cancelling','blocked','failed')]
+    now=time.time()
+    unsettled += [{'id':r['id'],'state':r['state'],'reason':'caller has not claimed queued work for over 30 minutes'}
+                  for r in state['jobs'] if r['state']=='queued' and now-r['created']>1800]
+    qualifications=[]
+    if (app/'config/fleet-media.enabled').exists():
+        expires=q.policy['projects']['articles-infra']['qualification_until']
+        qualifications.append({'project':'articles-infra','expires':expires,
+                               'remaining_hours':round((expires-now)/3600,1)})
+        if expires<=now:
+            errors.append({'project':'articles-infra','error':'qualification expired; research admission stopped'})
     return {'observed':time.time(),'ok':not errors and not unsettled,'mode':'observation, qualified synthetic pilots and opt-in infrastructure analysis',
-            'workers':workers,'errors':errors,'unsettled':unsettled,'inventory':inventory,'legacy_jobs':jobs,'queue':state}
+            'workers':workers,'errors':errors,'unsettled':unsettled,'qualifications':qualifications,
+            'inventory':inventory,'legacy_jobs':jobs,'queue':state}
 
 
 def render(data):

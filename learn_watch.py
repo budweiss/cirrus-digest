@@ -349,6 +349,7 @@ def default_analyze(text, meta):
 
 def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
                 last_ok, seen_path, dry_run):
+    attempted = succeeded = 0
     for post in posts:
         text = full_text(post.pop("entry"), post["kind"], parse)
         if len(text) < TEASER:
@@ -370,6 +371,7 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
                                     "not English, skipped" if post["foreign"] else "could not read"))
             continue
         try:
+            attempted += 1
             claims = analyze("%s\n\n%s" % (post["title"], text), meta) if text else []
         except (RuntimeError, OSError) as e:
             # the worker or the link is down: NOT seen, so tomorrow retries it
@@ -379,6 +381,7 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
             # a deterministic failure on this post: seen, so it cannot block the queue
             errors.append("%s: %s: %s" % (post["title"][:50], type(e).__name__, str(e)[:60]))
             claims = None
+        succeeded += claims is not None
         for c in claims or []:
             c["areas"] = areas_for(post["title"] + " " + c.get("quote", ""))
         post["claims"] = claims or []
@@ -392,6 +395,7 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
         if not dry_run:
             seen_path.parent.mkdir(parents=True, exist_ok=True)
             seen_path.write_text(json.dumps({"keys": seen[-SEEN_KEEP:], "last_success": last_ok}, indent=1))
+    return attempted, succeeded
 
 
 def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
@@ -420,8 +424,9 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
     results, errors = [], list(feed_errors)
     browser = browser if browser is not None else Browser()
     try:
-        _read_posts(posts[:limit], parse, analyze, browser, results, errors, seen, seen_set,
-                    last_ok, seen_path, dry_run)
+        attempted, succeeded = _read_posts(
+            posts[:limit], parse, analyze, browser, results, errors, seen, seen_set,
+            last_ok, seen_path, dry_run)
     finally:
         browser.close()
     if browser.challenged:
@@ -443,12 +448,15 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
                                              "areas": c["areas"]}) + "\n")
         # the window's anchor moves only when the run actually worked, so a
         # worker outage widens tomorrow's window instead of losing a day
-        analysed_ok = not posts or any(not r.get("failed") for r in results)
+        analysed_ok = (len(posts) <= limit and attempted == succeeded and not feed_errors
+                       and not any(r.get("unread") for r in results))
         if analysed_ok:
             seen_path.parent.mkdir(parents=True, exist_ok=True)
             seen_path.write_text(json.dumps({"keys": seen[-SEEN_KEEP:],
                                              "last_success": now.isoformat(timespec="seconds")}, indent=1))
     return {"feeds": len(feeds), "feed_errors": len(feed_errors), "unseen": len(posts),
+            "analysis_attempted": attempted, "analysis_succeeded": succeeded,
+            "analysis_failed": attempted - succeeded,
             "window_h": round(stats_window), "results": results,
             "processed": len(results), "claims": sum(len(r["claims"]) for r in results),
             "with_claims": sum(1 for r in results if r["claims"]),
@@ -547,9 +555,11 @@ def is_healthy(stats):
     """Unhealthy when half or more feeds are unreadable (the ytwatch lesson, S307),
     or when there was work and every analysis failed."""
     feeds_down = stats["feed_errors"] and stats["feed_errors"] * 2 >= max(stats["feeds"], 1)
-    analysis_down = (stats["unseen"] > 0 and stats["processed"] == 0
-                     and len(stats["errors"]) > stats["feed_errors"])
-    return not feeds_down and not analysis_down
+    analysis_down = (stats.get("analysis_attempted", 0) > 0
+                     and stats.get("analysis_succeeded", 0) == 0)
+    unread_only = (stats.get("unread", 0) > 0
+                   and stats.get("analysis_succeeded", 0) == 0)
+    return not feeds_down and not analysis_down and not unread_only
 
 
 def send(subject, body):
@@ -578,6 +588,7 @@ def main():
     note = "%d post(s) in %dh, %d claim(s), %d via member session, %d teaser-only, %d unreadable" % (
         stats["processed"], stats["window_h"], stats["claims"], stats["via_browser"],
         stats["teasers"], stats["unread"])
+    note += ", %d/%d analyses completed" % (stats["analysis_succeeded"], stats["analysis_attempted"])
     if stats["errors"]:
         note += ", %d error(s): %s" % (len(stats["errors"]), "; ".join(stats["errors"][:3]))
     healthy = is_healthy(stats)
@@ -736,8 +747,8 @@ def _selftest(g):
                 pause=0, claims_log=cl)
         ck("run: claims logged as JSONL for the STRATUS review",
            [json.loads(x)["title"] for x in cl.read_text().splitlines()] == ["Spark tips"])
-        ck("run: a working run records its time as the window anchor",
-           load_json(sp, {}).get("last_success") == now.isoformat(timespec="seconds"))
+        ck("run: a failed feed preserves the retry window even when other posts succeed",
+           load_json(sp, {}).get("last_success") is None)
         ck("run: the dead feed is an error, not a quiet feed", s["feed_errors"] == 1)
         ck("run: posts older than the 36 h window are skipped", s["unseen"] == 2)
         ck("run: a tag teaser is read from its author feed in full",
@@ -759,6 +770,41 @@ def _selftest(g):
         ck("run: a worker outage marks nothing seen (retried tomorrow)",
            load_json(sp2, {}).get("keys", []) == [] and s3["processed"] == 0)
         ck("health: every analysis failing is unhealthy", not is_healthy(s3))
+        mixed_map = {"https://mixed.substack.com/feed": F(status=200, entries=[
+            entry("https://mixed.substack.com/p/full", "Worker test", long_body),
+            entry("https://mixed.substack.com/p/locked", "Locked test", "short"),
+            entry("https://mixed.substack.com/p/foreign", "Foreign test", "클로드 코드 " * 200)])}
+        mixed_feeds = [{"name": "Mixed", "rss": "https://mixed.substack.com/feed", "kind": "substack"}]
+        mixed_path = Path(td) / "mixed-seen.json"
+        anchor = (now - timedelta(days=2)).isoformat(timespec="seconds")
+        mixed_path.write_text(json.dumps({"keys": [], "last_success": anchor}))
+        mixed = run(browser=FakeBrowser(), feeds=mixed_feeds, parse=lambda u: mixed_map[u],
+                    analyze=down, seen_path=mixed_path, out_dir=Path(td) / "mixed-out", now=now,
+                    pause=0, claims_log=Path(td) / "mixed-claims.jsonl")
+        ck("health: unread/foreign skips cannot hide a failed worker",
+           mixed["processed"] == 2 and mixed["analysis_attempted"] == 1
+           and mixed["analysis_succeeded"] == 0 and not is_healthy(mixed))
+        ck("run: mixed outage preserves the prior window and retries the failed post",
+           load_json(mixed_path, {})["last_success"] == anchor
+           and "https://mixed.substack.com/p/full" not in load_json(mixed_path, {})["keys"])
+        def invalid(text, meta):
+            raise ValueError("invalid model output")
+        invalid_stats = run(dry_run=True, browser=FakeBrowser(), feeds=feeds[:1], parse=parse,
+                            analyze=invalid, seen_path=Path(td) / "invalid-seen.json", now=now, pause=0)
+        ck("health: deterministic analysis failures are unhealthy", not is_healthy(invalid_stats))
+        quiet_path = Path(td) / "quiet-seen.json"
+        quiet = run(browser=FakeBrowser(), feeds=feeds[:1], parse=parse, analyze=lambda t, m: [],
+                    seen_path=quiet_path, out_dir=Path(td) / "quiet-out", now=now, pause=0,
+                    claims_log=Path(td) / "quiet-claims.jsonl")
+        ck("health: a valid zero-claim analysis is healthy and advances its window",
+           quiet["analysis_succeeded"] == 1 and quiet["claims"] == 0 and is_healthy(quiet)
+           and load_json(quiet_path, {})["last_success"] == now.isoformat(timespec="seconds"))
+        limited_path = Path(td) / "limited-seen.json"
+        run(browser=FakeBrowser(), feeds=feeds[:2], parse=parse, analyze=analyze, limit=1,
+            seen_path=limited_path, out_dir=Path(td) / "limited-out", now=now, pause=0,
+            claims_log=Path(td) / "limited-claims.jsonl")
+        ck("run: a bounded catch-up does not skip work beyond its limit",
+           load_json(limited_path, {}).get("last_success") is None)
         ck("health: the normal run is healthy", is_healthy(s))
         ck("health: half the feeds down is unhealthy",
            not is_healthy({"feeds": 4, "feed_errors": 2, "unseen": 0, "processed": 0, "errors": ["a", "b"]}))

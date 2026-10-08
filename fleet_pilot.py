@@ -13,6 +13,8 @@ from fleet_queue import Queue
 WORKERS={
  'cumulus1-gptoss':{'model':'gpt-oss:120b','endpoint':'http://127.0.0.1:8000','min_available_mib':8192},
  'cumulus2-qwen':{'model':'qwen3.8-27b-fp8','endpoint':'http://192.168.100.11:8000','min_available_mib':8192}}
+# S385 reviewed local fixtures and archived article replay; scope unchanged.
+QUALIFIED_UNTIL=1792077641.925303  # 2026-10-15; evidence: s385-fleet-renewal
 MESSAGES=[{'role':'system','content':'Extract only supplied facts. Reply with a JSON object only, keys sample (integer), control_group (boolean), trial_date (null if absent). No markdown.'},
  {'role':'user','content':'S318 SYNTHETIC TEST ONLY. The study included 12 participants and had no control group. No trial date was supplied.'}]
 
@@ -23,11 +25,11 @@ def request(endpoint,path,payload=None,timeout=120):
 
 
 def policy():
-    p = {'workers':WORKERS,'projects':{w:{'workers':[w],'model_ids':{w:s['model']},'validator':'fixture_json','max_retries':2,'stall_seconds':150,'heartbeat_seconds':30,'max_input_bytes':2048,'max_output_tokens':1024,'qualification_until':1791139200,'contract':'synthetic-v1','mode':'pilot','owner':'fleet-pilot','resource':w,'delivery':'none'} for w,s in WORKERS.items()}}
+    p = {'workers':WORKERS,'projects':{w:{'workers':[w],'model_ids':{w:s['model']},'validator':'fixture_json','max_retries':2,'stall_seconds':150,'heartbeat_seconds':30,'max_input_bytes':2048,'max_output_tokens':1024,'qualification_until':QUALIFIED_UNTIL,'contract':'synthetic-v1','mode':'pilot','owner':'fleet-pilot','resource':w,'delivery':'none'} for w,s in WORKERS.items()}}
     p['projects']['articles-infra'] = {'workers':['cumulus2-qwen'],
       'model_ids':{'cumulus2-qwen':'qwen3.8-27b-fp8'},'validator':'media_manifest',
       'max_retries':2,'stall_seconds':600,'heartbeat_seconds':30,'max_input_bytes':2000000,
-      'request_context_bound':10000,'max_output_tokens':2048,'qualification_until':1791139200,
+      'request_context_bound':10000,'max_output_tokens':2048,'qualification_until':QUALIFIED_UNTIL,
       'contract':'media-s307-v3','mode':'pilot','owner':'fleet-media','resource':'articles-infra',
       'delivery':'none'}
     return p
@@ -47,7 +49,8 @@ def run(root, allow_existing=False):
         host='cumulus1' if w=='cumulus1-gptoss' else 'cumulus2'
         if local_c1 and host=='cumulus2':
             resource=request('http://192.168.100.11:8011','/health')
-            if not 0 <= time.time()-resource['observed'] <= 30:raise RuntimeError('stale resource')
+            # Match the controller: sub-second clock skew is not a stale worker.
+            if not -1 <= time.time()-resource['observed'] <= 30:raise RuntimeError('stale resource')
             mem=resource['available_mib']
         else:
             cmd=['awk','/MemAvailable/{print $2}','/proc/meminfo']

@@ -414,7 +414,7 @@ def main(force=False):
                    "ALREADY EXPIRED" if expired else "in %.0f h" % hours))
         delivery = notify(msg)
         ok = ok and delivery == "sent"
-        note = "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
+        note = ("EXPIRED; " if expired else "") + "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
     note = answer_note + "; " + note
     log(note)
     return ok and answer_ok, note
