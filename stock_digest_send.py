@@ -35,6 +35,53 @@ MODES = ("dry-run", "live")
 PAPER_HOME = PROJECT_DIR / 'private' / 'stock-paper'
 
 
+def report_html(md):
+    """Small escaped renderer for our headings, paragraphs, links and tables."""
+    from html import escape
+    def inline(text):
+        text = escape(text)
+        text = re.sub(r'\[([^\]]+)\]\((https://[^\s)]+)\)', r'<a href="\2">\1</a>', text)
+        return re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', text)
+    out, paragraph, table = [], [], []
+    def flush():
+        if paragraph:
+            out.append('<p>' + inline(' '.join(paragraph)) + '</p>')
+            paragraph.clear()
+        if table:
+            out.append('<table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:14px">')
+            for index, row in enumerate(table):
+                if all(re.fullmatch(r'[: -]+', cell) for cell in row):
+                    continue
+                tag = 'th' if index == 0 else 'td'
+                out.append('<tr>' + ''.join('<' + tag + ' style="border:1px solid #d8dee4;text-align:left">' + inline(cell) + '</' + tag + '>' for cell in row) + '</tr>')
+            out.append('</table>')
+            table.clear()
+    for line in md.splitlines():
+        if re.fullmatch(r'<!-- stock-paper-report:[a-f0-9]{32} -->', line.strip()):
+            continue
+        if line.strip().startswith('|') and line.strip().endswith('|'):
+            if paragraph:
+                flush()
+            table.append([cell.strip() for cell in line.strip().strip('|').split('|')])
+            continue
+        if table:
+            flush()
+        header = re.match(r'^(#{1,3})\s+(.+)$', line)
+        if header:
+            flush()
+            level = len(header[1])
+            out.append('<h' + str(level) + '>' + inline(header[2]) + '</h' + str(level) + '>')
+        elif not line.strip():
+            flush()
+        elif line.startswith('- '):
+            flush()
+            out.append('<p>• ' + inline(line[2:]) + '</p>')
+        else:
+            paragraph.append(line)
+    flush()
+    return '<!doctype html><html><body style="font-family:Arial,sans-serif;line-height:1.55;color:#172333;max-width:1000px;margin:24px auto;padding:0 16px">' + '\n'.join(out) + '</body></html>'
+
+
 def check_paper_report(md, at=None, home=None):
     """A letter must contain a recent, exact account section from the ledger."""
     at = at or datetime.now(timezone.utc)
@@ -96,7 +143,7 @@ def deliver_once(md, creds, subject, report, send_fn=None, home=None):
         os.chmod(receipt, 0o600)
         sender = send_fn or mailer.send
         ok = sender(creds['outlook_email'], creds['outlook_password'], TO_EMAIL, subject, md,
-                    creds=creds, on_error='raise', log=print)
+                    html=report_html(md), creds=creds, on_error='raise', log=print)
         if not ok:
             raise ValueError('send_unconfirmed_receipt_requires_review')
         record.update(status='sent', sent_at=datetime.now(timezone.utc).isoformat())
@@ -171,7 +218,7 @@ def build_message(md: str, now=None, creds: dict = None):
     check_weekdays(md, now)
     subject = "Stock Pickers — %s (our paper portfolio)" % now.strftime("%Y-%m-%d %H:%M ET")
     creds = creds or {}
-    return mailer.build(creds["outlook_email"], TO_EMAIL, subject, md, creds=creds), subject
+    return mailer.build(creds["outlook_email"], TO_EMAIL, subject, md, html=report_html(md), creds=creds), subject
 
 
 def main(argv) -> int:
@@ -209,7 +256,7 @@ def main(argv) -> int:
     from_email = creds["outlook_email"]
     if mode == "dry-run":
         mailer.send(from_email, "", TO_EMAIL, subject, md, creds=creds,
-                    dry_run=True)
+                    html=report_html(md), dry_run=True)
         return 0
     ok = send_verified_once(md, creds, subject)
     return 0 if ok else 5

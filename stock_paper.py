@@ -143,11 +143,24 @@ def account_section(snapshot, trades, bench, slot):
 
 def refresh(home, ledger, slot):
     positions = ledger.snapshot()['positions']
-    quotes = fetch_quotes(home, [p['ticker'] for p in positions] + ['SPY'])
+    decisions = ledger.list_decisions(10000)
+    latest_decisions = {}
+    for decision in decisions:
+        if decision.get('ticker') and decision['ticker'] not in latest_decisions:
+            latest_decisions[decision['ticker']] = decision
+    watch = list(latest_decisions)[:20]
+    quotes = fetch_quotes(home, [p['ticker'] for p in positions] + watch + ['SPY'])
     report_id = uuid.uuid4().hex
     snapshot = ledger.record_snapshot(quotes, idempotency_key=report_id)
     trades = ledger.list_trades(10000)
-    decisions = ledger.list_decisions(10000)
+    outcomes = []
+    for decision in latest_decisions.values():
+        order = decision.get('order')
+        if order:
+            path = home / 'orders' / (hashlib.sha256(order['idempotency_key'].encode()).hexdigest() + '.json')
+            if path.exists():
+                recorded = json.loads(path.read_text())
+                outcomes.append(recorded.get('outcome') or {'ticker': decision['ticker'], 'status': 'outcome_unknown_inspect_same_order'})
     bench = benchmark(home, quotes['SPY'])
     section = account_section(snapshot, trades, bench, slot)
     marker = '<!-- stock-paper-report:' + report_id + ' -->'
@@ -155,7 +168,7 @@ def refresh(home, ledger, slot):
               'slot': slot, 'date': now().astimezone(NY).date().isoformat(),
               'created_at': snapshot['as_of'], 'snapshot': snapshot, 'benchmark': bench,
               'market': market_session(), 'quotes': quotes, 'trades': trades,
-              'decisions': decisions, 'account_section': section, 'marker': marker,
+              'decisions': decisions, 'order_outcomes': outcomes, 'account_section': section, 'marker': marker,
               'report': marker + '\n\n' + section}
     save(home / 'reports' / (report_id + '.json'), result, True)
     save(home / 'latest.json', result)
