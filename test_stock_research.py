@@ -1,12 +1,14 @@
 """Hermetic checks for source identity, dates, immutable memory and safe abstention."""
 import copy
+import fcntl
 import io
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 import types
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -317,6 +319,128 @@ class ResearchTests(unittest.TestCase):
         rendered = s.render_company(COMPANY, [], None, None, None, ['http_403'], False)
         self.assertIn('Research incomplete', rendered)
         self.assertNotIn('hold for review', rendered)
+
+    def test_deadline_escapes_model_catches_finalizes_and_rotates_unvisited_company(self):
+        companies = [COMPANY, dict(COMPANY, ticker='BETA', name='Beta Test Company')]
+        (self.home / 'universe.json').write_text(json.dumps({'companies': companies}))
+        caught = []
+        def slow_model(*args, audit=None, **kwargs):
+            audit({'task': 'synthetic-attempt', 'answer': 'Synthetic saved draft', 'input_sha': 'test'})
+            check = sqlite3.connect(self.home / 'research.sqlite3')
+            self.assertEqual(check.execute("SELECT count(*) FROM observations WHERE kind='model_attempt'").fetchone()[0], 1)
+            check.close()
+            try:
+                time.sleep(2)
+            except Exception:
+                caught.append(True)
+                self.fail('Deadline was swallowed by an ordinary model error handler')
+        output = io.StringIO()
+        started = time.monotonic()
+        with patch.object(s, 'now', return_value=AT), patch.object(s, 'market_quote', return_value=None), \
+                patch.object(s, 'collect', return_value=([document()], None, [])), \
+                patch.object(s, 'make_draft', side_effect=slow_model), redirect_stdout(output):
+            self.assertEqual(s.refresh(self.home, 'trial', budget_seconds=0.05), 2)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(caught, [])
+        result = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['interruption'], 'refresh_deadline_reached')
+        self.assertEqual(result['unfinished_companies'], ['ACME', 'BETA'])
+        row = self.conn.execute('SELECT finished,status FROM runs WHERE id=?', (result['run_id'],)).fetchone()
+        self.assertTrue(row['finished'])
+        self.assertEqual(row['status'], 'partial')
+        packet = json.loads(self.conn.execute("SELECT data FROM observations WHERE kind='research_packet'").fetchone()[0])
+        self.assertEqual(packet['as_of'], AT)
+        self.assertEqual(packet['documents'], [document()])
+        report = Path(result['report']).read_text()
+        self.assertIn('Analysis did not finish', report)
+        self.assertIn('Not processed to a complete source packet', report)
+        order = []
+        def collected(conn, home, company, at):
+            order.append(company['ticker'])
+            return [document()], None, []
+        with patch.object(s, 'now', return_value=AT), patch.object(s, 'market_quote', return_value=None), \
+                patch.object(s, 'collect', side_effect=collected), redirect_stdout(io.StringIO()):
+            self.assertEqual(s.refresh(self.home, 'pm', collect_only=True), 0)
+        self.assertEqual(order, ['BETA', 'ACME'])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM runs WHERE status='running'").fetchone()[0], 0)
+
+    def test_collection_archives_are_committed_before_deadline(self):
+        identity = {'cik': 123, 'tickers': ['ACME'], 'name': 'Acme Test Company'}
+        fetcher = lambda *args: (json.dumps(identity).encode(), 'application/json')
+        with self.assertRaises(s.ResearchDeadline), s.research_deadline(0.02):
+            s.collect(self.conn, self.home, COMPANY, AT, fetcher)
+        self.conn.rollback()
+        saved = self.conn.execute('SELECT first_seen,raw_path FROM documents').fetchone()
+        self.assertEqual(saved['first_seen'], AT)
+        self.assertEqual(json.loads((self.home / saved['raw_path']).read_bytes()), identity)
+
+    def interrupted_run(self):
+        companies = [COMPANY, dict(COMPANY, ticker='BETA'), dict(COMPANY, ticker='GAMMA')]
+        run_id = self.conn.execute('INSERT INTO runs (started,slot,version,manifest,status) VALUES (?,?,?,?,?)',
+                                  (AT, 'trial', 'old-version', json.dumps({'companies': companies}), 'running')).lastrowid
+        for company in companies[:2]:
+            packet = {'run_id': run_id, 'as_of': AT, 'company': company, 'documents': [document()],
+                      'quote': None, 'benchmark': None, 'previous': None, 'issues': []}
+            s.observation(self.conn, company['ticker'], 'research_packet', packet, AT)
+        # Old runs had no run_id in coverage observations; retain that recovery path.
+        s.observation(self.conn, 'ACME', 'coverage', {'issues': [], 'documents': [1]}, AT)
+        self.conn.execute('''INSERT INTO reviews
+            (run_id,ticker,recorded_at,evidence_key,draft,validation) VALUES (?,?,?,?,?,?)''',
+            (run_id, 'ACME', AT, 'original-key', json.dumps(draft()), 'human_unreviewed; new_evidence'))
+        self.conn.commit()
+        return run_id
+
+    def test_recovery_preserves_packets_reviews_and_exact_report_is_idempotent(self):
+        run_id = self.interrupted_run()
+        original = list(self.conn.execute("SELECT data,recorded_at FROM observations WHERE kind='research_packet'"))
+        output = io.StringIO()
+        with patch.object(s, 'collect', side_effect=AssertionError('recovery must not fetch')), \
+                patch.object(s, 'market_quote', side_effect=AssertionError('recovery must not reprice')), \
+                patch.object(s, 'make_draft', side_effect=AssertionError('recovery must not infer')), \
+                redirect_stdout(output):
+            self.assertEqual(s.recover(self.home, run_id, 'worker_timeout'), 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['run_id'], run_id)
+        self.assertEqual(result['accepted_drafts'], 1)
+        self.assertEqual(result['unfinished_companies'], ['BETA', 'GAMMA'])
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM reviews').fetchone()[0], 1)
+        self.assertEqual(list(self.conn.execute("SELECT data,recorded_at FROM observations WHERE kind='research_packet'")), original)
+        report = Path(result['report']).read_bytes()
+        self.assertIn(b'old-version', report)
+        self.assertIn(b'2026-08-01', report)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(s.recover(self.home, run_id, 'worker_interrupted'), 2)
+        self.assertEqual(Path(result['report']).read_bytes(), report)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM observations WHERE kind='run_finished'").fetchone()[0], 1)
+
+    def test_historical_recovery_does_not_replace_newer_latest_report(self):
+        run_id = self.interrupted_run()
+        self.conn.execute('INSERT INTO runs (started,finished,slot,version,manifest,status,report) VALUES (?,?,?,?,?,?,?)',
+                          (AT, AT, 'pm', 'new-version', json.dumps({'companies': [COMPANY]}), 'partial', 'newer.md'))
+        self.conn.commit()
+        reports = self.home / 'reports'
+        reports.mkdir()
+        (reports / 'latest.md').write_text('Newer report stays current')
+        with redirect_stdout(io.StringIO()):
+            s.recover(self.home, run_id)
+        self.assertEqual((reports / 'latest.md').read_text(), 'Newer report stays current')
+
+    def test_recovery_cli_refuses_active_refresh_lock(self):
+        run_id = self.interrupted_run()
+        with (self.home / 'refresh.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(s.main(['--home', str(self.home), 'recover', '--run-id', str(run_id)]), 2)
+        self.assertIsNone(self.conn.execute('SELECT finished FROM runs WHERE id=?', (run_id,)).fetchone()[0])
+
+    def test_refresh_refuses_budget_beyond_watchdog_margin(self):
+        (self.home / 'universe.json').write_text(json.dumps({'companies': [COMPANY]}))
+        for seconds in (0, -1, 601):
+            with self.subTest(seconds=seconds), self.assertRaisesRegex(ValueError, 'budget_outside'):
+                s.refresh(self.home, 'trial', budget_seconds=seconds)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM runs').fetchone()[0], 0)
 
 
 if __name__ == '__main__':

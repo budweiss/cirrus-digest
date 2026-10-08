@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import signal
 import socket
 import sqlite3
 import sys
@@ -22,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -30,6 +32,7 @@ DEFAULT_HOME = ROOT / 'private' / 'stock-research'
 VERSION = 's383-company-research-v2'
 UA = 'StockPickersResearch/1.0 contact cumulus@cumulustask.com'
 MAX_BYTES = 20_000_000
+REFRESH_BUDGET_SECONDS = 600
 METRICS = {
     'revenue': ['RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues', 'SalesRevenueNet'],
     'net income': ['NetIncomeLoss'],
@@ -74,6 +77,28 @@ def digest(value):
 
 def packed(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+class ResearchDeadline(BaseException):
+    """Leave nested source/model error handlers so the run can be finalized."""
+
+
+@contextmanager
+def research_deadline(seconds):
+    if not 0 < seconds <= REFRESH_BUDGET_SECONDS:
+        raise ValueError('refresh_budget_outside_supported_range')
+    def expired(signum, frame):
+        raise ResearchDeadline()
+    previous = signal.signal(signal.SIGALRM, expired)
+    started = time.monotonic()
+    timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        if timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, timer[0] - (time.monotonic() - started)), timer[1])
 
 
 def database(home):
@@ -349,6 +374,7 @@ def collect(conn, home, company, at, fetcher=fetch):
     observation(conn, ticker, 'identity', {'cik': cik, 'sec_name': name, 'tickers': identity['tickers']}, at)
     # Store the complete SEC metadata for traceability, not as an analyzed filing.
     save_document(conn, home, ticker, url, 'identity', name, None, packed(identity), raw, at)
+    conn.commit()
     time.sleep(0.2)  # far below SEC's published fair-access limit
     url = f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json'
     try:
@@ -356,6 +382,7 @@ def collect(conn, home, company, at, fetcher=fetch):
         content, published = financial_text(company, json.loads(raw), at)
         docs.append(save_document(conn, home, ticker, url, 'sec_facts', name + ' reported financials',
                                   published, content, raw, at))
+        conn.commit()
     except Exception as exc:
         issues.append('SEC financials: ' + error_code(exc))
     articles = []
@@ -374,6 +401,7 @@ def collect(conn, home, company, at, fetcher=fetch):
                 # A changing job page is a lead, not proof of hiring or growth.
                 save_document(conn, home, ticker, seed['url'], 'careers_lead', page.title,
                               page.published, page.text, raw, at)
+            conn.commit()
         except Exception as exc:
             issues.append('Publication index: ' + error_code(exc))
     for url in list(dict.fromkeys(articles))[:3]:
@@ -386,6 +414,7 @@ def collect(conn, home, company, at, fetcher=fetch):
                                 page.published, page.text, raw, at)
             docs.append(doc)
             conn.execute("UPDATE source_candidates SET status='trial' WHERE ticker=? AND url=?", (ticker, url))
+            conn.commit()
         except Exception as exc:
             issues.append('Publication: ' + error_code(exc))
     try:
@@ -626,62 +655,56 @@ def render_company(company, docs, quote, draft, previous, issues, unchanged):
     return '\n'.join(lines)
 
 
-def refresh(home, slot, collect_only=False):
-    manifest = validate_manifest(json.loads((home / 'universe.json').read_text()))
-    started = now()
-    conn = database(home)
-    run_id = conn.execute('INSERT INTO runs (started,slot,version,manifest,status) VALUES (?,?,?,?,?)',
-                          (started, slot, VERSION, packed(manifest), 'running')).lastrowid
-    conn.commit()
-    parts = [f'# Stock Pickers — {slot} research draft', '', f'Prepared {started}. Research version {VERSION}.', '',
+def finalize_run(conn, home, run_id, interruption=None):
+    """Build only from this run's durable packets/reviews; never refresh evidence."""
+    row = conn.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+    if not row:
+        raise ValueError('research_run_not_found')
+    if row['finished']:
+        saved = conn.execute("SELECT data FROM observations WHERE kind='run_finished' "
+                             "AND json_extract(data,'$.run_id')=? ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
+        return json.loads(saved['data']) if saved else {
+            'run_id': run_id, 'status': row['status'], 'report': row['report']}
+    manifest, started, slot = json.loads(row['manifest']), row['started'], row['slot']
+    settings = conn.execute("SELECT data FROM observations WHERE kind='run_started' "
+                            "AND json_extract(data,'$.run_id')=?", (run_id,)).fetchone()
+    collect_only = bool(settings and json.loads(settings['data']).get('collect_only'))
+    parts = [f'# Stock Pickers — {slot} research draft', '', f'Prepared {started}. Research version {row["version"]}.', '',
              'This private pilot connects business evidence with the previous assessment. It is a draft for review. '
              'Exact source quotations and interpretations receive automated checks; these checks do not replace human review. '
              'Coverage is limited to the pilot companies, selected financial periods and up to three official publications each.', '',
              'Prices are timestamped observations, not trading quotes. Portfolio size is not used as a sell trigger. '
              'No emails or trades are made by this process.', '']
+    if interruption:
+        parts += ['**Partial run:** ' + interruption + '. Saved evidence and accepted reviews were retained. '
+                  'No missing company assessment is inferred, and source/price timestamps are unchanged.', '']
     accepted, failures, coverage_gaps = 0, 0, 0
-    try:
-        benchmark = market_quote('SPY', started)
-        observation(conn, 'SPY', 'quote', benchmark, started)
-    except Exception:
-        benchmark = None
+    unfinished = []
     for company in manifest['companies']:
-        at, docs, quote, issues, draft, unchanged = now(), [], None, [], None, False
-        prev = latest_review(conn, company['ticker'])
-        try:
-            docs, quote, issues = collect(conn, home, company, at)
-            # Freeze the actual input, including the old price and previous view.
-            # Replays must not quietly introduce information learned afterward.
-            observation(conn, company['ticker'], 'research_packet', {
-                'run_id': run_id, 'as_of': at, 'company': company, 'documents': docs,
-                'quote': quote, 'benchmark': benchmark, 'previous': prev, 'issues': list(issues),
-            }, at)
-            conn.commit()  # Keep acquired evidence even if inference fails.
-            evidence_key = digest(packed([(d['id'], d['sha']) for d in docs]) + VERSION +
-                                  SYSTEM + REVIEW_SYSTEM + company['role'])
-            if not collect_only:
-                evidence_ready(docs, at)
-                # Repetition does not manufacture confidence or consume a new model call.
-                if prev and prev['evidence_key'] == evidence_key:
-                    draft, unchanged = json.loads(prev['draft']), True
-                else:
-                    draft = make_draft(company, docs, quote, json.loads(prev['draft']) if prev else None, at,
-                        audit=lambda data: observation(conn, company['ticker'], 'model_attempt', data, now()))
-                conn.execute('''INSERT INTO reviews
-                    (run_id,ticker,recorded_at,previous_id,evidence_key,draft,quote,benchmark,validation)
-                    VALUES (?,?,?,?,?,?,?,?,?)''', (run_id, company['ticker'], at, prev['id'] if prev else None,
-                    evidence_key, packed(draft), packed(quote), packed(benchmark),
-                    'source_quotes_matched; local_review_passed; human_unreviewed; ' + ('repeated_evidence' if unchanged else 'new_evidence')))
-                accepted += 1
-        except Exception as exc:
+        ticker = company['ticker']
+        saved = conn.execute("SELECT data FROM observations WHERE kind='research_packet' AND ticker=? "
+                             "AND json_extract(data,'$.run_id')=? ORDER BY id DESC LIMIT 1", (ticker, run_id)).fetchone()
+        packet = json.loads(saved['data']) if saved else None
+        review = conn.execute('SELECT draft,validation FROM reviews WHERE run_id=? AND ticker=?', (run_id, ticker)).fetchone()
+        coverage = conn.execute("SELECT data FROM observations WHERE kind='coverage' AND ticker=? AND "
+                                "(json_extract(data,'$.run_id')=? OR "
+                                "(json_extract(data,'$.run_id') IS NULL AND recorded_at=?)) ORDER BY id DESC LIMIT 1",
+                                (ticker, run_id, packet['as_of'] if packet else '')).fetchone()
+        docs, quote, prev = (packet['documents'], packet['quote'], packet['previous']) if packet else ([], None, None)
+        issues = list(json.loads(coverage['data'])['issues'] if coverage else packet['issues'] if packet else [])
+        draft = json.loads(review['draft']) if review else None
+        unchanged = bool(review and 'repeated_evidence' in review['validation'])
+        if not coverage:
+            unfinished.append(ticker)
+            issues.append('Company bookkeeping did not finish; the accepted review is retained' if draft else
+                          'Analysis did not finish; saved sources are retained' if packet else
+                          'Not processed to a complete source packet in this run; any acquired sources remain archived')
+        if draft:
+            accepted += 1
+        elif not collect_only or not packet:
             failures += 1
-            issues.append('Research not accepted: ' + error_code(exc))
-        observation(conn, company['ticker'], 'coverage', {'issues': issues, 'documents': [d['id'] for d in docs]}, at)
         coverage_gaps += len(issues)
-        conn.commit()
         parts.append(render_company(company, docs, quote, draft, prev, issues, unchanged))
-        print(packed({'ticker': company['ticker'], 'documents': len(docs), 'draft_accepted': bool(draft),
-                      'reused_evidence': unchanged, 'issues': issues}), flush=True)
     parts += ['## Learning record', '',
               'Every original assessment, source version and price timestamp is retained. Later assessments link to '
               'earlier ones. Repeated commentary is not scored as an additional investment. This pilot has no matured '
@@ -691,17 +714,113 @@ def refresh(home, slot, collect_only=False):
     reports = home / 'reports'
     reports.mkdir(exist_ok=True, mode=0o700)
     path = reports / f'{started[:10]}-{slot}-{run_id}.md'
-    path.write_text(report)
-    (reports / 'latest.md').write_text(report)
-    status = 'collected' if collect_only else ('draft_ready' if not failures else 'partial')
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(report)
+    temporary.replace(path)
+    if run_id == conn.execute('SELECT max(id) FROM runs').fetchone()[0]:
+        temporary = reports / 'latest.tmp'
+        temporary.write_text(report)
+        temporary.replace(reports / 'latest.md')
+    status = 'partial' if interruption or unfinished or failures else 'collected' if collect_only else 'draft_ready'
     if status == 'draft_ready' and coverage_gaps:
         status = 'draft_ready_with_gaps'
+    result = {'run_id': run_id, 'status': status, 'accepted_drafts': accepted, 'failed_companies': failures,
+              'coverage_gaps': coverage_gaps, 'unfinished_companies': unfinished, 'report': str(path),
+              'interruption': interruption}
     conn.execute('UPDATE runs SET finished=?,status=?,report=? WHERE id=?', (now(), status, str(path), run_id))
+    observation(conn, None, 'run_finished', result, now())
     conn.commit()
-    conn.close()
-    print(packed({'run_id': run_id, 'status': status, 'accepted_drafts': accepted, 'failed_companies': failures,
-                  'coverage_gaps': coverage_gaps, 'report': str(path)}))
-    return 0 if not failures else 2
+    return result
+
+
+def recover(home, run_id=None, reason='worker_interrupted'):
+    """Caller holds refresh.lock; an active refresh must never be finalized."""
+    conn = database(home)
+    try:
+        ids = [run_id] if run_id is not None else [r['id'] for r in conn.execute(
+            'SELECT id FROM runs WHERE finished IS NULL ORDER BY id')]
+        for ident in ids:
+            print(packed(finalize_run(conn, home, ident, reason)), flush=True)
+        if not ids:
+            print(packed({'status': 'no_interrupted_runs'}), flush=True)
+        return 2 if ids else 0
+    finally:
+        conn.close()
+
+
+def refresh(home, slot, collect_only=False, budget_seconds=REFRESH_BUDGET_SECONDS):
+    manifest = validate_manifest(json.loads((home / 'universe.json').read_text()))
+    if not 0 < budget_seconds <= REFRESH_BUDGET_SECONDS:
+        raise ValueError('refresh_budget_outside_supported_range')
+    conn = database(home)
+    try:
+        # The caller owns the refresh lock, so unfinished older rows are abandoned.
+        for row in conn.execute('SELECT id FROM runs WHERE finished IS NULL ORDER BY id').fetchall():
+            finalize_run(conn, home, row['id'], 'previous_worker_interrupted')
+        # Least recently collected first: a bounded pass cannot starve the tail.
+        last_packets = {r['ticker']: r['last_id'] for r in conn.execute(
+            "SELECT ticker,max(id) AS last_id FROM observations WHERE kind='research_packet' GROUP BY ticker")}
+        companies = sorted(manifest['companies'], key=lambda c: last_packets.get(c['ticker'], 0))
+        started = now()
+        run_id = conn.execute('INSERT INTO runs (started,slot,version,manifest,status) VALUES (?,?,?,?,?)',
+                             (started, slot, VERSION, packed(manifest), 'running')).lastrowid
+        observation(conn, None, 'run_started', {'run_id': run_id, 'collect_only': collect_only,
+                    'budget_seconds': budget_seconds, 'company_order': [c['ticker'] for c in companies]}, started)
+        conn.commit()
+        interruption = None
+        try:
+            with research_deadline(budget_seconds):
+                try:
+                    benchmark = market_quote('SPY', started)
+                    observation(conn, 'SPY', 'quote', benchmark, started)
+                    conn.commit()
+                except Exception:
+                    benchmark = None
+                for company in companies:
+                    at, docs, quote, issues, draft, unchanged = now(), [], None, [], None, False
+                    prev = latest_review(conn, company['ticker'])
+                    try:
+                        docs, quote, issues = collect(conn, home, company, at)
+                        observation(conn, company['ticker'], 'research_packet', {
+                            'run_id': run_id, 'as_of': at, 'company': company, 'documents': docs,
+                            'quote': quote, 'benchmark': benchmark, 'previous': prev, 'issues': list(issues)}, at)
+                        conn.commit()
+                        evidence_key = digest(packed([(d['id'], d['sha']) for d in docs]) + VERSION +
+                                              SYSTEM + REVIEW_SYSTEM + company['role'])
+                        if not collect_only:
+                            evidence_ready(docs, at)
+                            if prev and prev['evidence_key'] == evidence_key:
+                                draft, unchanged = json.loads(prev['draft']), True
+                            else:
+                                def audit(data):
+                                    observation(conn, company['ticker'], 'model_attempt', dict(data, run_id=run_id), now())
+                                    conn.commit()
+                                draft = make_draft(company, docs, quote, json.loads(prev['draft']) if prev else None,
+                                                   at, audit=audit)
+                            conn.execute('''INSERT INTO reviews
+                                (run_id,ticker,recorded_at,previous_id,evidence_key,draft,quote,benchmark,validation)
+                                VALUES (?,?,?,?,?,?,?,?,?)''', (run_id, company['ticker'], at, prev['id'] if prev else None,
+                                evidence_key, packed(draft), packed(quote), packed(benchmark),
+                                'source_quotes_matched; local_review_passed; human_unreviewed; ' +
+                                ('repeated_evidence' if unchanged else 'new_evidence')))
+                    except Exception as exc:
+                        issues.append('Research not accepted: ' + error_code(exc))
+                    observation(conn, company['ticker'], 'coverage', {
+                        'run_id': run_id, 'issues': issues, 'documents': [d['id'] for d in docs]}, at)
+                    conn.commit()
+                    print(packed({'ticker': company['ticker'], 'documents': len(docs), 'draft_accepted': bool(draft),
+                                  'reused_evidence': unchanged, 'issues': issues}), flush=True)
+        except (ResearchDeadline, KeyboardInterrupt) as exc:
+            interruption = 'refresh_deadline_reached' if isinstance(exc, ResearchDeadline) else 'worker_interrupted'
+            conn.commit()
+        except Exception as exc:
+            interruption = 'refresh_failed_' + error_code(exc)
+            conn.commit()
+        result = finalize_run(conn, home, run_id, interruption)
+        print(packed(result), flush=True)
+        return 2 if result['status'] == 'partial' else 0
+    finally:
+        conn.close()
 
 
 def replay(home, run_id, ticker, caller=None):
@@ -794,6 +913,10 @@ def main(argv=None):
     r = sub.add_parser('refresh')
     r.add_argument('--slot', choices=('am', 'pm', 'trial'), default='trial')
     r.add_argument('--collect-only', action='store_true')
+    r.add_argument('--budget-seconds', type=int, default=REFRESH_BUDGET_SECONDS)
+    recovery = sub.add_parser('recover', help='Finalize abandoned research from saved evidence; never recollect.')
+    recovery.add_argument('--run-id', type=int, help='Omit to finalize all unfinished runs under the refresh lock.')
+    recovery.add_argument('--reason', choices=('worker_timeout', 'worker_interrupted'), default='worker_interrupted')
     sub.add_parser('status')
     report_parser = sub.add_parser('report')
     report_ids = report_parser.add_mutually_exclusive_group()
@@ -816,7 +939,13 @@ def main(argv=None):
         elif args.command == 'refresh':
             from media_pipeline import lease
             with lease(args.home / 'refresh.lock', timeout=1):
-                return refresh(args.home, args.slot, args.collect_only)
+                return refresh(args.home, args.slot, args.collect_only, args.budget_seconds)
+        elif args.command == 'recover':
+            from media_pipeline import lease
+            if args.run_id is not None and args.run_id < 1:
+                raise ValueError('record_id_must_be_positive')
+            with lease(args.home / 'refresh.lock', timeout=1):
+                return recover(args.home, args.run_id, args.reason)
         elif args.command == 'status':
             status(args.home)
         elif args.command == 'replay':
