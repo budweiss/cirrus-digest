@@ -75,6 +75,16 @@ SKIP = "n/a"
 # it visible, records WHO decided and WHEN to look again, and does not count
 # toward the alarm total.
 ACCEPTED = "accepted"
+# S391 (2026-10-09). A signal that IS visible, IS measured, and is judged
+# "cannot be judged YET" is not a can't-see condition — the checker's own
+# message says so ("waiting, not stalled", "quiet client", "below N, too few
+# to judge"). Rendering those as ⚠️ UNCHECKED every morning is the T9 failure:
+# the checker KNOWS there is nothing to fix, and the pager says otherwise.
+# PREMATURE keeps the finding visible (never silenced) but takes it out of the
+# alarm total and out of the non-zero exit, while UNKNOWN — the state that hid
+# six problems for weeks — stays reserved for what we genuinely cannot see:
+# missing ledgers, unreadable files, unreachable boxes.
+PREMATURE = "premature"
 
 # key -> (who/when decided, why, review-on). The review date is the point: an
 # acceptance with no expiry is just a silence with extra steps.
@@ -318,7 +328,9 @@ def kb_outcome_verdict(rec, box, days=7):
                         "zero outcomes, and no attempt ledger to say whether "
                         "the signal has had any opportunity")
         if att.get("attempts", 0) == 0:
-            return _res(UNKNOWN, label,
+            # S391: PREMATURE, not UNKNOWN — the ledger is readable and shows
+            # zero opportunities; the signal is visible, just not exercised.
+            return _res(PREMATURE, label,
                         "zero outcomes, but the client has asked about 0 "
                         "entities — the signal has had NO opportunity yet, so "
                         "this is waiting, not stalled")
@@ -357,7 +369,8 @@ def kb_outcome_verdict(rec, box, days=7):
             return _res(OK, label,
                         f"{n} recorded, newest {age}d ago; {landed} of {recent} "
                         f"recent question(s) landed an outcome — signal working")
-        return _res(UNKNOWN, label,
+        # S391: seen and measured, nothing broken — informational.
+        return _res(PREMATURE, label,
                     f"{n} recorded, newest {age}d ago, and NO client question in "
                     f"the last {_ATTEMPT_WINDOW_DAYS}d — quiet client, not a "
                     f"broken signal; nothing to fix here")
@@ -449,7 +462,8 @@ def check_council_diversity(n=10, _path=None):
         return _res(UNKNOWN, "council diversity", f"unreadable ({e})")
     judges = [x.get("judge") for x in b if x.get("judge")]
     if len(judges) < n:
-        return _res(UNKNOWN, "council diversity",
+        # S391: the ledger exists and was read — below-sample, not can't-see.
+        return _res(PREMATURE, "council diversity",
                     f"only {len(judges)} judged decision(s) — below {n}, no verdict")
     recent = judges[-n:]
     if len(set(recent)) == 1:
@@ -491,7 +505,8 @@ def check_prompt_cache(min_calls=20, _path=None):
         return _res(UNKNOWN, "prompt cache", f"ledger unreadable ({e})")
 
     if reqs < min_calls:
-        return _res(UNKNOWN, "prompt cache",
+        # S391: ledger present and parsed — below-sample, not can't-see.
+        return _res(PREMATURE, "prompt cache",
                     f"only {reqs} cache-eligible call(s) — below {min_calls}, "
                     "too few to judge")
     if reads == 0:
@@ -788,8 +803,10 @@ def selftest():
                                      "recent_recorded": 0})
         r = kb_outcome_verdict(quiet, "CUMULUS")
         ck("kb: stale outcomes with NO recent questions is a quiet client, not a fault",
-           r["state"] == UNKNOWN and "quiet client" in r["msg"])
+           r["state"] == PREMATURE and "quiet client" in r["msg"])
         ck("kb: ...and it is not reported as a STALL", r["state"] != STALL)
+        ck("kb: ...nor as an UNCHECKED alarm (the checker itself says nothing "
+           "to fix — S391)", r["state"] != UNKNOWN)
 
         fresh = dict(real, newest=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         r = kb_outcome_verdict(fresh, "CUMULUS")
@@ -800,7 +817,7 @@ def selftest():
                    "attempts": {"attempts": 0, "no_match": 0, "ambiguous": 0}}
         r = kb_outcome_verdict(waiting, "CUMULUS")
         ck("kb: a real kb nobody has asked about is waiting, not stalled",
-           r["state"] == UNKNOWN and "NO opportunity" in r["msg"])
+           r["state"] == PREMATURE and "NO opportunity" in r["msg"])
 
         asked = {"project": "p", "entities": 5, "outcomes": 0, "newest": None,
                  "has_column": True, "error": "",
@@ -932,9 +949,10 @@ def selftest():
         ck("council: ...but a MIXED recent set is OK — the inverse, or the "
            "check can only ever cry theatre",
            _judges("a", "b", "a", "b")["state"] == OK)
-        ck("council: too few judged decisions is UNKNOWN, never OK — "
-           "'not enough data' and 'healthy' are different claims",
-           _judges("a", "a")["state"] == UNKNOWN)
+        ck("council: too few judged decisions is PREMATURE, never OK — "
+           "'not enough data' and 'healthy' are different claims (S391: but "
+           "the ledger was READ, so it is not a can't-see UNKNOWN)",
+           _judges("a", "a")["state"] == PREMATURE)
         ck("council: only the LAST n count, so an old monopoly does not "
            "condemn a council that has since diversified",
            _judges("a", "a", "a", "a", "b", "c")["state"] == OK)
@@ -945,6 +963,11 @@ def selftest():
         ck("council: an UNREADABLE ledger is UNKNOWN, not OK",
            check_council_diversity(_path=os.path.join(_td, "bad.json"))["state"]
            == UNKNOWN)
+
+        json.dump([], open(_ep := os.path.join(_td, "empty_j.json"), "w"))
+        ck("council: zero judged decisions in an EXISTING ledger is PREMATURE, "
+           "not OK and not a can't-see UNKNOWN",
+           check_council_diversity(n=3, _path=_ep)["state"] == PREMATURE)
 
         _cp = os.path.join(_td, "cache.jsonl")
 
@@ -961,13 +984,15 @@ def selftest():
            _cache([_w, _w, _w])["state"] == STALL)
         ck("cache: ...but any read-back is OK — the inverse",
            _cache([_w, _w, _r])["state"] == OK)
-        ck("cache: too few eligible calls is UNKNOWN, not OK",
-           _cache([_w, _w])["state"] == UNKNOWN)
-        ck("cache: calls that never REQUESTED caching are not counted",
-           _cache([_w, _w, _w, {"cache_requested": False}])["state"] == STALL)
-        ck("cache: a missing ledger is UNKNOWN, not OK",
+        ck("cache: too few eligible calls is PREMATURE, not OK (S391: the "
+           "ledger is present and parsed — informational, not a warning)",
+           _cache([_w, _w])["state"] == PREMATURE)
+        ck("cache: ...but a MISSING ledger stays UNKNOWN, never PREMATURE — "
+           "the two must never merge, that is the exact six-problems lesson",
            check_prompt_cache(_path=os.path.join(_td, "nope.jsonl"))["state"]
            == UNKNOWN)
+        ck("cache: calls that never REQUESTED caching are not counted",
+           _cache([_w, _w, _w, {"cache_requested": False}])["state"] == STALL)
 
     _kbck(ck)
 
@@ -994,26 +1019,36 @@ def main():
     res = run_all()
     stalls = [r for r in res if r["state"] == STALL]
     unknown = [r for r in res if r["state"] == UNKNOWN]
+    # S391: PREMATURE findings are informational — visible, but out of the
+    # alarm total AND out of the exit code, so the telegram brief stops paging
+    # Buddy about things the checker itself says need nothing. UNKNOWN (the
+    # can't-see class that hid six problems) still counts and still exits 1.
+    premature = [r for r in res if r["state"] == PREMATURE]
 
     if a.brief:
+        for r in premature:
+            print(f"- ℹ️ NOT YET {r['name']}: {r['msg']}")
         for r in stalls:
             print(f"- ❌ STALLED {r['name']}: {r['msg']}")
         for r in unknown:
             print(f"- ⚠️ UNCHECKED {r['name']}: {r['msg']}")
         if not stalls and not unknown:
-            print(f"- ✅ nothing stalled ({len(res)} signals checked)")
+            tail = f"; {len(premature)} not yet judgeable" if premature else ""
+            print(f"- ✅ nothing stalled ({len(res)} signals checked{tail})")
         return 1 if (stalls or unknown) else 0
 
     print("== stall check ==\n")
     for r in res:
         mark = {OK: "  ok     ", STALL: "  STALL  ", UNKNOWN: "  unknown",
-                ACCEPTED: "  accept ", SKIP: "  n/a    "}[r["state"]]
+                ACCEPTED: "  accept ", SKIP: "  n/a    ",
+                PREMATURE: "  premature"}[r["state"]]
         print(f"{mark} {r['name']:22} {r['msg']}")
     accepted = [r for r in res if r["state"] == ACCEPTED]
     skipped = [r for r in res if r["state"] == SKIP]
     print(f"\n  {len(res)} signal(s): "
-          f"{len(res)-len(stalls)-len(unknown)-len(accepted)-len(skipped)} ok, "
+          f"{len(res)-len(stalls)-len(unknown)-len(accepted)-len(skipped)-len(premature)} ok, "
           f"{len(stalls)} stalled, {len(unknown)} UNCHECKED, "
+          f"{len(premature)} premature, "
           f"{len(accepted)} accepted"
           + (f", {len(skipped)} not on this box" if skipped else ""))
     if unknown:
