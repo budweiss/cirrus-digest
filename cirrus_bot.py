@@ -1746,11 +1746,42 @@ def next_proposal_path() -> Path:
     n = len(existing) + 1
     return PROPOSALS_DIR / f"proposal-{today}-{n}.md"
 
+def has_open_duplicate_recommendation(detail: str) -> bool:
+    """True if an OPEN proposal already carries the SAME Source recommendation.
+    Dedupe guard (S396): repeated digest runs carrying an identical
+    recommendation each spawned their own proposal file — 9 pending turned out
+    to be 3 ideas x 3 same-day duplicate runs. Same status-opening rules as
+    _open_proposals: rejected/implemented/approved proposals are closed and do
+    NOT block regeneration."""
+    detail_norm = " ".join(str(detail).split())
+    for f in PROPOSALS_DIR.glob("proposal-*.md"):
+        try:
+            content = f.read_text()
+        except OSError:
+            continue
+        m = re.search(r"\*\*Source recommendation:\*\*\s*(.+)", content)
+        if not m or " ".join(m.group(1).split()) != detail_norm:
+            continue
+        sm = re.search(r"\*\*Status:\*\*\s*(.+)", content)
+        status = sm.group(1).strip().lower() if sm else ""
+        if "[x] Rejected" in content or "[x] Implemented and deployed" in content:
+            continue
+        if any(k in status for k in ("approved", "rejected", "implemented")):
+            continue
+        return True
+    return False
+
 def generate_proposal(item: dict) -> Path:
     """Ask the local LLM to draft a scoped implementation proposal for an
     approved CIRRUS_NOTE recommendation, and save it for human review.
+    Returns None (writes nothing) when an open proposal with the same
+    Source recommendation already exists.
     Does NOT modify or deploy any code itself."""
     detail = item["detail"]
+    if has_open_duplicate_recommendation(detail):
+        log("generate_proposal: open proposal with identical Source "
+            "recommendation already exists — skipping duplicate generation")
+        return None
     source_line = item.get("source_line", "")
     origin = item.get("source", "")
     added = item.get("added", "")
@@ -1959,6 +1990,10 @@ def execute_action(item: dict) -> str:
                 log(f"dev-loop queue failed (falling back to proposal): {e}")
         try:
             path = generate_proposal(item)
+            if path is None:
+                return ("ℹ️ Skipped: an open proposal for this exact "
+                        "recommendation already exists. Review it with "
+                        "`/proposals` — no duplicate file created.")
             return (f"📝 Proposal drafted: `{path.name}`\n"
                     f"Saved to `digests/proposals/` — review with Claude next Cowork session. "
                     f"No code was changed.")
