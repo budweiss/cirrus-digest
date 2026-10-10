@@ -319,7 +319,39 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
     if not dry_run and not any(s.get("avenue_id") and s.get("comparison") for s in new_steps):
         raise RuntimeError("research_notebook_comparison_missing")
     packets=research.load(research.STATE / "handoffs.json", [])[handoffs_before:]
-    if not dry_run and any(s.get("supporting") or s.get("contradicting") for s in new_steps) and not packets:
+    graded_evidence = bool(new_steps) and bool(
+        any(s.get("supporting") or s.get("contradicting") for s in new_steps))
+    if not dry_run and graded_evidence and not packets:
+        # S396 prevention of ticket-20261010-055429: the Oct 9/10 runs died at
+        # close-out because the agent graded supporting/contradicting evidence
+        # but never called medical_research_handoff — the WORK was done, the
+        # run burned on a policy trap. ONE bounded remediation pass that
+        # explicitly asks for the missing handoff from the notebook. Only a
+        # still-missing handoff raises. Remediation cost is recorded like the
+        # main pass and rolls into the returned run cost.
+        _log("close-out: graded evidence without handoff — one remediation pass")
+        rem_cost = 0.0
+        async for msg in query(prompt=(
+            "CLOSE-OUT REMEDIATION. This run's saved research steps contain "
+            "supporting/contradicting evidence, but no medical_research_handoff "
+            "packet was sent this run. Call medical_research_handoff exactly "
+            "once now, for the avenue of the graded step, quoting actual "
+            "retrieved passages and source_ids from the notebook — no invented "
+            "passages or medical conclusions. Finish immediately after the "
+            "handoff is sent."),
+            options=options):
+            if isinstance(msg, ResultMessage):
+                if msg.total_cost_usd is None:
+                    raise ValueError("SDK result omitted cost; accounting incomplete")
+                rem_cost = msg.total_cost_usd
+        if rem_cost:
+            llm_budget.record_sdk_cost(creds, rem_cost,
+                                       task="alopecia-agent:handoff-remediation",
+                                       run_id=run_id, app_dir=str(PROJECT_DIR))
+        cost += rem_cost
+        packets=research.load(research.STATE / "handoffs.json", [])[handoffs_before:]
+        _log(f"close-out remediation: handoffs after retry = {len(packets)}")
+    if not dry_run and graded_evidence and not packets:
         raise RuntimeError("research_medical_handoff_missing")
     return cost, transcript_path
 
