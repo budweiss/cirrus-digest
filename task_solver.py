@@ -1090,6 +1090,8 @@ if __name__ == "__main__":
     # what the classifier decides can be reviewed directly instead of inferred
     # from whether a promise later appeared. Same reasoning as S77's
     # cumulus-entity-recap. Reads creds; makes a model call; writes nothing.
+    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+        sys.exit(selftest())
     if len(sys.argv) > 2 and sys.argv[1] == "detect":
         import base64
         # Module-relative FIRST. PROJECT_DIR is ~/projects/cirrus-digest, which
