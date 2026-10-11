@@ -205,7 +205,12 @@ def parse_claims(raw, source, dropped=None):
 
 def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
             caller=complete, counter=token_count, metadata=None, report=None, progress=None):
-    if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware', 'articles-infra'):
+    # youtube-investing added 2026-10-11: the Stock-Pickers discovery loop added
+    # investing-lane channels (Joseph Carlson, GenEx, Fisher) but this whitelist
+    # was never extended -- every investing video failed nightly with
+    # ValueError('unknown_media_domain') (6 lost on 2026-10-11T05:31 run).
+    if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware',
+                      'youtube-investing', 'articles-infra'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
         raise ValueError('empty_transcript')
@@ -383,6 +388,12 @@ def weekly_fetch(payload):
 
 
 def youtube_instructions(lane):
+    if lane == 'investing':
+        return ('Extract only actionable, testable investing claims. Distinguish creator claims '
+            'from established facts. Do not assume findings are new or adopt suggestions. '
+            'A claim is an investment case: ticker (or instrument), direction, thesis, catalyst, '
+            'and stated horizon — concrete enough to grade against SPY later. Never describe a '
+            'transcript as independent verification; attribute the call to the presenter.')
     return ('Extract only actionable, testable '+lane+' claims. Current stack: two DGX Spark GB10 '
         'machines, 128GB each; GPT-OSS120B in Ollama on C1, independent Qwen27B FP8 in vLLM on C2; '
         'on-demand MedGemma and project-scoped RAG. No pooled memory. Distinguish creator claims '
