@@ -788,3 +788,134 @@ class Ledger:
                     "corporate_action_holds": holds,
                     "sources": ["https://www.irs.gov/publications/p550",
                                 "https://www.sec.gov/exams/educationhelpguidesfaqs/t1-faq"]}
+
+
+def selftest():
+    """Exercise the module's decision functions with explicit expected outputs."""
+    # fill_price: exact 4-decimal adverse 5bp model.
+    assert fill_price({"ask": "100.00", "bid": "99.90"}, "BUY") == "100.0500"
+    assert fill_price({"ask": "100.00", "bid": "99.90"}, "SELL") == "99.8501"
+    assert fill_price({"price": "100.00"}, "BUY") == "100.0500"
+    assert fill_price({"price": "100.00"}, "SELL") == "99.9500"
+    try:
+        fill_price({"ask": "100.00"}, "HOLD")
+    except LedgerError:
+        pass
+    else:
+        raise AssertionError("fill_price must reject a non-trade side")
+
+    # _term: LONG only when the NY sale date is strictly beyond the anniversary.
+    assert _term(datetime(2023, 1, 10, tzinfo=UTC), datetime(2024, 1, 11, tzinfo=UTC)) == "LONG"
+    assert _term(datetime(2023, 1, 10, tzinfo=UTC), datetime(2023, 12, 1, tzinfo=UTC)) == "SHORT"
+    assert _term(datetime(2024, 2, 29, 12, tzinfo=NY), datetime(2025, 3, 1, 12, tzinfo=NY)) == "LONG"
+    assert _term(datetime(2024, 2, 29, 12, tzinfo=NY), datetime(2025, 2, 28, 12, tzinfo=NY)) == "SHORT"
+
+    # Validation helpers accept and reject as documented.
+    assert _cents("200000.00") == 20_000_000
+    assert _amount(20_000_000) == "200000.00"
+    assert _ticker("AAPL") == "AAPL"
+    for bad in ("aapl", "TOOLONGTICKER1", "", 123):
+        try:
+            _ticker(bad)
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("_ticker accepted invalid input: %r" % (bad,))
+    for bad in ("0.001", "-1.00", "abc", None, 12.5):
+        try:
+            _cents(bad)
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("_cents accepted invalid input: %r" % (bad,))
+    assert _id("decision", "k") == _id("decision", "k")
+    assert _id("decision", "k") != _id("trade", "k")
+
+    # In-memory ledger with a deterministic clock: initialize, replay, conflict.
+    fixed = datetime(2026, 10, 9, 14, 0, tzinfo=UTC)
+    with Ledger(":memory:", now=lambda: fixed) as ledger:
+        init = ledger.initialize()
+        assert init["account_id"] == ACCOUNT_ID
+        assert init["initial_cash_cents"] == INITIAL_CASH_CENTS
+        assert init["initial_cash"] == "200000.00"
+        assert ledger.initialize()["created_at"] == init["created_at"]
+        try:
+            ledger.initialize(account_id="other")
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("initialize must reject a different account")
+
+        decision = ledger.record_decision({
+            "idempotency_key": "selftest-d1", "action": "HOLD",
+            "reason": "selftest deterministic decision"})
+        assert decision["simulated"] is True
+        assert decision["decision_id"] == _id("decision", "selftest-d1")
+        replay = ledger.record_decision({
+            "idempotency_key": "selftest-d1", "action": "HOLD",
+            "reason": "selftest deterministic decision"})
+        assert replay == decision
+        try:
+            ledger.record_decision({
+                "idempotency_key": "selftest-d1", "action": "HOLD",
+                "reason": "different input under the same key"})
+        except IdempotencyConflict:
+            pass
+        else:
+            raise AssertionError("reused key with different input must conflict")
+        try:
+            ledger.record_decision({
+                "idempotency_key": "selftest-d2", "action": "BUY",
+                "reason": "missing ticker"})
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("a trade decision without a ticker must fail")
+
+        event = ledger.record_event({
+            "idempotency_key": "selftest-e1", "kind": "CORPORATE_ACTION_HOLD",
+            "ticker": "AAPL", "effective_at": fixed.isoformat(),
+            "source": "selftest", "url": "https://example.com/corp-action",
+            "reason": "selftest hold"})
+        assert event["unresolved"] is True
+        assert ledger.record_event({
+            "idempotency_key": "selftest-e1", "kind": "CORPORATE_ACTION_HOLD",
+            "ticker": "AAPL", "effective_at": fixed.isoformat(),
+            "source": "selftest", "url": "https://example.com/corp-action",
+            "reason": "selftest hold"}) == event
+
+        snap = ledger.snapshot()
+        assert snap["cash_cents"] == INITIAL_CASH_CENTS
+        assert snap["valuation_complete"] is False  # the selftest hold is unresolved
+        assert snap["equity"] is None
+        assert snap["trade_count"] == 0
+        assert snap["event_count"] == 1
+
+        tax = ledger.export_tax(2026)
+        assert tax["not_for_filing"] is True
+        assert tax["dispositions"] == []
+        assert tax["total_realized"] == "0.00"
+        assert tax["tax_review_required"] is True  # unresolved hold forces review
+
+    # An uninitialized ledger must refuse activity.
+    with Ledger(":memory:", now=lambda: fixed) as ledger:
+        try:
+            ledger.record_decision({
+                "idempotency_key": "x", "action": "HOLD", "reason": "no account"})
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("activity before initialization must fail")
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        try:
+            selftest()
+        except BaseException as exc:
+            print("selftest FAILED: %r" % (exc,), file=sys.stderr)
+            sys.exit(1)
+        print("selftest OK")
+        sys.exit(0)
+    sys.exit("usage: python3 stock_paper_ledger.py --selftest")
