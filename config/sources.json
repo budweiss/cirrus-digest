@@ -280,6 +280,11 @@
       "name": "Google News: 4-bit Quantization Tools (MicroQonv/TACT) [added 2026-09-29]",
       "type": "blog",
       "rss": "https://news.google.com/rss/search?q=%22MicroQonv%22%20OR%20%22TACT%22%20OR%20%224-bit%20quantization%22%20OR%20%22INT4%20training%22%20local%20model&hl=en-US&gl=US&ceid=US:en"
+    },
+    {
+      "name": "Google News: Alex Ziskind AI supercomputer benchmarks [added 2026-10-10]",
+      "type": "blog",
+      "rss": "https://news.google.com/rss/search?q=%22Alex%20Ziskind%22%20AI%20supercomputer%20OR%20DGX%20OR%20benchmark&hl=en-US&gl=US&ceid=US:en"
     }
   ],
   "digest": {
