@@ -474,7 +474,7 @@ def run_extract():
 @app.route("/read/log/<logname>")
 def read_log(logname):
     require_token()
-    allowed = ["daily", "daily-error", "daily-manual", "bot", "bot-error", "digest", "tool_calls", "paywalls", "approve-exec"]
+    allowed = ["daily", "daily-error", "daily-manual", "bot", "bot-error", "digest", "tool_calls", "paywalls", "approve-exec", "learnwatch"]
     if logname not in allowed:
         return jsonify({"error": "log not found"}), 404
     if logname == "tool_calls":
