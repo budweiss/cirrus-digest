@@ -34,6 +34,7 @@ CADENCE_H = {
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 05:30 (YT-WATCH claim extractor)
     "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
+    "macstudiowatch": 26,       # S406: daily 16:45 CIRRUS, official Apple + Telegram
     "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)
     "foundationrenewalcumulus": 26,  # daily 04:40 CUMULUS (S316; cloud + GPT-OSS + HOA)
     # S141 -> S253. Project Immaculate guards deadlines that cannot be

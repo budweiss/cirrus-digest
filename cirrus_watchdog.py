@@ -59,7 +59,7 @@ SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
 # from CUMULUS's ledger via the morning brief (job_status node-aware pull); their
 # service health on CUMULUS is managed by systemd (see the CUMULUS-watchdog TODO).
 MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.stratusreview",
-                "com.cirrus.privacymon"}
+                "com.cirrus.privacymon", "com.cirrus.macstudiowatch"}
 MAX_REPAIRS = 3
 
 
