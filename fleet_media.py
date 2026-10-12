@@ -84,10 +84,16 @@ def run_analysis(payload,root=None,state=STATE,observer=None,analyzer=None,wait_
         manifest={**coverage,'artifact':str(folder),'input_hash':r['input_hash'],'source_verified':True}
         if not q.complete(job,r['fence'],manifest):raise Refused('completion validation failed')
         return result
-    except Exception:
+    except Exception as exc:
         # Do not guess that a timed-out backend stopped. Keep the slot until
         # explicit reconciliation; the original scheduler records its failure.
-        try:q.unknown(job,r['fence'],'analysis failed; backend and checkpoint reconciliation required')
+        # S406: the swallowed exception made every reconcile a guess — the
+        # generic reason left the failing section, size and cause invisible (the
+        # AI Series chunk went unknown twice with zero evidence why). The reason
+        # now names the exception; the reconcile flow reads it from
+        # fleet-inspect. Same prefix so tooling that matches the phrase keeps
+        # working; bounded so a huge payload cannot spam the queue record.
+        try:q.unknown(job,r['fence'],'analysis failed; backend and checkpoint reconciliation required: %s: %s' % (type(exc).__name__, str(exc)[:140]))
         except Refused:pass
         raise
     finally:stop.set();t.join()

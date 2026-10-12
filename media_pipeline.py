@@ -549,11 +549,21 @@ def selftest():
             assert str(exc) == 'invalid_youtube_deadline', (bad, exc)
 
     # An already-past deadline must raise YouTubeDeadline immediately.
+    # S406: youtube_time_limit calls the REAL youtube_deadline() internally, so
+    # this line raised youtube_deferred_busy_window whenever the selftest ran
+    # inside the weekday busy window — a time-of-day flake, not a coverage gap.
+    # Pin the deadline for the block; restore after (the original assertion,
+    # that a PAST deadline raises immediately, is unchanged).
+    real_deadline = globals()['youtube_deadline']
+    globals()['youtube_deadline'] = lambda *a, **k: time.time() + 3600
     try:
-        with youtube_time_limit(time.time() - 1):
-            raise AssertionError('expected YouTubeDeadline')
-    except YouTubeDeadline:
-        pass
+        try:
+            with youtube_time_limit(time.time() - 1):
+                raise AssertionError('expected YouTubeDeadline')
+        except YouTubeDeadline:
+            pass
+    finally:
+        globals()['youtube_deadline'] = real_deadline
 
     # --- enabled(): env flag gate ---
     old = os.environ.pop('CUMULUS_MEDIA', None)
@@ -706,5 +716,8 @@ if __name__ == '__main__':
                 result = dispatch(payload)
         print(json.dumps({'result':result},ensure_ascii=False))
     except (Exception, YouTubeDeadline) as exc:
-        print('media worker failed: '+type(exc).__name__,file=sys.stderr)
+        # S406: name the exception AND its message — the bare type lost the
+        # detail the caller needed to diagnose a chunk failure remotely ('Refused'
+        # told nothing about WHICH admission check refused).
+        print('media worker failed: %s: %s' % (type(exc).__name__, str(exc)[:200]),file=sys.stderr)
         raise SystemExit(75 if isinstance(exc, YouTubeDeadline) else 1)

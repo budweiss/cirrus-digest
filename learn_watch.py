@@ -375,11 +375,13 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
             claims = analyze("%s\n\n%s" % (post["title"], text), meta) if text else []
         except (RuntimeError, OSError) as e:
             # the worker or the link is down: NOT seen, so tomorrow retries it
-            errors.append("%s: %s" % (post["title"][:50], str(e)[:80]))
+            # S406: keep up to 240 chars so the worker's exception message
+            # (media_pipeline now names type + bounded msg) survives the job note.
+            errors.append("%s: %s" % (post["title"][:50], str(e)[:240]))
             continue
         except Exception as e:
             # a deterministic failure on this post: seen, so it cannot block the queue
-            errors.append("%s: %s: %s" % (post["title"][:50], type(e).__name__, str(e)[:60]))
+            errors.append("%s: %s: %s" % (post["title"][:50], type(e).__name__, str(e)[:200]))
             claims = None
         succeeded += claims is not None
         for c in claims or []:
