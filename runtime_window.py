@@ -13,17 +13,20 @@ between 07:00 and 08:15, all competing for the same uplink, minutes before the
 constrained window opened. Nothing detected that, because nothing had an opinion
 about when a job SHOULD run.
 
-THE POLICY (from Buddy, 2026-08-19)
------------------------------------
-  * MONDAY-FRIDAY 08:00-16:00  -- local internet is in use by people. AVOID.
-    Anything bandwidth-hungry scheduled here is a scheduling defect.
+THE POLICY (from Buddy, 2026-08-19; AMENDED 2026-10-12)
+-------------------------------------------------------
+  * 2026-10-12 AMENDMENT (Buddy, live): "we can lift any restriction of
+    running requests between 8am and 4pm." The Mon-Fri 08:00-16:00 ban below
+    is LIFTED -- daytime heavy work is ALLOWED. What the audit still fails on
+    is stacking heavy jobs and anything running at/after the brief. 00:00-08:00
+    remains the preferred window as a preference, not a rule.
+  * (Superseded 2026-10-12) MONDAY-FRIDAY 08:00-16:00 -- local internet is in
+    use by people. AVOID. Anything bandwidth-hungry scheduled here was a
+    scheduling defect.
   * SATURDAY & SUNDAY          -- no such constraint. The whole day is open.
-    ("Saturday and Sunday do not have the same rules, just monday thru Friday.")
   * 02:00-06:00                -- PREFERRED. "2am, 3am, 4am, 5am are good times
-    to run for the day." Spread work across it; do NOT compact everything into
-    the hour before 08:00.
+    to run for the day." Spread work across it.
   * The daily brief runs LAST, after everything it reports on.
-    ("Only the daily brief should run last to catch the results.")
 
 WHAT THIS MODULE IS FOR
 -----------------------
@@ -68,13 +71,21 @@ import sys
 # loses information:
 #   "8am to 4pm the internet is being used by local access"     -> real conflict
 #   "heavy ... should run after midnight and complete before 8am" -> preference
-# So 16:00-24:00 is neither. It is allowed for heavy work and simply is not the
-# preferred window. Reporting an evening job as a VIOLATION would be crying
-# wolf, and an audit that cries wolf stops being read.
+#
+# AMENDED 2026-10-12 (Buddy, live): "we can lift any restriction of running
+# requests between 8am and 4pm." The Mon-Fri 08:00-16:00 ban is GONE. Heavy work
+# is allowed any weekday hour; what the audit still guards are the two things
+# that were always the real point -- not STACKING heavy jobs (the contention he
+# is seeing is jobs colliding, not the household's internet) and the brief
+# running last. 00:00-08:00 stays the preferred window, as a PREFERENCE: an
+# 'overruns' verdict (finish by 08:00) is now a note, not a violation, and a
+# heavy job inside 08:00-16:00 classifies 'day' and is noted, never failed.
+# Keeping the verdicts as notes keeps the planning information alive without
+# crying wolf -- an audit nobody reads guards nothing.
 HEAVY_START_H = 0     # preferred heavy window opens at midnight ...
-HEAVY_END_H = 8       # ... and heavy work should be DONE by 08:00
-BUSY_START_H = 8      # genuine conflict: local internet in use ...
-BUSY_END_H = 16       # ... Mon-Fri only
+HEAVY_END_H = 8       # ... heavy finishes by 08:00, now as a preference
+BUSY_START_H = 8      # was the Mon-Fri local-use window; LIFTED 2026-10-12
+BUSY_END_H = 16
 BUSY_DAYS = {0, 1, 2, 3, 4}          # Mon-Fri only (Python weekday(): Mon=0)
 BRIEF_JOB = "com.cirrus.morningbrief"
 BRIEF_RULE = ("the daily brief must fire AFTER every job it reports on, so it "
@@ -174,31 +185,37 @@ def profile(job: str):
 
 def classify(hour: int, minute: int = 0, weekday: int = 0,
              weight: str = "heavy", minutes: int = 0) -> str:
-    """'ok' | 'off-window' | 'overruns' | 'avoid' for one job placement.
+    """'ok' | 'off-window' | 'overruns' | 'day' | 'avoid' for one placement.
 
     weekday is Python's Mon=0..Sun=6.
 
       * light jobs      -> always 'ok'. Buddy: "no restriction".
       * weekends        -> always 'ok', including heavy work.
-      * heavy, Mon-Fri  -> 'avoid' inside 08:00-16:00 (a real conflict with
-                           local use); 'off-window' in the evening (allowed,
-                           just not preferred); 'overruns' if it starts in the
-                           preferred window but is still running at 08:00;
-                           'ok' otherwise.
+      * heavy, Mon-Fri  -> 'day' inside 08:00-16:00 (ALLOWED since Buddy lifted
+                           the busy window on 2026-10-12; audit notes it);
+                           'off-window' in the evening (allowed, just not
+                           preferred); 'overruns' if it starts in the preferred
+                           window and finishes past 08:00 (now a preference,
+                           so a note); never 'avoid' any more -- the verdict
+                           stays defined so old callers comparing against it do
+                           not silently change meaning.
     """
     if weight == "light" or weekday not in BUSY_DAYS:
         return "ok"
     if BUSY_START_H <= hour < BUSY_END_H:
-        return "avoid"                       # real conflict with local use
+        return "day"                         # lifted 2026-10-12; noted, allowed
     if not (HEAVY_START_H <= hour < HEAVY_END_H):
         return "off-window"                  # evening: allowed, not preferred
     if hour * 60 + minute + minutes > HEAVY_END_H * 60:
-        return "overruns"
+        return "overruns"                    # 08:00 deadline is now a preference
     return "ok"
 
 
 def is_constrained(hour: int, weekday: int, weight: str = "heavy") -> bool:
-    return classify(hour, 0, weekday, weight) != "ok"
+    """True only for placements the POLICY still constrains. Since the
+    2026-10-12 lift that is nothing -- daytime heavy work is allowed and the
+    night deadline is a preference; 'day' and 'ok' are both unconstrained."""
+    return classify(hour, 0, weekday, weight) not in ("ok", "day")
 
 
 def line_share(est_mb: float, minutes: float) -> float:
@@ -357,22 +374,35 @@ def audit(jobs):
         days = [wd] if wd is not None else sorted(BUSY_DAYS)
         verdicts = {classify(j["hour"], j["minute"], d, weight, mins) for d in days}
         end = j["hour"] * 60 + j["minute"] + mins
-        if "off-window" in verdicts and "avoid" not in verdicts:
+        if "off-window" in verdicts and "day" not in verdicts:
             notes.append(
                 f"off-window  {j['host']}/{j['job']} "
                 f"{j['hour']:02d}:{j['minute']:02d} — heavy, outside the "
                 f"preferred {HEAVY_START_H:02d}:00-{HEAVY_END_H:02d}:00 window "
                 f"but clear of local-use hours, so allowed")
+        if "day" in verdicts:
+            # 2026-10-12 (Buddy): the Mon-Fri busy-window ban is lifted. A
+            # heavy job in the working day is planning information, not a
+            # defect; a violation here would cry wolf forever.
+            notes.append(
+                f"daytime   {j['host']}/{j['job']} "
+                f"{j['hour']:02d}:{j['minute']:02d} — HEAVY inside "
+                f"{BUSY_START_H:02d}:00-{BUSY_END_H:02d}:00, allowed since the "
+                f"Mon-Fri window was lifted 2026-10-12; not a violation")
         if "avoid" in verdicts:
+            # Unreachable since 2026-10-12 (classify no longer returns it for
+            # any placement) but kept as a belt-and-braces failure signal.
             violations.append(
                 f"{j['host']}/{j['job']} is HEAVY ({basis}) and starts at "
                 f"{j['hour']:02d}:{j['minute']:02d}, inside the Mon-Fri "
                 f"{BUSY_START_H:02d}:00-{BUSY_END_H:02d}:00 local-use window")
         elif "overruns" in verdicts:
-            violations.append(
-                f"{j['host']}/{j['job']} starts {j['hour']:02d}:{j['minute']:02d} "
-                f"but runs ~{mins} min, finishing {end//60:02d}:{end%60:02d} -- "
-                f"past the {HEAVY_END_H:02d}:00 deadline")
+            notes.append(
+                f"overruns  {j['host']}/{j['job']} starts "
+                f"{j['hour']:02d}:{j['minute']:02d} and runs ~{mins} min, "
+                f"finishing {end//60:02d}:{end%60:02d} -- past the preferred "
+                f"{HEAVY_END_H:02d}:00 heavy finish; daytime work is allowed "
+                f"since 2026-10-12, so a note, not a violation")
 
     # Pile-ups: only HEAVY jobs contend. Three status pings in the same minute
     # are harmless, and flagging them would bury the findings that matter.
@@ -501,8 +531,10 @@ def find_window(jobs, minutes: int = 30, host: str = "cirrus",
                 f"{(t+minutes)//60:02d}:{(t+minutes)%60:02d}")
     return None, None, (
         f"no {minutes}-min slot fits inside {HEAVY_START_H:02d}:00-"
-        f"{HEAVY_END_H:02d}:00 on {host} -- move it to the other box, run it "
-        f"on a weekend, or make it cheaper. Do NOT place it in working hours")
+        f"{HEAVY_END_H:02d}:00 on {host} -- daytime is ALLOWED since Buddy "
+        f"lifted the Mon-Fri window (2026-10-12), so schedule it whenever it "
+        f"wont collide: separate it from other heavy jobs on {host} and keep "
+        f"it clear of the morning brief")
 
 
 def selftest() -> bool:
@@ -516,14 +548,18 @@ def selftest() -> bool:
         bad += 0 if ok else 1
 
     # --- the weight split, which IS the policy ---
-    ck("heavy Wed 09:00 avoid", classify(9, 0, 2, "heavy"), "avoid")
+    # 2026-10-12: Buddy lifted the Mon-Fri 08:00-16:00 ban. Daytime heavy work
+    # is allowed and classified 'day'; the audit notes it, never fails on it.
+    ck("heavy Wed 09:00 day (allowed, lifted)", classify(9, 0, 2, "heavy"), "day")
+    ck("heavy Fri 14:00 day", classify(14, 0, 4, "heavy"), "day")
     ck("LIGHT Wed 09:00 ok (no restriction)", classify(9, 0, 2, "light"), "ok")
     ck("LIGHT Wed 13:00 ok", classify(13, 0, 2, "light"), "ok")
     ck("heavy Wed 00:30 ok (after midnight)", classify(0, 30, 2, "heavy"), "ok")
     ck("heavy Wed 02:00 ok", classify(2, 0, 2, "heavy"), "ok")
     ck("heavy Wed 07:59 ok if instant", classify(7, 59, 2, "heavy", 0), "ok")
-    # "try to complete before 8am" -- starting inside the window is not enough.
-    ck("heavy 07:30 + 45min overruns", classify(7, 30, 2, "heavy", 45), "overruns")
+    # "try to complete before 8am" is now a PREFERENCE: 'overruns' is a note.
+    ck("heavy 07:30 + 45min overruns (preference)",
+       classify(7, 30, 2, "heavy", 45), "overruns")
     ck("heavy 06:00 + 45min ok", classify(6, 0, 2, "heavy", 45), "ok")
     # Weekends carry no restriction at all, heavy included.
     ck("heavy SAT 09:00 ok", classify(9, 0, 5, "heavy"), "ok")
@@ -549,7 +585,15 @@ def selftest() -> bool:
     # fine by luck; under the new one it must be fine BY RULE, and a light job
     # at 13:00 must be fine too. That distinction is the whole refinement.
     ck("light jobscheck 16:30 not flagged", any("jobscheck" in x for x in v), False)
-    ck("heavy devloop 09:00 flagged", any("devloop" in x for x in v), True)
+    # Window lifted 2026-10-12: a heavy job at 09:00 weekday is a NOTE. But the
+    # 09:00 slot ALSO fires after the 07:30 brief, which is a REAL violation of
+    # a different rule -- so assert on the wording, not on devloop's mentions.
+    ck("heavy devloop 09:00 not flagged for the WINDOW (lifted)",
+       any("devloop" in x and "local-use window" in x for x in v), False)
+    ck("heavy devloop 09:00 IS noted for the window",
+       any("devloop" in x and "HEAVY inside" in x for x in n), True)
+    ck("...but its after-brief violation still stands",
+       any("devloop" in x and "AFTER the brief" in x for x in v), True)
     # 21:30 is outside local-use hours: allowed, noted, NOT a violation.
     ev = parse_schedule("===== CIRRUS (launchd) =====\n"
                         "  com.cirrus.devloop                 21:30\n")
@@ -558,6 +602,12 @@ def selftest() -> bool:
     ck("evening heavy job IS noted",
        any("off-window" in x for x in ev_n), True)
     ck("evening classify", classify(21, 30, 2, "heavy", 15), "off-window")
+    # The finish-by-08:00 deadline is a preference now: overruns is a note.
+    ovr = parse_schedule("===== CIRRUS (launchd) =====\n"
+                         "  com.cirrus.daily                   07:50\n")
+    ovr_v, ovr_n = audit(ovr)
+    ck("overruns past 08:00 NOT a violation", ovr_v, [])
+    ck("overruns past 08:00 IS noted", any("overruns" in x for x in ovr_n), True)
     ck("dormant NOT a violation", any("billsnow" in x for x in v), False)
     ck("dormant IS reported", any("dormant" in x and "billsnow" in x for x in n), True)
     ck("daily 02:00 clean", any("com.cirrus.daily" in x for x in v), False)
