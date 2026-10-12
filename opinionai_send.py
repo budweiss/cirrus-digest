@@ -66,7 +66,10 @@ def build_message(md: str, creds: dict = None):
     """Compose the message. Returns (mailer-message tuple, subject)."""
     creds = creds or {}
     subject = extract_subject(md)
-    to = ", ".join(TO_EMAILS)
+    # To must be a LIST, not a comma-joined string: mailer._as_list does not
+    # split string addresses on commas, and smtp.sendmail would take the whole
+    # "<a@x, b@y>" string as ONE envelope recipient (553, proven 2026-10-11).
+    to = list(TO_EMAILS)
     return mailer.build(creds["outlook_email"], to, subject, md,
                         html=report_html(md), creds=creds), subject, to
 
