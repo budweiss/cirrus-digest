@@ -33,6 +33,11 @@ CADENCE_H = {
                                 # three boxes at BOTH layers and is the only thing
                                 # that watches cumulus2 at all
     "ytwatch":       26,        # daily 05:30 (YT-WATCH claim extractor)
+    # S412: daily 07:10 CIRRUS — Aggie's client-facing YouTube brief (OFFER).
+    # Depends on ytwatch's findings, which run 05:30 with a 90-min deadline;
+    # 26h grace absorbs a transient extraction that slips a day (the digest
+    # waits for findings rather than sending nothing).
+    "aggieyt":       26,
     "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
     "macstudiowatch": 26,       # S406: daily 16:45 CIRRUS, official Apple + Telegram
     "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)

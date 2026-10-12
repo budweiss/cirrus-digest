@@ -209,8 +209,12 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
     # investing-lane channels (Joseph Carlson, GenEx, Fisher) but this whitelist
     # was never extended -- every investing video failed nightly with
     # ValueError('unknown_media_domain') (6 lost on 2026-10-11T05:31 run).
+    # youtube-aggie added 2026-10-12 (S412): the OFFER client's daily YouTube
+    # brief added three channels with lane 'aggie'. Same lesson as above — a
+    # lane added to channels.json without this whitelist fails nightly, so the
+    # whitelist edit is part of adding the lane, not an optional extra.
     if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware',
-                      'youtube-investing', 'articles-infra'):
+                      'youtube-investing', 'youtube-aggie', 'articles-infra'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
         raise ValueError('empty_transcript')
@@ -394,6 +398,27 @@ def youtube_instructions(lane):
             'A claim is an investment case: ticker (or instrument), direction, thesis, catalyst, '
             'and stated horizon — concrete enough to grade against SPY later. Never describe a '
             'transcript as independent verification; attribute the call to the presenter.')
+    if lane == 'aggie':
+        # S412: client-facing daily brief for Aggie (OFFER). The three channels
+        # are faith-and-finance shows; the client wants to know what their
+        # presenters say about stocks, the stock-market direction and
+        # government matters. SELECT which quotes are worth keeping here — the
+        # published claim text is always the presenter's own verbatim words
+        # (analyze() rewrites 'claim' to the quote), so this prompt decides the
+        # filter, not the wording. Zero claims is correct when a chunk is
+        # worship, adverts or unrelated testimony.
+        return ('Extract the client-facing content of this faith-and-finance video. '
+            'Select up to 6 passages, in these priority order: (1) any specific stock, ETF, '
+            'crypto token, metal or commodity the presenter endorses, warns about, or gives '
+            'a direction/target/level for; (2) what the presenter says the OVERALL stock '
+            'market will do or is doing (direction, timing, levels); (3) anything the '
+            'presenter connects to government actions, policy, the Federal Reserve, '
+            'elections or legislation, as long as the presenter links it to money or '
+            'markets. Skip general worship, adverts, testimony, health or morality talk '
+            'that carries no market content. Prefer a few high-value passages over many '
+            'vague ones; a prophetic prediction counts ONLY if it names something checkable '
+            '(an asset, an index level, a date). Never describe a transcript as independent '
+            'verification; the claims stay attributed to the presenter.')
     return ('Extract only actionable, testable '+lane+' claims. Current stack: two DGX Spark GB10 '
         'machines, 128GB each; GPT-OSS120B in Ollama on C1, independent Qwen27B FP8 in vLLM on C2; '
         'on-demand MedGemma and project-scoped RAG. No pooled memory. Distinguish creator claims '
