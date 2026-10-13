@@ -228,6 +228,15 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
         return {"error": "no-credential", "saved": 0}
 
     state = load_state(state_path)
+    # S412: one state file serves multiple mailboxes (yahoo + Buddy's personal
+    # gmail). UIDs are PER-MAILBOX, so the cursor must live under the account
+    # label — a shared flat last_uid would let one mailbox's high watermark
+    # silently mask the other's low UIDs (real mail skipped, no error).
+    # Backward-compat: the pre-S412 flat shape belonged to the only account
+    # that existed (the default "yahoo"); adopt it once, then keep separate.
+    if ACCOUNT_LABEL not in state and "last_uid" in state:
+        state = {ACCOUNT_LABEL: state}
+    cur = state.setdefault(ACCOUNT_LABEL, {})
     stats = {"seen": 0, "allowed": 0, "skipped": 0, "saved": 0, "errors": 0}
 
     mail = imaplib.IMAP4_SSL(account["imap_server"],
@@ -246,13 +255,13 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
                     uidvalidity = int(m.group(1))
         except Exception:
             pass
-        last_uid = state.get("last_uid", 0)
+        last_uid = cur.get("last_uid", 0)
         # A UIDVALIDITY change means the server renumbered everything; the old
         # cursor is meaningless and keeping it would silently skip real mail.
-        if uidvalidity is not None and state.get("uidvalidity") != uidvalidity:
+        if uidvalidity is not None and cur.get("uidvalidity") != uidvalidity:
             log("UIDVALIDITY changed — resetting the cursor")
             last_uid = 0
-        state["uidvalidity"] = uidvalidity
+        cur["uidvalidity"] = uidvalidity
 
         since = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
         _, msg_ids = mail.uid("search", None, "SINCE %s" % since)
@@ -288,7 +297,7 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
             except Exception as e:
                 stats["errors"] += 1
                 log("  uid %s: %s" % (uid, e))
-            state["last_uid"] = max(state.get("last_uid", 0), uid)
+            cur["last_uid"] = max(cur.get("last_uid", 0), uid)
     finally:
         try:
             mail.logout()
