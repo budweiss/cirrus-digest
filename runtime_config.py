@@ -78,7 +78,8 @@ def merge(base, overlay):
         raise ValueError('runtime ollama_model must be a nonempty string')
     result.setdefault('digest', {}).update(paths)
     email_overlay = overlay.get('email', {})
-    if set(email_overlay) - {'accounts', 'newsletter_allowlist'}:
+    if set(email_overlay) - {'accounts', 'newsletter_allowlist',
+                             'newsletter_rejectlist'}:
         # S373: unsupported email overlay keys were silently dropped before,
         # which is how the Stock Pickers newsletter allowlist never shipped
         # despite the "box overlay" design note in stock-pickers/sources.md.
@@ -97,6 +98,13 @@ def merge(base, overlay):
                 or not all(isinstance(e, str) and e.strip() for e in allow)):
             raise ValueError('runtime newsletter_allowlist must be a nonempty list of senders')
         result.setdefault('email', {})['newsletter_allowlist'] = [e.strip() for e in allow]
+    rej = email_overlay.get('newsletter_rejectlist')
+    if rej is not None:
+        if (not isinstance(rej, list) or not rej
+                or not all(isinstance(e, str) and e.strip() for e in rej)):
+            raise ValueError('runtime newsletter_rejectlist must be a nonempty '
+                             'list of senders')
+        result.setdefault('email', {})['newsletter_rejectlist'] = [e.strip() for e in rej]
     return result
 
 

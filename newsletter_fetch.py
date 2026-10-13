@@ -204,7 +204,7 @@ def render(subject, from_addr, date_hdr, body):
 
 
 def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
-          days_back=DAYS_BACK):
+          days_back=DAYS_BACK, rejectlist=()):
     account = find_account(config)
     if not account:
         log("no account labelled %r in config.email.accounts — nothing to do"
@@ -279,6 +279,14 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
                 msg = email.message_from_bytes(msg_data[0][1])
                 from_addr = (email.utils.parseaddr(msg.get("From", ""))[1] or "").lower()
                 subject = decode_hdr(msg.get("Subject", ""))
+                if rejectlist and allowed(from_addr, rejectlist):
+                    # S412 reject list: Buddy reviewed these senders and
+                    # decided NON-finance — never re-review them. The check
+                    # runs BEFORE the allowlist on purpose: a sender put on
+                    # both lists is treated as rejected.
+                    stats["rejected"] = stats.get("rejected", 0) + 1
+                    log("  rejectlisted (no review): %s — %r" % (from_addr, subject[:60]))
+                    continue
                 if not allowed(from_addr, allowlist):
                     stats["skipped"] += 1
                     log("  skipped (not allowlisted): %s — %r" % (from_addr, subject[:60]))
@@ -328,6 +336,16 @@ def selftest():
     ok("lookalike domain is rejected", not allowed("x@notsubstack.com", al))
     ok("suffix-glued domain is rejected", not allowed("x@evilsubstack.com", al))
     ok("empty allowlist allows nothing", not allowed("a@b.com", []))
+
+    # --- S412 reject list: same matcher, decided by Buddy's review —-------
+    rj = ["bestbuy@email.bestbuy.com", "noreply@redditmail.com"]
+    ok("exact rejectlist address matches",
+       allowed("bestbuy@email.bestbuy.com", rj))
+    ok("subdomain senders under a rejectlist exact address do NOT match",
+       not allowed("other@email.bestbuy.com", rj))
+    ok("rejectlist is independent of allowlist",
+       allowed("bestbuy@email.bestbuy.com", rj) and
+       not allowed("bestbuy@email.bestbuy.com", al))
 
     # --- header decoding --------------------------------------------------
     ok("plain subject survives", decode_hdr("Agentic Engineering #1") ==
@@ -477,4 +495,5 @@ if __name__ == "__main__":
     cfg = load_sources(PROJECT_DIR / "config/sources.json")
     cr = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     allow = cfg.get("email", {}).get("newsletter_allowlist", [".substack.com"])
-    raise SystemExit(0 if fetch(cfg, cr, allow).get("saved", 0) >= 0 else 1)
+    reject = cfg.get("email", {}).get("newsletter_rejectlist", [])
+    raise SystemExit(0 if fetch(cfg, cr, allow, rejectlist=reject).get("saved", 0) >= 0 else 1)
