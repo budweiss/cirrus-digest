@@ -340,7 +340,7 @@ def deliver(entry, urls, dry=False):
     if not dry and prior:
         if prior.get('status') != 'sent':
             raise RuntimeError('prior_delivery_outcome_needs_reconciliation')
-        return {'status': 'already_sent', 'recipients': len(RECIPIENTS)}
+        return dict(prior, status='already_sent')
     subject = 'STRATUS monthly research — ' + TODAY
     body = entry + '\n\nSources checked:\n' + '\n'.join('- ' + u for u in urls)
     creds = json.loads(CREDS_PATH.read_text())
@@ -458,6 +458,9 @@ def main():
     if err:
         print("ERROR:", err, "— nothing written or sent.")
         _rec(dry, False, err[:120])
+        if not dry:
+            from vendor_mail_watch import telegram
+            telegram('STRATUS monthly research could not pass its evidence/model checks. Nothing was published or emailed; the review needs attention.')
         return 1
     print("=" * 70)
     print(entry)
