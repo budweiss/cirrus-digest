@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""aggie_yt_digest.py — the OFFER client's daily YouTube brief (S412, live 2026-10-12).
+"""aggie_yt_digest.py — the OFFER client's daily YouTube brief (prepared S412).
+
+S415 audit (2026-10-14): deployed, but the daily schedule is not installed and
+no introductory email has been sent. Delivery regressions are covered in
+test_aggie_yt_digest.py; activation still needs a real findings/content check.
 
 Buddy's authorization, 2026-10-12: "build the daily lane and begin sending her
 updates" and, when asked where it goes: "her, not here" — the emails go to
@@ -223,6 +227,11 @@ def compose_email(sections, day_label):
 
 
 def compose_intro(intro_body, day_label):
+    # The template's leading maintenance notes are not part of the email.
+    lines = intro_body.splitlines()
+    while lines and (not lines[0].strip() or lines[0].lstrip().startswith("#")):
+        lines.pop(0)
+    intro_body = "\n".join(lines)
     return ("Hi Aggie,\n\n" + intro_body.strip() + "\n\n— CIRRUS, on behalf of Buddy\n")
 
 
@@ -239,11 +248,12 @@ def pick_sections(channels, by_url, state):
         if (sent.get(name) or {}).get("video_id") == new["video_id"]:
             continue
         sec = by_url.get(new["url"])
-        if sec and sec.get("channel") == name:
+        if sec and sec.get("channel") == name and not sec.get("extract_error"):
             sections.append(sec)
         else:
-            pending.append("%s (%s pub %s — no findings yet)"
-                           % (name, (new["title"] or "")[:50], new["published"]))
+            reason = "extraction needs retry" if sec and sec.get("extract_error") else "no findings yet"
+            pending.append("%s (%s pub %s — %s)"
+                           % (name, (new["title"] or "")[:50], new["published"], reason))
     return sections, pending
 
 
@@ -282,9 +292,9 @@ def work(dry_run):
     # The one-time intro: sent only before any summary has ever gone out, so a
     # first run with no findings yet still answers the client today.
     if not state.get(INTRO_SENT_KEY):
+        intro_path = PROJECT_DIR / "yt-watch/aggie_intro_note.md"
+        body = compose_intro(intro_path.read_text(errors="replace"), day_label)
         if not dry_run:
-            intro_path = PROJECT_DIR / "yt-watch/aggie_intro_note.md"
-            body = compose_intro(intro_path.read_text(errors="replace"), day_label)
             import mailer
             creds = load_json(CREDS_PATH, {})
             ok = mailer.send(creds["outlook_email"], creds["outlook_password"],
@@ -299,6 +309,7 @@ def work(dry_run):
             log("intro email sent to %s" % AGGIE_TO)
             return 0
         log("DRY RUN: intro would be sent to %s" % AGGIE_TO)
+        print("Subject: Your daily YouTube brief is starting\n\n" + body)
         return 0
 
     if not sections:
@@ -315,8 +326,11 @@ def work(dry_run):
         return 0
     import mailer
     creds = load_json(CREDS_PATH, {})
-    mailer.send(creds["outlook_email"], creds["outlook_password"], AGGIE_TO,
-                subject, body, creds=creds, log=log, watch_promises=False)
+    ok = mailer.send(creds["outlook_email"], creds["outlook_password"], AGGIE_TO,
+                     subject, body, creds=creds, log=log, watch_promises=False)
+    if not ok:
+        job_status.record("aggieyt", False, "digest send failed")
+        return 3
     sent = state.setdefault("sent", {})
     for sec in sections:
         vid = sec["url"].split("v=")[-1]
