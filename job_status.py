@@ -40,6 +40,12 @@ CADENCE_H = {
     "aggieyt":       26,
     "aggiecollect":  26,        # dedicated latest-video collection, daily 00:30
     "environmentscan": 26,     # daily official-source review at 06:45
+    "stockam": 96,  # preserved app review cadence migrated to CIRRUS/CUMULUS
+    "stockpm": 96,  # preserved app review cadence migrated to CIRRUS/CUMULUS
+    "stockscorecard": 192,  # preserved app review cadence migrated to CIRRUS/CUMULUS
+    "stockdiscovery": 192,  # preserved app review cadence migrated to CIRRUS/CUMULUS
+    "shoredigest": 120,  # preserved app review cadence migrated to CIRRUS/CUMULUS
+    "personalopinion": 96,  # preserved app review cadence migrated to CIRRUS/CUMULUS
     "opinionaireview": 24 * 8,  # weekly Sunday 10:30; CIRRUS dispatches to CUMULUS
     "yahooreview":   24 * 8,    # Thursday 09:00; private header-only review on CUMULUS
     "yahooapply":    26,        # 09:05; only due, explicitly submitted choices

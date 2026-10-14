@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.cirrus.stockscorecard</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>-u</string>
+		<string>/Users/buddy/projects/cirrus-digest/stock_schedule.py</string>
+		<string>--dispatch</string>
+		<string>--job</string>
+		<string>scorecard</string>
+		<string>--live</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/stockscorecard-schedule.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/stockscorecard-schedule.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>9</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+		<key>Weekday</key>
+		<integer>6</integer>
+	</dict>
+	<key>UserName</key>
+	<string>buddy</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/buddy/projects/cirrus-digest</string>
+</dict>
+</plist>

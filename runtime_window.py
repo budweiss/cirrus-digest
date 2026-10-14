@@ -119,6 +119,12 @@ JOB = {
     "com.cirrus.vendormail":         ("light", 1, 5, "scans a small vendor inbox"),
     "com.cirrus.stratusreview":      ("light", 2, 10, "short review pass"),
     "com.cirrus.environmentscan":    ("light", 8, 10, "bounded public-source scan and two local reviews"),
+    "com.cirrus.stockam": ("heavy", 15, 30, "bounded SEC collection and local paper review"),
+    "com.cirrus.stockpm": ("heavy", 15, 30, "bounded SEC collection and local paper review"),
+    "com.cirrus.stockscorecard": ("light", 5, 3, "private ledger review and local analysis"),
+    "com.cirrus.stockdiscovery": ("heavy", 15, 20, "six bounded public-source trials"),
+    "com.cirrus.shoredigest": ("heavy", 20, 20, "bounded county/listing collection and local review"),
+    "com.cirrus.personalopinion": ("heavy", 12, 10, "private quote refresh and local evidence review"),
     "com.cirrus.opinionaireview":    ("light", 3, 1, "one metadata fetch, bounded local triage and email"),
     "com.cirrus.yahooreview":        ("light", 3, 1, "20 IMAP headers and bounded local classification"),
     "com.cirrus.yahooapply":         ("light", 2, 1, "applies only due human-submitted mailbox choices"),
@@ -172,6 +178,12 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "com.cirrus.stockam": "existing user review time migrated from Claude; reports into the next brief",
+    "com.cirrus.stockpm": "existing user review time migrated from Claude; reports into the next brief",
+    "com.cirrus.stockscorecard": "existing user review time migrated from Claude; reports into the next brief",
+    "com.cirrus.stockdiscovery": "existing user review time migrated from Claude; reports into the next brief",
+    "com.cirrus.shoredigest": "existing user review time migrated from Claude; reports into the next brief",
+    "com.cirrus.personalopinion": "existing user review time migrated from Claude; reports into the next brief",
     "com.cirrus.stratusreview": "existing day-1 13:45 monthly digest consolidated from Claude; reports into the next brief",
     "com.cirrus.opinionaireview": "existing Sunday 10:30 user digest migrated from Claude; reports into the next brief",
     "com.cirrus.yahooreview": "existing Thursday 09:00 private review migrated from Codex; reports into the next brief",
