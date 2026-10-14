@@ -820,4 +820,4 @@ if __name__ == "__main__":
     h, m, why = find_window(jobs)
     print(f"\nnext free heavy slot on cirrus: {h:02d}:{m:02d}  ({why})"
           if h is not None else f"\n{why}")
-    raise SystemExit(1 if viol else 0)
+    raise SystemExit(1 if viol or unparsed else 0)
