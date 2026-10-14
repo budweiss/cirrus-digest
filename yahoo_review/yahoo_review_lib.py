@@ -129,10 +129,19 @@ def classify(items):
               'Clearly promotional subscription mail may be unsubscribe_candidate. Routine low-stakes newsletters may be filing_candidate. '
               'If uncertain use review. Do not infer the user\'s preferences or whether a message is read from its subject. '
               'A List-Unsubscribe header is a clue, not proof of unwanted mail. Say suggestions are tentative when headers are insufficient. '
-              'No invented sender history, age, engagement or body content.')
-    answer = local_model.complete(system, json.dumps(items), 'mail:yahoo:headers')
-    answer = re.sub(r'^```(?:json)?\s*|\s*```$', '', answer.strip())
-    return validate(json.loads(answer), items)
+              'No invented sender history, age, engagement or body content. '
+              'Use the exact input id as a JSON string. Keep each reason under 16 words. Output only JSON.')
+    correction = ''
+    for attempt in range(2):
+        try:
+            answer = local_model.complete(system + correction, json.dumps(items), 'mail:yahoo:headers')
+            answer = re.sub(r'^```(?:json)?\s*|\s*```$', '', answer.strip())
+            return validate(json.loads(answer), items)
+        except Exception as error:
+            if attempt:
+                raise
+            correction = (' Your previous response failed the output contract (' + type(error).__name__ +
+                          '). Return exactly one item for every input id, valid categories and brief string reasons.')
 
 
 def triage(items, progress=None):
@@ -140,7 +149,8 @@ def triage(items, progress=None):
     for start in range(0, len(items), 5):
         batch = items[start:start+5]
         try: results = classify(batch)
-        except Exception:
+        except Exception as error:
+            print(json.dumps({'classification_error_type': type(error).__name__}), flush=True)
             failures += len(batch)
             results = {r['id']: {'category': 'review', 'reason': 'Local classification unavailable; manual review needed.'} for r in batch}
         for row in batch:
