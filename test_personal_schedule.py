@@ -26,6 +26,30 @@ class PersonalChecks(unittest.TestCase):
             folder=Path(td);self.fixture(folder);(folder/'holdings.csv').write_text('changed')
             with self.assertRaisesRegex(ValueError,'holdings_hash_mismatch'):S.inputs(folder)
 
+    def test_blank_numeric_cells_remain_unknown(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);self.fixture(folder)
+            raw=(folder/'holdings.csv').read_text().replace('EXAMPLE,2,10,12,24,100','EXAMPLE,,,12,24,')
+            (folder/'holdings.csv').write_text(raw)
+            manifest=json.loads((folder/'manifest.json').read_text());manifest['sha256']=hashlib.sha256(raw.encode()).hexdigest()
+            (folder/'manifest.json').write_text(json.dumps(manifest))
+            rows,*_=S.inputs(folder)
+            self.assertIsNone(rows[0]['shares']);self.assertIsNone(rows[0]['avg_cost']);self.assertIsNone(rows[0]['weight_pct'])
+            self.assertEqual(rows[0]['value_at_export'],'24')
+
+    def test_invalid_import_preserves_last_usable_inputs(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);folder=home/'inputs';folder.mkdir();self.fixture(folder)
+            before={p.name:p.read_bytes() for p in folder.iterdir()}
+            raw='ticker,shares,avg_cost,price_at_export,value_at_export,weight_pct\nINVALID!,2,10,12,24,100\n'
+            data={'files':{name:before[name].decode() for name in ('holdings.csv','sell-review-2026-10-09.md','instructions.md')},
+                  'manifest':{'sha256':hashlib.sha256(raw.encode()).hexdigest(),'source_mtime':time.time()-86400}}
+            data['files']['holdings.csv']=raw
+            with patch.object(S.socket,'gethostname',return_value='cumulus1'),patch.object(S,'HOME',home),patch.object(S,'INPUTS',folder),patch.object(S.media,'lease',return_value=nullcontext()):
+                with self.assertRaisesRegex(ValueError,'holding_symbol'):S.import_inputs(data)
+            self.assertEqual(before,{p.name:p.read_bytes() for p in folder.iterdir()})
+
     def test_all_seven_rules_required(self):
         data={'opinion':'Synthetic private opinion with clearly limited evidence and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic trigger evidence established.'} for i in range(1,8)]}

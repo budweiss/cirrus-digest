@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -141,6 +142,11 @@ def qualify_decisions(data, evidence, account, date, slot):
         result.update(idempotency_key='server-'+date+'-'+slot+'-'+str(i)+'-'+x['ticker'],
                       strategy_version='independent-server-v1',evidence=safe,
                       review_dates=review_dates(date))
+        # Freeze contemporaneous observations for later fixed-window review.
+        # This is neither a proposed fill nor a reconstructed entry benchmark.
+        result['review_reference']={'recorded_at':account.get('created_at'),
+            'company':account.get('quotes',{}).get(x['ticker']),
+            'spy':account.get('quotes',{}).get('SPY')}
         if x['action']!='HOLD':
             order=x.get('order',{})
             if set(order)-{'budget','shares','limit_price'}:raise ValueError('unsupported_order_field')
@@ -273,20 +279,69 @@ def checked_prose(system,data,task):
         return text
 
 
+def review_key(decision,date):
+    return hashlib.sha256(json.dumps(decision,sort_keys=True).encode()).hexdigest()+'-'+date
+
+
+def fixed_observations(account,date,home=None):
+    home=home or HOME;pending=[]
+    for decision in account['decisions']:
+        for target in decision.get('review_dates',[]):
+            if target<=date and not (home/'fixed-window-reviews'/(review_key(decision,target)+'.json')).exists():
+                pending.append((target,decision))
+    pending.sort(key=lambda x:(x[0],x[1].get('decided_at','')))
+    marks=dict(account.get('quotes',{}));rows=[]
+    for target,decision in pending[:40]:
+        ticker=decision.get('ticker');reference=decision.get('review_reference')
+        if not reference:
+            # Only pre-existing, contemporaneous saved reports qualify. Missing
+            # historical observations stay missing; never fetch a past price.
+            eligible=[]
+            for path in (home/'reports').glob('*.json'):
+                old=json.loads(path.read_text())
+                delta=research.dt(decision['decided_at'])-research.dt(old['created_at'])
+                if timedelta(0)<=delta<=timedelta(hours=1) and ticker in old.get('quotes',{}):
+                    eligible.append(old)
+            if eligible:
+                old=max(eligible,key=lambda x:x['created_at'])
+                reference={'recorded_at':old['created_at'],'company':old['quotes'][ticker],'spy':old['quotes'].get('SPY')}
+        if ticker and ticker not in marks:
+            try:marks[ticker]=paper.get_quote(ticker,archive_dir=home/'quotes')
+            except Exception as exc:marks[ticker]={'error_type':research.error_code(exc)}
+        current=paper.validate_mark(marks.get(ticker,{}) or {})
+        spy=paper.validate_mark(marks.get('SPY',{}) or {})
+        row={'decision':decision,'scheduled_review':target,'observed_on':date,
+             'observed_late':target<date,'original_reference':reference,
+             'current_company_quote':current,'current_spy_quote':spy,
+             'comparison_available':False,
+             'notice':'Fixed-window idea observation, separate from account fills and realized proceeds. '
+                      'A late observation is not a return at the original due date. Price-only; corporate actions and dividends are not adjusted.'}
+        start=(reference or {}).get('company') or {};bench=(reference or {}).get('spy') or {}
+        try:
+            paired=research.dt(start['quote_at']).astimezone(NY).date()==research.dt(bench['quote_at']).astimezone(NY).date()
+            paired=paired and research.dt(current['quote_at']).astimezone(NY).date()==research.dt(spy['quote_at']).astimezone(NY).date()
+            if not paired or not all(x.get('valuation_eligible') for x in (start,bench,current,spy)):
+                raise ValueError('matching_verified_references_missing')
+            change=100*(Decimal(current['price'])/Decimal(start['price'])-1)
+            spy_change=100*(Decimal(spy['price'])/Decimal(bench['price'])-1)
+            row.update(comparison_available=True,price_return_percent=str(change.quantize(Decimal('.01'))),
+                       spy_price_return_percent=str(spy_change.quantize(Decimal('.01'))),
+                       excess_percentage_points=str((change-spy_change).quantize(Decimal('.01'))))
+        except (KeyError,ValueError,TypeError,ArithmeticError):
+            row['comparison_gap']='Matching verified original/current price observations unavailable; not backfilled.'
+        rows.append(row)
+    return rows,len(pending)
+
+
 def scorecard(live,date,folder):
     account=snapshot('trial')
     with media.lease(HOME/'operation.lock',timeout=5):
         with Ledger(HOME/'ledger.sqlite3') as ledger:
             taxes=paper.tax_export(HOME,ledger,int(date[:4]))
-    # Freeze dated review observations without rewriting original decisions.
-    due=[]
-    for decision in account['decisions']:
-        for review_date in decision.get('review_dates',[]):
-            if review_date<=date:
-                due.append({'decision':decision,'scheduled_review':review_date,'observed_on':date,
-                            'observed_late':review_date<date})
-    data={'account':account,'due_21_28_day_reviews':due[:40],
-          'remaining_due_reviews':max(0,len(due)-40),
+    due,total_due=fixed_observations(account,date)
+    prior=[json.loads(p.read_text()) for p in sorted((HOME/'fixed-window-reviews').glob('*.json'))[-40:]]
+    data={'account':account,'due_21_28_day_reviews':due,'prior_fixed_reviews':prior,
+          'remaining_due_reviews':max(0,total_due-len(due)),
           'simulated_lot_record':{k:v for k,v in taxes.items() if k!='csv'},
           'policy':policy()}
     text=checked_prose('Write a concise weekly review of the independent simulated account. '
@@ -300,14 +355,14 @@ def scorecard(live,date,folder):
     path=folder/('report.md' if live else 'preview.md');path.write_text(report);path.chmod(0o600)
     if live:
         reviews=HOME/'fixed-window-reviews';reviews.mkdir(exist_ok=True,mode=0o700)
-        for item in due[:40]:
-            key=hashlib.sha256(json.dumps(item['decision'],sort_keys=True).encode()).hexdigest()+'-'+item['scheduled_review']
+        for item in due:
+            key=review_key(item['decision'],item['scheduled_review'])
             target=reviews/(key+'.json')
             if not target.exists():paper.save(target,dict(item,account_report_id=account['report_id']),True)
         digests=ROOT/'digests';digests.mkdir(exist_ok=True)
-        (digests/'stock-scorecard-latest.md').write_text(report)
+        destination=digests/'stock-scorecard-latest.md';destination.write_text(report);destination.chmod(0o600)
     return {'status':'complete' if live else 'preview','job':'scorecard','date':date,
-            'due_reviews':len(due),'reviewed':min(len(due),40),'report':str(path),'extra_email':False}
+            'due_reviews':total_due,'reviewed':len(due),'prior_reviews':len(prior),'report':str(path),'extra_email':False}
 
 
 DISCOVERY_HOSTS=('sec.gov','www.sec.gov','data.sec.gov','efts.sec.gov',

@@ -14,6 +14,30 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_fixed_window_keeps_sold_ideas_and_never_rewrites_prior_review(self):
+        import json
+        from pathlib import Path
+        def q(price,at):return {'price':price,'quote_at':at,'valuation_eligible':True}
+        d={'decision_id':'synthetic-original','ticker':'EXAMPLE','action':'BUY',
+           'decided_at':'2026-09-01T15:00:00Z','review_dates':['2026-09-22','2026-09-29'],
+           'review_reference':{'company':q('100','2026-09-01T14:59:00Z'),'spy':q('200','2026-09-01T14:59:00Z')}}
+        account={'decisions':[d],'quotes':{'SPY':q('220','2026-10-14T15:00:00Z')}}
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);reviews=home/'fixed-window-reviews';reviews.mkdir()
+            first=reviews/(S.review_key(d,'2026-09-22')+'.json');first.write_text('{"original":"unchanged"}')
+            with patch.object(S.paper,'get_quote',return_value=q('105','2026-10-14T15:00:00Z')) as fetch,patch.object(S.paper,'validate_mark',side_effect=lambda x:x):
+                rows,total=S.fixed_observations(account,'2026-10-14',home)
+            self.assertEqual(total,1);self.assertEqual(rows[0]['scheduled_review'],'2026-09-29')
+            self.assertTrue(rows[0]['observed_late']);self.assertEqual(rows[0]['excess_percentage_points'],'-5.00')
+            self.assertEqual(first.read_text(),'{"original":"unchanged"}');fetch.assert_called_once()
+
+    def test_missing_original_benchmark_is_not_invented(self):
+        from pathlib import Path
+        d={'ticker':'EXAMPLE','decided_at':'2026-09-01T15:00:00Z','review_dates':['2026-09-22']}
+        with tempfile.TemporaryDirectory() as td,patch.object(S.paper,'validate_mark',side_effect=lambda x:x):
+            rows,_=S.fixed_observations({'decisions':[d],'quotes':{'EXAMPLE':{},'SPY':{}}},'2026-10-14',Path(td))
+        self.assertFalse(rows[0]['comparison_available']);self.assertIsNone(rows[0]['original_reference'])
+
     def test_primary_evidence_and_stable_identity(self):
         a,_=S.qualify_decisions(DEC,EV,{},'2026-10-14','am')
         b,_=S.qualify_decisions(DEC,EV,{},'2026-10-14','am')
