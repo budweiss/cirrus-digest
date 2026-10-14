@@ -79,10 +79,10 @@ def public_news(rows):
         found=False
         try:
             for url in search_web(row['ticker']+' company earnings business news '+datetime.now(NY).strftime('%B %Y'),max_results=3) or []:
-                text,title=fetch_article_content(url)
-                if not text or len(text)<400:continue
+                text,paywalled=fetch_article_content(url,max_chars=5000)
+                if paywalled or not text or len(text)<400:continue
                 # No account size/cost or personal financial context is sent to a source.
-                out.append({'ticker':row['ticker'],'url':url,'title':title,'text':text[:5000],
+                out.append({'ticker':row['ticker'],'url':url,'title':'Public company source','text':text[:5000],
                             'observed_at':datetime.now(timezone.utc).isoformat(),
                             'notice':'An observed public page; publication date must come from the text, not the observation date.'})
                 found=True;break

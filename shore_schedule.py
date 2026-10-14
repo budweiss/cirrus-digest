@@ -63,9 +63,10 @@ def gather(newsletter=None):
         if url in seen:return
         seen.add(url)
         try:
-            text,title=fetch_article_content(url)
+            text,paywalled=fetch_article_content(url,max_chars=16000)
+            if paywalled:raise ValueError('subscription_access_incomplete')
             if not text or len(text)<300:raise ValueError('no_substantive_text')
-            sources.append({'url':url,'title':title or label,'text':text[:16000],
+            sources.append({'url':url,'title':label,'text':text[:16000],
                             'full_characters':len(text),'excerpted':len(text)>16000,
                             'observed_at':datetime.now(timezone.utc).isoformat()})
         except Exception as exc:gaps.append(label+': '+type(exc).__name__)
@@ -213,9 +214,9 @@ def detail_sources(candidates):
             try:
                 for url in search_web(query,max_results=2) or []:
                     if urlsplit(url).scheme!='https':continue
-                    text,title=fetch_article_content(url)
-                    if text and len(text)>400:
-                        output.append({'url':url,'title':title or 'Property context','text':text[:4500],
+                    text,paywalled=fetch_article_content(url,max_chars=4500)
+                    if not paywalled and text and len(text)>400:
+                        output.append({'url':url,'title':'Property context','text':text[:4500],
                             'full_characters':len(text),'excerpted':len(text)>4500,'kind':'listing_or_rent_context'})
                         break
             except Exception:pass

@@ -8,6 +8,15 @@ from unittest.mock import patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def test_partial_paywall_text_is_not_treated_as_verified_news(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        fetch=Mock(side_effect=[('Blocked excerpt '*40,True),('Verified public source '*40,False)])
+        module=SimpleNamespace(search_web=lambda *a,**k:['https://example.com/blocked','https://example.com/allowed'],fetch_article_content=fetch)
+        with patch.dict('sys.modules',{'cirrus_daily':module}):rows,gaps=S.public_news([{'ticker':'EXAMPLE','weight_pct':'100'}])
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['url'],'https://example.com/allowed')
+        self.assertIsInstance(rows[0]['title'],str);self.assertEqual(fetch.call_args.kwargs['max_chars'],5000)
+
     def test_inconsistent_approval_preserves_findings_for_correction(self):
         from contextlib import nullcontext
         draft={'opinion':'Synthetic private opinion with limited evidence and no transactions.',

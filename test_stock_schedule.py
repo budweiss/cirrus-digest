@@ -14,6 +14,16 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_model_schema_limits_symbols_to_reviewed_companies(self):
+        import json
+        response={'model':S.media.MODEL,'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'decisions':[],'explanation':'Synthetic missing evidence means no action is justified.'})}}]}
+        with patch.object(S.media,'token_count',return_value=100),patch.object(S.media,'request',return_value=response) as request,patch('llm_budget.record_call'):
+            S.decision_complete('Synthetic policy','Synthetic evidence','am',EV['companies'])
+        schema=request.call_args.args[1]['response_format']['json_schema']['schema']
+        fields=schema['properties']['decisions']['items']['properties']
+        self.assertEqual(fields['ticker']['enum'],['EXAMPLE']);self.assertEqual(fields['action']['enum'],['HOLD'])
+        self.assertEqual(fields['evidence']['items']['properties']['id']['enum'],[1])
+
     def test_accepted_primary_quote_beyond_article_opening_is_preserved(self):
         import json
         from pathlib import Path

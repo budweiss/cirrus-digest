@@ -79,10 +79,10 @@ def gather():
         try:
             for url in search_web(query,max_results=4) or []:
                 if url in seen or not permitted(url):continue
-                text,title=fetch_article_content(url)
-                if not text or len(text)<300:continue
+                text,paywalled=fetch_article_content(url,max_chars=3500)
+                if paywalled or not text or len(text)<300:continue
                 seen.add(url);added+=1
-                rows.append({'url':url,'title':title or 'Official source','published':'not established',
+                rows.append({'url':url,'title':'Official source: '+urlsplit(url).hostname,'published':'not established',
                              'text':text[:3500],'kind':'research'})
                 if added>=1:break
             if not added:gaps.append('No usable primary page: '+query)

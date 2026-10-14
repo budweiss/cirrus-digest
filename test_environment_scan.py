@@ -6,6 +6,16 @@ ROWS=[{'url':'https://amd.com/example','title':'Synthetic release','published':'
 GOOD={'findings':[{'source_index':0,'quote':'supports a bounded 128 GB configuration.','summary':'A synthetic configuration needs review before use.','verdict':'DEFER'}]}
 
 class EnvironmentChecks(unittest.TestCase):
+    def test_article_fetch_flag_is_paywall_not_title(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        fetch=Mock(side_effect=[('Blocked excerpt '*40,True),('Verified public source '*40,False)])
+        module=SimpleNamespace(search_web=lambda *a,**k:['https://amd.com/blocked','https://amd.com/allowed'],fetch_article_content=fetch)
+        with patch.dict('sys.modules',{'cirrus_daily':module}),patch.object(scan,'FEEDS',{}),patch.object(scan,'QUERIES',('synthetic',)):
+            rows,gaps=scan.gather()
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['url'],'https://amd.com/allowed')
+        self.assertIsInstance(rows[0]['title'],str);self.assertEqual(fetch.call_args.kwargs['max_chars'],3500)
+
     def test_sources_are_allowlisted(self):
         self.assertTrue(scan.permitted('https://amd.com/product'))
         self.assertTrue(scan.permitted('https://huggingface.co/google/model'))

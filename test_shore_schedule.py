@@ -11,6 +11,15 @@ SOURCE={'text':TEXT,'url':'https://example.com/listing','title':'Synthetic fixtu
 ROW={'town':'Wildwood','address':'123 Example Street','price':300000,'price_kind':'asking','status':'Active 2026-10-14','quote':TEXT,'summary':'Synthetic property with no confirmed rental or condition evidence.'}
 
 class ShoreChecks(unittest.TestCase):
+    def test_blocked_subscription_excerpt_is_an_access_gap(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        fetch=Mock(return_value=('Blocked subscription excerpt '*40,True))
+        module=SimpleNamespace(search_web=lambda *a,**k:[],fetch_article_content=fetch)
+        with patch.dict('sys.modules',{'cirrus_daily':module}),patch.object(S,'COUNTIES',(('Synthetic county','https://example.com/blocked'),)):
+            with self.assertRaisesRegex(RuntimeError,'shore_sources_unavailable'):S.gather()
+        self.assertEqual(fetch.call_args.kwargs['max_chars'],16000)
+
     def test_twice_covered_unchanged_property_waits_for_a_change(self):
         history=S.record_coverage([ROW],ROW['address'],'2026-10-10',{})
         history=S.record_coverage([ROW],ROW['address'],'2026-10-13',history)
