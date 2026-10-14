@@ -16,7 +16,22 @@ Companion docs: `STRATUS-Production-Sizing-and-Architecture.md` (current design)
 
 ---
 
-## Current recommendation snapshot (as of 2026-07-20)
+## Current purchase decision — Buddy, S406
+
+**Wait for the new Mac Studio.** The expensive refurbished Mac Studio under
+discussion is declined. This replaces the earlier November-order assumption;
+reconsider timing and configuration when the new model is available and its
+specifications and pricing are verified. See `STRATUS-Hardware-Watch.md` for
+the standing purchase decision.
+
+**October 12, S406:** the official Apple availability watch now runs on CIRRUS
+daily at 16:45 ET and notifies Buddy through `@CIRRUSdigest_bot`, as requested.
+The MacBook Codex heartbeat is paused. CIRRUS completed an actual scheduled-job
+invocation and Telegram accepted the activation message. Apple's 512GB memory
+option still says coming late October; base prices are not configured quotes.
+See the hardware watch for verification and operating details.
+
+## Historical recommendation snapshot (2026-07-20)
 - **Serving:** scale out DGX Spark (128GB each) — double CUMULUS, expand to 3
   (switchless ring), add a QSFP switch to grow past 3. Great for concurrent
   serving + single-node QLoRA; weak for tightly-coupled distributed training
@@ -60,15 +75,42 @@ Companion docs: `STRATUS-Production-Sizing-and-Architecture.md` (current design)
 
 ## Log entries (newest first)
 
-### 2026-07-20 — Baseline established
-- Wrote the two companion docs; snapshot above is the starting position.
-- Current CIRRUS models: qwen2.5:72b/14b, qwen2.5-coder:14b (Alibaba), llama3.2:3b,
-  nomic-embed-text. CUMULUS = 1× DGX Spark (128GB), just received.
-- Open questions to resolve as research accrues: (a) which small base specializes
-  best for our domains (Qwen vs Llama), (b) real peak concurrency the client
-  workloads generate (sizes node count), (c) whether any single-box option beats
-  a 2–3 Spark cluster on $/throughput by the time we commit.
-- Next monthly review: 2026-08-01.
+### S406 — Buddy chooses to wait for the new Mac Studio
+- Buddy: "we are going to wait for the new mac studio. I not spending this
+  much money on a refrb."
+- Declined the refurbished candidate at the price discussed. No new order
+  date is set; the earlier "ORDER Nov" note below is superseded.
+- Updated the hardware watch's current recommendation to match this decision.
+
+### 2026-10-11 — KAI "Every Ways to Get 128GB VRAM" video review + Strata offload
+- From Buddy's /todo items prop-2026-10-11-559/560 (via his ChatGPT/KAI notes). Full
+  review + options table: `STRATUS-128GB-VRAM-ROUTES-KAI-VIDEO-REVIEW.md`.
+- Headlines: (1) the 128-GB threshold is real but ALL boxes cap GPU-addressable
+  memory under it (Windows Strix Halo ~96 default, macOS ~96, DGX Spark ~122
+  usable) — most "128" machines offload something; (2) Strata (engine by
+  Niko1221) runs Qwen3.8-Flash-Next 125B from a 12-GB GPU + 64-GB RAM by
+  offloading experts to pinned RAM and keeping the 28.8-GB n-gram lookup table
+  on SSD — the "memory look-ups" answer; one-model-family only; (3) 3-bit keeps
+  99.4% of full precision on the lab's benchmarks (one saturated) — a real
+  quality-vs-$4th-bit debate remains (~$700 unmet); (4) used-server-card route
+  ($3,000, 60-70 tok/s) is gone post-viral; (5) multi-user/swarm serving still
+  favors pools — OUR estate serves concurrent lanes, so Mac Studio M5 Ultra
+  512GB (2026-10-10 decision, ORDER Nov) stands, with a day-one GPU-cap raise
+  and 512-GB capacity justified by serving, not single-lane quality.
+- Watch: Kai's follow-up with hands-on benchmarks settles the 3-bit-vs-4-bit
+  agent-session gap. Candidate channel for the discovery loop.
+
+### 2026-10-01
+
+- DGX Spark Founders Edition price confirmed at $4,699 (up from $3,999 in Feb 2026, memory-supply driven), ~$36.71/GB unified memory — street prices verify before purchase. [intuitionlabs.ai](https://intuitionlabs.ai/articles/nvidia-dgx-spark-review), [kevinwelter.com](https://kevinwelter.com/en/blog/dgx-spark-kaufen)
+- New competitor: **RTX Spark N1X** (Windows AI PC variant, same GB10-class Grace-Blackwell silicon, 128GB LPDDR5X) estimated ~$2,899, ~$22.65/GB — ~38% cheaper per GB than DGX Spark if real; worth tracking once it ships (fall 2026), but it's consumer/Windows-targeted, not the CUDA dev stack — verify before purchase. [aitooldiscovery.com](https://www.aitooldiscovery.com/ai-infra/nvidia-rtx-spark-explained)
+- Independent enterprise review reinforces our own interconnect math: DGX Spark wins at single-developer prototyping/fine-tuning (70B–200B via FP4, no quantization gymnastics) but **loses badly at production serving and high-concurrency batch** — RTX PRO 6000 Blackwell cited as 6–7× faster for the same workload, 273GB/s bandwidth is explicitly called the bottleneck. This is a flag against pure Spark-scale-out for serving at volume. [ifactoryapp.com](https://ifactoryapp.com/sap-integration/on-prem-ai/nvidia-dgx-spark-review-enterprise)
+- DGX Station pricing is now concrete: six OEMs (Supermicro, Exxact, MSI, ASUS, Dell, HP), all same GB300/748GB, public listings $91.8K–$100K base before storage/support — our "reserve for heavy training only" stance holds, this is a big capital jump — verify before purchase. [betterclaw.io](https://www.betterclaw.io/blog/dgx-station-alternative)
+- B200 (192GB HBM3e, up to 8TB/s, native FP4) and H200 (141GB HBM3e, 4.8TB/s) remain the datacenter-tier reference points if we ever need cloud burst for heavy fine-tuning — B200 claims ~4x H100 inference throughput. No local-box equivalent exists at this bandwidth; still a cloud-only tier. [jarvislabs.ai](https://jarvislabs.ai/ai-faqs/nvidia-b200-specs), [nvidia.com/h200](https://www.nvidia.com/en-us/data-center/h200/)
+- Quantization technique note: "Tetra" approach fits Qwen3-14B into 5.04GB (vs full precision) at only -3.22 MMLU, 57.2 tok/s on an L40S — reasoning tasks degrade more (1.7-2.2x more GSM8K errors) than knowledge tasks. Relevant to our "small specialist beats big general model" thesis if applied to our fine-tunes. [lab.scub.net](https://lab.scub.net/tetra-medium-digest-b732aed67995)
+- Real-world DGX Spark clustering report (Piyush Medikeri) confirms Qwen3-235B NVFP4 + speculative decoding gives substantial throughput gains and the reduced FP4 footprint lets multiple models run concurrently on one Spark — directly useful for our concurrent-serving plan. Separately, a hands-on cluster benchmark found MTP/speculative draft heads can *hurt* throughput over RPC (24.2 vs 27.4 tok/s) due to cross-node verification cost — worth testing before we assume speculative decoding helps once we're multi-node. [medium.com/piyushrajeshmedikeri](https://medium.com/@piyushrajeshmedikeri/piyush-rajesh-medikeri-on-building-reliable-local-ai-agents-with-qwen-and-dgx-spark-5aae4785e360), [medium.com/@karlhendrik](https://medium.com/@karlhendrik/building-local-ai-with-cloud-ai-84850c6fcad0)
+
+Recommendation change suggested: don't treat Spark scale-out as settled for *production serving* — the iFactory enterprise review's 6–7× RTX PRO 6000 Blackwell serving-throughput claim deserves a direct comparison (RTX PRO 6000 $/GB, bandwidth, and street price, verify before purchase) against continued Spark scale-out before we commit further capital to a 3rd/4th Spark.
 
 ### 2026-09-01
 
@@ -82,16 +124,14 @@ Companion docs: `STRATUS-Production-Sizing-and-Architecture.md` (current design)
 
 Recommendation change suggested: re-verify the "Spark scale-out is great for concurrent serving" claim against the newly-surfaced 6–7× throughput gap vs RTX PRO 6000 Blackwell before committing further Spark purchases — get an apples-to-apples concurrent-batch benchmark (not just single-stream tok/s) before buying a 3rd/4th Spark node.
 
-### 2026-10-01
-
-- DGX Spark Founders Edition price confirmed at $4,699 (up from $3,999 in Feb 2026, memory-supply driven), ~$36.71/GB unified memory — street prices verify before purchase. [intuitionlabs.ai](https://intuitionlabs.ai/articles/nvidia-dgx-spark-review), [kevinwelter.com](https://kevinwelter.com/en/blog/dgx-spark-kaufen)
-- New competitor: **RTX Spark N1X** (Windows AI PC variant, same GB10-class Grace-Blackwell silicon, 128GB LPDDR5X) estimated ~$2,899, ~$22.65/GB — ~38% cheaper per GB than DGX Spark if real; worth tracking once it ships (fall 2026), but it's consumer/Windows-targeted, not the CUDA dev stack — verify before purchase. [aitooldiscovery.com](https://www.aitooldiscovery.com/ai-infra/nvidia-rtx-spark-explained)
-- Independent enterprise review reinforces our own interconnect math: DGX Spark wins at single-developer prototyping/fine-tuning (70B–200B via FP4, no quantization gymnastics) but **loses badly at production serving and high-concurrency batch** — RTX PRO 6000 Blackwell cited as 6–7× faster for the same workload, 273GB/s bandwidth is explicitly called the bottleneck. This is a flag against pure Spark-scale-out for serving at volume. [ifactoryapp.com](https://ifactoryapp.com/sap-integration/on-prem-ai/nvidia-dgx-spark-review-enterprise)
-- DGX Station pricing is now concrete: six OEMs (Supermicro, Exxact, MSI, ASUS, Dell, HP), all same GB300/748GB, public listings $91.8K–$100K base before storage/support — our "reserve for heavy training only" stance holds, this is a big capital jump — verify before purchase. [betterclaw.io](https://www.betterclaw.io/blog/dgx-station-alternative)
-- B200 (192GB HBM3e, up to 8TB/s, native FP4) and H200 (141GB HBM3e, 4.8TB/s) remain the datacenter-tier reference points if we ever need cloud burst for heavy fine-tuning — B200 claims ~4x H100 inference throughput. No local-box equivalent exists at this bandwidth; still a cloud-only tier. [jarvislabs.ai](https://jarvislabs.ai/ai-faqs/nvidia-b200-specs), [nvidia.com/h200](https://www.nvidia.com/en-us/data-center/h200/)
-- Quantization technique note: "Tetra" approach fits Qwen3-14B into 5.04GB (vs full precision) at only -3.22 MMLU, 57.2 tok/s on an L40S — reasoning tasks degrade more (1.7-2.2x more GSM8K errors) than knowledge tasks. Relevant to our "small specialist beats big general model" thesis if applied to our fine-tunes. [lab.scub.net](https://lab.scub.net/tetra-medium-digest-b732aed67995)
-- Real-world DGX Spark clustering report (Piyush Medikeri) confirms Qwen3-235B NVFP4 + speculative decoding gives substantial throughput gains and the reduced FP4 footprint lets multiple models run concurrently on one Spark — directly useful for our concurrent-serving plan. Separately, a hands-on cluster benchmark found MTP/speculative draft heads can *hurt* throughput over RPC (24.2 vs 27.4 tok/s) due to cross-node verification cost — worth testing before we assume speculative decoding helps once we're multi-node. [medium.com/piyushrajeshmedikeri](https://medium.com/@piyushrajeshmedikeri/piyush-rajesh-medikeri-on-building-reliable-local-ai-agents-with-qwen-and-dgx-spark-5aae4785e360), [medium.com/@karlhendrik](https://medium.com/@karlhendrik/building-local-ai-with-cloud-ai-84850c6fcad0)
-
-Recommendation change suggested: don't treat Spark scale-out as settled for *production serving* — the iFactory enterprise review's 6–7× RTX PRO 6000 Blackwell serving-throughput claim deserves a direct comparison (RTX PRO 6000 $/GB, bandwidth, and street price, verify before purchase) against continued Spark scale-out before we commit further capital to a 3rd/4th Spark.
+### 2026-07-20 — Baseline established
+- Wrote the two companion docs; snapshot above is the starting position.
+- Current CIRRUS models: qwen2.5:72b/14b, qwen2.5-coder:14b (Alibaba), llama3.2:3b,
+  nomic-embed-text. CUMULUS = 1× DGX Spark (128GB), just received.
+- Open questions to resolve as research accrues: (a) which small base specializes
+  best for our domains (Qwen vs Llama), (b) real peak concurrency the client
+  workloads generate (sizes node count), (c) whether any single-box option beats
+  a 2–3 Spark cluster on $/throughput by the time we commit.
+- Next monthly review: 2026-08-01.
 
 <!-- New monthly entries appended above this line by stratus-monthly-review -->
