@@ -14,6 +14,11 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_failed_review_is_a_failed_process_even_when_preview_was_composed(self):
+        import io,contextlib
+        with patch.object(S.sys,'argv',['stock_schedule.py','--job','am']),patch.object(S,'run',return_value={'status':'preview','decision_review':'failed_paper_decision_review_failed'}),contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(S.main(),1)
+
     def test_http_success_without_dated_original_content_cannot_be_adopted(self):
         trials=[{'status':'fetched','text':QUOTE,'published':None}]
         choice={'trial':0,'decision':'ADOPT','reason':'Synthetic useful original article for a research question.','quote':QUOTE}

@@ -226,6 +226,8 @@ def render(sources,candidates,gaps,coverage,prior,replies,date,taxes=None):
     offered=[s['url'] for s in sources]
     packet={'sources':sources,'candidates':candidates,'coverage_gaps':gaps,'page_coverage':coverage,
             'prior_reports':prior[-10000:],'feedback':replies,'date':date,'tax_lien_checks':taxes or {}}
+    legacy=STATE/'legacy-tax-lien-notes.md'
+    if legacy.exists():packet['historical_tax_watchlist_needs_current_verification']=legacy.read_text()[-6000:]
     prompt=RULES+'\nCompose the Jersey Shore digest using ONLY this evidence. '+(
         'No invented rental yields, comparable discounts, photo URLs, dates or weekday names. '
         'At most 2–3 eye-catchers, and only when supported; otherwise say none qualified. '

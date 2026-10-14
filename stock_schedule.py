@@ -551,6 +551,6 @@ def main():
             import job_status
             job_status.record('stock'+a.job,False,result['error_type'])
             result['telegram_confirmed']=telegram('Stock Pickers '+a.job+' could not complete its server run. Check the saved receipt before retrying; no blind resend.')
-    print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False else 0
+    print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False or result.get('decision_review','').startswith('failed') else 0
 
 if __name__=='__main__':raise SystemExit(main())
