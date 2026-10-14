@@ -643,6 +643,15 @@ def run(job,live=False):
         return result
 
 
+def record_status(job,ok,note):
+    import job_status
+    if job=='am':job_status.record('stockam',ok,note)
+    elif job=='pm':job_status.record('stockpm',ok,note)
+    elif job=='scorecard':job_status.record('stockscorecard',ok,note)
+    elif job=='discovery':job_status.record('stockdiscovery',ok,note)
+    else:raise ValueError('unknown_stock_status_job')
+
+
 def dispatch(job,live=False):
     from vendor_mail_watch import telegram
     import job_status
@@ -656,7 +665,7 @@ def dispatch(job,live=False):
         if proc.returncode:result['status']='failed'
         ok=result.get('status') in ('sent','already_sent','holiday','preview','complete') and not result.get('decision_review','').startswith('failed')
         if live:
-            job_status.record('stock'+job,ok,'status='+result.get('status','unknown'))
+            record_status(job,ok,'status='+result.get('status','unknown'))
             if result.get('status') not in ('already_sent','holiday'):
                 result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))
         atomic(root/(job+('-live' if live else '-preview')+'.json'),result)
@@ -672,7 +681,7 @@ def main():
         if a.dispatch and a.live:
             from vendor_mail_watch import telegram
             import job_status
-            job_status.record('stock'+a.job,False,result['error_type'])
+            record_status(a.job,False,result['error_type'])
             result['telegram_confirmed']=telegram('Stock Pickers '+a.job+' could not complete its server run. Check the saved receipt before retrying; no blind resend.')
     print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False or result.get('decision_review','').startswith('failed') else 0
 

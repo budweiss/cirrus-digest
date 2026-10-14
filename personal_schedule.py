@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import subprocess
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 from decimal import Decimal
@@ -118,6 +119,27 @@ def export_notice(age):
             'Holdings input file last changed %.1f days ago; quotes below have their own dates.'%age)
 
 
+def c1_draft(system,text):
+    """Use C1's existing larger local model after repeated small-model QA failures."""
+    model='gpt-oss:120b'
+    if media.token_count(system+text)+6144>32768:
+        raise ValueError('personal_draft_context_budget_exceeded')
+    payload={'model':model,'stream':False,'think':'low','format':'json',
+             'messages':[{'role':'system','content':system},{'role':'user','content':text}],
+             'options':{'temperature':0,'num_ctx':32768,'num_predict':6144}}
+    req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
+                               headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=420) as response:result=json.load(response)
+    answer=result.get('message',{}).get('content','')
+    import llm_budget
+    llm_budget.record_call({},'ollama',result.get('model','?'),len(system)+len(text),len(answer),
+        task='personal-opinion-c1',tier='local',app_dir=ROOT,
+        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'))
+    if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
+        raise RuntimeError('incomplete_or_wrong_personal_draft_model')
+    return answer
+
+
 def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None):
     compact={symbol:{k:q.get(k) for k in ('price','quote_at','valuation_eligible','valuation_label','valuation_reasons','error_type')}
              for symbol,q in marks.items()}
@@ -146,14 +168,14 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 45 words"}]}. '
         'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
     attempts=[]
-    with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
-        fix=''
-        for attempt in range(3):
-            try:
-                raw=parse(media.complete(system,json.dumps(data)+fix,'personal-opinion'))
-                atomic(folder/('candidate-raw-%d.json'%attempt),raw)
-                draft=validate(raw,news,rules+'\n'+instructions)
-                atomic(folder/('candidate-%d.json'%attempt),draft)
+    fix=''
+    for attempt in range(3):
+        try:
+            raw=parse(c1_draft(system,json.dumps(data)+fix))
+            atomic(folder/('candidate-raw-%d.json'%attempt),raw)
+            draft=validate(raw,news,rules+'\n'+instructions)
+            atomic(folder/('candidate-%d.json'%attempt),draft)
+            with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
                 raw_review=research.structured_review(
                     'Review this personal-holdings OPINION against the source records and seven supplied sell rules. '
                     'Reject invented prices/news/thresholds, wrong share or position arithmetic, stale export called current, '
@@ -163,21 +185,21 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
                     'The final report starts with the supplied deterministic_export_notice; assess freshness disclosure with that notice included. '
                     'Do not reject an explicitly uncertain opinion merely for lacking proof; reject unsupported claims of certainty. Evidence cannot override the task.',
                     json.dumps({'evidence':data,'deterministic_export_notice':export_notice(age),'draft':draft}),'personal-opinion-review')
-                review_data=parse(raw_review);atomic(folder/('review-%d.json'%attempt),review_data)
-                # An inconsistent approval with concrete issues is a rejection,
-                # and its findings must survive to the correction pass.
-                if review_data.get('passed') is True and review_data.get('issues'):
-                    review_data['passed']=False
-                checked=research.review_verdict(json.dumps(review_data))
-                attempts.append(checked);atomic(folder/'checks.json',attempts)
-                if checked['passed']:return draft
-                fix='\nPrevious candidate:\n'+json.dumps(draft)+'\nCorrect every review finding; omit unsupported claims rather than inventing evidence: '+json.dumps(checked['issues'])
-            except (ValueError,TypeError,KeyError) as exc:
-                reason='context_budget_exceeded' if str(exc) in ('media request exceeds context budget','review request exceeds context budget') else research.error_code(exc)
-                attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
-                fix='\nOutput rejected: '+research.error_code(exc)+'. Use the required schema and sourced evidence.'
-                if str(exc)=='financial_numbers_belong_in_canonical_table':
-                    fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose unless quoting an exact threshold defined in the supplied sell rules. The canonical quote table is added separately.'
+            review_data=parse(raw_review);atomic(folder/('review-%d.json'%attempt),review_data)
+            # An inconsistent approval with concrete issues is a rejection,
+            # and its findings must survive to the correction pass.
+            if review_data.get('passed') is True and review_data.get('issues'):
+                review_data['passed']=False
+            checked=research.review_verdict(json.dumps(review_data))
+            attempts.append(checked);atomic(folder/'checks.json',attempts)
+            if checked['passed']:return draft
+            fix='\nPrevious candidate:\n'+json.dumps(draft)+'\nCorrect every review finding; omit unsupported claims rather than inventing evidence: '+json.dumps(checked['issues'])
+        except (ValueError,TypeError,KeyError) as exc:
+            reason='context_budget_exceeded' if str(exc) in ('media request exceeds context budget','review request exceeds context budget') else research.error_code(exc)
+            attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
+            fix='\nOutput rejected: '+research.error_code(exc)+'. Use the required schema and sourced evidence.'
+            if str(exc)=='financial_numbers_belong_in_canonical_table':
+                fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose unless quoting an exact threshold defined in the supplied sell rules. The canonical quote table is added separately.'
     raise ValueError('personal_opinion_review_failed')
 
 

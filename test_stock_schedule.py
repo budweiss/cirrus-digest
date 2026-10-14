@@ -14,6 +14,16 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_every_scheduled_job_records_its_own_monitor_key(self):
+        with patch('job_status.record') as record:
+            for job in S.JOBS:
+                S.record_status(job,False,'Synthetic failure')
+                record.assert_called_with('stock'+job,False,'Synthetic failure')
+            self.assertEqual(record.call_count,4)
+            with self.assertRaisesRegex(ValueError,'unknown_stock_status_job'):
+                S.record_status('unapproved',True,'Synthetic result')
+            self.assertEqual(record.call_count,4)
+
     def test_secondary_newsletters_exclude_other_mail_and_preserve_date_limits(self):
         from pathlib import Path
         from datetime import date

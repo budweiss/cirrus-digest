@@ -4,13 +4,24 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock,patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def test_private_draft_uses_only_c1_loopback_and_rejects_incomplete_output(self):
+        import io
+        response={'model':'gpt-oss:120b','done':True,'done_reason':'stop','message':{'content':'{"synthetic":true}'}}
+        def reply(*args,**kwargs):return io.BytesIO(json.dumps(response).encode())
+        with patch.object(S.media,'token_count',return_value=100),patch.object(S.urllib.request,'urlopen',side_effect=reply) as request,patch('llm_budget.record_call'):
+            self.assertEqual(S.c1_draft('Synthetic policy','Synthetic private fixture'),'{"synthetic":true}')
+            self.assertEqual(request.call_args.args[0].full_url,'http://127.0.0.1:11434/api/chat')
+            response['done_reason']='length'
+            with self.assertRaisesRegex(RuntimeError,'incomplete_or_wrong'):S.c1_draft('policy','fixture')
+            response.update(done_reason='stop',model='other-model')
+            with self.assertRaisesRegex(RuntimeError,'incomplete_or_wrong'):S.c1_draft('policy','fixture')
+
     def test_partial_paywall_text_is_not_treated_as_verified_news(self):
         from types import SimpleNamespace
-        from unittest.mock import Mock
         fetch=Mock(side_effect=[('Blocked excerpt '*40,True),('Verified public source '*40,False)])
         module=SimpleNamespace(search_web=lambda *a,**k:['https://example.com/blocked','https://example.com/allowed'],fetch_article_content=fetch)
         with patch.dict('sys.modules',{'cirrus_daily':module}):rows,gaps=S.public_news([{'ticker':'EXAMPLE','weight_pct':'100'}])
@@ -22,7 +33,7 @@ class PersonalChecks(unittest.TestCase):
         draft={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic test evidence is not available for this rule.'} for i in range(1,8)]}
         reviews=iter(['{"passed":true,"issues":["Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
-        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S.media,'complete',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args:next(reviews)):
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args:next(reviews)):
             result=S.assess([],{},[],[],4,'Synthetic seven rules.','Synthetic instructions.',Path(td))
             checks=json.loads((Path(td)/'checks.json').read_text())
         self.assertEqual(result,draft);self.assertEqual(model.call_count,2)
