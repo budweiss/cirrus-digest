@@ -146,3 +146,7 @@ media/
 
 # S321: live research caches and unreviewed memory remain on the research host.
 alopecia/research-state/
+
+/private/yahoo-review/
+/private/yahoo-schedule/
+/private/stratus-monthly/

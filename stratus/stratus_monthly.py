@@ -474,6 +474,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if 'selftest' in sys.argv[1:] or '--selftest' in sys.argv[1:]:
+        main()
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (STATE / 'run.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
