@@ -22,6 +22,7 @@ feedparser==6.0.12       # RSS/Atom feed parsing (cirrus_daily, cirrus_digest)
 Flask==3.1.3             # cirrus_api admin API (port 5001)
 numpy==2.2.6             # cirrus_rag vector store (nomic-embed-text embeddings)
 requests==2.34.2         # everywhere — HTTP for feeds, Telegram, Ollama, Claude API
+pypdf==6.13.2           # Shore county listings: layout extraction preserves case/amount alignment
 openpyxl                 # xlsx builders (newdev/build_report.py, snow workbooks) — S56: was
                          # missing here; pip-installed ad-hoc on CIRRUS, absent on CUMULUS.
                          # Unpinned so ARM64/CUDA + macOS both resolve a native wheel.

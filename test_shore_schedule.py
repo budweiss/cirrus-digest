@@ -15,10 +15,31 @@ class ShoreChecks(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import Mock
         fetch=Mock(return_value=('Blocked subscription excerpt '*40,True))
-        module=SimpleNamespace(search_web=lambda *a,**k:[],fetch_article_content=fetch)
-        with patch.dict('sys.modules',{'cirrus_daily':module}),patch.object(S,'COUNTIES',(('Synthetic county','https://example.com/blocked'),)):
+        module=SimpleNamespace(search_web=lambda *a,**k:['https://example.com/blocked'],fetch_article_content=fetch)
+        with patch.dict('sys.modules',{'cirrus_daily':module}),patch.object(S,'COUNTIES',()):
             with self.assertRaisesRegex(RuntimeError,'shore_sources_unavailable'):S.gather()
         self.assertEqual(fetch.call_args.kwargs['max_chars'],16000)
+
+    def test_pdf_amounts_cannot_cross_case_boundaries(self):
+        layout='OCEAN COUNTY UPSET\nREAL ESTATE LISTING FOR 10/20/2026 AMOUNT\n CH 100\n PLAINTIFF $850,000.00\n SEQ 001 1 EXAMPLE ST TOMS RIVER NJ\n CH 200\n PLAINTIFF $350,000.00 ADJOURNED UNTIL 11/17/2026\n SEQ 001 2 EXAMPLE ST SEASIDE PARK NJ\n'
+        blocks,total=S.ocean_blocks(layout)
+        self.assertEqual(total,2);self.assertEqual(len(blocks),1)
+        self.assertIn('$350,000.00',blocks[0]);self.assertNotIn('$850,000.00',blocks[0])
+        self.assertIn('ADJOURNED UNTIL',blocks[0]);self.assertIn('UPSET AMOUNT',blocks[0])
+        with self.assertRaisesRegex(ValueError,'amount_alignment'):
+            S.ocean_blocks(layout.replace('$850,000.00',''))
+
+    def test_county_form_table_and_details_use_one_session(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        index='<h2>Cape May County, NJ</h2><form><table><tr><td><a href="/Sales/SaleDetails?PropertyId=1">Details</a></td><td>10/20/2026</td><td>123 Example Street Wildwood NJ</td></tr></table></form>'
+        detail='<form>Sales Listing Detail (Cape May County, NJ) Property Address: 123 Example Street Wildwood NJ Minimum Bid: $300,000.00</form>'
+        response=lambda text,url:SimpleNamespace(text=text,url=url,raise_for_status=lambda:None)
+        session=Mock();session.get.side_effect=[response(index,'https://salesweb.civilview.com/Sales/SalesSearch?countyId=52'),response(detail,'https://salesweb.civilview.com/Sales/SaleDetails?PropertyId=1')]
+        with patch('requests.Session',return_value=session):sources,gaps=S.county_sources('Cape May','https://salesweb.civilview.com/Sales/SalesSearch?countyId=52')
+        self.assertEqual(session.get.call_count,2)
+        self.assertIn('$300,000.00',sources[0]['text']);self.assertIn('read 1 index rows',gaps[-1])
+        self.assertIn('attempted 1 detail pages',gaps[-1])
 
     def test_twice_covered_unchanged_property_waits_for_a_change(self):
         history=S.record_coverage([ROW],ROW['address'],'2026-10-10',{})
