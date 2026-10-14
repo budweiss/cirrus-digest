@@ -48,6 +48,7 @@ class ReviewTests(unittest.TestCase):
     def server(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             folder = Path(tmp)
+            (folder/'page.html').write_text('outdated page')
             for key, value in {'OUTPUT_DIR': folder, 'QUEUE': folder/'queue.json',
                                'BATCH_META': folder/'meta.json', 'LATEST': folder/'page.html'}.items():
                 stack.enter_context(patch.object(lib, key, value))
@@ -107,7 +108,6 @@ class ReviewTests(unittest.TestCase):
 
     def test_failed_refresh_does_not_serve_old_actionable_page(self):
         with self.server() as port, patch.object(web, 'regenerate', side_effect=RuntimeError('failed')):
-            lib.LATEST.write_text('outdated page')
             conn = http.client.HTTPConnection('127.0.0.1', port)
             conn.request('GET', '/')
             res = conn.getresponse()

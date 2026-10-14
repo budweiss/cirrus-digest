@@ -246,6 +246,12 @@ def validate_entry(text, urls):
 def local_entry(prompt, urls):
     import media_pipeline as media
     draft = media.call('prompt', prompt=SYSTEM + '\n\n' + prompt)
+    # This is a standing publication notice, not a model inference. Render it
+    # deterministically; the unchanged validator and evidence review still run.
+    if re.search(r'\$\s?\d', draft) and 'Prices: verify before purchase.' not in draft:
+        lines = draft.rstrip().splitlines()
+        lines.insert(max(0, len(lines) - 1), 'Prices: verify before purchase.')
+        draft = '\n'.join(lines)
     draft = validate_entry(draft, urls)
     review = media.call('prompt', prompt=(
         'Review this STRATUS draft against its supplied evidence. Return only JSON '
