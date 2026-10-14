@@ -86,6 +86,8 @@ class PersonalChecks(unittest.TestCase):
         data={'opinion':'Synthetic dated export is 40% in one holding; this invented weight must be rejected.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic evidence established.'} for i in range(1,8)]}
         with self.assertRaisesRegex(ValueError,'canonical_table'):S.validate(data,[])
+        data['opinion']='Synthetic user rule defines a 40% threshold; no current outcome is established.'
+        self.assertEqual(S.validate(data,[],'Synthetic rule threshold is 40%.'),data)
 
     def test_unoffered_source_refused(self):
         data={'opinion':'Synthetic opinion with invented source https://example.com/not-offered and no transactions.',

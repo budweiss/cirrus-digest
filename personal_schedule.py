@@ -91,7 +91,7 @@ def public_news(rows):
     return out,gaps
 
 
-def validate(data,news):
+def validate(data,news,rule_source=''):
     if not isinstance(data,dict) or not isinstance(data.get('opinion'),str) or not 50<=len(data['opinion'])<=6500:
         raise ValueError('opinion_schema')
     rules=data.get('rules')
@@ -107,7 +107,8 @@ def validate(data,news):
     if '<!-- stock-paper-report:' in data['opinion']:raise ValueError('paper_account_contamination')
     prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)
     prose=re.sub(r'https?://\S+','',prose)
-    if re.search(r'\$\s*\d|\d\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',prose,re.I):
+    numbers=re.findall(r'\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',prose,re.I)
+    if any(value not in rule_source for value in numbers):
         raise ValueError('financial_numbers_belong_in_canonical_table')
     return data
 
@@ -134,8 +135,9 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
         'Use report_as_of as the report clock. The October 9 sell review is historical context, not a current event. '
         'All shares and weights refer to the dated export; only separately verified quotes have current observations. '
-        'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns, '
-        'valuation multiples or numerical sell thresholds in the opinion/rule prose. The final report adds a '
+        'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns '
+        'or valuation multiples in the opinion/rule prose. A numerical threshold explicitly defined in a supplied '
+        'sell rule may be quoted as that rule, never invented or treated as a current observed result. The final report adds a '
         'separate canonical quote table. Historical financial numbers must not be promoted to current facts. '
         'A large weight alone is not a sell reason. Apply each of the seven supplied rules with specific evidence '
         'or not_established. Name the actual test for each rule; when evidence is absent, state what is missing. '
@@ -148,7 +150,9 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         fix=''
         for attempt in range(3):
             try:
-                draft=validate(parse(media.complete(system,json.dumps(data)+fix,'personal-opinion')),news)
+                raw=parse(media.complete(system,json.dumps(data)+fix,'personal-opinion'))
+                atomic(folder/('candidate-raw-%d.json'%attempt),raw)
+                draft=validate(raw,news,rules+'\n'+instructions)
                 atomic(folder/('candidate-%d.json'%attempt),draft)
                 raw_review=research.structured_review(
                     'Review this personal-holdings OPINION against the source records and seven supplied sell rules. '
@@ -172,6 +176,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
                 reason='context_budget_exceeded' if str(exc) in ('media request exceeds context budget','review request exceeds context budget') else research.error_code(exc)
                 attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
                 fix='\nOutput rejected: '+research.error_code(exc)+'. Use the required schema and sourced evidence.'
+                if str(exc)=='financial_numbers_belong_in_canonical_table':
+                    fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose unless quoting an exact threshold defined in the supplied sell rules. The canonical quote table is added separately.'
     raise ValueError('personal_opinion_review_failed')
 
 
