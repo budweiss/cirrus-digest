@@ -36,7 +36,8 @@ def atomic(path,data):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2)+'\n');tmp.chmod(0o600);tmp.replace(path)
 
 
-def inputs(folder=INPUTS):
+def inputs(folder=None):
+    folder=folder or INPUTS
     manifest=json.loads((folder/'manifest.json').read_text());raw=(folder/'holdings.csv').read_bytes()
     if hashlib.sha256(raw).hexdigest()!=manifest['sha256']:raise ValueError('holdings_hash_mismatch')
     rows=list(csv.DictReader(io.StringIO(raw.decode())))
@@ -202,13 +203,19 @@ def import_inputs(data):
         raise ValueError('input_hash')
     HOME.mkdir(parents=True,exist_ok=True,mode=0o700)
     with media.lease(HOME/'run.lock',timeout=5):
-        INPUTS.mkdir(parents=True,exist_ok=True,mode=0o700)
-        # All readers hold run.lock. A crash before manifest replacement causes
-        # hash refusal instead of silently using a partial input set.
-        for name,text in data['files'].items():
-            target=INPUTS/name;tmp=target.with_suffix('.incoming');tmp.write_text(text);tmp.chmod(0o600);tmp.replace(target)
-        atomic(INPUTS/'manifest.json',data['manifest'])
-        rows,manifest,age,_,_=inputs()
+        import tempfile
+        # Validate all incoming data before touching the last usable input set.
+        with tempfile.TemporaryDirectory(dir=HOME,prefix='inputs-review-') as temp:
+            staged=Path(temp)
+            for name,text in data['files'].items():(staged/name).write_text(text)
+            atomic(staged/'manifest.json',data['manifest'])
+            rows,manifest,age,_,_=inputs(staged)
+            INPUTS.mkdir(parents=True,exist_ok=True,mode=0o700)
+            # All readers hold run.lock. A crash before manifest replacement
+            # causes hash refusal instead of silently using a partial input set.
+            for name in data['files']:
+                source=staged/name;source.chmod(0o600);source.replace(INPUTS/name)
+            (staged/'manifest.json').replace(INPUTS/'manifest.json')
     return {'status':'inputs_verified','sha256':manifest['sha256'],'rows':len(rows),'export_stale':age>3}
 
 def main():
