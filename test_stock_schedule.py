@@ -164,10 +164,12 @@ class ScheduleChecks(unittest.TestCase):
                     patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
                     patch.object(S.paper,'tax_export',return_value={'dispositions':[]}), \
                     patch.object(S,'policy',return_value='Synthetic paper policy only.'), \
-                    patch.object(S,'checked_prose',return_value='No mature decisions; synthetic account only.'), \
+                    patch.object(S,'checked_prose',return_value='No mature decisions; synthetic account only.') as narrative, \
                     patch.object(S.sender,'send_verified_once') as send,patch.object(S.paper,'apply') as apply:
                 result=S.scorecard(False,'2026-10-14',folder)
             self.assertEqual(result['status'],'preview');send.assert_not_called();apply.assert_not_called()
+            narrative.assert_not_called()
+            self.assertIn('No recorded decision has reached', (folder/'preview.md').read_text())
             self.assertTrue((folder/'preview.md').exists())
             self.assertFalse((folder/'fixed-window-reviews').exists())
             self.assertFalse((folder/'digests').exists())
