@@ -118,7 +118,7 @@ def county_sources(county,url):
             detail=session.get(target,timeout=30);detail.raise_for_status();page=BeautifulSoup(detail.text,'html.parser')
             for node in page(['script','style','nav','header','footer']):node.decompose()
             text=page.get_text(' ',strip=True)
-            if county+' County, NJ' not in text or 'Property Address:' not in text:raise ValueError('county_detail_identity')
+            if county+' County, NJ' not in text or not re.search(r'\b(?:Property )?Address:',text):raise ValueError('county_detail_identity')
             add(target,county+' sheriff sale detail',text)
         except Exception as exc:gaps.append(county+' detail unavailable: '+type(exc).__name__)
     overview=heading+'\n\nTarget-town index rows (prices require the detail pages):\n'+'\n'.join(row for _,row in listing)

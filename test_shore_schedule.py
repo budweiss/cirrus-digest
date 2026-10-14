@@ -40,6 +40,9 @@ class ShoreChecks(unittest.TestCase):
         self.assertEqual(session.get.call_count,2)
         self.assertIn('$300,000.00',sources[0]['text']);self.assertIn('read 1 index rows',gaps[-1])
         self.assertIn('attempted 1 detail pages',gaps[-1])
+        session.get.side_effect=[response(index.replace('Cape May','Monmouth'),'https://salesweb.civilview.com/Sales/SalesSearch?countyId=8'),response(detail.replace('Cape May','Monmouth').replace('Property Address:','Address:'),'https://salesweb.civilview.com/Sales/SaleDetails?PropertyId=1')]
+        with patch('requests.Session',return_value=session):sources,gaps=S.county_sources('Monmouth','https://salesweb.civilview.com/Sales/SalesSearch?countyId=8')
+        self.assertIn('$300,000.00',sources[0]['text'])
 
     def test_twice_covered_unchanged_property_waits_for_a_change(self):
         history=S.record_coverage([ROW],ROW['address'],'2026-10-10',{})
