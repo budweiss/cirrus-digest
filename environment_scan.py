@@ -60,7 +60,7 @@ def gather():
             req=urllib.request.Request(url,headers={'User-Agent':'Cowork-environment-review/1.0'})
             with urllib.request.urlopen(req,timeout=30) as response:
                 tree=ET.fromstring(response.read(2_000_000))
-            entries=tree.findall('a:entry',atom)[:2]
+            entries=tree.findall('a:entry',atom)[:1]
             if not entries:raise ValueError('empty_release_feed')
             for item in entries:
                 link=item.find('a:link',atom).get('href','')

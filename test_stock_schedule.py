@@ -57,4 +57,16 @@ class ScheduleChecks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'prior_delivery_requires_reconciliation'):S.daily('pm',True,'2026-10-14',home)
             snap.assert_not_called()
 
+    def test_weekly_review_cannot_send_mail(self):
+        import inspect
+        for fn in (S.scorecard,S.discovery):
+            code=inspect.getsource(fn)
+            self.assertNotIn('sender.',code)
+            self.assertNotIn('paper.apply',code)
+
+    def test_primary_source_allowlist_excludes_promotions(self):
+        self.assertNotIn('fool.com',S.DISCOVERY_HOSTS)
+        self.assertNotIn('dividendfortress.substack.com',S.DISCOVERY_HOSTS)
+        self.assertIn('www.fisherinvestments.com',S.DISCOVERY_HOSTS)
+
 if __name__=='__main__':unittest.main()
