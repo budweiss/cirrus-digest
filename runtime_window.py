@@ -118,6 +118,7 @@ JOB = {
     "com.cirrus.businessideasdigest": ("light", 1, 2, "composes and sends one digest"),
     "com.cirrus.vendormail":         ("light", 1, 5, "scans a small vendor inbox"),
     "com.cirrus.stratusreview":      ("light", 2, 10, "short review pass"),
+    "com.cirrus.environmentscan":    ("light", 8, 10, "bounded public-source scan and two local reviews"),
     "com.cirrus.opinionaireview":    ("light", 3, 1, "one metadata fetch, bounded local triage and email"),
     "com.cirrus.yahooreview":        ("light", 3, 1, "20 IMAP headers and bounded local classification"),
     "com.cirrus.yahooapply":         ("light", 2, 1, "applies only due human-submitted mailbox choices"),

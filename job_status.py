@@ -39,6 +39,7 @@ CADENCE_H = {
     # waits for findings rather than sending nothing).
     "aggieyt":       26,
     "aggiecollect":  26,        # dedicated latest-video collection, daily 00:30
+    "environmentscan": 26,     # daily official-source review at 06:45
     "opinionaireview": 24 * 8,  # weekly Sunday 10:30; CIRRUS dispatches to CUMULUS
     "yahooreview":   24 * 8,    # Thursday 09:00; private header-only review on CUMULUS
     "yahooapply":    26,        # 09:05; only due, explicitly submitted choices
