@@ -139,6 +139,18 @@ class ScheduleChecks(unittest.TestCase):
             self.assertFalse((folder/'fixed-window-reviews').exists())
             self.assertFalse((folder/'digests').exists())
 
+    def test_completed_scorecard_stays_out_of_shared_digest_ingestion(self):
+        from pathlib import Path
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home=root/'private/stock-paper';home.mkdir(parents=True)
+            folder=home/'runs';folder.mkdir()
+            account={'decisions':[],'report':'Synthetic private account','report_id':'fixture'}
+            with patch.object(S,'ROOT',root),patch.object(S,'HOME',home),patch.object(S,'snapshot',return_value=account),patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'),patch.object(S.paper,'tax_export',return_value={'dispositions':[]}),patch.object(S,'policy',return_value='Synthetic policy'),patch.object(S,'checked_prose',return_value='Synthetic private scorecard'):
+                S.scorecard(True,'2026-10-14',folder)
+            self.assertTrue((home/'digests/stock-scorecard-latest.md').exists())
+            self.assertFalse((root/'digests').exists())
+
 class SimpleCursor:
     def __init__(self,row):self.row=row
     def fetchone(self):return self.row
