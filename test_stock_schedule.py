@@ -14,6 +14,19 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_accepted_primary_quote_beyond_article_opening_is_preserved(self):
+        import json
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as td:
+            report=Path(td)/'report.md';report.write_text('Synthetic research')
+            conn=MagicMock()
+            conn.execute.side_effect=[SimpleCursor({'id':1,'started':'2026-10-14T12:00:00Z','status':'partial','report':str(report)}),
+                [{'ticker':'EXAMPLE','recorded_at':'2026-10-14T12:01:00Z','draft':json.dumps({'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]})}],
+                SimpleCursor({'data':json.dumps({'company':{},'documents':[{'id':1,'text':'x'*8000+QUOTE,'url':'https://example.com/filing','published':'2026-10-01'}]})})]
+            with patch.object(S.research,'database',return_value=conn):out=S.packet()
+            self.assertIn(QUOTE,out['companies'][0]['documents'][0]['text'])
+
     def test_failed_review_is_a_failed_process_even_when_preview_was_composed(self):
         import io,contextlib
         with patch.object(S.sys,'argv',['stock_schedule.py','--job','am']),patch.object(S,'run',return_value={'status':'preview','decision_review':'failed_paper_decision_review_failed'}),contextlib.redirect_stdout(io.StringIO()):
@@ -125,5 +138,9 @@ class ScheduleChecks(unittest.TestCase):
             self.assertTrue((folder/'preview.md').exists())
             self.assertFalse((folder/'fixed-window-reviews').exists())
             self.assertFalse((folder/'digests').exists())
+
+class SimpleCursor:
+    def __init__(self,row):self.row=row
+    def fetchone(self):return self.row
 
 if __name__=='__main__':unittest.main()

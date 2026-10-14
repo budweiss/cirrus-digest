@@ -93,7 +93,6 @@ def packet():
             data=json.loads(obs['data']);draft=json.loads(row['draft'])
             ids={x['id'] for p in draft['paragraphs'] for x in p['evidence']}
             docs=[{k:d.get(k) for k in ('id','url','published','title','text')} for d in data['documents'] if d['id'] in ids]
-            for d in docs:d['text']=d['text'][:7000]
             latest.append({'ticker':row['ticker'],'recorded_at':row['recorded_at'],'company':data['company'],
                            'draft':draft,'documents':docs})
         return {'run_id':run['id'],'started':run['started'],'status':run['status'],'companies':latest,
@@ -209,6 +208,14 @@ def choose(evidence,account,replies,date,slot,caller=media.complete,audit=None,p
 def refresh_research(slot):
     # The existing collector's lock, rotation and ten-minute bound are retained.
     with media.lease(HOME/'research/refresh.lock',timeout=5):
+        # A just-completed pass is still current during retries/verification.
+        # Reuse its original timestamp and quality result, never relabel it fresh.
+        try:
+            recent=packet()
+            age=datetime.now(timezone.utc)-research.dt(recent['started'])
+            if timedelta(0)<=age<=timedelta(minutes=15) and recent['companies']:
+                return recent
+        except (ValueError,KeyError,TypeError,FileNotFoundError):pass
         with contextlib.redirect_stdout(io.StringIO()):
             research.refresh(HOME/'research',slot,budget_seconds=600)
     return packet()
