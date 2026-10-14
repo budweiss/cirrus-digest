@@ -171,6 +171,7 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "com.cirrus.stratusreview": "existing day-1 13:45 monthly digest consolidated from Claude; reports into the next brief",
     "com.cirrus.opinionaireview": "existing Sunday 10:30 user digest migrated from Claude; reports into the next brief",
     "com.cirrus.yahooreview": "existing Thursday 09:00 private review migrated from Codex; reports into the next brief",
     "com.cirrus.yahooapply": "existing 09:05 worker for due human choices; reports into the next brief",
