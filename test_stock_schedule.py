@@ -14,6 +14,29 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_secondary_newsletters_exclude_other_mail_and_preserve_date_limits(self):
+        from pathlib import Path
+        from datetime import date
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            (folder/'20261014-sa.md').write_text('> From: `alerts@email.seekingalpha.com`\nSynthetic secondary opinion only.')
+            (folder/'20261014-other.md').write_text('> From: `person@example.com`\nUnrelated private fixture.')
+            (folder/'20261001-old.md').write_text('> From: `alerts@seekingalpha.com`\nOld fixture.')
+            rows=S.secondary_newsletters(folder,date(2026,10,14))
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['archive_date'],'2026-10-14')
+        self.assertIn('not an article publication date',rows[0]['notice'])
+
+    def test_secondary_contribution_requires_both_offered_sources(self):
+        public={'newsletter_excerpts':[{'id':'fixture','archive_date':'2026-10-14'}]}
+        self.assertIn('contributed no',S.secondary_usage([],public,EV))
+        with self.assertRaisesRegex(ValueError,'offered_primary_source'):
+            S.secondary_usage([{'secondary_id':'fixture','primary_id':999}],public,EV)
+        result=S.secondary_usage([{'secondary_id':'fixture','primary_id':1}],public,EV)
+        self.assertIn('2026-10-01',result);self.assertIn('not a verified article date',result)
+        listing=S.source_list(EV,public)
+        self.assertIn('Primary sources',listing);self.assertIn('Secondary sources',listing)
+        self.assertIn('full articles were not fetched',listing)
+
     def test_model_schema_limits_symbols_to_reviewed_companies(self):
         import json
         response={'model':S.media.MODEL,'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'decisions':[],'explanation':'Synthetic missing evidence means no action is justified.'})}}]}
