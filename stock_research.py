@@ -486,7 +486,7 @@ def structured_review(system, text, task):
               'required': ['passed', 'issues'], 'properties': {
                   'passed': {'type': 'boolean'},
                   'issues': {'type': 'array', 'maxItems': 5,
-                             'items': {'type': 'string', 'maxLength': 300}}}}
+                             'items': {'type': 'string', 'minLength': 5, 'maxLength': 300}}}}
     result = request('/v1/chat/completions', {'model': MODEL,
         'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
         'temperature': 0, 'max_tokens': 1500, 'chat_template_kwargs': {'enable_thinking': False},

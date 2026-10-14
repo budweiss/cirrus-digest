@@ -105,6 +105,10 @@ def validate(data,news):
     cited={u.rstrip('.') for u in re.findall(r'https?://[^\s)\]>\"\'`,]+',json.dumps(data))}
     if not cited<=urls:raise ValueError('opinion_unoffered_source')
     if '<!-- stock-paper-report:' in data['opinion']:raise ValueError('paper_account_contamination')
+    prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)
+    prose=re.sub(r'https?://\S+','',prose)
+    if re.search(r'\$\s*\d|\d\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',prose,re.I):
+        raise ValueError('financial_numbers_belong_in_canonical_table')
     return data
 
 
@@ -130,6 +134,9 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
         'Use report_as_of as the report clock. The October 9 sell review is historical context, not a current event. '
         'All shares and weights refer to the dated export; only separately verified quotes have current observations. '
+        'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns, '
+        'valuation multiples or numerical sell thresholds in the opinion/rule prose. The final report adds a '
+        'separate canonical quote table. Historical financial numbers must not be promoted to current facts. '
         'A large weight alone is not a sell reason. Apply each of the seven supplied rules with specific evidence '
         'or not_established. Name the actual test for each rule; when evidence is absent, state what is missing. '
         'Do not invent business news, prices, dates, sell thresholds or intent. '

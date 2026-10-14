@@ -82,6 +82,11 @@ class PersonalChecks(unittest.TestCase):
         data['rules'].pop()
         with self.assertRaisesRegex(ValueError,'seven_sell_rules_required'):S.validate(data,[])
 
+    def test_model_cannot_recalculate_financial_numbers_in_opinion(self):
+        data={'opinion':'Synthetic dated export is 40% in one holding; this invented weight must be rejected.',
+              'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic evidence established.'} for i in range(1,8)]}
+        with self.assertRaisesRegex(ValueError,'canonical_table'):S.validate(data,[])
+
     def test_unoffered_source_refused(self):
         data={'opinion':'Synthetic opinion with invented source https://example.com/not-offered and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic evidence established.'} for i in range(1,8)]}
