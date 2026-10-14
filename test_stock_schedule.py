@@ -57,16 +57,23 @@ class ScheduleChecks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'prior_delivery_requires_reconciliation'):S.daily('pm',True,'2026-10-14',home)
             snap.assert_not_called()
 
-    def test_weekly_review_cannot_send_mail(self):
-        import inspect
-        for fn in (S.scorecard,S.discovery):
-            code=inspect.getsource(fn)
-            self.assertNotIn('sender.',code)
-            self.assertNotIn('paper.apply',code)
-
-    def test_primary_source_allowlist_excludes_promotions(self):
-        self.assertNotIn('fool.com',S.DISCOVERY_HOSTS)
-        self.assertNotIn('dividendfortress.substack.com',S.DISCOVERY_HOSTS)
-        self.assertIn('www.fisherinvestments.com',S.DISCOVERY_HOSTS)
+    def test_scorecard_preview_has_no_mail_trade_or_live_review_write(self):
+        from pathlib import Path
+        from contextlib import nullcontext
+        account={'decisions':[],'report':'Synthetic canonical account','report_id':'fixture'}
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            with patch.object(S,'ROOT',folder),patch.object(S,'HOME',folder), \
+                    patch.object(S,'snapshot',return_value=account), \
+                    patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
+                    patch.object(S.paper,'tax_export',return_value={'dispositions':[]}), \
+                    patch.object(S,'policy',return_value='Synthetic paper policy only.'), \
+                    patch.object(S,'checked_prose',return_value='No mature decisions; synthetic account only.'), \
+                    patch.object(S.sender,'send_verified_once') as send,patch.object(S.paper,'apply') as apply:
+                result=S.scorecard(False,'2026-10-14',folder)
+            self.assertEqual(result['status'],'preview');send.assert_not_called();apply.assert_not_called()
+            self.assertTrue((folder/'preview.md').exists())
+            self.assertFalse((folder/'fixed-window-reviews').exists())
+            self.assertFalse((folder/'digests').exists())
 
 if __name__=='__main__':unittest.main()

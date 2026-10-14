@@ -117,7 +117,7 @@ def review(rows,prior,caller=None,audit=None):
         'Do not call a fetched old page new merely because it was fetched today. '
         'For undated product pages say observation, not new release. Return only JSON '
         '{"findings":[{"source_index":0,"quote":"exact contiguous excerpt",'
-        '"summary":"specific change, relevance and limitation",'
+        '"summary":"one sentence of at most 45 words: change, relevance, limitation",'
         '"verdict":"ADOPT|DEFER|SKIP|DECIDE"}]}. ADOPT means a suggestion for review, '
         'not a completed install. Prices require verification before purchase. '
         'Use an empty findings list if nothing meaningful changed.\nPrior report:\n')+prior[-7000:]+'\nSources:\n'+evidence
@@ -134,7 +134,8 @@ def review(rows,prior,caller=None,audit=None):
             feedback='\nCorrect these findings: '+json.dumps(checked)
             if audit:audit({'stage':'evidence_review','review':checked})
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
-            feedback='\nPrevious output rejected: '+type(exc).__name__+'. Keep the required schema and exact quotes.'
+            reason=str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction') else type(exc).__name__
+            feedback='\nPrevious output rejected: '+reason+'. Use exact quotes and summaries of no more than 45 words each.'
             if audit:audit({'stage':'schema','error_type':type(exc).__name__, 'controlled_reason':str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction','media request exceeds context budget') else 'parse_or_transport'})
     raise ValueError('environment_review_failed')
 
