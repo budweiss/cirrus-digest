@@ -119,6 +119,8 @@ JOB = {
     "com.cirrus.vendormail":         ("light", 1, 5, "scans a small vendor inbox"),
     "com.cirrus.stratusreview":      ("light", 2, 10, "short review pass"),
     "com.cirrus.opinionaireview":    ("light", 3, 1, "one metadata fetch, bounded local triage and email"),
+    "com.cirrus.yahooreview":        ("light", 3, 1, "20 IMAP headers and bounded local classification"),
+    "com.cirrus.yahooapply":         ("light", 2, 1, "applies only due human-submitted mailbox choices"),
     "com.cirrus.macstudiowatch":     ("light", 1, 1, "two Apple pages; S406 probe 0.8 MB, under one minute"),
     "com.cirrus.modelhealth":        ("light", 1, 2, "pings each model endpoint"),
     "com.cirrus.morningbrief":       ("light", 1, 3, "composes + sends; MUST BE LAST"),

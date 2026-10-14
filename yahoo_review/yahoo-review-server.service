@@ -1,0 +1,17 @@
+[Unit]
+Description=Private Yahoo weekly review page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python -u yahoo_review/yahoo_review_server.py
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

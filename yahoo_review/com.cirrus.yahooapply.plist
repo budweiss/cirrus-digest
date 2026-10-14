@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.cirrus.yahooapply</string>
+<key>UserName</key><string>buddy</string>
+<key>WorkingDirectory</key><string>/Users/buddy/projects/cirrus-digest</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>/Users/buddy/projects/cirrus-digest/yahoo_review/schedule.py</string><string>apply</string></array>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+<key>RunAtLoad</key><false/>
+<key>StandardOutPath</key><string>/Users/buddy/projects/cirrus-digest/logs/yahooapply.log</string>
+<key>StandardErrorPath</key><string>/Users/buddy/projects/cirrus-digest/logs/yahooapply-error.log</string>
+</dict></plist>
