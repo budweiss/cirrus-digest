@@ -19,9 +19,16 @@ class OpinionTests(unittest.TestCase):
             with self.assertRaises(ValueError): r.validate(data, [POST])
 
     def test_failed_review_is_not_published_as_findings(self):
-        draft = '{"items":[{"index":0,"verdict":"ACT","reason":"It is free and compatible."}]}'
+        draft = '{"items":[{"index":0,"verdict":"ACT","kind":"tool","reason":"It is free and compatible."}]}'
         caller = Mock(side_effect=[draft, '{"approved":false,"problems":["invented price"]}'] * 2)
         with self.assertRaisesRegex(ValueError, 'review_failed'): r.triage([POST], caller)
+        self.assertEqual(caller.call_count, 4)
+
+    def test_technique_cannot_be_counted_as_installable_tool_trial(self):
+        data = {'items': [{'index': 0, 'verdict': 'TRIAL', 'kind': 'technique',
+                          'reason': 'Use evaluation driven development.'}]}
+        with self.assertRaisesRegex(ValueError, 'requires_a_tool'):
+            r.validate(data, [POST])
 
     def test_success_records_send_once_and_keeps_both_recipients(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(r, 'fetch_posts', return_value=([], {})), \
