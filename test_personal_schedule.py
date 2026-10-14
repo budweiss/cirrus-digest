@@ -8,6 +8,11 @@ from unittest.mock import patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def test_export_notice_does_not_depend_on_model_disclosure(self):
+        self.assertIn('STALE',S.export_notice(4.1))
+        self.assertIn('current positions need your confirmation',S.export_notice(4.1))
+        self.assertNotIn('STALE',S.export_notice(1.0))
+
     def fixture(self,folder):
         raw=b'ticker,shares,avg_cost,price_at_export,value_at_export,weight_pct\nEXAMPLE,2,10,12,24,100\n'
         (folder/'holdings.csv').write_bytes(raw)
