@@ -50,11 +50,19 @@ def connect(readonly=True, timeout=60):
     if status != 'OK': raise RuntimeError('select_failed')
     return conn
 
+def header_value(message, name):
+    try:
+        return str(message.get(name, ''))
+    except (ValueError, TypeError):
+        # Python 3.9's email parser raises on malformed Date headers. Preserve
+        # their literal identity instead of losing the entire batch.
+        return next((v for k, v in message.raw_items() if k.lower() == name.lower()), '')
+
 def headers(raw, uid, flagged=False):
     m = email.message_from_bytes(raw, policy=email.policy.default)
-    return {'id': uid, 'sender': str(m.get('From',''))[:500], 'subject': str(m.get('Subject',''))[:700],
-            'date': str(m.get('Date',''))[:100],
-            'message_id': str(m.get('Message-ID',''))[:998],
+    return {'id': uid, 'sender': header_value(m, 'From')[:500], 'subject': header_value(m, 'Subject')[:700],
+            'date': header_value(m, 'Date')[:100],
+            'message_id': header_value(m, 'Message-ID')[:998],
             'list_unsubscribe_present': bool(m.get('List-Unsubscribe')), 'flagged': flagged}
 
 def fetch_headers_single(conn, uid):
@@ -86,14 +94,10 @@ def scan_headers(conn, folder='INBOX', depth=SCAN_DEPTH):
                     mu = re.search(rb'UID (\d+)', meta)
                     if not mu: continue
                     try:
-                        m = email.message_from_bytes(raw, policy=email.policy.default)
+                        item = headers(raw, mu.group(1).decode())
                     except Exception:
                         continue
-                    out.append({'id': mu.group(1).decode(), 'sender': str(m.get('From',''))[:500],
-                                'subject': str(m.get('Subject',''))[:700],
-                                'date': str(m.get('Date',''))[:100],
-                                'message_id': str(m.get('Message-ID',''))[:998],
-                                'list_unsubscribe_present': bool(m.get('List-Unsubscribe'))})
+                    out.append(item)
         seen = set(); unique = []
         for it in out:
             if it['id'] not in seen:
