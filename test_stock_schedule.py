@@ -1,0 +1,60 @@
+import copy
+import tempfile
+import unittest
+from datetime import datetime,timezone
+from unittest.mock import patch
+import stock_schedule as S
+
+QUOTE='Synthetic revenue for the period ended 2026-09-30 was 100 units.'
+EV={'companies':[{'ticker':'EXAMPLE','recorded_at':datetime.now(timezone.utc).isoformat(),
+    'documents':[{'id':1,'text':QUOTE,'url':'https://example.com/filing','published':'2026-10-01'}]}]}
+DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported valuation.',
+    'valuation':'No verified valuation available.','counterargument':'Business evidence may deteriorate.',
+    'exit_trigger':'Review a verified adverse business event.','evidence':[{'id':1,'quote':QUOTE}]}],
+    'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
+
+class ScheduleChecks(unittest.TestCase):
+    def test_primary_evidence_and_stable_identity(self):
+        a,_=S.qualify_decisions(DEC,EV,{},'2026-10-14','am')
+        b,_=S.qualify_decisions(DEC,EV,{},'2026-10-14','am')
+        self.assertEqual(a,b);self.assertEqual(a['decisions'][0]['evidence'][0]['url'],'https://example.com/filing')
+
+    def test_morning_never_turns_into_late_buy(self):
+        d=copy.deepcopy(DEC);d['decisions'][0]['action']='BUY'
+        with self.assertRaisesRegex(ValueError,'morning_plans_only'):S.qualify_decisions(d,EV,{},'2026-10-14','am')
+
+    def test_unknown_company_refused(self):
+        d=copy.deepcopy(DEC);d['decisions'][0]['ticker']='OTHER'
+        with self.assertRaises(ValueError):S.qualify_decisions(d,EV,{},'2026-10-14','pm')
+
+    def test_stale_research_refused(self):
+        ev=copy.deepcopy(EV);ev['companies'][0]['recorded_at']='2020-01-01T00:00:00Z'
+        with self.assertRaisesRegex(ValueError,'research_not_current'):S.qualify_decisions(DEC,ev,{},'2026-10-14','pm')
+
+    def test_invented_quote_refused(self):
+        d=copy.deepcopy(DEC);d['decisions'][0]['evidence'][0]['quote']='Invented revenue was 200 units and growing very fast.'
+        with self.assertRaisesRegex(ValueError,'decision_quote_or_date_unverified'):S.qualify_decisions(d,EV,{},'2026-10-14','pm')
+
+    def test_review_dates_skip_holiday_and_weekend(self):
+        self.assertEqual(S.review_dates('2026-11-05')[0],'2026-11-27')
+        self.assertEqual(S.review_dates('2026-10-17')[0],'2026-11-09')
+
+    def test_sent_slot_short_circuits_before_research_and_trades(self):
+        import json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);(home/'delivery').mkdir();(home/'delivery/2026-10-14-am.json').write_text(json.dumps({'status':'sent'}))
+            with patch.object(S,'HOME',home),patch.object(S,'snapshot') as snap,patch.object(S,'refresh_research') as research:
+                result=S.daily('am',True,'2026-10-14',home)
+            self.assertEqual(result['status'],'already_sent');snap.assert_not_called();research.assert_not_called()
+
+    def test_uncertain_slot_never_resends(self):
+        import json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);(home/'delivery').mkdir();(home/'delivery/2026-10-14-pm.json').write_text(json.dumps({'status':'sending_outcome_unknown_until_confirmed'}))
+            with patch.object(S,'HOME',home),patch.object(S,'snapshot') as snap:
+                with self.assertRaisesRegex(ValueError,'prior_delivery_requires_reconciliation'):S.daily('pm',True,'2026-10-14',home)
+            snap.assert_not_called()
+
+if __name__=='__main__':unittest.main()
