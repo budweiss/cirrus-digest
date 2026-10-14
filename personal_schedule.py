@@ -217,7 +217,9 @@ def dispatch(live=False):
     if live:
         ok=result['status'] in ('sent','already_sent');job_status.record('personalopinion',ok,'status='+result['status'])
         if result['status']!='already_sent':
-            result['telegram_confirmed']=telegram('Personal holdings opinion '+('completed locally and was accepted for your usual Yahoo address.' if ok else 'needs attention. Check its private review and delivery receipt before retrying.'))
+            notice='Personal holdings opinion '+('completed locally and was accepted for your usual Yahoo address.' if ok else 'needs attention. Check its private review and delivery receipt before retrying.')
+            if ok and result.get('export_stale'):notice+=' The holdings file is older than three days; refresh the export if your positions have changed.'
+            result['telegram_confirmed']=telegram(notice)
     folder=ROOT/'private/personal-schedule';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     atomic(folder/('dispatch-live.json' if live else 'dispatch-preview.json'),result);return result
 
