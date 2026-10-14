@@ -196,6 +196,8 @@ def parse_unreachable(text: str):
 # recorded elsewhere. Add to this ONLY with a doc reference — the point is that
 # the decision is written down, not that the warning is annoying.
 SETTLED_PLACEMENT = {
+    "yahoo-review-server.service",  # yahoo_review/README.md — private state,
+                                   # Yahoo credential and local inference on C1/C2
     "com.cirrus.offer",   # docs/OFFER-MLS-PROXY-DESIGN.md — split app, MLS half
                           # needs Playwright + the live session on CIRRUS
 }

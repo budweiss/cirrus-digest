@@ -3,13 +3,8 @@
 <plist version="1.0"><dict>
 <key>Label</key><string>com.buddy.yahoo-review-tunnel</string>
 <key>ProgramArguments</key><array>
-<string>/usr/bin/ssh</string><string>-N</string>
-<string>-o</string><string>BatchMode=yes</string>
-<string>-o</string><string>ExitOnForwardFailure=yes</string>
-<string>-o</string><string>ServerAliveInterval=30</string>
-<string>-o</string><string>ServerAliveCountMax=3</string>
-<string>-L</string><string>127.0.0.1:8638:127.0.0.1:8638</string>
-<string>cumulus1</string>
+<string>/opt/homebrew/bin/python3</string>
+<string>/Users/buddy/Library/CoworkHelpers/yahoo_review_tunnel.py</string>
 </array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>

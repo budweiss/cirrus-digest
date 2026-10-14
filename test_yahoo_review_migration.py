@@ -118,7 +118,7 @@ class ReviewTests(unittest.TestCase):
             entry = web.batch_entry('2', 'trash_after_7_days_review', lib.fingerprint(item),
                 (lib.now_eastern()-datetime.timedelta(days=8)).isoformat(), 30, 7)
             lib.save_queue([entry])
-            conn = MagicMock(); conn.capabilities = (b'MOVE',)
+            conn = MagicMock(); conn.capabilities = (b'IMAP4rev1',)
             conn.capability.return_value = ('OK', [b'IMAP4rev1 MOVE UIDPLUS'])
             conn.select.return_value = ('OK', [])
             conn.uid.return_value = ('OK', [(b'2', b'From: fake@example.test\nSubject: Synthetic\nMessage-ID: <x>\n\n')])
