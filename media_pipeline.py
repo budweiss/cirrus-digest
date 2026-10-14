@@ -468,6 +468,9 @@ def dispatch(payload):
         return supervised_youtube(payload)
     with lease(ROOT/'logs/media/worker.lock', timeout=7200):
         action = payload['action']
+        if action == 'aggie-summary':
+            from aggie_yt_collect import build_video
+            return build_video(payload['video'])
         if action == 'analyze':
             if payload.get('domain') == 'articles-infra' and (ROOT/'config/fleet-media.enabled').exists():
                 from fleet_media import run_analysis
@@ -504,7 +507,7 @@ def lane_ceiling(action):
     budget-derived ceiling; transcribe/weekly-fetch keep 28800 (the worker
     lease is 7200 s and those lanes can legitimately run hours).
     """
-    return {'prompt': 900, 'analyze': 1800}.get(action, 28800)
+    return {'prompt': 900, 'analyze': 1800, 'aggie-summary': 1800}.get(action, 28800)
 
 
 def call(action, **kwargs):

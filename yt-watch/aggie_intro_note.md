@@ -1,29 +1,19 @@
-# aggie_intro_note.md — S412
-# The one-time intro email aggie_yt_digest.py sends on its first live run
-# (before any summary has gone out). Keep it in Aggie-ack voice: plain, warm,
-# honest about what is covered and what is not.
+# S416 — introduction sent once, with the first verified brief.
 
-Thank you for your email of October 2 — that request reached me, and it's now
-set up. Beginning tomorrow morning you'll get a short daily brief here
-covering:
+Thank you for your October 2 request, and for your patience while I finished
+setting this up. Your daily video brief is ready, and the first summaries
+are below.
 
-    • Money On The Move
-    • Financial Education
-    • Take FiVe - His Glory
+I’m checking Money On The Move, Financial Education, and Take FiVe - His
+Glory each day for new YouTube videos. The brief focuses on the presenters’
+stock ideas, market outlook, and government or policy comments. Each item
+includes its video date and link, with the presenter’s views clearly
+attributed.
 
-Each brief lists the latest video from each channel and what the presenter
-said about stocks they recommend, where they think the stock market is
-headed, and anything they connect to government actions and policy. The
-quotes are their own words taken from the videos — reported and attributed,
-never ours and never an endorsement. Nothing in the briefs is financial
-advice.
+The daily check runs on Buddy’s servers, with new summaries sent here in
+the morning. When there is no new video, I won’t repeat an old summary or
+send filler. If a video cannot be read or checked reliably, I’ll hold its
+summary rather than guess.
 
-One note on Take FiVe - His Glory: its YouTube channel has been quiet since
-July 2025, because the show now puts its daily episodes on Rumble instead of
-YouTube. If a channel posts nothing on a given day, you'll simply get
-nothing for it that morning — no filler. If you'd like us to follow Take
-FiVe over on Rumble too (or only there), just reply and say the word and
-I'll take care of it.
-
-If you'd rather have the brief at a different time of day, or want anything
-summarized in more depth, just reply to this email.
+If you would like a different time or more detail on a particular video,
+please reply to this email.

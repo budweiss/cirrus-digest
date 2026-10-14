@@ -35,7 +35,7 @@ class DeliveryTests(unittest.TestCase):
                    patch.object(digest, "CREDS_PATH", self.creds),
                    patch.object(digest, "aggie_channels", return_value=[{"name": "Fixture", "channel_id": "fixture"}]),
                    patch.object(digest, "findings_files", return_value=[]),
-                   patch.object(digest, "parse_findings", return_value={self.sec["url"]: self.sec}),
+                   patch.object(digest, "reviewed_summaries", return_value={self.sec["url"]: self.sec}),
                    patch.object(digest, "newest_video", return_value={"video_id": "fixture0001", "title": "Example",
                                "published": "2026-10-01", "url": self.sec["url"]}),
                    patch.object(digest, "log")]
@@ -56,7 +56,7 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             digest.work(False)
         self.assertEqual(self.state.read_bytes(), before)
-        self.status.record.assert_not_called()
+        self.status.record.assert_called_once_with('aggieyt', False, 'digest send raised; cursor preserved')
 
     def test_confirmed_send_advances_cursor_and_prevents_repeat(self):
         self.assertEqual(digest.work(False), 0)
@@ -67,7 +67,7 @@ class DeliveryTests(unittest.TestCase):
     def test_failed_extraction_waits_and_sends_when_repaired(self):
         before = self.state.read_bytes()
         self.sec["extract_error"] = "fixture extraction failed"
-        self.assertEqual(digest.work(False), 0)
+        self.assertEqual(digest.work(False), 1)
         self.mail.send.assert_not_called()
         self.assertEqual(self.state.read_bytes(), before)
         self.sec["extract_error"] = ""

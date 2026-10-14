@@ -38,6 +38,7 @@ CADENCE_H = {
     # 26h grace absorbs a transient extraction that slips a day (the digest
     # waits for findings rather than sending nothing).
     "aggieyt":       26,
+    "aggiecollect":  26,        # dedicated latest-video collection, daily 00:30
     "learnwatch":    26,        # daily 01:15 (S308 Medium/Substack server-learnings read)
     "macstudiowatch": 26,       # S406: daily 16:45 CIRRUS, official Apple + Telegram
     "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)

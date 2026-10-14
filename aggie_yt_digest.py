@@ -1,54 +1,13 @@
 #!/usr/bin/env python3
-"""aggie_yt_digest.py — the OFFER client's daily YouTube brief (prepared S412).
+"""Aggie's daily brief: reviewed C1/C2 results, delivery owned by CIRRUS.
 
-S415 audit (2026-10-14): deployed, but the daily schedule is not installed and
-no introductory email has been sent. Delivery regressions are covered in
-test_aggie_yt_digest.py; activation still needs a real findings/content check.
-
-Buddy's authorization, 2026-10-12: "build the daily lane and begin sending her
-updates" and, when asked where it goes: "her, not here" — the emails go to
-Aggie only, never cc'd to Buddy.
-
-What this does (and does not do)
---------------------------------
-It does NOT transcribe, extract or summarize anything. The nightly yt-watch
-run (com.cirrus.ytwatch 05:30, media worker on cumulus1, inference on cumulus2)
-already produces yt-watch/findings/yt-watch-YYYY-MM-DD.md for every watched
-channel. Aggie's three channels (lane 'aggie' in yt-watch/channels.json) ride
-that same pipeline — same seen-cursor, same caption handling, same
-quote-grounded extraction. This script is only the LAST MILE:
-
-  1. fetch each aggie-lane channel's RSS and find the newest video;
-  2. if that video was already sent, skip the channel;
-  3. otherwise look for that video's section in the findings files (newest
-     file backwards). No findings yet is NOT a failure — extraction raced or
-     transiently failed, and the video simply waits for its summary; the next
-     run sends it. Findings, not the clock, are the source of truth, per
-     S102: a video that could not be read is reported, never skipped in
-     silence.
-  4. if any channel produced a section, compose one plain email and send it
-     from the mailbox Aggie wrote to (cirrustask@gmail.com), addressed to her,
-     no cc; the published claims are ALWAYS the presenters' own verbatim
-     words ("Presenter reports: ..." — the S307 quote-grounding rewrite in
-     media_pipeline.analyze), which is exactly the right shape for a client
-     brief: what they said, never our endorsement, and a fixed disclaimer.
-  5. if NO channel produced anything new, send nothing (an empty "nothing
-     today" email would train the client to ignore the digest — same
-     reasoning as pedagogy_daily's watch_promises=False note).
-  6. record the outcome in job_status as 'aggieyt' so the wrap can see
-     silence as well as sends.
-
-The intro email
----------------
-The FIRST live run (state file absent or no 'intro_sent') sends a single
-intro note instead of a summary and records intro_sent. That note is also
-where the one caveat Aggie needs lives: Take FiVe - His Glory stopped posting
-to YouTube in July 2025 and streams daily on Rumble instead — we cover the
-YouTube channel and offered to follow Rumble if she wants.
-
-State is written only AFTER a confirmed send, atomically (tmp+replace), and
-the run takes an exclusive flock so a manual run and the 07:10 fire can never
-double-send.
+Dedicated collection runs separately from the shared video backlog. Only a
+source-grounded, locally reviewed summary is eligible. The first confirmed
+email includes both the setup update and available summaries. Newest videos
+without usable results remain pending, and old episodes are labeled as old.
+Buddy authorized daily delivery to Aggie only, with no cc, October 12/14.
+The send cursor advances only after confirmed SMTP success. A lock prevents
+concurrent runs; source, review and delivery evidence are retained separately.
 """
 import fcntl
 import json
@@ -183,6 +142,22 @@ def findings_files(limit=14):
     return files[:limit]
 
 
+def reviewed_summaries():
+    """Only dedicated, reviewed results are eligible for client delivery."""
+    by_url = {}
+    for path in (PROJECT_DIR / 'yt-watch/aggie-summaries').glob('*.json'):
+        data = load_json(path, {})
+        if data.get('review', {}).get('approved') is not True or not data.get('channel'):
+            continue
+        video = data.get('video', {})
+        if not video.get('url') or not isinstance(data.get('bullets'), list):
+            continue
+        by_url[video['url']] = dict(video, channel=data['channel'],
+            bullets=data['bullets'], stale=data.get('stale', False), claims=[],
+            no_transcript='', extract_error='')
+    return by_url
+
+
 # ── composing ────────────────────────────────────────────────────────────────
 
 def render_quote_prefix(claim):
@@ -199,18 +174,24 @@ def render_quote_prefix(claim):
 def compose_email(sections, day_label):
     lines = ["Hi Aggie,", "",
              "Here's today's brief on the channels you follow — what each presenter said "
-             "about stocks, the market, and government matters. Everything is their words, "
-             "summarized; it's information, not financial advice.", ""]
+             "about stocks, the market, and government matters. These are summaries of their "
+             "views, not independently verified facts or financial advice.", ""]
     for sec in sections:
         lines.append("**%s — %s**" % (sec["channel"], sec["title"]))
         lines.append("Published %s · %s" % (sec["published"], sec["url"]))
         lines.append("")
-        if sec.get("no_transcript"):
+        if sec.get('stale'):
+            lines.append("The latest post found on this YouTube channel is dated %s. "
+                         "I’m continuing to check for new videos; this older episode "
+                         "is not included as current market or government news." % sec['published'])
+        elif sec.get("no_transcript"):
             lines.append("_This video had no captions available, so there's nothing to "
                          "summarize today._")
         elif sec.get("extract_error"):
             lines.append("_Something went wrong on our side reading this video — it will "
                          "be summarized on a later daily brief._")
+        elif 'bullets' in sec and sec['bullets']:
+            lines.extend('- ' + b for b in sec['bullets'])
         elif not sec["claims"]:
             lines.append("_No specific stock, market or government comments detected in "
                          "this one._")
@@ -241,9 +222,13 @@ def pick_sections(channels, by_url, state):
     sent = state.get("sent", {}) or {}
     for ch in channels:
         name = ch.get("name", "?")
-        new = newest_video(ch["channel_id"])
+        try:
+            new = newest_video(ch["channel_id"])
+        except Exception as exc:
+            pending.append(name + ' (feed check failed: ' + type(exc).__name__ + ')')
+            continue
         if not new:
-            log("  %s: feed empty/unreadable — skipping" % name)
+            pending.append(name + ' (feed empty)')
             continue
         if (sent.get(name) or {}).get("video_id") == new["video_id"]:
             continue
@@ -282,43 +267,29 @@ def work(dry_run):
         job_status.record("aggieyt", False, "no aggie-lane channels")
         return 2
     state = load_json(STATE_PATH, {})
-    by_url = parse_findings(findings_files())
+    by_url = reviewed_summaries()
     sections, pending = pick_sections(channels, by_url, state)
     for p in pending:
         log("  waiting for findings: %s" % p)
     now = datetime.now(NY)
     day_label = now.strftime("%A, %B %d")
 
-    # The one-time intro: sent only before any summary has ever gone out, so a
-    # first run with no findings yet still answers the client today.
-    if not state.get(INTRO_SENT_KEY):
-        intro_path = PROJECT_DIR / "yt-watch/aggie_intro_note.md"
-        body = compose_intro(intro_path.read_text(errors="replace"), day_label)
-        if not dry_run:
-            import mailer
-            creds = load_json(CREDS_PATH, {})
-            ok = mailer.send(creds["outlook_email"], creds["outlook_password"],
-                             AGGIE_TO, "Your daily YouTube brief is starting",
-                             body, creds=creds, log=log, watch_promises=False)
-            if not ok:
-                job_status.record("aggieyt", False, "intro send failed")
-                return 3
-            state[INTRO_SENT_KEY] = now.strftime("%Y-%m-%d")
-            atomic_json(STATE_PATH, state)
-            job_status.record("aggieyt", True, "intro sent (%d)" % len(sections))
-            log("intro email sent to %s" % AGGIE_TO)
-            return 0
-        log("DRY RUN: intro would be sent to %s" % AGGIE_TO)
-        print("Subject: Your daily YouTube brief is starting\n\n" + body)
-        return 0
-
     if not sections:
-        log("nothing new for any aggie channel — no email")
-        job_status.record("aggieyt", True,
-                          "no new videos (%d still pending findings)" % len(pending))
-        return 0
+        log("no reviewed new summaries — no email")
+        if not dry_run:
+            job_status.record("aggieyt", not pending,
+                              "no new summaries (%d pending)" % len(pending))
+        return 1 if pending else 0
     body = compose_email(sections, day_label)
     subject = "Your daily YouTube brief — " + day_label
+    introductory = not state.get(INTRO_SENT_KEY)
+    if introductory:
+        intro_path = PROJECT_DIR / "yt-watch/aggie_intro_note.md"
+        intro = compose_intro(intro_path.read_text(errors="replace"), day_label)
+        body = intro.rsplit('\n\n— CIRRUS', 1)[0] + '\n\n' + body.removeprefix('Hi Aggie,\n\n')
+        subject = "Your daily video summaries are ready"
+    if pending:
+        body += "\nSome new videos are still being checked and will follow when their summaries are ready.\n"
     if dry_run:
         print("DRY RUN — nothing sent. Would email to %s:\n" % AGGIE_TO)
         print("Subject: " + subject)
@@ -326,18 +297,24 @@ def work(dry_run):
         return 0
     import mailer
     creds = load_json(CREDS_PATH, {})
-    ok = mailer.send(creds["outlook_email"], creds["outlook_password"], AGGIE_TO,
-                     subject, body, creds=creds, log=log, watch_promises=False)
+    try:
+        ok = mailer.send(creds["outlook_email"], creds["outlook_password"], AGGIE_TO,
+                         subject, body, creds=creds, log=log, watch_promises=False)
+    except Exception:
+        job_status.record('aggieyt', False, 'digest send raised; cursor preserved')
+        raise
     if not ok:
         job_status.record("aggieyt", False, "digest send failed")
         return 3
     sent = state.setdefault("sent", {})
+    if introductory:
+        state[INTRO_SENT_KEY] = now.strftime("%Y-%m-%d")
     for sec in sections:
         vid = sec["url"].split("v=")[-1]
         sent[sec["channel"]] = {"video_id": vid, "date": now.strftime("%Y-%m-%d")}
         log("sent: %s — %s" % (sec["channel"], vid))
     atomic_json(STATE_PATH, state)
-    job_status.record("aggieyt", True, "sent %d section(s)" % len(sections))
+    job_status.record("aggieyt", not pending, "sent %d section(s); %d pending" % (len(sections), len(pending)))
     return 0
 
 
@@ -418,7 +395,7 @@ def selftest() -> int:
            "No specific stock, market or government comments" in body)
         body2 = aggie_yt.compose_email([sec], "X")
         ck("claim quotes are quoted for the client", '"XRP will multiply' in body2)
-        ck("client disclaimer present", "not financial advice" in body2)
+        ck("client disclaimer present", "financial advice" in body2)
 
         # pick_sections: already-sent video is not sent again
         state = {"sent": {"Money On The Move": {"video_id": "7jxq5gCd2aY"}}}
