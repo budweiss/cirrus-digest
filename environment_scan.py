@@ -68,7 +68,7 @@ def gather():
                 text=re.sub(r'<[^>]+>',' ',item.findtext('a:content','',atom))
                 title=item.findtext('a:title','',atom)
                 rows.append({'url':link,'title':name+': '+title,'published':item.findtext('a:updated','',atom),
-                             'text':(title+'\n'+text)[:7000],'kind':'release'})
+                             'text':(title+'\n'+text)[:3500],'kind':'release'})
         except Exception as exc:gaps.append(name+': '+type(exc).__name__)
     seen={r['url'] for r in rows}
     for query in QUERIES:
@@ -80,7 +80,7 @@ def gather():
                 if not text or len(text)<300:continue
                 seen.add(url);added+=1
                 rows.append({'url':url,'title':title or 'Official source','published':'not established',
-                             'text':text[:7000],'kind':'research'})
+                             'text':text[:3500],'kind':'research'})
                 if added>=1:break
             if not added:gaps.append('No usable primary page: '+query)
         except Exception as exc:gaps.append('Primary search: '+type(exc).__name__)
@@ -105,7 +105,7 @@ def validate(data,rows):
     return items
 
 
-def review(rows,prior,caller=None):
+def review(rows,prior,caller=None,audit=None):
     if caller is None:
         import media_pipeline
         caller=lambda prompt:media_pipeline.call('prompt',prompt=prompt)
@@ -132,8 +132,10 @@ def review(rows,prior,caller=None):
                 json.dumps({'prior':prior[-7000:],'sources':rows,'findings':findings})))
             if checked.get('approved') is True and checked.get('problems')==[]:return findings
             feedback='\nCorrect these findings: '+json.dumps(checked)
+            if audit:audit({'stage':'evidence_review','review':checked})
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
             feedback='\nPrevious output rejected: '+type(exc).__name__+'. Keep the required schema and exact quotes.'
+            if audit:audit({'stage':'schema','error_type':type(exc).__name__, 'controlled_reason':str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction','media request exceeds context budget') else 'parse_or_transport'})
     raise ValueError('environment_review_failed')
 
 
@@ -153,7 +155,7 @@ def run(dry=False,home=STATE):
         # 7 current release notes + 5 primary queries fit the local context.
         fresh=fresh[:12]
         prior=(home/'latest.md').read_text() if (home/'latest.md').exists() else ''
-        findings=review(fresh,prior) if fresh else []
+        findings=review(fresh,prior,audit=lambda d:atomic(home/'review-rejection.json',d)) if fresh else []
         now=datetime.now(ZoneInfo('America/New_York'));date=now.date().isoformat()
         lines=['# Environment review — '+date,'',
             'New-source review; older pages are dated observations, not release announcements.','']
@@ -188,7 +190,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--dry-run',action='store_true');a=p.parse_args()
     try:result=run(a.dry_run)
     except Exception as exc:
-        result={'status':'failed','error_type':type(exc).__name__}
+        result={'status':'failed','error_type':type(exc).__name__, 'reason':str(exc) if str(exc) in ('environment_review_failed','environment_report_exceeds_400_words','all_sources_unavailable','telegram_not_confirmed') else 'source_or_model_failure'}
         if not a.dry_run:
             import job_status
             from vendor_mail_watch import telegram
