@@ -192,9 +192,33 @@ def dispatch(live=False):
     atomic(folder/('dispatch-live.json' if live else 'dispatch-preview.json'),result);return result
 
 
+
+def import_inputs(data):
+    if socket.gethostname()!='cumulus1':raise ValueError('inputs_require_cumulus1')
+    allowed={'holdings.csv','sell-review-2026-10-09.md','instructions.md'}
+    if set(data.get('files',{}))!=allowed:raise ValueError('input_names')
+    if any(not isinstance(v,str) or len(v)>200000 for v in data['files'].values()):raise ValueError('input_size')
+    if hashlib.sha256(data['files']['holdings.csv'].encode()).hexdigest()!=data['manifest']['sha256']:
+        raise ValueError('input_hash')
+    HOME.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with media.lease(HOME/'run.lock',timeout=5):
+        INPUTS.mkdir(parents=True,exist_ok=True,mode=0o700)
+        # All readers hold run.lock. A crash before manifest replacement causes
+        # hash refusal instead of silently using a partial input set.
+        for name,text in data['files'].items():
+            target=INPUTS/name;tmp=target.with_suffix('.incoming');tmp.write_text(text);tmp.chmod(0o600);tmp.replace(target)
+        atomic(INPUTS/'manifest.json',data['manifest'])
+        rows,manifest,age,_,_=inputs()
+    return {'status':'inputs_verified','sha256':manifest['sha256'],'rows':len(rows),'export_stale':age>3}
+
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--live',action='store_true');p.add_argument('--dispatch',action='store_true');a=p.parse_args()
-    try:result=dispatch(a.live) if a.dispatch else run(a.live)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--live',action='store_true');p.add_argument('--dispatch',action='store_true');p.add_argument('--import-inputs',action='store_true');a=p.parse_args()
+    try:
+        if a.import_inputs:
+            if a.dispatch or a.live:raise ValueError('import_mode_conflict')
+            import sys
+            result=import_inputs(json.load(sys.stdin))
+        else:result=dispatch(a.live) if a.dispatch else run(a.live)
     except Exception as exc:result={'status':'failed','error_type':research.error_code(exc)}
     print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False else 0
 
