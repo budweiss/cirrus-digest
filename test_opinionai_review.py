@@ -30,6 +30,15 @@ class OpinionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'requires_a_tool'):
             r.validate(data, [POST])
 
+    def test_tool_name_alone_cannot_prove_installability(self):
+        data = {'items': [{'index': 0, 'verdict': 'TRIAL', 'kind': 'tool',
+                          'reason': 'Try the tool.', 'trial_evidence': POST['subtitle']}]}
+        with self.assertRaisesRegex(ValueError, 'exact_metadata_evidence'):
+            r.validate(data, [POST])
+        post = dict(POST, subtitle='An open-source library for evaluation.')
+        data['items'][0]['trial_evidence'] = post['subtitle']
+        self.assertEqual(r.validate(data, [post])[0]['verdict'], 'TRIAL')
+
     def test_success_records_send_once_and_keeps_both_recipients(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(r, 'fetch_posts', return_value=([], {})), \
                 patch.object(r.sender, 'CREDS_PATH', Path(tmp)/'creds'), \
