@@ -11,6 +11,24 @@ SOURCE={'text':TEXT,'url':'https://example.com/listing','title':'Synthetic fixtu
 ROW={'town':'Wildwood','address':'123 Example Street','price':300000,'price_kind':'asking','status':'Active 2026-10-14','quote':TEXT,'summary':'Synthetic property with no confirmed rental or condition evidence.'}
 
 class ShoreChecks(unittest.TestCase):
+    def test_twice_covered_unchanged_property_waits_for_a_change(self):
+        history=S.record_coverage([ROW],ROW['address'],'2026-10-10',{})
+        history=S.record_coverage([ROW],ROW['address'],'2026-10-13',history)
+        self.assertEqual(S.new_or_changed([ROW],history),[])
+        changed=dict(ROW,price=280000)
+        self.assertEqual(S.new_or_changed([changed],history),[changed])
+
+    def test_newsletter_links_drop_tracking_and_other_mail(self):
+        from datetime import date
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            (folder/'20261014-example.md').write_text('> From: `news@news.pressofatlanticcity.com`\nPrivate synthetic subject/body\nhttps://pressofatlanticcity.com/news/example.html?tracking=private#part\nhttps://unrelated.example/mail')
+            (folder/'20261014-unrelated.md').write_text('> From: `other@example.com`\nhttps://pressofatlanticcity.com/news/other.html')
+            result=S.newsletter_links(folder,date(2026,10,14))
+            self.assertEqual(result['issues'],1)
+            self.assertEqual(result['urls'],['https://pressofatlanticcity.com/news/example.html'])
+            self.assertNotIn('private',json.dumps(result).lower())
+
     def test_atlantic_city_excluded(self):
         row=dict(ROW,town='Atlantic City')
         with self.assertRaisesRegex(ValueError,'town_out_of_scope'):S.validate_candidates({'properties':[row]},SOURCE)

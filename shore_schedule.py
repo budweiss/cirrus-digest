@@ -11,7 +11,7 @@ import sys
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,urlunsplit
 import media_pipeline as media
 
 ROOT=Path(__file__).resolve().parent
@@ -46,7 +46,7 @@ def atomic(path,data):
 
 
 def call_c1(mode,payload=None):
-    if mode not in ('feedback','preview-send','live-send'):raise ValueError('worker_mode')
+    if mode not in ('feedback','newsletter-links','preview-send','live-send'):raise ValueError('worker_mode')
     command='cd /home/buddy/cirrus-digest && .venv/bin/python shore_schedule.py --worker '+mode
     p=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=20','buddy@192.168.0.204',command],
                      input=json.dumps(payload or {}),capture_output=True,text=True,timeout=180)
@@ -56,7 +56,7 @@ def call_c1(mode,payload=None):
     return d
 
 
-def gather():
+def gather(newsletter=None):
     from cirrus_daily import search_web,fetch_article_content
     sources=[];gaps=[];seen=set()
     def get(url,label):
@@ -75,6 +75,9 @@ def gather():
         'Point Pleasant Lavallette Seaside Belmar Manasquan house price cut under 500000 '+datetime.now(NY).strftime('%B %Y'),
         'Villas Rio Grande Cape May Court House estate sale house under 500000 '+datetime.now(NY).strftime('%B %Y'),
         'site:pressofatlanticcity.com sheriff foreclosure Cape May Ocean County '+datetime.now(NY).strftime('%B %Y'),
+        'site:nj.us "tax sale" "Wildwood" '+str(datetime.now(NY).year),
+        'site:nj.gov "tax sale" "Ocean County" '+str(datetime.now(NY).year),
+        '"notice of tax sale" "Sea Isle" "Belmar" '+str(datetime.now(NY).year),
     )
     for query in searches:
         try:
@@ -84,8 +87,82 @@ def gather():
                 if p.scheme=='https' and p.hostname and not p.username and not p.password:get(url,'Public property source')
             if not urls:gaps.append('No search results: '+query)
         except Exception as exc:gaps.append('Public search: '+type(exc).__name__)
+    if newsletter is not None:
+        for url in newsletter.get('urls',[])[:5]:get(url,'Press of AC newsletter-linked article')
+        if not newsletter.get('issues'):gaps.append('No saved Press of AC newsletter from the last four days.')
+        elif not newsletter.get('urls'):gaps.append('Saved Press of AC newsletter had no direct public article link.')
     if not sources:raise RuntimeError('shore_sources_unavailable')
     return sources,gaps
+
+
+def newsletter_links(folder,today):
+    # Mail remains on C1. Only canonical public Press article links leave this
+    # reader; newsletter subject, sender, body and tracking query stay private.
+    urls=[];issues=0
+    for days in range(4):
+        stamp=(today-timedelta(days=days)).strftime('%Y%m%d')
+        for path in sorted(folder.glob(stamp+'-*.md')):
+            text=path.read_text()
+            sender=re.search(r'^> From: `([^`]+)`',text,re.M)
+            host=(sender.group(1).rsplit('@',1)[-1] if sender else '').lower()
+            if host!='pressofatlanticcity.com' and not host.endswith('.pressofatlanticcity.com'):continue
+            issues+=1
+            for value in re.findall(r'https?://[^\s<>"\'`)]+',text):
+                p=urlsplit(value)
+                if p.scheme=='https' and p.hostname in ('pressofatlanticcity.com','www.pressofatlanticcity.com') and not p.username and not p.password and p.path not in ('','/'):
+                    url=urlunsplit(('https',p.hostname,p.path,'',''))
+                    if url not in urls:urls.append(url)
+    return {'status':'ok','issues':issues,'urls':urls[:12]}
+
+
+def property_key(row):
+    return re.sub(r'[^a-z0-9]','',row['town'].lower()+'|'+row['address'].lower())
+
+
+def property_version(row):
+    return hashlib.sha256(json.dumps({k:row[k] for k in ('price','price_kind','status')},sort_keys=True).encode()).hexdigest()
+
+
+def new_or_changed(candidates,history):
+    unique={}
+    for row in candidates:
+        key=property_key(row);version=property_version(row)
+        old=history.get(key,{})
+        if old.get('version')==version and len(set(old.get('covered_dates',[])))>=2:continue
+        unique[(key,version)]=row
+    return list(unique.values())
+
+
+def record_coverage(candidates,report,date,history):
+    for row in candidates:
+        if row['address'].lower() not in report.lower():continue
+        key=property_key(row);version=property_version(row);old=history.get(key,{})
+        dates=old.get('covered_dates',[]) if old.get('version')==version else []
+        history[key]={'version':version,'covered_dates':sorted(set(dates+[date])),
+                      'town':row['town'],'address':row['address'],'price':row['price'],'price_kind':row['price_kind'],'status':row['status']}
+    return history
+
+
+def tax_notices(sources):
+    packet=[s for s in sources if re.search(r'tax.{0,12}(sale|lien)|municipal lien',s['text'],re.I)]
+    if not packet:return {'notices':[],'coverage':'No current municipal tax-sale notice verified in this bounded pass.'}
+    evidence=[dict(s,text=s['text'][:6000]) for s in packet[:6]]
+    prompt=RULES+'\nExtract only current municipal tax-lien sale notices and explicit property-specific tax liens. '
+    prompt+='Tax certificates are not ownership of a house. Never infer an absence of liens. '
+    prompt+='No general legal, deposit or redemption claims. Return JSON {"notices":[{"url":"offered source URL",'
+    prompt+='"quote":"exact contiguous excerpt", "summary":"town, source-supported sale date or lien, and verification gaps; at most 60 words"}],'
+    prompt+='"coverage":"limits of what was checked"}. At most six notices. If none verified, use an empty array.\n'+json.dumps(evidence)
+    data=parse(media.call('prompt',prompt=prompt));notices=data.get('notices')
+    if not isinstance(notices,list) or len(notices)>6:raise ValueError('tax_notice_schema')
+    offered={s['url']:s for s in evidence}
+    for row in notices:
+        q=row.get('quote','');s=offered.get(row.get('url'))
+        if not s or not isinstance(q,str) or not 30<=len(q)<=900 or q not in s['text'] or not isinstance(row.get('summary'),str):raise ValueError('tax_notice_evidence')
+    check=parse(media.call('prompt',prompt=RULES+'\nReview these tax-sale observations. Reject wrong towns, past notices called upcoming, '
+        'unsupported liens, tax certificates called home ownership, or general legal conclusions. '
+        'Return JSON {"approved":true,"problems":[]} or false.\n'+json.dumps({'sources':evidence,'candidate':data})))
+    if check.get('approved') is not True or check.get('problems')!=[]:raise ValueError('tax_notice_review_failed')
+    return data
 
 
 def validate_candidates(data,source):
@@ -130,7 +207,8 @@ def detail_sources(candidates):
     chosen=sorted(candidates,key=lambda x:x['town'] in BORDER)[:2]
     for row in chosen:
         queries=[row['address']+' '+row['town']+' NJ real estate listing',
-                 row['town']+' NJ weekly seasonal vacation rental rates '+str(datetime.now(NY).year)]
+                 row['town']+' NJ weekly seasonal vacation rental rates '+str(datetime.now(NY).year),
+                 '"'+row['address']+'" "'+row['town']+'" "tax" "lien"']
         for query in queries:
             try:
                 for url in search_web(query,max_results=2) or []:
@@ -144,16 +222,18 @@ def detail_sources(candidates):
     return output
 
 
-def render(sources,candidates,gaps,coverage,prior,replies,date):
+def render(sources,candidates,gaps,coverage,prior,replies,date,taxes=None):
     offered=[s['url'] for s in sources]
     packet={'sources':sources,'candidates':candidates,'coverage_gaps':gaps,'page_coverage':coverage,
-            'prior_reports':prior[-10000:],'feedback':replies,'date':date}
+            'prior_reports':prior[-10000:],'feedback':replies,'date':date,'tax_lien_checks':taxes or {}}
     prompt=RULES+'\nCompose the Jersey Shore digest using ONLY this evidence. '+(
         'No invented rental yields, comparable discounts, photo URLs, dates or weekday names. '
         'At most 2–3 eye-catchers, and only when supported; otherwise say none qualified. '
         'For each, explain whether worth a two-hour drive (yes/watch/no), evidence and missing diligence. '
         'Unknown rent/comparables/condition means watch, not yes. Borderline towns require exceptional value evidence. '
-        'Sections: eye-catchers; sheriff sales; distressed/REO; price cuts; Press of AC; changes since prior; caveats. '
+        'Sections: eye-catchers; sheriff sales; distressed/REO; price cuts; Press of AC; tax-lien checks; changes since prior; caveats. '
+        'Include beds/baths only if verified, otherwise unknown. Tax-sale notices must have verified town/date; '
+        'missing property lien records never mean lien-free. No general legal/deposit/redemption claims without current authoritative evidence. '
         'A fetch or table shell does not mean the complete sheriff list was checked. Describe source failures candidly. '
         'Candidate prices labelled estimated/upset cannot become asking prices. '
         'Cite only supplied source URLs. Do not repeat twice-covered unchanged properties. '
@@ -174,6 +254,7 @@ def render(sources,candidates,gaps,coverage,prior,replies,date):
 
 def worker(mode):
     import shore_digest_send as sender
+    if mode=='newsletter-links':return newsletter_links(ROOT/'knowledge-newsletters',datetime.now(NY).date())
     if mode=='feedback':
         # Read only matching report replies; all content stays between C1/CIRRUS/C2.
         from cumulus_inbox_peek import load_creds,dec,body_text
@@ -219,7 +300,8 @@ def run(live=False):
         if live and saved.exists():
             old=json.loads(saved.read_text())
             if old.get('status') in ('sent','already_sent'):return dict(old,status='already_sent')
-        sources,gaps=gather();replies=call_c1('feedback')['replies']
+        newsletter=call_c1('newsletter-links');sources,gaps=gather(newsletter);replies=call_c1('feedback')['replies']
+        atomic(STATE/(date+'.sources.json'),{'sources':sources,'gaps':gaps,'newsletter_issues':newsletter['issues']})
         candidates=[];coverage=[]
         for i,source in enumerate(sources):
             try:
@@ -227,17 +309,26 @@ def run(live=False):
                 candidates.extend(dict(x,source_url=source['url']) for x in rows)
                 coverage.append({'url':source['url'],'coverage':observed})
             except Exception as exc:gaps.append('Extraction/review withheld for '+source['url']+': '+type(exc).__name__)
+        history_path=STATE/'property-history.json';history=json.loads(history_path.read_text()) if history_path.exists() else {}
+        candidates=new_or_changed(candidates,history)
         prior='\n\n'.join(p.read_text() for p in sorted(STATE.glob('????-??-??.md'))[-2:])
         # Each page was independently reviewed above. The synthesis sees exact
         # accepted quotes and coverage, not a misleading claim to full-list coverage.
         concise=[dict(s,text='\n'.join(x['quote'] for x in candidates if x['source_url']==s['url']) or 'No accepted property extracted.') for s in sources]
         concise+=detail_sources(candidates)
-        md=render(concise,candidates,gaps,coverage,prior,replies,date)
+        try:taxes=tax_notices(sources+concise[len(sources):])
+        except Exception as exc:
+            taxes={'notices':[],'coverage':'Current tax-lien source review did not pass; no lien-free conclusion.'}
+            gaps.append('Tax-lien review: '+type(exc).__name__)
+        concise+=[{'url':x['url'],'title':'Verified tax-sale notice','text':x['quote']} for x in taxes['notices'] if x['url'] not in {s['url'] for s in concise}]
+        md=render(concise,candidates,gaps,coverage,prior,replies,date,taxes)
         path=STATE/(date+('' if live else '-preview')+'.md');path.write_text(md);path.chmod(0o600)
         result=call_c1('live-send' if live else 'preview-send',{'date':date,'markdown':md})
-        result.update(sources=len(sources),candidates=len(candidates),gaps=len(gaps))
+        result.update(sources=len(sources),candidates=len(candidates),gaps=len(gaps),newsletter_issues=newsletter['issues'],tax_notices=len(taxes['notices']))
         atomic(saved if live else STATE/'preview-result.json',result)
         if live:
+            atomic(history_path,record_coverage(candidates,md,date,history))
+            atomic(STATE/'tax-lien-notes.json',dict(taxes,checked_at=date))
             job_status.record('shoredigest',True,'sources=%d candidates=%d gaps=%d'%(len(sources),len(candidates),len(gaps)))
             result['telegram_confirmed']=telegram('Jersey Shore review completed on the servers; the digest was accepted for your usual Yahoo address. Source gaps are identified in the email.')
             atomic(saved,result)
@@ -246,7 +337,7 @@ def run(live=False):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--live',action='store_true')
-    p.add_argument('--worker',choices=('feedback','preview-send','live-send'));a=p.parse_args()
+    p.add_argument('--worker',choices=('feedback','newsletter-links','preview-send','live-send'));a=p.parse_args()
     try:result=worker(a.worker) if a.worker else run(a.live)
     except Exception as exc:
         result={'status':'failed','error_type':type(exc).__name__}

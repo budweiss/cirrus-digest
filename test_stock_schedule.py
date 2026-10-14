@@ -14,6 +14,27 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_http_success_without_dated_original_content_cannot_be_adopted(self):
+        trials=[{'status':'fetched','text':QUOTE,'published':None}]
+        choice={'trial':0,'decision':'ADOPT','reason':'Synthetic useful original article for a research question.','quote':QUOTE}
+        with self.assertRaisesRegex(ValueError,'adoption_requires_original_dated_content'):
+            S.validate_adoptions({'decisions':[choice]},trials)
+
+    def test_adopted_source_is_read_by_daily_followup(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        trials=[{'status':'fetched','text':QUOTE,'published':'2026-10-14','url':'https://example.com/article',
+                 'observed_at':'2026-10-14T12:00:00Z','sha256':'synthetic-hash'}]
+        choices=[{'trial':0,'decision':'ADOPT','reason':'Synthetic original dated content answers a research question.','quote':QUOTE}]
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            with patch.object(S,'HOME',home):
+                S.install_adoptions(trials,choices)
+                with patch.object(S.research,'fetch',return_value=(b'<html>synthetic</html>','text/html')) as fetch,patch.object(S.research,'Page',return_value=SimpleNamespace(title='Synthetic article',text=QUOTE*20,published='2026-10-14')):
+                    result=S.public_followup()
+            self.assertEqual(len(result['sources']),1);fetch.assert_called_once_with('https://example.com/article',['example.com'])
+            self.assertTrue((home/'research/sources.md').exists())
+
     def test_fixed_window_keeps_sold_ideas_and_never_rewrites_prior_review(self):
         import json
         from pathlib import Path
