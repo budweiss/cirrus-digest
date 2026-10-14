@@ -113,8 +113,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder):
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
         'A large weight alone is not a sell reason. Apply each of the seven supplied rules with specific evidence '
         'or not_established. Do not invent business news, prices, dates, sell thresholds or intent. '
-        'Return JSON {"opinion":"plain-language connected paragraphs with supplied source links, at most 650 words",'
-        '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 80 words"}]}. '
+        'Return JSON {"opinion":"plain-language connected paragraphs with supplied source links, at most 350 words",'
+        '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 45 words"}]}. '
         'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
     attempts=[]
     with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
