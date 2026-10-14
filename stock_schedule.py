@@ -372,7 +372,8 @@ def scorecard(live,date,folder):
             key=review_key(item['decision'],item['scheduled_review'])
             target=reviews/(key+'.json')
             if not target.exists():paper.save(target,dict(item,account_report_id=account['report_id']),True)
-        digests=ROOT/'digests';digests.mkdir(exist_ok=True)
+        # Keep account details out of the shared digest ingestion directory.
+        digests=HOME/'digests';digests.mkdir(exist_ok=True,mode=0o700)
         destination=digests/'stock-scorecard-latest.md';destination.write_text(report);destination.chmod(0o600)
     return {'status':'complete' if live else 'preview','job':'scorecard','date':date,
             'due_reviews':total_due,'reviewed':len(due),'prior_reviews':len(prior),'report':str(path),'extra_email':False}
