@@ -191,7 +191,11 @@ def send(from_email, password, to, subject, body, cc=None, html=None,
             s.starttls()
             s.ehlo()
             s.login(from_email, password)
-            s.sendmail(from_email, recipients, msg.as_string())
+            refused = s.sendmail(from_email, recipients, msg.as_string())
+            if refused:
+                # SMTP may accept one recipient while refusing another. Returning
+                # True here falsely confirmed delivery to every requested address.
+                raise smtplib.SMTPRecipientsRefused(refused)
         # AFTER the send, and non-raising by construction: bookkeeping must
         # never turn into a client-visible failure, and must never make a
         # delivered mail look undelivered.
