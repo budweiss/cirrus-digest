@@ -372,6 +372,11 @@ def parse_schedule(text: str, unparsed: list = None):
     return out
 
 
+def calendars_intersect(a, b):
+    return all(a.get(key) is None or b.get(key) is None or a[key] == b[key]
+               for key in ('weekday', 'monthday'))
+
+
 def audit(jobs):
     """Every way the live schedule disagrees with the policy.
 
@@ -429,10 +434,18 @@ def audit(jobs):
     buckets = {}
     for j in jobs:
         if j.get("weight") == "heavy":
-            buckets.setdefault((j["hour"], j["minute"] // 15), []).append(
-                f"{j['host']}/{j['job']}")
-    for (h, q), names in sorted(buckets.items()):
-        if len(names) > 2:
+            weekdays = [j['weekday']] if j.get('weekday') is not None else range(7)
+            monthdays = [j['monthday']] if j.get('monthday') is not None else range(1, 32)
+            for weekday in weekdays:
+                for monthday in monthdays:
+                    buckets.setdefault((j['hour'], j['minute'] // 15, weekday, monthday), set()).add(
+                        f"{j['host']}/{j['job']}")
+    seen_pileups = set()
+    for (h, q, weekday, monthday), members in sorted(buckets.items()):
+        names = sorted(members)
+        key = (h, q, tuple(names))
+        if len(names) > 2 and key not in seen_pileups:
+            seen_pileups.add(key)
             violations.append(
                 f"{len(names)} HEAVY jobs all start in {h:02d}:{q*15:02d}-"
                 f"{h:02d}:{q*15+14:02d}: {', '.join(names)}")
@@ -500,10 +513,12 @@ def budget(jobs):
         # duration on this plan looked equally trustworthy and the overlap
         # check silently ran on a guess.
         flag = " [UNPROFILED — 15min is a guess]" if basis is _DEFAULT[3] else ""
+        days = (' weekday ' + str(j['weekday']) if j.get('weekday') is not None else '')
+        days += (' monthday ' + str(j['monthday']) if j.get('monthday') is not None else '')
         lines.append(
             f"  {j['hour']:02d}:{j['minute']:02d}-{end//60:02d}:{end%60:02d}  "
             f"{j['job']:<32} ~{est_mb:4}MB over {mins:3}min  "
-            f"= {share:5.2f}% of the {LINE_DOWN_MBPS:.0f} Mbps line{flag}")
+            f"= {share:5.2f}% of the {LINE_DOWN_MBPS:.0f} Mbps line{days}{flag}")
     # S79: this comparison was `sa < sb < sa + dur` -- STRICTLY greater. Two
     # jobs starting in the SAME minute give sa == sb, so the single likeliest
     # collision (two jobs both parked on a round hour) was the one case it
@@ -513,6 +528,8 @@ def budget(jobs):
     # in one direction rather than two.
     for i, a in enumerate(heavy):
         for b in heavy[i + 1:]:
+            if not calendars_intersect(a, b) or (a['host'], a['job']) == (b['host'], b['job']):
+                continue
             sa = a["hour"] * 60 + a["minute"]
             sb = b["hour"] * 60 + b["minute"]
             first, second = (a, b) if sa <= sb else (b, a)
@@ -734,6 +751,15 @@ def selftest() -> bool:
     apart[1]["hour"] = 9
     _, ov3 = budget(apart)
     ck("jobs far apart do not clash", ov3, [])
+
+    weekdays = [dict(same[0], job='com.cirrus.stockam', weekday=day) for day in range(5)]
+    ck('weekday entries are one job, not a pile-up', audit(weekdays)[0], [])
+    ck('different weekdays do not overlap', budget(weekdays)[1], [])
+    real_pileup = [dict(same[0], job='heavy-%d' % i) for i in range(3)]
+    ck('three distinct same-day jobs still fail', len(audit(real_pileup)[0]), 1)
+    separate_days = [dict(job, monthday=i+1) for i, job in enumerate(real_pileup)]
+    ck('different month days do not pile up', audit(separate_days)[0], [])
+    ck('different month days do not overlap', budget(separate_days)[1], [])
 
     # find_window
     h, m, _ = find_window(jobs, minutes=30, host="cirrus")
