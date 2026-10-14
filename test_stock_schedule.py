@@ -21,7 +21,7 @@ class ScheduleChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             report=Path(td)/'report.md';report.write_text('Synthetic research')
             conn=MagicMock()
-            conn.execute.side_effect=[SimpleCursor({'id':1,'started':'2026-10-14T12:00:00Z','status':'partial','report':str(report)}),
+            conn.execute.side_effect=[SimpleCursor({'id':1,'started':'2026-10-14T12:00:00Z','finished':'2026-10-14T12:01:00Z','status':'partial','report':str(report)}),
                 [{'ticker':'EXAMPLE','recorded_at':'2026-10-14T12:01:00Z','draft':json.dumps({'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]})}],
                 SimpleCursor({'data':json.dumps({'company':{},'documents':[{'id':1,'text':'x'*8000+QUOTE,'url':'https://example.com/filing','published':'2026-10-01'}]})})]
             with patch.object(S.research,'database',return_value=conn):out=S.packet()

@@ -95,7 +95,7 @@ def packet():
             docs=[{k:d.get(k) for k in ('id','url','published','title','text')} for d in data['documents'] if d['id'] in ids]
             latest.append({'ticker':row['ticker'],'recorded_at':row['recorded_at'],'company':data['company'],
                            'draft':draft,'documents':docs})
-        return {'run_id':run['id'],'started':run['started'],'status':run['status'],'companies':latest,
+        return {'run_id':run['id'],'started':run['started'],'finished':run['finished'],'status':run['status'],'companies':latest,
                 'report':Path(run['report']).read_text()}
     finally:conn.close()
 
@@ -144,8 +144,8 @@ def qualify_decisions(data, evidence, account, date, slot):
         # Freeze contemporaneous observations for later fixed-window review.
         # This is neither a proposed fill nor a reconstructed entry benchmark.
         result['review_reference']={'recorded_at':account.get('created_at'),
-            'company':account.get('quotes',{}).get(x['ticker']),
-            'spy':account.get('quotes',{}).get('SPY')}
+            'company':{k:q for k,q in account.get('quotes',{}).get(x['ticker'],{}).items() if k in ('ticker','price','quote_at','valuation_eligible','source','url')},
+            'spy':{k:q for k,q in account.get('quotes',{}).get('SPY',{}).items() if k in ('ticker','price','quote_at','valuation_eligible','source','url')}}
         if x['action']!='HOLD':
             order=x.get('order',{})
             if set(order)-{'budget','shares','limit_price'}:raise ValueError('unsupported_order_field')
@@ -181,7 +181,9 @@ def choose(evidence,account,replies,date,slot,caller=media.complete,audit=None,p
         '{"ticker":"...","action":"BUY|SELL|HOLD","reason":"...","valuation":"...",'
         '"counterargument":"...","exit_trigger":"...","evidence":[{"id":1,"quote":"exact text"}],'
         '"order":{"budget":"1000.00","limit_price":"10.00"}}]}. '
-        'At most three decisions. BUY order uses budget or shares; SELL uses owned shares. HOLD has no order. '
+        'At most two decisions. The explanation must be at most 120 words; each reason, valuation, counterargument '
+        'and exit trigger at most 25 words. Use one short exact source quote per decision. '
+        'BUY order uses budget or shares; SELL uses owned shares. HOLD has no order. '
         'The example numbers are schema placeholders, never proposed orders.')
     feedback_text=''
     with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
@@ -199,9 +201,9 @@ def choose(evidence,account,replies,date,slot,caller=media.complete,audit=None,p
                 if audit:audit({'stage':'review','passed':review['passed'],'issues':review['issues']})
                 if review['passed']:return request,note
                 feedback_text='\nCorrect reviewer issues: '+json.dumps(review['issues'])
-            except (ValueError,TypeError,KeyError) as exc:
+            except (ValueError,TypeError,KeyError,RuntimeError) as exc:
                 if audit:audit({'stage':'schema','reason':research.error_code(exc)})
-                feedback_text='\nOutput rejected: '+research.error_code(exc)+'. Follow the schema and exact primary evidence.'
+                feedback_text='\nOutput rejected: '+research.error_code(exc)+'. Follow the schema and exact primary evidence. Keep output below 900 words; prefer one or no decisions when evidence is incomplete.'
     raise ValueError('paper_decision_review_failed')
 
 
@@ -213,7 +215,8 @@ def refresh_research(slot):
         try:
             recent=packet()
             age=datetime.now(timezone.utc)-research.dt(recent['started'])
-            if timedelta(0)<=age<=timedelta(minutes=15) and recent['companies']:
+            finished_age=datetime.now(timezone.utc)-research.dt(recent['finished'])
+            if timedelta(0)<=age<=timedelta(minutes=30) and timedelta(0)<=finished_age<=timedelta(minutes=15) and recent['companies']:
                 return recent
         except (ValueError,KeyError,TypeError,FileNotFoundError):pass
         with contextlib.redirect_stdout(io.StringIO()):
