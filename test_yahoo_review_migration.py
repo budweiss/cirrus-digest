@@ -16,6 +16,8 @@ import yahoo_review_lib as lib
 import yahoo_review_server as web
 import apply_yahoo_actions as actions
 import schedule as scheduler
+import tunnel
+import plistlib
 
 
 class ReviewTests(unittest.TestCase):
@@ -139,6 +141,22 @@ class ReviewTests(unittest.TestCase):
 
 
 class DispatcherTests(unittest.TestCase):
+    def test_launchd_parent_passes_credentials_only_in_child_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            creds = root/'Documents/Cowork/cirrus/config/local.json'
+            creds.parent.mkdir(parents=True)
+            creds.write_text(json.dumps({'cf_ssh_service_token_id':'synthetic-id',
+                                         'cf_ssh_service_token_secret':'synthetic-secret'}))
+            with patch.object(tunnel.Path, 'home', return_value=root), patch.object(tunnel.os, 'execve') as execute:
+                tunnel.main()
+            _, args, env = execute.call_args.args
+            self.assertNotIn('synthetic-secret', ' '.join(args))
+            self.assertEqual(env['TUNNEL_SERVICE_TOKEN_SECRET'], 'synthetic-secret')
+            plist = plistlib.loads((Path(__file__).parent/'yahoo_review/com.buddy.yahoo-review-tunnel.plist').read_bytes())
+            self.assertEqual(plist['ProgramArguments'][0], '/opt/homebrew/bin/python3')
+            self.assertTrue(plist['ProgramArguments'][1].endswith('/yahoo_review_tunnel.py'))
+
     def dispatch(self, remote, action='collect', exitcode=0):
         with tempfile.TemporaryDirectory() as tmp, patch.object(scheduler, 'ROOT', Path(tmp)), \
              patch.object(scheduler.subprocess, 'run', return_value=MagicMock(stdout=json.dumps(remote), returncode=exitcode)), \
