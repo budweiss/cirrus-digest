@@ -20,7 +20,6 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from runtime_window import BUSY_DAYS, BUSY_START_H, BUSY_END_H
 
 ROOT = Path(__file__).resolve().parent
 MODEL = 'qwen3.8-27b-fp8'
@@ -33,17 +32,9 @@ class YouTubeDeadline(BaseException):
 
 
 def youtube_deadline(now=None):
-    """90 minutes including queue wait; leave five minutes before weekday 08:00."""
+    """90 minutes including queue wait; daytime restriction lifted October 12."""
     now = now or datetime.now(ZoneInfo('America/New_York'))
-    now = now.astimezone(ZoneInfo('America/New_York'))
-    deadline = now.timestamp() + 90 * 60
-    if now.weekday() in BUSY_DAYS:
-        cutoff = now.replace(hour=BUSY_START_H, minute=0, second=0, microsecond=0) - timedelta(minutes=5)
-        if cutoff <= now < now.replace(hour=BUSY_END_H, minute=0, second=0, microsecond=0):
-            raise RuntimeError('youtube_deferred_busy_window')
-        if now < cutoff:
-            deadline = min(deadline, cutoff.timestamp())
-    return deadline
+    return now.timestamp() + 90 * 60
 
 
 @contextlib.contextmanager
@@ -542,28 +533,11 @@ def selftest():
     """Exercise decision-making functions with explicit inputs/outputs. No network, no GPU."""
     import io
 
-    # --- youtube_deadline: busy-window deferral and weekday math ---
+    # --- youtube_deadline: bounded on weekdays and weekends, including daytime ---
     tz = ZoneInfo('America/New_York')
-    # A weekday well inside the busy window should raise.
-    busy_day = next(d for d in range(1, 8) if datetime(2024, 1, d, tzinfo=tz).weekday() in BUSY_DAYS)
-    inside_busy = datetime(2024, 1, busy_day, BUSY_START_H, 30, tzinfo=tz)
-    try:
-        youtube_deadline(inside_busy)
-        raise AssertionError('expected youtube_deferred_busy_window')
-    except RuntimeError as exc:
-        assert str(exc) == 'youtube_deferred_busy_window', exc
-
-    # A weekday shortly before the busy window should cap the deadline at cutoff.
-    before_busy = datetime(2024, 1, busy_day, BUSY_START_H - 1, 0, tzinfo=tz)
-    cutoff = before_busy.replace(hour=BUSY_START_H, minute=0, second=0, microsecond=0) - timedelta(minutes=5)
-    deadline = youtube_deadline(before_busy)
-    assert abs(deadline - cutoff.timestamp()) < 1, (deadline, cutoff.timestamp())
-
-    # A weekend day (not in BUSY_DAYS) should never raise and use the full 90 minutes.
-    weekend_day = next(d for d in range(1, 8) if datetime(2024, 1, d, tzinfo=tz).weekday() not in BUSY_DAYS)
-    weekend = datetime(2024, 1, weekend_day, 12, 0, tzinfo=tz)
-    deadline = youtube_deadline(weekend)
-    assert abs(deadline - (weekend.timestamp() + 90 * 60)) < 1
+    for stamp in ('2026-10-14T07:30', '2026-10-14T08:30', '2026-10-17T12:00'):
+        now = datetime.fromisoformat(stamp).replace(tzinfo=tz)
+        assert youtube_deadline(now) - now.timestamp() == 90 * 60
 
     # --- youtube_time_limit: invalid deadline types/values rejected ---
     for bad in (True, False, 'x', None, float('nan'), float('inf')):

@@ -24,12 +24,12 @@ class DeadlineTests(unittest.TestCase):
         guard.start();self.addCleanup(guard.stop)
 
     def test_windows(self):
-        for stamp,minutes in [('2026-09-28T05:30',90),('2026-09-28T07:30',25),('2026-09-28T16:00',90),('2026-10-03T08:00',90)]:
+        for stamp,minutes in [('2026-10-14T05:30',90),('2026-10-14T07:30',90),('2026-10-14T16:00',90),('2026-10-17T08:00',90)]:
             now=datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo('America/New_York'))
             self.assertEqual(m.youtube_deadline(now)-now.timestamp(),minutes*60)
-        for stamp in ['2026-09-28T07:55','2026-09-28T08:00','2026-09-28T15:59']:
-            with self.assertRaisesRegex(RuntimeError,'youtube_deferred_busy_window'):
-                m.youtube_deadline(datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo('America/New_York')))
+        for stamp in ['2026-10-14T07:55','2026-10-14T08:00','2026-10-14T15:59']:
+            now = datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo('America/New_York'))
+            self.assertEqual(m.youtube_deadline(now) - now.timestamp(), 90 * 60)
 
     def test_invalid_expired_never_spawn(self):
         with patch.object(m,'youtube_deadline',return_value=time.time()+60),patch.object(m.subprocess,'Popen') as spawn:
