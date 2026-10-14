@@ -8,6 +8,17 @@ from unittest.mock import patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def test_inconsistent_approval_preserves_findings_for_correction(self):
+        from contextlib import nullcontext
+        draft={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
+               'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic test evidence is not available for this rule.'} for i in range(1,8)]}
+        reviews=iter(['{"passed":true,"issues":["Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S.media,'complete',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args:next(reviews)):
+            result=S.assess([],{},[],[],4,'Synthetic seven rules.','Synthetic instructions.',Path(td))
+            checks=json.loads((Path(td)/'checks.json').read_text())
+        self.assertEqual(result,draft);self.assertEqual(model.call_count,2)
+        self.assertFalse(checks[0]['passed']);self.assertIn('rule seven',model.call_args_list[1].args[1])
+
     def test_export_notice_does_not_depend_on_model_disclosure(self):
         self.assertIn('STALE',S.export_notice(4.1))
         self.assertIn('current positions need your confirmation',S.export_notice(4.1))
