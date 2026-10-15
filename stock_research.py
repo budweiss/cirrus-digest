@@ -477,7 +477,7 @@ Review only draft_to_review, not an older assessment. Be concise: at most five i
 each under 300 characters. Do not propose new facts from your own knowledge.'''
 
 
-def structured_review(system, text, task):
+def structured_review(system, text, task, issue_pattern=None):
     """Constrain the local review's shape so rambling output cannot truncate JSON."""
     from media_pipeline import request, token_count, MODEL
     if token_count(system + text) + 1800 > 32768:
@@ -487,6 +487,8 @@ def structured_review(system, text, task):
                   'passed': {'type': 'boolean'},
                   'issues': {'type': 'array', 'maxItems': 5,
                              'items': {'type': 'string', 'minLength': 5, 'maxLength': 300}}}}
+    if issue_pattern is not None:
+        schema['properties']['issues']['items']['pattern'] = issue_pattern
     result = request('/v1/chat/completions', {'model': MODEL,
         'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
         'temperature': 0, 'max_tokens': 1500, 'chat_template_kwargs': {'enable_thinking': False},

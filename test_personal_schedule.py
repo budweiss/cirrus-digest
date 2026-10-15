@@ -19,6 +19,19 @@ class PersonalChecks(unittest.TestCase):
         self.assertTrue(all('output requirement' not in r['source'] for r in rules))
         for bad in ('No numbered source rules.',text+'\n'+self.source_rules()):
             with self.assertRaisesRegex(ValueError,'ambiguous_or_missing'):S.sell_rule_catalog(bad)
+
+    def test_correction_cannot_rewrite_unflagged_report_sections(self):
+        previous={'opinion':'Accepted synthetic opinion.',
+                  'rules':[{'rule':i,'status':'not_established','assessment':'Accepted source-grounded section.'} for i in range(1,8)]}
+        candidate={'opinion':'Unrequested replacement.',
+                   'rules':[{'rule':i,'status':'triggered','assessment':'Changed section.'} for i in range(1,8)]}
+        result=S.repair_fields(previous,candidate,{'rule_6'})
+        self.assertEqual(result['opinion'],previous['opinion'])
+        self.assertEqual(result['rules'][:5],previous['rules'][:5])
+        self.assertEqual(result['rules'][6],previous['rules'][6])
+        self.assertEqual(result['rules'][5],candidate['rules'][5])
+        self.assertEqual(previous['rules'][5]['status'],'not_established')
+        with self.assertRaisesRegex(ValueError,'repair_fields_invalid'):S.repair_fields(previous,candidate,{'other'})
     def test_computed_rule_evidence_mixes_verified_quotes_and_export_values(self):
         rows=[{'ticker':'AAA','shares':'100','value_at_export':'10000','price_at_export':'100'},
               {'ticker':'BBB','shares':'50','value_at_export':'9000','price_at_export':'180'},
@@ -108,8 +121,8 @@ class PersonalChecks(unittest.TestCase):
         from contextlib import nullcontext
         draft={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic test evidence is not available for this rule.'} for i in range(1,8)]}
-        reviews=iter(['{"passed":true,"issues":["Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
-        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args:next(reviews)):
+        reviews=iter(['{"passed":true,"issues":["rule_7: Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args,**kwargs:next(reviews)):
             result=S.assess([],{},[],[],4,'Historical background only.',self.source_rules(),Path(td))
             checks=json.loads((Path(td)/'checks.json').read_text())
         self.assertEqual(result,draft);self.assertEqual(model.call_count,2)
@@ -125,7 +138,7 @@ class PersonalChecks(unittest.TestCase):
         good={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
         bad=dict(good,opinion='Synthetic correction mistakenly invents a 999% observation which must fail.')
-        findings='Rule six must use its actual source test.'
+        findings='opinion: The opinion must use the actual source tests.'
         reviews=[json.dumps({'passed':False,'issues':[findings]}),json.dumps({'passed':True,'issues':[]})]
         with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',side_effect=[json.dumps(good),json.dumps(bad),json.dumps(good)]) as model,patch.object(S.research,'structured_review',side_effect=reviews) as reviewer:
             result=S.assess([],{},[],[],4,'Historical background.',self.source_rules(),Path(td))

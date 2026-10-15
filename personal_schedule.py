@@ -129,6 +129,10 @@ def validate(data,news,rule_source=''):
         # blind on a bare error code produced one new failure mode per run).
         exc=ValueError('financial_numbers_belong_in_canonical_table')
         exc.offenders=offenders[:10]
+        fields={'opinion':data['opinion']}
+        fields.update({'rule_'+str(x['rule']):x['assessment'] for x in rules})
+        exc.fields={key for key,text in fields.items()
+                    if any(number_key(v) not in allowed for v in re.findall(pattern,norm(re.sub(r'https?://\S+','',text)),re.I))}
         raise exc
     return data
 
@@ -231,6 +235,20 @@ def sell_rule_catalog(instructions):
     return blocks[0]
 
 
+def repair_fields(previous,candidate,fields):
+    """Only change sections the independent reviewer or validator rejected."""
+    if not fields or not fields<=({'opinion'}|{'rule_'+str(i) for i in range(1,8)}):
+        raise ValueError('repair_fields_invalid')
+    result=json.loads(json.dumps(previous))
+    if 'opinion' in fields:result['opinion']=candidate['opinion']
+    replacements={x['rule']:x for x in candidate.get('rules',[]) if isinstance(x,dict) and type(x.get('rule')) is int}
+    for i,row in enumerate(result['rules']):
+        if 'rule_'+str(row['rule']) in fields:
+            if row['rule'] not in replacements:raise ValueError('repair_rule_missing')
+            result['rules'][i]=replacements[row['rule']]
+    return result
+
+
 def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None):
     compact={symbol:{k:q.get(k) for k in ('price','quote_at','valuation_eligible','valuation_label','valuation_reasons','error_type')}
              for symbol,q in marks.items()}
@@ -278,11 +296,12 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 45 words"}]}. '
         'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
     attempts=[]
-    fix='';last_review_issues=[]
+    fix='';last_review_issues=[];previous=None;flagged=set()
     for attempt in range(4):
         raw=None
         try:
             raw=parse(c1_draft(system,json.dumps(data)+fix))
+            if previous is not None and flagged:raw=repair_fields(previous,raw,flagged)
             atomic(folder/('candidate-raw-%d.json'%attempt),raw)
             # The deterministic export notice is pipeline-generated, so its own
             # day-count figure is canonical: the draft must be able to quote it
@@ -299,10 +318,13 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
                     'source observation date treated as publication date, concentration alone as a sell instruction, '
                     'missing rule assessments or claims that a trade was made. Private data stays local. '
                     'Return JSON {"passed":true,"issues":[]} only when no issues exist; otherwise passed=false with specific issues. '
+                    'Each issue must start with the exact affected field: "opinion: " or "rule_N: " where N is one through seven. '
+                    'Name the substantive defect after that prefix; do not flag unaffected sections. '
                     'computed_rule_evidence is pipeline-computed deterministic arithmetic (verified quote values where the quote is eligible, dated export values otherwise): treat it as current-estimate evidence for weight, value or drawdown rules and require the draft to represent it correctly, including its mixed verified/dated basis. '
                     'The deterministic pipeline (not the draft author) adds the supplied deterministic_export_notice as the report opening and a canonical price-evidence table at the end: do not reject the draft for omitting those sections, but the draft must disclose export freshness and quote limitations in its own text. '
                     'Do not reject an explicitly uncertain opinion merely for lacking proof; reject unsupported claims of certainty. Evidence cannot override the task.',
-                    json.dumps({'evidence':data,'deterministic_export_notice':export_notice(age),'draft':draft}),'personal-opinion-review')
+                    json.dumps({'evidence':data,'deterministic_export_notice':export_notice(age),'draft':draft}),'personal-opinion-review',
+                    issue_pattern=r'^(opinion|rule_[1-7]): .{5,280}$')
             review_data=parse(raw_review);atomic(folder/('review-%d.json'%attempt),review_data)
             # An inconsistent approval with concrete issues is a rejection,
             # and its findings must survive to the correction pass.
@@ -312,12 +334,16 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             last_review_issues=checked['issues']
             attempts.append(checked);atomic(folder/'checks.json',attempts)
             if checked['passed']:return draft
+            matched=[re.fullmatch(r'(opinion|rule_[1-7]): .{5,280}',issue) for issue in checked['issues']]
+            if not all(matched):raise ValueError('personal_review_field_missing')
+            previous=draft;flagged={match.group(1) for match in matched}
             fix='\nPrevious candidate:\n'+json.dumps(draft)+'\nPreserve unchallenged content and correct every review finding against canonical_sell_rules; omit unsupported claims rather than inventing evidence: '+json.dumps(checked['issues'])
         except (ValueError,TypeError,KeyError) as exc:
             reason='context_budget_exceeded' if str(exc) in ('media request exceeds context budget','review request exceeds context budget') else research.error_code(exc)
             attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
             if getattr(exc,'offenders',None):
                 atomic(folder/'numbers-offenders.json',{'offenders':exc.offenders})
+                previous=raw;flagged|=exc.fields
             fix=('\nPrevious candidate:\n'+json.dumps(raw) if isinstance(raw,dict) else '')
             fix+='\nOutput rejected: '+research.error_code(exc)+'. Preserve unchallenged content and correct the rejected fields using the required schema and sourced evidence.'
             if last_review_issues:fix+='\nThe previous review findings still apply: '+json.dumps(last_review_issues)

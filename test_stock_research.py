@@ -224,6 +224,24 @@ class ResearchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'incomplete_or_wrong_review_model'):
                 s.structured_review('system', 'data', 'fixture')
 
+    def test_personal_issue_constraints_do_not_change_ordinary_stock_reviews(self):
+        payloads=[]
+        response={'model':'fixture-local','choices':[{'finish_reason':'stop',
+                  'message':{'content':'{"passed":true,"issues":[]}'}}]}
+        def request(path,payload):
+            payloads.append(payload)
+            return response
+        media=types.SimpleNamespace(MODEL='fixture-local',token_count=lambda text:10,request=request)
+        budget=types.SimpleNamespace(record_call=lambda *args,**kwargs:None)
+        pattern=r'^(opinion|rule_[1-7]): .{5,280}$'
+        with patch.dict('sys.modules',{'media_pipeline':media,'llm_budget':budget}):
+            s.structured_review('system','data','personal-fixture',issue_pattern=pattern)
+            s.structured_review('system','data','stock-fixture')
+        issue_schema=lambda p:p['response_format']['json_schema']['schema']['properties']['issues']['items']
+        self.assertEqual(issue_schema(payloads[0])['pattern'],pattern)
+        self.assertNotIn('pattern',issue_schema(payloads[1]))
+        self.assertEqual(issue_schema(payloads[1])['type'],'string')
+
     def test_legacy_import_preserves_original_and_is_idempotent(self):
         text = 'date,run,ticker,call,price,reason_one_line,rules_fired\n2026-10-05,am,ACME,HOLD,30,Original mistaken reason,\n'
         self.assertEqual(s.import_legacy(self.conn, text), 1)
