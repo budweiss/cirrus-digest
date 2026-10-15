@@ -108,8 +108,17 @@ def validate(data,news,rule_source=''):
     if '<!-- stock-paper-report:' in data['opinion']:raise ValueError('paper_account_contamination')
     prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)
     prose=re.sub(r'https?://\S+','',prose)
-    numbers=re.findall(r'\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',prose,re.I)
-    offenders=[value for value in numbers if value not in rule_source]
+    # S418: models emit narrow no-break (U+202F) and nbsp (U+00A0) spaces
+    # when quoting a rule threshold like "15 %". The figure WAS sourced
+    # verbatim apart from the space variant, so normalise both sides before
+    # matching — otherwise a correct quote is falsely rejected.
+    norm=lambda text:text.replace('\u202f',' ').replace('\u00a0',' ')
+    numbers=re.findall(r'\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',norm(prose),re.I)
+    rule_norm=norm(rule_source)
+    compact=lambda text:re.sub(r'\s+','',text)
+    rule_compact=compact(rule_norm)
+    offenders=[value for value in numbers if value not in rule_source and value not in rule_norm
+               and (not rule_compact or compact(value) not in rule_compact)]
     if offenders:
         # S418: carry the offending tokens on the exception so the run folder
         # can record WHICH figures were unsourced (detection fix — iterating
