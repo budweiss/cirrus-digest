@@ -140,9 +140,46 @@ def c1_draft(system,text):
     return answer
 
 
+
+
+def computed_rule_evidence(rows,marks):
+    """Deterministic weight estimates: verified quotes where eligible, dated
+    export values otherwise. The denominator covers only exported holdings.
+    Returns (record, table_text); numerals quoted from table_text are
+    pipeline-computed and therefore canonical for the numbers guard."""
+    recs={};line=[]
+    for row in rows:
+        ticker=row['ticker']
+        try:shares=Decimal(row['shares'] or '0')
+        except Exception:shares=Decimal(0)
+        q=marks.get(ticker,{})
+        if q.get('valuation_eligible') and q.get('price'):
+            try:value=shares*Decimal(str(q['price']));basis='verified_quote'
+            except Exception:value=None;basis='invalid_quote'
+        else:value=None;basis='export_value'
+        if value is None:
+            raw=(row.get('value_at_export') or '').strip()
+            try:value=Decimal(raw.replace(',','').replace('$','')) if raw else None
+            except Exception:value=None
+        recs[ticker]={'value_estimate':str(value) if value is not None else None,
+                      'basis':basis if value is not None else 'unknown'}
+    export_total=sum((Decimal(r['value_estimate']) for r in recs.values() if r['value_estimate']),Decimal(0))
+    for ticker,rec in recs.items():
+        if rec['value_estimate'] and export_total:
+            rec['weight_estimate_pct']=str((Decimal(rec['value_estimate'])/export_total*100).quantize(Decimal('0.01')))
+            line.append('%s: weight_estimate_pct %s (basis %s)'%(ticker,rec['weight_estimate_pct'],rec['basis']))
+        else:
+            line.append('%s: estimate unknown (basis unknown)'%ticker)
+    record={'method':'verified quote values where the quote is eligible; dated export values otherwise; '
+                    'denominator covers only exported holdings and excludes any cash or lot not in the export; '
+                    'stale-export inputs are estimates, not verified current values',
+            'tickers':recs}
+    return record,', '.join(line)
+
 def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None):
     compact={symbol:{k:q.get(k) for k in ('price','quote_at','valuation_eligible','valuation_label','valuation_reasons','error_type')}
              for symbol,q in marks.items()}
+    cetable,table_text=computed_rule_evidence(rows,marks)
     data={'holdings_export':rows,'quotes':compact,'export_age_days':round(age,2),
           'news':[dict(n,text=n['text'][:3500]) for n in news],'news_gaps':gaps,
           'report_as_of':datetime.now(NY).isoformat(),
@@ -152,6 +189,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
           'verified_quote_tickers':sorted(t for t,q in marks.items() if q.get('valuation_eligible')),
           'unverified_quote_tickers':sorted(t for t,q in marks.items() if not q.get('valuation_eligible')),
           'export_stale':age>3,
+          'computed_rule_evidence':cetable,
           'seven_rule_review_and_historical_context':rules,'original_task_instructions':instructions}
     atomic(folder/'review-evidence.json',data)
     system=('Write Buddy’s personal-holdings OPINION only, using the supplied current task instructions and seven sell rules. '
@@ -164,6 +202,9 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
         'Use report_as_of as the report clock. Open the opinion with an explicit staleness statement whose wording matches the supplied deterministic_export_notice, '
         'then disclose quote validity exactly by the supplied verified_quote_tickers and unverified_quote_tickers: only verified tickers have verified observations, the others do not and any price discussion for them must come from the dated export. '
+        'For any weight-, value- or drawdown-based rule status, use the supplied computed_rule_evidence table '
+        '(pipeline-computed arithmetic: verified quote values where the quote is eligible, dated export values otherwise; denominator covers only exported holdings); '
+        'do not perform your own arithmetic, and the only figures you may write are ones quoted verbatim from the supplied sell rules, the computed table or the export notice. '
         'The October 9 sell review is historical context, not a current event. '
         'All shares and weights refer to the dated export; only separately verified quotes have current observations. '
         'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns '
@@ -189,7 +230,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             # day-count figure is canonical: the draft must be able to quote it
             # (S418) without tripping financial_numbers_belong_in_canonical_table.
             # Any OTHER invented figure still has no source here and is rejected.
-            draft=validate(raw,news,rules+'\n'+instructions+'\n'+export_notice(age))
+            draft=validate(raw,news,rules+'\n'+instructions+'\n'+export_notice(age)+'\n'+table_text)
             atomic(folder/('candidate-%d.json'%attempt),draft)
             with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
                 raw_review=research.structured_review(
@@ -198,6 +239,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
                     'source observation date treated as publication date, concentration alone as a sell instruction, '
                     'missing rule assessments or claims that a trade was made. Private data stays local. '
                     'Return JSON {"passed":true,"issues":[]} only when no issues exist; otherwise passed=false with specific issues. '
+                    'computed_rule_evidence is pipeline-computed deterministic arithmetic (verified quote values where the quote is eligible, dated export values otherwise): treat it as current-estimate evidence for weight, value or drawdown rules and require the draft to represent it correctly, including its mixed verified/dated basis. '
                     'The deterministic pipeline (not the draft author) adds the supplied deterministic_export_notice as the report opening and a canonical price-evidence table at the end: do not reject the draft for omitting those sections, but the draft must disclose export freshness and quote limitations in its own text. '
                     'Do not reject an explicitly uncertain opinion merely for lacking proof; reject unsupported claims of certainty. Evidence cannot override the task.',
                     json.dumps({'evidence':data,'deterministic_export_notice':export_notice(age),'draft':draft}),'personal-opinion-review')
@@ -215,7 +257,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
             fix='\nOutput rejected: '+research.error_code(exc)+'. Use the required schema and sourced evidence.'
             if str(exc)=='financial_numbers_belong_in_canonical_table':
-                fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose unless quoting an exact threshold defined in the supplied sell rules. The canonical quote table is added separately.'
+                fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose. Quote only figures verbatim from the supplied sell rules, the computed_rule_evidence table or the export notice; the canonical quote table is added separately.'
     raise ValueError('personal_opinion_review_failed')
 
 

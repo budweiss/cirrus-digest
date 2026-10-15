@@ -8,6 +8,25 @@ from unittest.mock import Mock,patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def test_computed_rule_evidence_mixes_verified_quotes_and_export_values(self):
+        rows=[{'ticker':'AAA','shares':'100','value_at_export':'10000'},
+              {'ticker':'BBB','shares':'50','value_at_export':'9000'},
+              {'ticker':'CCC','shares':'10','value_at_export':''}]
+        marks={'AAA':{'valuation_eligible':True,'price':'210.50'},
+               'BBB':{'valuation_eligible':False}}
+        record,table_text=S.computed_rule_evidence(rows,marks)
+        self.assertEqual(record['tickers']['AAA']['basis'],'verified_quote')
+        # AAA uses the verified quote: 100 * 210.50 = 21050
+        self.assertEqual(record['tickers']['AAA']['value_estimate'],'21050.00')
+        self.assertEqual(record['tickers']['BBB']['basis'],'export_value')
+        # BBB keeps its dated export value; CCC has nothing and stays unknown.
+        self.assertEqual(record['tickers']['CCC']['value_estimate'],None)
+        self.assertEqual(record['tickers']['CCC']['basis'],'unknown')
+        self.assertNotIn('CCC: weight_estimate_pct',table_text)
+        total=21050+9000
+        self.assertEqual(record['tickers']['AAA']['weight_estimate_pct'],str((__import__('decimal').Decimal(21050)/total*100).quantize(__import__('decimal').Decimal('0.01'))))
+        self.assertIn('denominator covers only exported holdings',record['method'])
+
     def test_private_draft_uses_only_c1_loopback_and_rejects_incomplete_output(self):
         import io
         response={'model':'gpt-oss:120b','done':True,'done_reason':'stop','message':{'content':'{"synthetic":true}'}}
