@@ -88,12 +88,12 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn(sent_body, output.getvalue())
 
     def test_cli_requires_explicit_live_flag(self):
-        with patch.object(digest, "work", return_value=0) as work:
-            digest.main([])
-            work.assert_called_once_with(True)
-            work.reset_mock()
-            digest.main(["--live"])
-            work.assert_called_once_with(False)
+        for args, dry, backfill in [([], True, False), (["--live"], False, False),
+                                    (["--backfill"], True, True),
+                                    (["--backfill", "--live"], False, True)]:
+            with self.subTest(args=args), patch.object(digest, "work", return_value=0) as work:
+                digest.main(args)
+                work.assert_called_once_with(dry, backfill=backfill)
 
 
 if __name__ == "__main__":

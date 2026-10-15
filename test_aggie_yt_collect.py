@@ -3,13 +3,20 @@ import json
 import tempfile
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import aggie_yt_collect as c
 import aggie_yt_digest as d
 
 
 class CollectionTests(unittest.TestCase):
+    def setUp(self):
+        # A renamed feed helper must not turn an offline fixture into HTTP.
+        for guard in (patch.object(d.urllib.request, 'urlopen', side_effect=AssertionError('offline collection test')),
+                      patch.object(d, 'log')):
+            guard.start()
+            self.addCleanup(guard.stop)
+
     def test_unsupported_evidence_and_copied_passage_refused(self):
         claims = [{'quote': 'one two three four five six seven eight nine ten eleven twelve thirteen'}]
         for item in [{'text': 'A concise paraphrase.', 'evidence': [1]},
@@ -43,13 +50,36 @@ class CollectionTests(unittest.TestCase):
         result = {'video': video, 'version': c.VERSION, 'bullets': ['A reviewed summary.'], 'review': {'approved': True}}
         with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'SUMMARIES', Path(tmp)), \
                 patch.object(d, 'aggie_channels', return_value=channels), \
-                patch.object(d, 'newest_video', side_effect=[RuntimeError('feed unavailable'), video]), \
+                patch.object(d, 'feed_videos', side_effect=[RuntimeError('feed unavailable'), [video]]) as feed, \
                 patch.object(c.media, 'call', return_value=result), patch.object(c.time, 'sleep'), \
                 patch('job_status.record') as record, patch('vendor_mail_watch.telegram', return_value=True):
             self.assertEqual(c.collect(), 1)
+            self.assertEqual(feed.call_args_list, [call('a', count=1), call('b', count=1)])
             self.assertEqual(json.loads((Path(tmp) / 'example0001.json').read_text())['channel'], 'B')
             self.assertFalse(record.call_args.args[1])
             self.assertEqual(json.loads((Path(tmp) / 'collection.json').read_text())['ready'], 1)
+
+    def test_depth_reuses_reviewed_cache_and_gates_each_new_video(self):
+        videos = [{'video_id': name, 'published': '2026-10-15', 'url': 'https://example.invalid/' + name}
+                  for name in ('cached00001', 'newvideo001')]
+        for approved in (True, False):
+            with self.subTest(approved=approved), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(c, 'SUMMARIES', Path(tmp)), \
+                    patch.object(d, 'aggie_channels', return_value=[{'name': 'A', 'channel_id': 'a'}]), \
+                    patch.object(d, 'feed_videos', return_value=videos) as feed, \
+                    patch.object(c.media, 'call', return_value={'video': videos[1], 'version': c.VERSION,
+                                 'bullets': ['Fixture summary.'], 'review': {'approved': approved}}) as model, \
+                    patch('job_status.record') as record, patch('vendor_mail_watch.telegram', return_value=True):
+                (Path(tmp) / 'cached00001.json').write_text(json.dumps({
+                    'video': videos[0], 'version': c.VERSION, 'bullets': ['Cached fixture.'],
+                    'review': {'approved': True}}))
+                self.assertEqual(c.collect(depth=2), 0 if approved else 1)
+                feed.assert_called_once_with('a', count=2)
+                model.assert_called_once_with('aggie-summary', video=videos[1])
+                self.assertEqual((Path(tmp) / 'newvideo001.json').exists(), approved)
+                self.assertEqual(record.call_args.args[1], approved)
+                state = json.loads((Path(tmp) / 'collection.json').read_text())
+                self.assertEqual(state['ready'], 2 if approved else 1)
 
     def test_unreviewed_output_cannot_be_delivered(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(d, 'PROJECT_DIR', Path(tmp)):
