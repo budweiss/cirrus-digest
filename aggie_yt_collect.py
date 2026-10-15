@@ -122,11 +122,20 @@ def build_video(video):
     return result
 
 
-def collect():
+def collect(depth=1):
+    """Collect the newest `depth` videos per channel.
+
+    depth=1 is the nightly default (unchanged 00:30 contract). depth>1 is the
+    S417 catch-up (Buddy asked 2026-10-15 whether we can run with older
+    postings): each requested depth slot reuses the same per-video cache and
+    review gate, so already-collected videos cost one file read and one channel
+    that fails still costs only that channel, not the others' slots.
+    """
     import job_status
     channels = digest.aggie_channels()
     if not channels:
         raise ValueError('aggie_channels_missing')
+    depth = max(1, min(int(depth), 15))
     SUMMARIES.mkdir(parents=True, exist_ok=True)
     with (SUMMARIES / '.collect.lock').open('w') as handle:
         try:
@@ -138,19 +147,21 @@ def collect():
             if index:
                 time.sleep(5)
             try:
-                video = digest.newest_video(channel['channel_id'])
-                if not video:
+                videos = digest.feed_videos(channel['channel_id'], count=depth)
+                if not videos:
                     raise ValueError('empty_channel_feed')
-                destination = SUMMARIES / (video['video_id'] + '.json')
-                result = digest.load_json(destination, {})
-                if result.get('version') != VERSION or result.get('review', {}).get('approved') is not True:
-                    result = media.call('aggie-summary', video=video)
-                if result.get('review', {}).get('approved') is not True:
-                    raise ValueError('unreviewed_summary')
-                result.update(channel=channel['name'], checked_at=datetime.now(digest.NY).isoformat())
-                media.atomic_json(destination, result)
-                ready += 1
-                digest.log('ready: %s (%s)' % (channel['name'], video['published']))
+                for video in videos:
+                    destination = SUMMARIES / (video['video_id'] + '.json')
+                    result = digest.load_json(destination, {})
+                    if result.get('version') != VERSION or result.get('review', {}).get('approved') is not True:
+                        result = media.call('aggie-summary', video=video)
+                    if result.get('review', {}).get('approved') is not True:
+                        raise ValueError('unreviewed_summary')
+                    result.update(channel=channel['name'], checked_at=datetime.now(digest.NY).isoformat())
+                    media.atomic_json(destination, result)
+                    ready += 1
+                    digest.log('ready: %s (%s pub %s)' % (
+                        channel['name'], video['published'], video.get('video_id', '?')))
             except Exception as exc:
                 errors.append(channel['name'] + ': ' + type(exc).__name__)
                 digest.log('pending: ' + errors[-1])
@@ -171,4 +182,8 @@ def collect():
 
 
 if __name__ == '__main__':
-    raise SystemExit(collect())
+    _depth = 1
+    for _a in sys.argv[1:]:
+        if _a.startswith('--depth='):
+            _depth = int(_a.split('=', 1)[1])
+    raise SystemExit(collect(depth=_depth))

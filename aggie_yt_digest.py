@@ -54,28 +54,53 @@ def aggie_channels():
             if c.get("lane") == "aggie" and c.get("channel_id")]
 
 
-def newest_video(channel_id):
-    """Newest entry of the channel's RSS feed, or None. Read-only."""
+def feed_videos(channel_id, count=1):
+    """The channel's newest `count` RSS entries, newest first. Read-only.
+
+    Three attempts with backoff (S417): the 2026-10-15 00:30 collection had
+    ALL aggie channels fail with a single HTTPError each, while the same
+    feeds fetched fine at 05:35 — the known intermittent platform-wide feed
+    404 window (yt-watch met it for years; see TRANSIENT notes in yt_watch).
+    A one-shot fetch turns that nightly window into a whole lost brief.
+    """
+    import time as _time
     url = "https://www.youtube.com/feeds/videos.xml?channel_id=" + channel_id
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        xml_text = r.read().decode("utf-8", "replace")
+    last_exc = None
+    for attempt in range(3):
+        if attempt:
+            _time.sleep(30 * attempt)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                xml_text = r.read().decode("utf-8", "replace")
+            break
+        except Exception as exc:
+            last_exc = exc
+            log("  feed fetch attempt %d/3 failed: %s" % (attempt + 1, str(exc)[:80]))
+    else:
+        raise last_exc
     import xml.etree.ElementTree as ET
     NS = {"a": "http://www.w3.org/2005/Atom",
           "yt": "http://www.youtube.com/xml/schemas/2015"}
     root = ET.fromstring(xml_text)
-    e = root.find("a:entry", NS)
-    if e is None:
-        return None
-    vid = e.findtext("yt:videoId", default="", namespaces=NS)
-    if not vid:
-        return None
-    return {
-        "video_id": vid,
-        "title": (e.findtext("a:title", default="", namespaces=NS) or "").strip(),
-        "published": (e.findtext("a:published", default="", namespaces=NS) or "")[:10],
-        "url": "https://www.youtube.com/watch?v=%s" % vid,
-    }
+    out = []
+    for e in root.findall("a:entry", NS)[:max(1, int(count))]:
+        vid = e.findtext("yt:videoId", default="", namespaces=NS)
+        if not vid:
+            continue
+        out.append({
+            "video_id": vid,
+            "title": (e.findtext("a:title", default="", namespaces=NS) or "").strip(),
+            "published": (e.findtext("a:published", default="", namespaces=NS) or "")[:10],
+            "url": "https://www.youtube.com/watch?v=%s" % vid,
+        })
+    return out
+
+
+def newest_video(channel_id):
+    """Newest entry of the channel's RSS feed, or None. Read-only."""
+    videos = feed_videos(channel_id, count=1)
+    return videos[0] if videos else None
 
 
 # ── findings parsing ────────────────────────────────────────────────────────
@@ -216,6 +241,45 @@ def compose_intro(intro_body, day_label):
     return ("Hi Aggie,\n\n" + intro_body.strip() + "\n\n— CIRRUS, on behalf of Buddy\n")
 
 
+def catchup_sections(channels, by_url, state, cap=6):
+    """Reviewed non-stale summaries Aggie has NOT yet been sent, newest first.
+
+    S417 catch-up (Buddy asked 2026-10-15: "are there any old posting you can
+    run with?"). Unlike pick_sections this is NOT gated on 'newest only' and
+    does NO feed checks: it works purely from the reviewed cache, so it sends
+    nothing that failed collection or review, never re-sends (cursor = state
+    'sent' latest ids + 'sent_extra' history), never crosses the 30-day line
+    (stale summaries are excluded here — TF's 2025 episodes stay labeled old,
+    not republished as catch-up content), and is capped to bound the email.
+    """
+    sent = state.get("sent", {}) or {}
+    sent_extra = state.get("sent_extra", {}) or {}
+    names = [c.get("name", "?") for c in channels]
+    order = {n: i for i, n in enumerate(names)}
+    sections = []
+    for url, sec in by_url.items():
+        name = sec.get("channel")
+        if name not in order or sec.get("stale") or sec.get("extract_error"):
+            continue
+        vid = url.split("v=")[-1]
+        if (sent.get(name) or {}).get("video_id") == vid:
+            continue
+        if vid in (sent_extra.get(name) or {}):
+            continue
+        section = dict(sec)
+        section.setdefault("url", url)
+        sections.append(section)
+    # Cap against the NEWEST posts, then present per channel oldest-first
+    # inside each channel block so catch-up reads naturally.
+    sections.sort(key=lambda s: (order[s["channel"]], s.get("published", "")))
+    if len(sections) > cap:
+        kept = set(id(s) for s in
+                   sorted(sections, key=lambda s: (s.get("published", ""), order[s["channel"]]),
+                          reverse=True)[:cap])
+        sections = [s for s in sections if id(s) in kept]
+    return sections
+
+
 def pick_sections(channels, by_url, state):
     """Which of Aggie's newest videos have findings and haven't been sent."""
     sections, pending = [], []
@@ -245,6 +309,7 @@ def pick_sections(channels, by_url, state):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = "dry"
+    backfill = "--backfill" in argv
     for a in argv:
         if a in ("--live", "--mode=live"):
             mode = "live"
@@ -256,10 +321,10 @@ def main(argv=None):
         except OSError:
             log("already running — refusing to double-send")
             return 0
-        return work(dry_run)
+        return work(dry_run, backfill=backfill)
 
 
-def work(dry_run):
+def work(dry_run, backfill=False):
     import job_status
     channels = aggie_channels()
     if not channels:
@@ -268,7 +333,11 @@ def work(dry_run):
         return 2
     state = load_json(STATE_PATH, {})
     by_url = reviewed_summaries()
-    sections, pending = pick_sections(channels, by_url, state)
+    if backfill:
+        sections = catchup_sections(channels, by_url, state)
+        pending = []
+    else:
+        sections, pending = pick_sections(channels, by_url, state)
     for p in pending:
         log("  waiting for findings: %s" % p)
     now = datetime.now(NY)
@@ -288,6 +357,15 @@ def work(dry_run):
         intro = compose_intro(intro_path.read_text(errors="replace"), day_label)
         body = intro.rsplit('\n\n— CIRRUS', 1)[0] + '\n\n' + body.removeprefix('Hi Aggie,\n\n')
         subject = "Your daily video summaries are ready"
+    elif backfill:
+        subject = "Your YouTube catch-up brief — " + day_label
+        body = body.removeprefix('Hi Aggie,\n\n')
+        body = ("Hi Aggie,\n\n"
+                "A short catch-up: here are earlier posts from the past month on "
+                "your channels, in the same style as the daily briefs — what the "
+                "presenters said about stocks, the market and government matters, "
+                "attributed to them as always. Not financial advice, and just "
+                "information.\n\n" + body.removeprefix('Hi Aggie,\n\n'))
     if pending:
         body += "\nSome new videos are still being checked and will follow when their summaries are ready.\n"
     if dry_run:
@@ -311,8 +389,25 @@ def work(dry_run):
         state[INTRO_SENT_KEY] = now.strftime("%Y-%m-%d")
     for sec in sections:
         vid = sec["url"].split("v=")[-1]
-        sent[sec["channel"]] = {"video_id": vid, "date": now.strftime("%Y-%m-%d")}
-        log("sent: %s — %s" % (sec["channel"], vid))
+        if backfill:
+            extra = state.setdefault("sent_extra", {}).setdefault(sec["channel"], {})
+            extra[vid] = now.strftime("%Y-%m-%d")
+        else:
+            sent[sec["channel"]] = {"video_id": vid, "date": now.strftime("%Y-%m-%d")}
+        log("sent%s: %s — %s" % (" (catch-up)" if backfill else "", sec["channel"], vid))
+    if backfill:
+        # After a catch-up, every cached summary is sent; point the per-channel
+        # cursor at the NEWEST cached video so the daily flow never re-sends a
+        # newer-than-cursor video the client has already received.
+        newest_by_channel = {}
+        for url, sec2 in by_url.items():
+            if sec2.get("channel") and not sec2.get("stale"):
+                vid2 = url.split("v=")[-1]
+                newest_by_channel.setdefault(sec2["channel"], []).append(
+                    (sec2.get("published", ""), vid2))
+        for name2, items in newest_by_channel.items():
+            newest_vid = max(items)[1]
+            sent[name2] = {"video_id": newest_vid, "date": now.strftime("%Y-%m-%d")}
     atomic_json(STATE_PATH, state)
     job_status.record("aggieyt", not pending, "sent %d section(s); %d pending" % (len(sections), len(pending)))
     return 0
@@ -424,6 +519,25 @@ def selftest() -> int:
         sp = Path(tmp) / "state.json"
         aggie_yt.atomic_json(sp, {"sent": {"a": {}}})
         ck("state file round-trips", load_json(sp, {}) == {"sent": {"a": {}}})
+
+        # catch-up selection: never re-sends, never crosses the 30-day line
+        chans2 = [{"name": "Money On The Move"}, {"name": "Financial Education"}]
+        by2 = {
+            "https://www.youtube.com/watch?v=sentold12345": {"channel": "Money On The Move", "published": "2026-10-13", "stale": False},
+            "https://www.youtube.com/watch?v=cand1aaaaaaa": {"channel": "Money On The Move", "published": "2026-09-29", "stale": False},
+            "https://www.youtube.com/watch?v=cand2aaaaaaa": {"channel": "Financial Education", "published": "2026-10-12", "stale": False},
+            "https://www.youtube.com/watch?v=stale1aaaaaaaa": {"channel": "Take FiVe - His Glory", "published": "2025-07-03", "stale": True},
+        }
+        state2 = {"sent": {"Money On The Move": {"video_id": "sentold12345"}}}
+        picked = aggie_yt.catchup_sections(chans2, by2, state2)
+        ck("catch-up excludes already-sent and stale, includes unsent",
+           [s["url"] for s in picked] == ["https://www.youtube.com/watch?v=cand1aaaaaaa",
+                                          "https://www.youtube.com/watch?v=cand2aaaaaaa"])
+        state3 = {"sent": {"Money On The Move": {"video_id": "sentold12345"}},
+                  "sent_extra": {"Financial Education": {"cand2aaaaaaa": "2026-10-15"}}}
+        picked3 = aggie_yt.catchup_sections(chans2, by2, state3)
+        ck("catch-up never re-sends recorded history",
+           [s["url"] for s in picked3] == ["https://www.youtube.com/watch?v=cand1aaaaaaa"])
 
     print("  selftest %s" % ("PASSED" if not failures else "FAILED"))
     return 1 if failures else 0
