@@ -124,7 +124,7 @@ def c1_draft(system,text):
     model='gpt-oss:120b'
     if media.token_count(system+text)+6144>32768:
         raise ValueError('personal_draft_context_budget_exceeded')
-    payload={'model':model,'stream':False,'think':'low','format':'json',
+    payload={'model':model,'stream':False,'think':'medium','format':'json',
              'messages':[{'role':'system','content':system},{'role':'user','content':text}],
              'options':{'temperature':0,'num_ctx':32768,'num_predict':6144}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
@@ -148,6 +148,10 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
           'report_as_of':datetime.now(NY).isoformat(),
           'holdings_file_last_changed_at':datetime.fromtimestamp(source_mtime,NY).isoformat() if source_mtime is not None else 'not supplied in this fixture',
           'historical_sell_review_date':'2026-10-09',
+          'deterministic_export_notice':export_notice(age),
+          'verified_quote_tickers':sorted(t for t,q in marks.items() if q.get('valuation_eligible')),
+          'unverified_quote_tickers':sorted(t for t,q in marks.items() if not q.get('valuation_eligible')),
+          'export_stale':age>3,
           'seven_rule_review_and_historical_context':rules,'original_task_instructions':instructions}
     atomic(folder/'review-evidence.json',data)
     system=('Write Buddy’s personal-holdings OPINION only, using the supplied current task instructions and seven sell rules. '
@@ -158,7 +162,9 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'Never claim that every position has a verified or live quote; each position in the quotes data is individually verified or unverified, and any price-validity statement must follow that per-position status. '
         'When an assessment spans live quotes and the dated export values, say explicitly that the live and dated values are mixed. '
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
-        'Use report_as_of as the report clock. The October 9 sell review is historical context, not a current event. '
+        'Use report_as_of as the report clock. Open the opinion with an explicit staleness statement whose wording matches the supplied deterministic_export_notice, '
+        'then disclose quote validity exactly by the supplied verified_quote_tickers and unverified_quote_tickers: only verified tickers have verified observations, the others do not and any price discussion for them must come from the dated export. '
+        'The October 9 sell review is historical context, not a current event. '
         'All shares and weights refer to the dated export; only separately verified quotes have current observations. '
         'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns '
         'or valuation multiples in the opinion/rule prose. A numerical threshold explicitly defined in a supplied '
@@ -179,7 +185,11 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         try:
             raw=parse(c1_draft(system,json.dumps(data)+fix))
             atomic(folder/('candidate-raw-%d.json'%attempt),raw)
-            draft=validate(raw,news,rules+'\n'+instructions)
+            # The deterministic export notice is pipeline-generated, so its own
+            # day-count figure is canonical: the draft must be able to quote it
+            # (S418) without tripping financial_numbers_belong_in_canonical_table.
+            # Any OTHER invented figure still has no source here and is rejected.
+            draft=validate(raw,news,rules+'\n'+instructions+'\n'+export_notice(age))
             atomic(folder/('candidate-%d.json'%attempt),draft)
             with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
                 raw_review=research.structured_review(
