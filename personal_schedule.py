@@ -113,12 +113,16 @@ def validate(data,news,rule_source=''):
     # verbatim apart from the space variant, so normalise both sides before
     # matching — otherwise a correct quote is falsely rejected.
     norm=lambda text:text.replace('\u202f',' ').replace('\u00a0',' ')
-    numbers=re.findall(r'\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',norm(prose),re.I)
-    rule_norm=norm(rule_source)
-    compact=lambda text:re.sub(r'\s+','',text)
-    rule_compact=compact(rule_norm)
-    offenders=[value for value in numbers if value not in rule_source and value not in rule_norm
-               and (not rule_compact or compact(value) not in rule_compact)]
+    pattern=r'(?<![\w.,])(?:\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?\b|dollars?\b|times earnings\b|[xX]\b))'
+    numbers=re.findall(pattern,norm(prose),re.I)
+    def number_key(value):
+        amount=Decimal(re.search(r'\d[\d,.]*',value).group().replace(',','').rstrip('.'))
+        unit=('percent' if '%' in value else 'shares' if 'share' in value.lower() else
+              'currency' if '$' in value or 'dollar' in value.lower() else 'multiple')
+        return unit,amount
+    # Compare complete quantities: "5%" is not sourced by a "15%" rule.
+    allowed={number_key(value) for value in re.findall(pattern,norm(rule_source),re.I)}
+    offenders=[value for value in numbers if number_key(value) not in allowed]
     if offenders:
         # S418: carry the offending tokens on the exception so the run folder
         # can record WHICH figures were unsourced (detection fix — iterating
@@ -165,10 +169,10 @@ def computed_rule_evidence(rows,marks):
     recs={};line=[]
     for row in rows:
         ticker=row['ticker']
-        try:shares=Decimal(row['shares'] or '0')
-        except Exception:shares=Decimal(0)
+        try:shares=Decimal(row['shares']) if row.get('shares') is not None else None
+        except Exception:shares=None
         q=marks.get(ticker,{})
-        if q.get('valuation_eligible') and q.get('price'):
+        if shares is not None and q.get('valuation_eligible') and q.get('price'):
             try:value=shares*Decimal(str(q['price']));basis='verified_quote'
             except Exception:value=None;basis='invalid_quote'
         else:value=None;basis='export_value'
@@ -193,7 +197,7 @@ def computed_rule_evidence(rows,marks):
     for ticker,rec in recs.items():
         if rec['value_estimate'] and export_total:
             rec['weight_estimate_pct']=str((Decimal(rec['value_estimate'])/export_total*100).quantize(Decimal('0.01')))
-            line.append('%s: weight_estimate_pct %s (basis %s)'%(ticker,rec['weight_estimate_pct'],rec['basis']))
+            line.append('%s: weight_estimate_pct %s%% (basis %s)'%(ticker,rec['weight_estimate_pct'],rec['basis']))
         else:
             line.append('%s: estimate unknown (basis unknown)'%ticker)
     record={'method':'verified quote values where the quote is eligible; dated export values otherwise; '
@@ -233,12 +237,10 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'do not perform your own arithmetic, and the only figures you may write are ones quoted verbatim from the supplied sell rules, the computed table or the export notice. '
         'The October 9 sell review is historical context, not a current event. '
         'All shares and weights refer to the dated export; only separately verified quotes have current observations. '
-        'Write qualitative opinions. Do not calculate or repeat prices, position sizes, portfolio weights, returns '
-        'or valuation multiples in the opinion/rule prose. A numerical threshold explicitly defined in a supplied '
-        'sell rule may be quoted as that rule, never invented or treated as a current observed result. '
-        'When a rule assessment needs arithmetic (for example comparing a weight with its stated threshold), compute it silently and state the outcome '
-        'qualitatively — above, below or near the rule\'s stated threshold — and write only numerals that appear verbatim in the supplied sell-rule or instruction text; '
-        'never write a newly computed figure in the opinion or rule assessments. The final report adds a '
+        'Prefer qualitative opinions: above, below or near the rule\'s stated threshold. '
+        'If a figure is necessary, quote only an exact supplied rule threshold or computed-table quantity, '
+        'with its unit and dated or mixed basis. Never calculate a new figure in prose. '
+        'A rule threshold is a test, never proof that the observed holding meets it. The final report adds a '
         'separate canonical quote table. Historical financial numbers must not be promoted to current facts. '
         'A large weight alone is not a sell reason. Apply each of the seven supplied rules with specific evidence '
         'or not_established. Name the actual test for each rule; when evidence is absent, state what is missing. '
@@ -289,6 +291,20 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
     raise ValueError('personal_opinion_review_failed')
 
 
+@contextlib.contextmanager
+def result_attempt(folder,live):
+    """A failed retry must replace an older passing result for this daily slot."""
+    path=folder/('result.json' if live else 'preview-result.json')
+    metadata={'started_at':datetime.now(timezone.utc).isoformat(),
+              'source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    atomic(path,dict(metadata,status='running'))
+    try:yield metadata
+    except Exception as exc:
+        atomic(path,dict(metadata,status='failed',error_type=research.error_code(exc),
+                         completed_at=datetime.now(timezone.utc).isoformat()))
+        raise
+
+
 def run(live=False):
     if socket.gethostname()!='cumulus1':raise ValueError('personal_review_requires_cumulus1')
     os.umask(0o077);HOME.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -299,28 +315,29 @@ def run(live=False):
             old=json.loads(receipt.read_text())
             if old.get('status')=='sent':return {'status':'already_sent','recipients':1}
             raise ValueError('personal_delivery_needs_reconciliation')
-        rows,manifest,age,rules,instructions=inputs();marks=quotes(rows);news,gaps=public_news(rows)
-        draft=assess(rows,marks,news,gaps,age,rules,instructions,folder,manifest['source_mtime'])
-        lead=export_notice(age)
-        md='# Personal Holdings Opinion — '+date+'\n\n'+lead+'\n\n'+draft['opinion']+'\n\n## Seven sell-rule checks\n\n'
-        md+='\n'.join(str(x['rule'])+'. '+x['status'].replace('_',' ')+': '+x['assessment'] for x in sorted(draft['rules'],key=lambda x:x['rule']))
-        md+='\n\n## Price evidence\n\n| Holding | Observed price | Quote timestamp | Status |\n|---|---:|---|---|\n'
-        for row in sorted(rows,key=lambda r:Decimal(r['weight_pct'] or '0'),reverse=True):
-            q=marks[row['ticker']]
-            md+='| '+row['ticker']+' | '+str(q.get('price','unavailable'))+' | '+str(q.get('quote_at','unavailable'))+' | '+('verified observation' if q.get('valuation_eligible') else 'unverified or stale')+' |\n'
-        md+='\nOpinion only. No transactions were made. Export freshness and quote freshness are separate.\n'
-        path=folder/('report.md' if live else 'preview.md');path.write_text(md);path.chmod(0o600)
-        creds=json.loads(sender.CREDS_PATH.read_text());sender.check_lane(md)
-        (_,envelope),subject=sender.build_message(md,datetime.now(NY),creds)
-        if envelope!=[sender.TO_EMAIL]:raise ValueError('personal_recipient_mismatch')
-        if live:
-            with contextlib.redirect_stdout(io.StringIO()):sender.send_live(md,creds,subject,date)
-        result={'status':'sent' if live else 'preview','recipients':1,'holdings':len(rows),
-                'verified_quotes':sum(bool(x.get('valuation_eligible')) for x in marks.values()),
-                'sources':len(news),'source_gaps':len(gaps),'export_stale':age>3,'rules_reviewed':7,
-                'unknown_input_fields':sum(v is None for row in rows for v in row.values()),
-                'body_sha256':hashlib.sha256(md.encode()).hexdigest()}
-        atomic(folder/('result.json' if live else 'preview-result.json'),result);return result
+        with result_attempt(folder,live) as metadata:
+            rows,manifest,age,rules,instructions=inputs();marks=quotes(rows);news,gaps=public_news(rows)
+            draft=assess(rows,marks,news,gaps,age,rules,instructions,folder,manifest['source_mtime'])
+            lead=export_notice(age)
+            md='# Personal Holdings Opinion — '+date+'\n\n'+lead+'\n\n'+draft['opinion']+'\n\n## Seven sell-rule checks\n\n'
+            md+='\n'.join(str(x['rule'])+'. '+x['status'].replace('_',' ')+': '+x['assessment'] for x in sorted(draft['rules'],key=lambda x:x['rule']))
+            md+='\n\n## Price evidence\n\n| Holding | Observed price | Quote timestamp | Status |\n|---|---:|---|---|\n'
+            for row in sorted(rows,key=lambda r:Decimal(r['weight_pct'] or '0'),reverse=True):
+                q=marks[row['ticker']]
+                md+='| '+row['ticker']+' | '+str(q.get('price','unavailable'))+' | '+str(q.get('quote_at','unavailable'))+' | '+('verified observation' if q.get('valuation_eligible') else 'unverified or stale')+' |\n'
+            md+='\nOpinion only. No transactions were made. Export freshness and quote freshness are separate.\n'
+            path=folder/('report.md' if live else 'preview.md');path.write_text(md);path.chmod(0o600)
+            creds=json.loads(sender.CREDS_PATH.read_text());sender.check_lane(md)
+            (_,envelope),subject=sender.build_message(md,datetime.now(NY),creds)
+            if envelope!=[sender.TO_EMAIL]:raise ValueError('personal_recipient_mismatch')
+            if live:
+                with contextlib.redirect_stdout(io.StringIO()):sender.send_live(md,creds,subject,date)
+            result=dict(metadata,status='sent' if live else 'preview',recipients=1,holdings=len(rows),
+                    verified_quotes=sum(bool(x.get('valuation_eligible')) for x in marks.values()),
+                    sources=len(news),source_gaps=len(gaps),export_stale=age>3,rules_reviewed=7,
+                    unknown_input_fields=sum(v is None for row in rows for v in row.values()),
+                    body_sha256=hashlib.sha256(md.encode()).hexdigest(),completed_at=datetime.now(timezone.utc).isoformat())
+            atomic(folder/('result.json' if live else 'preview-result.json'),result);return result
 
 
 def dispatch(live=False):

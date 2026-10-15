@@ -49,6 +49,42 @@ class PersonalChecks(unittest.TestCase):
             response.update(done_reason='stop',model='other-model')
             with self.assertRaisesRegex(RuntimeError,'incomplete_or_wrong'):S.c1_draft('policy','fixture')
 
+    def test_exact_computed_percentage_is_a_sourced_quantity(self):
+        rows=[{'ticker':'AAA','shares':'1','value_at_export':'15','price_at_export':'15'},
+              {'ticker':'BBB','shares':'1','value_at_export':'85','price_at_export':'85'}]
+        _,source=S.computed_rule_evidence(rows,{})
+        data={'opinion':'Synthetic dated estimate is 15\u202f% for AAA; this is not a verified current holding.',
+              'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic trigger evidence established.'} for i in range(1,8)]}
+        self.assertEqual(S.validate(data,[],source),data)
+        data['opinion']='Synthetic dated estimate is 5% for AAA; this wrong substring must not pass.'
+        with self.assertRaisesRegex(ValueError,'canonical_table'):S.validate(data,[],source)
+        data['opinion']='Synthetic dated estimate is 15 shares for AAA; the unit is deliberately wrong.'
+        with self.assertRaisesRegex(ValueError,'canonical_table'):S.validate(data,[],source)
+
+    def test_unknown_shares_do_not_become_zero_at_a_verified_quote(self):
+        rows=[{'ticker':'AAA','shares':None,'value_at_export':'30','price_at_export':'15'},
+              {'ticker':'BBB','shares':None,'value_at_export':None,'price_at_export':'10'}]
+        marks={ticker:{'valuation_eligible':True,'price':'20'} for ticker in ('AAA','BBB')}
+        record,_=S.computed_rule_evidence(rows,marks)
+        self.assertEqual(record['tickers']['AAA']['value_estimate'],'30')
+        self.assertEqual(record['tickers']['AAA']['basis'],'export_value')
+        self.assertIsNone(record['tickers']['BBB']['value_estimate'])
+
+    def test_failed_retry_replaces_previous_success_without_sending(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);folder=home/'runs'/S.datetime.now(S.NY).date().isoformat();folder.mkdir(parents=True)
+            path=folder/'preview-result.json'
+            path.write_text(json.dumps({'status':'preview','body_sha256':'old_success'}))
+            with patch.object(S.socket,'gethostname',return_value='cumulus1'),patch.object(S,'HOME',home),patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'inputs',side_effect=ValueError('holdings_hash_mismatch')),patch.object(S.sender,'send_live') as send:
+                with self.assertRaisesRegex(ValueError,'holdings_hash_mismatch'):S.run(False)
+                send.assert_not_called()
+            result=json.loads(path.read_text())
+            self.assertEqual(result['status'],'failed')
+            self.assertNotIn('body_sha256',result)
+            self.assertEqual(result['source_sha256'],hashlib.sha256(Path(S.__file__).read_bytes()).hexdigest())
+            self.assertIn('started_at',result);self.assertIn('completed_at',result)
+
     def test_partial_paywall_text_is_not_treated_as_verified_news(self):
         from types import SimpleNamespace
         fetch=Mock(side_effect=[('Blocked excerpt '*40,True),('Verified public source '*40,False)])
