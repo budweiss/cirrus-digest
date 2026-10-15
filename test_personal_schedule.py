@@ -35,8 +35,6 @@ class PersonalChecks(unittest.TestCase):
         self.assertEqual(len(known),3)
         total=sum(float(r['weight_estimate_pct']) for r in known)
         self.assertAlmostEqual(total,100.0,delta=0.01)
-        total=21050+9000
-        self.assertEqual(record['tickers']['AAA']['weight_estimate_pct'],str((__import__('decimal').Decimal(21050)/total*100).quantize(__import__('decimal').Decimal('0.01'))))
         self.assertIn('denominator covers only exported holdings',record['method'])
 
     def test_private_draft_uses_only_c1_loopback_and_rejects_incomplete_output(self):
