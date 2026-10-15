@@ -109,8 +109,14 @@ def validate(data,news,rule_source=''):
     prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)
     prose=re.sub(r'https?://\S+','',prose)
     numbers=re.findall(r'\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?|dollars?|times earnings|[xX]\b)',prose,re.I)
-    if any(value not in rule_source for value in numbers):
-        raise ValueError('financial_numbers_belong_in_canonical_table')
+    offenders=[value for value in numbers if value not in rule_source]
+    if offenders:
+        # S418: carry the offending tokens on the exception so the run folder
+        # can record WHICH figures were unsourced (detection fix — iterating
+        # blind on a bare error code produced one new failure mode per run).
+        exc=ValueError('financial_numbers_belong_in_canonical_table')
+        exc.offenders=offenders[:10]
+        raise exc
     return data
 
 
@@ -255,6 +261,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         except (ValueError,TypeError,KeyError) as exc:
             reason='context_budget_exceeded' if str(exc) in ('media request exceeds context budget','review request exceeds context budget') else research.error_code(exc)
             attempts.append({'error_type':reason});atomic(folder/'checks.json',attempts)
+            if getattr(exc,'offenders',None):
+                atomic(folder/'numbers-offenders.json',{'offenders':exc.offenders})
             fix='\nOutput rejected: '+research.error_code(exc)+'. Use the required schema and sourced evidence.'
             if str(exc)=='financial_numbers_belong_in_canonical_table':
                 fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose. Quote only figures verbatim from the supplied sell rules, the computed_rule_evidence table or the export notice; the canonical quote table is added separately.'
