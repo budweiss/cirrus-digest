@@ -8,6 +8,17 @@ from unittest.mock import Mock,patch
 import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
+    def source_rules(self):
+        return '# Rules\n'+ '\n'.join('%d. Synthetic source test %d.'%(i,i) for i in range(1,8))
+
+    def test_source_rule_mapping_excludes_numbered_output_instructions(self):
+        text=self.source_rules()+'\n\n# Output format\n'+ '\n'.join('%d. Synthetic output requirement.'%i for i in range(1,7))
+        rules=S.sell_rule_catalog(text)
+        self.assertEqual([r['rule'] for r in rules],list(range(1,8)))
+        self.assertIn('Synthetic source test 6.',rules[5]['source'])
+        self.assertTrue(all('output requirement' not in r['source'] for r in rules))
+        for bad in ('No numbered source rules.',text+'\n'+self.source_rules()):
+            with self.assertRaisesRegex(ValueError,'ambiguous_or_missing'):S.sell_rule_catalog(bad)
     def test_computed_rule_evidence_mixes_verified_quotes_and_export_values(self):
         rows=[{'ticker':'AAA','shares':'100','value_at_export':'10000','price_at_export':'100'},
               {'ticker':'BBB','shares':'50','value_at_export':'9000','price_at_export':'180'},
@@ -99,7 +110,7 @@ class PersonalChecks(unittest.TestCase):
                'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic test evidence is not available for this rule.'} for i in range(1,8)]}
         reviews=iter(['{"passed":true,"issues":["Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
         with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args:next(reviews)):
-            result=S.assess([],{},[],[],4,'Synthetic seven rules.','Synthetic instructions.',Path(td))
+            result=S.assess([],{},[],[],4,'Historical background only.',self.source_rules(),Path(td))
             checks=json.loads((Path(td)/'checks.json').read_text())
         self.assertEqual(result,draft);self.assertEqual(model.call_count,2)
         self.assertFalse(checks[0]['passed']);self.assertIn('rule seven',model.call_args_list[1].args[1])
@@ -108,6 +119,19 @@ class PersonalChecks(unittest.TestCase):
         self.assertIn('STALE',S.export_notice(4.1))
         self.assertIn('current positions need your confirmation',S.export_notice(4.1))
         self.assertNotIn('STALE',S.export_notice(1.0))
+
+    def test_quantity_repair_keeps_the_previous_semantic_review_findings(self):
+        from contextlib import nullcontext
+        good={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
+              'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
+        bad=dict(good,opinion='Synthetic correction mistakenly invents a 999% observation which must fail.')
+        findings='Rule six must use its actual source test.'
+        reviews=[json.dumps({'passed':False,'issues':[findings]}),json.dumps({'passed':True,'issues':[]})]
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',side_effect=[json.dumps(good),json.dumps(bad),json.dumps(good)]) as model,patch.object(S.research,'structured_review',side_effect=reviews) as reviewer:
+            result=S.assess([],{},[],[],4,'Historical background.',self.source_rules(),Path(td))
+        self.assertEqual(result,good);self.assertEqual(reviewer.call_count,2)
+        self.assertIn(findings,model.call_args_list[2].args[1])
+        self.assertIn('999%',model.call_args_list[2].args[1])
 
     def fixture(self,folder):
         raw=b'ticker,shares,avg_cost,price_at_export,value_at_export,weight_pct\nEXAMPLE,2,10,12,24,100\n'
