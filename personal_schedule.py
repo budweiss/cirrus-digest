@@ -173,8 +173,19 @@ def computed_rule_evidence(rows,marks):
             except Exception:value=None;basis='invalid_quote'
         else:value=None;basis='export_value'
         if value is None:
+            # First fallback: the export's own value cell. Second: shares x
+            # export price — the S418 run exposed holdings with an empty
+            # value cell dropping out of the denominator entirely (weights
+            # summed to ~50%), which the reviewer rightly called an artifact.
             raw=(row.get('value_at_export') or '').strip()
             try:value=Decimal(raw.replace(',','').replace('$','')) if raw else None
+            except Exception:value=None
+        if value is None:
+            raw_shares=(row.get('shares') or '').strip()
+            raw_price=(row.get('price_at_export') or '').strip()
+            try:
+                value=Decimal(raw_shares.replace(',','').replace('$',''))*Decimal(raw_price.replace(',','').replace('$',''))
+                basis='export_value'
             except Exception:value=None
         recs[ticker]={'value_estimate':str(value) if value is not None else None,
                       'basis':basis if value is not None else 'unknown'}

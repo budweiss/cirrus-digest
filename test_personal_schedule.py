@@ -9,9 +9,10 @@ import personal_schedule as S
 
 class PersonalChecks(unittest.TestCase):
     def test_computed_rule_evidence_mixes_verified_quotes_and_export_values(self):
-        rows=[{'ticker':'AAA','shares':'100','value_at_export':'10000'},
-              {'ticker':'BBB','shares':'50','value_at_export':'9000'},
-              {'ticker':'CCC','shares':'10','value_at_export':''}]
+        rows=[{'ticker':'AAA','shares':'100','value_at_export':'10000','price_at_export':'100'},
+              {'ticker':'BBB','shares':'50','value_at_export':'9000','price_at_export':'180'},
+              {'ticker':'CCC','shares':'10','value_at_export':'','price_at_export':'50'},
+              {'ticker':'DDD','shares':'','value_at_export':'','price_at_export':''}]
         marks={'AAA':{'valuation_eligible':True,'price':'210.50'},
                'BBB':{'valuation_eligible':False}}
         record,table_text=S.computed_rule_evidence(rows,marks)
@@ -19,10 +20,21 @@ class PersonalChecks(unittest.TestCase):
         # AAA uses the verified quote: 100 * 210.50 = 21050
         self.assertEqual(record['tickers']['AAA']['value_estimate'],'21050.00')
         self.assertEqual(record['tickers']['BBB']['basis'],'export_value')
-        # BBB keeps its dated export value; CCC has nothing and stays unknown.
-        self.assertEqual(record['tickers']['CCC']['value_estimate'],None)
-        self.assertEqual(record['tickers']['CCC']['basis'],'unknown')
-        self.assertNotIn('CCC: weight_estimate_pct',table_text)
+        # CCC has no value cell but shares x export price = 500, so it still
+        # counts (S418: partial rows previously dropped out of the denominator
+        # and the weight column summed to ~50%).
+        self.assertEqual(record['tickers']['CCC']['value_estimate'],'500')
+        self.assertEqual(record['tickers']['CCC']['basis'],'export_value')
+        # DDD has nothing at all and stays unknown.
+        self.assertEqual(record['tickers']['DDD']['value_estimate'],None)
+        self.assertEqual(record['tickers']['DDD']['basis'],'unknown')
+        self.assertNotIn('DDD: weight_estimate_pct',table_text)
+        # Denominator sanity: every known row is in the weight column and the
+        # weights sum to ~100 percent.
+        known=[r for r in record['tickers'].values() if r.get('weight_estimate_pct')]
+        self.assertEqual(len(known),3)
+        total=sum(float(r['weight_estimate_pct']) for r in known)
+        self.assertAlmostEqual(total,100.0,delta=0.01)
         total=21050+9000
         self.assertEqual(record['tickers']['AAA']['weight_estimate_pct'],str((__import__('decimal').Decimal(21050)/total*100).quantize(__import__('decimal').Decimal('0.01'))))
         self.assertIn('denominator covers only exported holdings',record['method'])
