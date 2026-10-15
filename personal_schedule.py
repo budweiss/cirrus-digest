@@ -201,7 +201,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'When an assessment spans live quotes and the dated export values, say explicitly that the live and dated values are mixed. '
         'An export older than three days must be prominently labelled stale; do not claim current positions. '
         'Use report_as_of as the report clock. Open the opinion with an explicit staleness statement whose wording matches the supplied deterministic_export_notice, '
-        'then disclose quote validity exactly by the supplied verified_quote_tickers and unverified_quote_tickers: only verified tickers have verified observations, the others do not and any price discussion for them must come from the dated export. '
+        'then disclose quote validity exactly by the supplied lists: only verified_quote_tickers have verified observations; for every unverified_quote_ticker state explicitly, by name, that its price is the dated export value per the computed table (basis export_value), not a live quote. ''Assess every sell rule strictly from the supplied dated evidence: when the supplied evidence shows a rule\'s trigger condition met, mark triggered and name the evidence source; when the evidence is absent or insufficient, mark not_established and name precisely what is missing — never mark a status contradicted by the supplied computed table. '
         'For any weight-, value- or drawdown-based rule status, use the supplied computed_rule_evidence table '
         '(pipeline-computed arithmetic: verified quote values where the quote is eligible, dated export values otherwise; denominator covers only exported holdings); '
         'do not perform your own arithmetic, and the only figures you may write are ones quoted verbatim from the supplied sell rules, the computed table or the export notice. '
@@ -222,7 +222,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
     attempts=[]
     fix=''
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             raw=parse(c1_draft(system,json.dumps(data)+fix))
             atomic(folder/('candidate-raw-%d.json'%attempt),raw)
