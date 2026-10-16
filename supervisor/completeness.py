@@ -540,6 +540,7 @@ RULES = {
 NO_ZERO_STATE = {
     "foundationrenewalcumulus": "Renewal due-check, packet preparation and errors record explicit ok; not-due is valid. Cadence checked independently.",
     "foundationrenewal": "CIRRUS renewal due-check has explicit success/failure; not-due is valid.",
+    "foundationrenewalauto": "Unattended renewal records explicit pass/hold/failure; no due records is valid and cadence is checked separately.",
     "immaculatewednesdayreport": "Called after games by immaculatetick, not a Wednesday timer. Sent, off-season and duplicate-suppressed are valid; failed send sets ok=False. Parent tick owns cadence.",
     "fleetcontroller": "Live fleet sidecar freshness and both worker identities are validated by the fixed status feed.",
     "runtimeconfig": "Host configuration is validated live by the status feed.",

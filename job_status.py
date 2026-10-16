@@ -53,6 +53,7 @@ CADENCE_H = {
     "macstudiowatch": 26,       # S406: daily 16:45 CIRRUS, official Apple + Telegram
     "foundationrenewal":        26,  # daily 04:50 CIRRUS (S316 approval-renewal due check)
     "foundationrenewalcumulus": 26,  # daily 04:40 CUMULUS (S316; cloud + GPT-OSS + HOA)
+    "foundationrenewalauto": 26,  # daily 10:00 CIRRUS, unattended local review/install
     # S141 -> S253. Project Immaculate guards deadlines that cannot be
     # re-opened. Since S253 one twice-daily tick (immaculate-tick.timer, 09:00
     # and 21:00 on cumulus1) watches for each week's contest and, after each

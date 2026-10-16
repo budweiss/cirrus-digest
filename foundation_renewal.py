@@ -4,17 +4,17 @@
 Buddy, S316: "automate the renewal". Reviewed foundation approvals are valid for
 7 days (his choice, S315). The RUN half now runs itself: recover each approved
 record's exact prior fixtures, re-run them, pre-check the gates, and lay every
-fresh answer beside the previously approved one. The REVIEW does not: approval
-stays an explicit written decision by a session (the S279/S287 design), and the
-installer refuses any record left undecided.
+fresh answer beside the previously approved one. The separate CIRRUS auto-review
+can write explicit decisions for unanimous local passes; uncertain records still
+need a session. The installer refuses any record left undecided.
 
 Daily on each box (CUMULUS 04:40 systemd timer, CIRRUS 04:50 LaunchDaemon):
   * finds the earliest expiry among the LIVE approvals this box is responsible
     for -- enabled route, approved record, and for a local slot only the model
     it serves now. Cloud records are tested only on CUMULUS: they are identical
     on both boxes (S315 verified 47/47) and CUMULUS cannot ssh to CIRRUS;
-  * more than 48 h away: records "next renewal due ..." and exits;
-  * within 48 h: runs the tests into ~/model-evaluation/renewal-<stamp>/, writes
+  * more than 72 h away: records "next renewal due ..." and exits;
+  * within 72 h: runs the tests into ~/model-evaluation/renewal-<stamp>/, writes
     PACKET.txt and decisions.json (every record approved=null), and Telegrams
     Buddy the deadline;
   * a packet under 20 h old for the same expiry: one reminder, no re-run (the
@@ -49,7 +49,7 @@ REGISTRY = HERE / "config" / "model_capabilities.json"
 CREDS = HERE / "config" / "credentials.json"
 EVROOT = Path.home() / "model-evaluation"
 STATE = EVROOT / "renewal-state.json"
-WINDOW_H = 48        # start the run half this long before the earliest expiry
+WINDOW_H = 72        # allow unattended review and a retry before expiry
 STALE_H = 20         # re-run a packet older than this (installer accepts < 24 h)
 VALIDITY_S = 7 * 86400
 LOCAL = ("ollama", "vllm")
@@ -281,7 +281,7 @@ def gates(rows):
 def write_packet(out_dir, host, projects, index):
     """PACKET.txt: every fresh answer beside the answer in the record's CURRENTLY
     APPROVED evidence; decisions.json with every record approved=null for the
-    reviewing session to fill in."""
+    review process or a reviewing session to fill in."""
     prior = {}
     for key, route in projects.items():
         for field in ("evaluations", "judge_evaluations"):
@@ -420,7 +420,7 @@ def main(force=False):
     return ok and answer_ok, note
 
 
-# ── the install half (run by a reviewing session, never by the timer) ─────────
+# ── the install half (run after explicit review, never by the test timer) ─────
 def _decisions(dirs, host):
     """Filled decisions.json from each packet dir; records keep the dir they came from."""
     recs, hoa = [], []
@@ -570,8 +570,8 @@ def selftest():
     ck("expiry: earliest live one (30 h), not the lapsing qwen (2 h)",
        earliest_expiry(projects, ("anthropic", "kimi", "vllm"), served) == now + 30 * 3600)
     ck("decide: nothing live -> none", decide(now, None, {}) == "none")
-    ck("decide: > 48 h away -> wait", decide(now, now + 49 * 3600, {}) == "wait")
-    ck("decide: within 48 h, no packet -> run", decide(now, now + 30 * 3600, {}) == "run")
+    ck("decide: > 72 h away -> wait", decide(now, now + 73 * 3600, {}) == "wait")
+    ck("decide: within 72 h, no packet -> run", decide(now, now + 70 * 3600, {}) == "run")
     ck("decide: fresh packet for the same expiry -> remind, no re-run",
        decide(now, now + 30 * 3600, {"last_run_at": now - 3600, "last_run_for": now + 30 * 3600}) == "remind")
     ck("decide: packet older than STALE_H -> run again (installer needs < 24 h)",

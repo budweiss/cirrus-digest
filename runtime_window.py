@@ -119,6 +119,7 @@ JOB = {
     "com.cirrus.vendormail":         ("light", 1, 5, "scans a small vendor inbox"),
     "com.cirrus.stratusreview":      ("light", 2, 10, "short review pass"),
     "com.cirrus.environmentscan":    ("light", 8, 10, "bounded public-source scan and two local reviews"),
+    "com.cirrus.foundationrenewalauto": ("heavy", 45, 5, "local fixture review and LAN approval sync"),
     "com.cirrus.stockam": ("heavy", 15, 30, "bounded SEC collection and local paper review"),
     "com.cirrus.stockpm": ("heavy", 15, 30, "bounded SEC collection and local paper review"),
     "com.cirrus.stockscorecard": ("light", 5, 3, "private ledger review and local analysis"),
