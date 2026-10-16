@@ -179,6 +179,7 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "com.cirrus.foundationrenewalauto": "long local review starts after the brief; counts-only failures alert directly, status reports next day",
     "com.cirrus.stockam": "existing user review time migrated from Claude; reports into the next brief",
     "com.cirrus.stockpm": "existing user review time migrated from Claude; reports into the next brief",
     "com.cirrus.stockscorecard": "existing user review time migrated from Claude; reports into the next brief",
