@@ -105,13 +105,20 @@ def record_sha(record):
     return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
 
 
-def has_due_records(registry, due_before):
-    for project in registry.get("projects", {}).values():
-        for field in ("evaluations", "judge_evaluations"):
-            for record in project.get(field, []):
-                if record.get("approved") is True and record.get("expires_at", 0) <= due_before:
-                    return True
-    return False
+def has_due_records(host, due_before):
+    """Use the builder's live-route filter, including served local-model slots."""
+    if host == "cumulus":
+        args = ["ssh", "-o", "BatchMode=yes", "cumulus1",
+                "/home/buddy/cirrus-digest/.venv/bin/python",
+                "/home/buddy/cirrus-digest/foundation_renewal.py", "--plan"]
+    else:
+        args = ["python3", str(ROOT / "foundation_renewal.py"), "--plan"]
+    plan = json.loads(command(args, host.upper() + " renewal plan"))
+    value = plan.get("earliest_expiry")
+    if not value:
+        return False
+    earliest = datetime.fromisoformat(value).replace(tzinfo=ZoneInfo("America/New_York"))
+    return earliest.timestamp() <= due_before
 
 
 def remote_python_command(script):
@@ -319,7 +326,7 @@ def run_once(reviewer=model_review, apply=True):
         if packet_age_hours(packet) > 20:
             # Evidence expires at 24 h. A stale packet with due records needs
             # an explicit alert, not a successful empty run.
-            if has_due_records(registry, time.time() + 72 * 3600):
+            if has_due_records(host, time.time() + 72 * 3600):
                 raise RuntimeError("fresh renewal packet missing")
             continue
         records, hoa, held, details = review_packet(packet, registry, time.time() + 72 * 3600, reviewer)
@@ -356,13 +363,10 @@ def run_once(reviewer=model_review, apply=True):
             install("cirrus", target)
         summary["renewed"] += len(records)
     if not any(host == "cumulus" for host, _ in packets):
-        remote_registry = json.loads(command(["ssh", "-o", "BatchMode=yes", "cumulus1", "cat",
-                                              "/home/buddy/cirrus-digest/config/model_capabilities.json"],
-                                             "read CUMULUS registry"))
-        if has_due_records(remote_registry, time.time() + 72 * 3600):
+        if has_due_records("cumulus", time.time() + 72 * 3600):
             raise RuntimeError("CUMULUS renewal packet missing")
     if not any(host == "cirrus" for host, _ in packets):
-        if has_due_records(json.loads(renewal.REGISTRY.read_text()), time.time() + 72 * 3600):
+        if has_due_records("cirrus", time.time() + 72 * 3600):
             raise RuntimeError("CIRRUS renewal packet missing")
     return summary
 
@@ -370,8 +374,6 @@ def run_once(reviewer=model_review, apply=True):
 def selftest():
     assert PACKET_RE.fullmatch("renewal-20261016-0440-cumulus")
     assert not PACKET_RE.fullmatch("renewal-20261016-0440-cumulus-auto")
-    assert has_due_records({"projects": {"x": {"evaluations": [
-        {"approved": True, "expires_at": 1}]}}}, 2)
     assert review_controls(lambda _rule, _case: {"verdict": "fail"})
     assert not review_controls(lambda _rule, _case: {"verdict": "pass"})
     assert record_sha({"a": 1, "b": 2}) == record_sha({"b": 2, "a": 1})

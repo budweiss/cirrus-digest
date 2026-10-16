@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import foundation_renewal_auto as auto
 
@@ -75,6 +76,16 @@ class RenewalAutoTest(unittest.TestCase):
             self.path, self.registry, time.time() + 10,
             lambda *_: self.fail("reviewer should not run"))
         self.assertEqual((len(approved), held), (0, 0))
+
+    def test_missing_packet_uses_builder_live_expiry(self):
+        with patch.object(auto, "command", return_value=json.dumps({
+            "earliest_expiry": "2026-10-20T10:00"})):
+            cutoff = auto.datetime(2026, 10, 20, 11, 0, tzinfo=auto.ZoneInfo(
+                "America/New_York")).timestamp()
+            self.assertTrue(auto.has_due_records("cumulus", cutoff))
+            self.assertFalse(auto.has_due_records("cirrus", cutoff - 7200))
+        with patch.object(auto, "command", return_value='{"earliest_expiry": null}'):
+            self.assertFalse(auto.has_due_records("cumulus", cutoff))
 
     def test_hoa_retention_skips_already_changed_record(self):
         hoa_record = {"approved": True, "expires_at": time.time() + 3600}
