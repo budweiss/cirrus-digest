@@ -163,7 +163,13 @@ def collect(depth=1):
                     digest.log('ready: %s (%s pub %s)' % (
                         channel['name'], video['published'], video.get('video_id', '?')))
             except Exception as exc:
-                errors.append(channel['name'] + ': ' + type(exc).__name__)
+                # S423: the type alone hid the diagnosis — MOTM's older videos
+                # failed nightly with a bare RuntimeError whose real cause
+                # (incomplete_or_wrong_media_model ...) was already in the
+                # message. Surface a bounded, single-line error string too.
+                detail = re.sub(r'\s+', ' ', str(exc)).strip()[:160]
+                errors.append('%s: %s%s' % (channel['name'], type(exc).__name__,
+                                            (': ' + detail) if detail else ''))
                 digest.log('pending: ' + errors[-1])
         previous = digest.load_json(SUMMARIES / 'collection.json', {})
         notice = previous.get('notified_errors', [])

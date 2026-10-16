@@ -126,24 +126,38 @@ def split_text(text, count=token_count, limit=6000, overlap=300):
     return spans
 
 
-def complete(system, text, task):
+def complete(system, text, task, attempts=3):
     # Include instructions, framing and output reserve; never rely on truncation.
     if token_count(system + '\n' + text) + 2300 > 32768:
         raise ValueError('media request exceeds context budget')
-    result = request('/v1/chat/completions', {'model': MODEL,
-        'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
-        'temperature': 0, 'max_tokens': 2048,
-        'chat_template_kwargs': {'enable_thinking': False}})
-    choice = result['choices'][0]
-    answer = choice['message'].get('content') or ''
-    import llm_budget
-    usage = result.get('usage', {})
-    llm_budget.record_call({}, 'vllm', result.get('model', '?'), len(system)+len(text),
-        len(answer), task=task, tier='local', app_dir=ROOT,
-        in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'))
-    if result.get('model') != MODEL or choice.get('finish_reason') != 'stop' or not answer.strip():
-        raise RuntimeError('incomplete_or_wrong_media_model')
-    return answer.strip()
+    # S423: under load, vLLM occasionally returns an empty or truncated
+    # response (finish != stop / wrong model id), which surfaced as
+    # incomplete_or_wrong_media_model and failed the whole video
+    # deterministically (~84s into the MOTM 2026-09-29/22 analyses). A
+    # temperature-0 retry can only succeed when that failure was
+    # load-transient -- schema/content mistakes are caught downstream and are
+    # NOT retried here -- so a bounded 3-attempt loop with short backoff is
+    # safe, and the raised error names what the final attempt saw.
+    failure = RuntimeError('incomplete_or_wrong_media_model:not_attempted')
+    for attempt in range(1, max(1, attempts) + 1):
+        result = request('/v1/chat/completions', {'model': MODEL,
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
+            'temperature': 0, 'max_tokens': 2048,
+            'chat_template_kwargs': {'enable_thinking': False}})
+        choice = result['choices'][0]
+        answer = choice['message'].get('content') or ''
+        import llm_budget
+        usage = result.get('usage', {})
+        llm_budget.record_call({}, 'vllm', result.get('model', '?'), len(system)+len(text),
+            len(answer), task=task, tier='local', app_dir=ROOT,
+            in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'))
+        if result.get('model') == MODEL and choice.get('finish_reason') == 'stop' and answer.strip():
+            return answer.strip()
+        failure = RuntimeError('incomplete_or_wrong_media_model:model=%s finish=%s answer_chars=%d'
+                               % (result.get('model'), choice.get('finish_reason'), len(answer)))
+        if attempt < attempts:
+            time.sleep(10 * attempt)
+    raise failure
 
 
 def atomic_json(path, data):
@@ -691,6 +705,59 @@ def selftest():
         atomic_json(target, {'a': 1})
         assert json.loads(target.read_text()) == {'a': 1}
         assert not target.with_suffix('.tmp').exists()
+
+    # --- complete(): bounded worker-side retry on truncated/empty vLLM spans ---
+    # No network/GPU: /tokenize and /v1/chat/completions are faked, the budget
+    # recorder is stubbed, and sleeps are recorded rather than waited out.
+    import types
+    real_request, real_sleep = globals()['request'], time.sleep
+    real_budget_module = sys.modules.get('llm_budget')
+    def fake_response(model, finish, content):
+        return {'model': model, 'usage': {'prompt_tokens': 7, 'completion_tokens': 3},
+                'choices': [{'message': {'content': content}, 'finish_reason': finish}]}
+    try:
+        time.sleep = lambda s: sleeps.append(s)
+        sys.modules['llm_budget'] = types.ModuleType('llm_budget')
+        sys.modules['llm_budget'].record_call = lambda *a, **k: recorded.append((a, k))
+
+        # Transient truncation under load: the first two attempts are empty
+        # spans (finish=length, the observed MOTM failure), the third is clean.
+        sleeps, recorded, attempts = [], [], []
+        def flaky(path, payload):
+            if path == '/tokenize':
+                return {'count': 1}
+            attempts.append(1)
+            return (fake_response(MODEL, 'length', '') if len(attempts) <= 2
+                    else fake_response(MODEL, 'stop', 'All good.'))
+        globals()['request'] = flaky
+        assert complete('System', 'Body', 'test:lane') == 'All good.'
+        assert len(attempts) == 3, attempts
+        assert sleeps == [10, 20], sleeps
+        assert len(recorded) == 3  # every attempt is budgeted, not just the last
+
+        # Persistent truncation: exhausts the bound and names the last attempt.
+        attempts = []
+        def stuck(path, payload):
+            if path == '/tokenize':
+                return {'count': 1}
+            attempts.append(1)
+            return fake_response(MODEL, 'length', '')
+        globals()['request'] = stuck
+        try:
+            complete('System', 'Body', 'test:lane')
+            raise AssertionError('expected incomplete_or_wrong_media_model')
+        except RuntimeError as exc:
+            message = str(exc)
+            assert message.startswith('incomplete_or_wrong_media_model'), message
+            assert 'finish=length' in message and 'answer_chars=0' in message, message
+        assert len(attempts) == 3
+    finally:
+        globals()['request'] = real_request
+        time.sleep = real_sleep
+        if real_budget_module is None:
+            sys.modules.pop('llm_budget', None)
+        else:
+            sys.modules['llm_budget'] = real_budget_module
 
     print('media_pipeline selftest OK', file=sys.stderr)
 

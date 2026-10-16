@@ -58,6 +58,10 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(json.loads((Path(tmp) / 'example0001.json').read_text())['channel'], 'B')
             self.assertFalse(record.call_args.args[1])
             self.assertEqual(json.loads((Path(tmp) / 'collection.json').read_text())['ready'], 1)
+            # S423: the pending log carries the error string, not just the type
+            # (the MOTM RuntimeError's real cause was in the message, not the name).
+            state = json.loads((Path(tmp) / 'collection.json').read_text())
+            self.assertEqual(state['errors'], ['A: RuntimeError: feed unavailable'])
 
     def test_depth_reuses_reviewed_cache_and_gates_each_new_video(self):
         videos = [{'video_id': name, 'published': '2026-10-15', 'url': 'https://example.invalid/' + name}
