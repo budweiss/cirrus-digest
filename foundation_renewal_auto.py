@@ -52,7 +52,8 @@ def command(args, label):
 def remote_packet_name():
     code = ("from pathlib import Path; p=sorted((Path.home()/'model-evaluation')"
             ".glob('renewal-*-cumulus')); print(p[-1].name if p else '')")
-    name = command(["ssh", "-o", "BatchMode=yes", "cumulus1", "python3", "-c", code],
+    name = command(["ssh", "-o", "BatchMode=yes", "cumulus1",
+                    remote_python_command(code)],
                    "locate CUMULUS packet").strip()
     if name and not PACKET_RE.fullmatch(name):
         raise ValueError("unexpected packet name")
