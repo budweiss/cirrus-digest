@@ -97,20 +97,29 @@ def _classify_contact(contact: str):
 def fetch(url: str = URL) -> str:
     """GET the directory page.
 
-    2026-10-15 (Cloudflare/CivicPlus): header-only requests now get a hard
-    403 block page, so the fetch is vault-aware:
-
-      * cookies.json has an entry for this host -> replay those Safari
-        cookies under the shared chrome UA (the press-of-AC lane, S391/S412).
-      * no vault entry -> attempt the historical plain fetch anyway so the
-        caller's DIRECTORY FAILED reporting keeps its meaning, and flag the
-        domain for the MacBook's Safari cookie sync so the NEXT run can
-        pass. cirrus_daily imports are deferred and best-effort: this
-        module must still work standalone (--from-file, --selftest) and on
-        a box where the vault/watchlist/config are absent.
-
-    Cookie VALUES are never logged (SECRET-EXPOSURE-PREVENTION).
+    2026-10-15 (Cloudflare/CivicPlus, rounds 1-4): header-only clients get
+    a hard 403 block page; a valid Safari clearance replayed under the
+    exact solving UA still 403s from both CUMULUS and the MacBook — the WAF
+    is TLS-fingerprint-gated. curl_cffi impersonate="chrome" passes
+    outright (200 for all ~224 rows, NO cookie needed), so it is the
+    primary lane; no hand-set UA (impersonate sends a complete
+    self-consistent header set). Fallbacks keep the module standalone:
+    vault-cookie replay, then the historical plain fetch — and a 401/403
+    there still flags the Safari sync (S66 pattern). Cookie VALUES are
+    never logged (SECRET-EXPOSURE-PREVENTION).
     """
+    try:
+        from curl_cffi import requests as _cr
+    except Exception:
+        _cr = None
+    if _cr is not None:
+        r = _cr.get(url, impersonate="chrome", timeout=60,
+                    allow_redirects=True)
+        if r.status_code == 200:
+            return r.text
+        # Non-200 through the impersonated tunnel: fall through to the
+        # cookie-lane attempts below rather than raising early, so the
+        # caller's DIRECTORY FAILED reporting remains the one truth.
     headers = {"User-Agent": UA}
     try:
         from cirrus_daily import get_cookies_for_url
@@ -122,14 +131,10 @@ def fetch(url: str = URL) -> str:
         headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            # S66 pattern: a hard 403 on a subscription/vault-gated domain
-            # must ring the Safari re-sync bell, not silently re-fail every
-            # Monday forever. Best-effort: watchlist and flag-file state
-            # vary by box and the fetch failure is reported regardless.
             try:
                 from cirrus_daily import flag_cookie_refresh
                 flag_cookie_refresh(url)
