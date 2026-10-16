@@ -207,7 +207,7 @@ def review_packet(path, registry, due_before, reviewer=model_review):
             for rule in REVIEW_PROMPTS:
                 try:
                     result = reviewer(rule, case)
-                except ValueError:
+                except Exception:
                     result = {"verdict": "unsure", "issue_type": "other",
                               "reason": "invalid local review"}
                 results.append(result)

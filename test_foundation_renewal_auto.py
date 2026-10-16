@@ -55,6 +55,14 @@ class RenewalAutoTest(unittest.TestCase):
             self.path, self.registry, time.time() + 72 * 3600, reviewer)
         self.assertEqual((len(approved), held), (0, 1))
 
+    def test_reviewer_timeout_holds_record(self):
+        def reviewer(_rule, _case):
+            raise TimeoutError("local model unavailable")
+        approved, _, held, details = auto.review_packet(
+            self.path, self.registry, time.time() + 72 * 3600, reviewer)
+        self.assertEqual((len(approved), held), (0, 1))
+        self.assertEqual(details[0]["verdicts"], ["unsure"])
+
     def test_changed_record_is_not_reapproved_from_old_packet(self):
         self.record["expires_at"] += 100
         approved, _, held, _ = auto.review_packet(
