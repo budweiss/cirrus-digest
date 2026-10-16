@@ -6,9 +6,52 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import aggie_yt_digest as digest
+
+
+class FeedRetryTests(unittest.TestCase):
+    # S425: the widened 5-attempt feed backoff, exercised offline. The 404
+    # window (channel-wide, seen live 2026-10-15) must not cost the brief.
+    RSS = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<feed xmlns="http://www.w3.org/2005/Atom" '
+           'xmlns:yt="http://www.youtube.com/xml/schemas/2015">'
+           '<entry><yt:videoId>fixture0001</yt:videoId><title>Example</title>'
+           '<published>2026-10-14T10:00:00+00:00</published>'
+           '<author><name>Fixture</name></author></entry></feed>')
+
+    @staticmethod
+    def urlopen_fixture(payload):
+        ctx = Mock()
+        ctx.read.return_value = payload.encode()
+        return Mock(__enter__=Mock(return_value=ctx), __exit__=Mock(return_value=False))
+
+    def run_fetch(self, failures):
+        side = [Exception('HTTP Error 404: Not Found')] * failures
+        if failures < 5:
+            side.append(self.urlopen_fixture(self.RSS))
+        with patch.object(digest.urllib.request, 'urlopen', side_effect=side) as urlopen, \
+                patch('time.sleep') as sleep, \
+                patch.object(digest, 'log'):
+            if failures >= 5:
+                with self.assertRaises(Exception):
+                    digest.feed_videos('fixture')
+            else:
+                videos = digest.feed_videos('fixture')
+                self.assertEqual([(v['video_id'], v['url']) for v in videos],
+                                 [('fixture0001', 'https://www.youtube.com/watch?v=fixture0001')])
+            return urlopen.call_count, sleep.call_args_list
+
+    def test_fetch_recovers_within_the_bound(self):
+        attempts, sleeps = self.run_fetch(failures=3)
+        self.assertEqual(attempts, 4)
+        self.assertEqual([c.args[0] for c in sleeps], [30, 60, 90])
+
+    def test_fetch_backoff_covers_five_minutes(self):
+        attempts, sleeps = self.run_fetch(failures=5)
+        self.assertEqual(attempts, 5)
+        self.assertEqual([c.args[0] for c in sleeps], [30, 60, 90, 120])
 
 
 class DeliveryTests(unittest.TestCase):

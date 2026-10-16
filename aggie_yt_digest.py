@@ -62,11 +62,18 @@ def feed_videos(channel_id, count=1):
     feeds fetched fine at 05:35 — the known intermittent platform-wide feed
     404 window (yt-watch met it for years; see TRANSIENT notes in yt_watch).
     A one-shot fetch turns that nightly window into a whole lost brief.
+
+    S425: five attempts with 30/60/90/120 s spacing. Evidence for widening:
+    the 2026-10-15 20:51 re-kick had all three channels 404/500 through ALL
+    three attempts — the window outlasted the ~90 s bound (independently
+    confirmed from a second vantage point ~20:58), while the same afternoon's
+    re-kicks were green twice. A ~5.5-minute bound still covers the window
+    seen so far without meaningfully delaying a healthy run.
     """
     import time as _time
     url = "https://www.youtube.com/feeds/videos.xml?channel_id=" + channel_id
     last_exc = None
-    for attempt in range(3):
+    for attempt in range(5):
         if attempt:
             _time.sleep(30 * attempt)
         try:
@@ -76,7 +83,7 @@ def feed_videos(channel_id, count=1):
             break
         except Exception as exc:
             last_exc = exc
-            log("  feed fetch attempt %d/3 failed: %s" % (attempt + 1, str(exc)[:80]))
+            log("  feed fetch attempt %d/5 failed: %s" % (attempt + 1, str(exc)[:80]))
     else:
         raise last_exc
     import xml.etree.ElementTree as ET
