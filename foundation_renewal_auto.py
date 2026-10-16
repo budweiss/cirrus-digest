@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -101,6 +102,12 @@ def record_sha(record):
     return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
 
 
+def remote_python_command(script):
+    # ssh joins trailing argv into a remote shell command; -c source must be
+    # quoted as one shell argument even though local subprocess uses an array.
+    return "python3 -c " + shlex.quote(script)
+
+
 def model_review(rule, case):
     prompt = ("You are reviewing a previously approved model route against its exact "
               "prior fixtures. " + rule + " The full fixture INPUT follows; "
@@ -129,7 +136,8 @@ def model_review(rule, case):
                   "r=urllib.request.Request('http://127.0.0.1:11434/api/chat',"
                   "data=sys.stdin.buffer.read(),headers={'Content-Type':'application/json'}); "
                   "print(json.dumps(json.load(urllib.request.urlopen(r,timeout=300))))")
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1", "python3", "-c", script],
+        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1",
+                               remote_python_command(script)],
                               input=body, capture_output=True, timeout=330)
         if proc.returncode:
             raise RuntimeError("CUMULUS local reviewer failed")
@@ -339,6 +347,8 @@ def selftest():
     assert review_controls(lambda _rule, _case: {"verdict": "fail"})
     assert not review_controls(lambda _rule, _case: {"verdict": "pass"})
     assert record_sha({"a": 1, "b": 2}) == record_sha({"b": 2, "a": 1})
+    example = "print('one; two')"
+    assert shlex.split(remote_python_command(example)) == ["python3", "-c", example]
     print("foundation renewal auto selftest: PASS")
 
 
