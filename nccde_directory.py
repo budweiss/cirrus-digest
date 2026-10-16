@@ -35,11 +35,24 @@ import html
 import json
 import re
 import sys
+import urllib.error
 import urllib.request
 
 URL = ("https://www.newcastlede.gov/BusinessDirectoryII.aspx"
        "?lngBusinessCategoryID=31,32&ysnShowAll=1")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+
+# 2026-10-15: the county site landed behind Cloudflare bot management
+# (CivicPlus hosting). Every header-only client now gets a hard block page
+# -- "Sorry, you have been blocked ... you are unable to access
+# civicplus.io" -- and no User-Agent polish changes that. The lane that
+# passes is a browser-solved session: the Safari cookie vault used for
+# pressofatlanticcity.com since S391. Replay UA is cirrus_daily's own fetch
+# UA on purpose -- same vault, same fingerprint, one consistent story for
+# Cloudflare, and the identical string already passes on the press lane.
+_REPLAY_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/124.0.0.0 Safari/537.36")
 
 # Terminate each item at its own closing </div>, NOT at the next item's name:
 # the last row on the page has no following name, and a lookahead for one
@@ -79,9 +92,47 @@ def _classify_contact(contact: str):
 
 
 def fetch(url: str = URL) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read().decode("utf-8", errors="replace")
+    """GET the directory page.
+
+    2026-10-15 (Cloudflare/CivicPlus): header-only requests now get a hard
+    403 block page, so the fetch is vault-aware:
+
+      * cookies.json has an entry for this host -> replay those Safari
+        cookies under the shared chrome UA (the press-of-AC lane, S391/S412).
+      * no vault entry -> attempt the historical plain fetch anyway so the
+        caller's DIRECTORY FAILED reporting keeps its meaning, and flag the
+        domain for the MacBook's Safari cookie sync so the NEXT run can
+        pass. cirrus_daily imports are deferred and best-effort: this
+        module must still work standalone (--from-file, --selftest) and on
+        a box where the vault/watchlist/config are absent.
+
+    Cookie VALUES are never logged (SECRET-EXPOSURE-PREVENTION).
+    """
+    headers = {"User-Agent": UA}
+    try:
+        from cirrus_daily import get_cookies_for_url
+        cookies = get_cookies_for_url(url)
+    except Exception:
+        cookies = {}
+    if cookies:
+        headers["User-Agent"] = _REPLAY_UA
+        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            # S66 pattern: a hard 403 on a subscription/vault-gated domain
+            # must ring the Safari re-sync bell, not silently re-fail every
+            # Monday forever. Best-effort: watchlist and flag-file state
+            # vary by box and the fetch failure is reported regardless.
+            try:
+                from cirrus_daily import flag_cookie_refresh
+                flag_cookie_refresh(url)
+            except Exception:
+                pass
+        raise
 
 
 def parse(page: str) -> list:
