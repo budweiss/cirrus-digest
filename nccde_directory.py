@@ -47,12 +47,15 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 # -- "Sorry, you have been blocked ... you are unable to access
 # civicplus.io" -- and no User-Agent polish changes that. The lane that
 # passes is a browser-solved session: the Safari cookie vault used for
-# pressofatlanticcity.com since S391. Replay UA is cirrus_daily's own fetch
-# UA on purpose -- same vault, same fingerprint, one consistent story for
-# Cloudflare, and the identical string already passes on the press lane.
+# pressofatlanticcity.com since S391. Replay UA is pinned to Buddy's actual
+# Safari fingerprint (version read from /Applications/Safari.app via runner
+# `safari-ua`, 2026-10-15): Cloudflare validated cf_clearance against THIS
+# exact UA, and the first replay attempt under cirrus_daily's Chrome-style
+# UA was rejected 403 (Chrome/124) while the vault held a valid clearance —
+# UA-binding is enforced on this host, so the fingerprint must match.
 _REPLAY_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-              "AppleWebKit/537.36 (KHTML, like Gecko) "
-              "Chrome/124.0.0.0 Safari/537.36")
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/26.6.2 Safari/605.1.15")
 
 # Terminate each item at its own closing </div>, NOT at the next item's name:
 # the last row on the page has no following name, and a lookahead for one
