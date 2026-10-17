@@ -236,6 +236,8 @@ performed at, or is sold for, a football halftime show.
 EXCLUDE, always:
 - marching bands, drumlines, drum corps, pep bands, colour guard, majorettes
 - Super Bowl halftime performers (booked centrally, not by a club)
+- musical acts, including non-marching bands, jazz groups and solo musicians
+  (the separate for_hire_music pool catalogues musical acts)
 - concerts by touring musicians (a different pipeline already covers those)
 - anything you cannot tie to football
 
@@ -245,7 +247,7 @@ Return ONLY a JSON array, no prose. Each element:
               pogo/trampoline, pyro/fireworks, projection/light, fan contest,
               mascot/novelty, other",
  "level": "pro" | "college" | "both" | "unknown",
- "clients": "teams/schools named as having booked it, comma separated, or ''",
+ "clients": "teams/schools explicitly stated to have booked, hired or contracted the act; otherwise empty string. A performance at a school or stadium is NOT proof that it booked the act",
  "booking_contact": "phone/email/site if stated, else ''",
  "fee_note": "any DOCUMENTED figure with its source context, else ''",
  "home_base": "city/state if stated, else ''",
@@ -253,7 +255,9 @@ Return ONLY a JSON array, no prose. Each element:
 
 If a field is not stated in the sources, use "". NEVER invent a contact, a fee
 or a client list -- an empty field is correct and useful; a guessed one poisons
-the catalogue. If the sources contain no qualifying act, return []."""
+the catalogue. A performance credit alone does not establish a booking: leave
+clients empty unless the source explicitly identifies a team or school as
+booking the act. If the sources contain no qualifying act, return []."""
 
 
 _MUSIC_SYSTEM = """You catalogue MUSICAL acts that have actually PERFORMED at
