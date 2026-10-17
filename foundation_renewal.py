@@ -405,7 +405,8 @@ def main(force=False):
     elif action == "remind":
         msg = ("Approval renewal still pending on %s: packet %s is waiting for review; approvals expire %s "
                "(in %.0f h). Start a Cowork session: 'review the renewal packet'." % (host, state.get("last_dir"), when, hours))
-        delivery = notify(msg)
+        from capability_admission import ADVISORY_NOTE
+        delivery = notify(msg + " " + ADVISORY_NOTE)
         ok = hours > 0 and delivery == "sent"
         note = ("EXPIRED; " if hours <= 0 else "") + "reminded: " + str(delivery)
     else:
@@ -420,7 +421,8 @@ def main(force=False):
                    "EXPIRED -- " if expired else "", host, fixtures, bad,
                    ", %d record(s) missing evidence" % len(missing) if missing else "", out_dir, when,
                    "ALREADY EXPIRED" if expired else "in %.0f h" % hours))
-        delivery = notify(msg)
+        from capability_admission import ADVISORY_NOTE
+        delivery = notify(msg + " " + ADVISORY_NOTE)
         ok = ok and delivery == "sent"
         note = ("EXPIRED; " if expired else "") + "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
     note = answer_note + "; " + note
@@ -528,6 +530,7 @@ def verify(host, dirs):
     recs, _ = _decisions(dirs, host)
     here_providers = set(CLOUD) | {"vllm" if host == "cumulus" else "ollama"}
     health, passed, held, deferred = {}, 0, 0, []
+    advisory_expired = 0
     for d in [r for r in recs if r["provider"] in here_providers]:
         route = p[d["route"]]; record = route[d["field"]][d["index"]]; provider = record["id"]
         if provider not in health:
@@ -542,12 +545,15 @@ def verify(host, dirs):
             deferred.append(d["route"]); continue
         if d["approved"]:
             expired = copy.deepcopy(record); expired["expires_at"] = time.time() - 1
-            assert not A.candidates([expired], [health[provider]], **args)
+            expired_admitted = bool(A.candidates([expired], [health[provider]], **args))
+            assert expired_admitted == A.expiry_is_advisory(record["task"])
+            advisory_expired += int(expired_admitted)
             passed += 1
         else:
             held += 1
     print(json.dumps({"host": host, "renewed_records_admitted": passed, "failed_review_records_rejected": held,
-                      "expired_copies_rejected": passed, "runtime_deferred": deferred}))
+                      "expired_copies_rejected": passed - advisory_expired,
+                      "advisory_expired_copies_admitted": advisory_expired, "runtime_deferred": deferred}))
 
 
 # ── selftest (offline, no registry or network) ────────────────────────────────

@@ -49,6 +49,57 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 admission.candidates(self.e,self.h,task='t',capability='extract',system='system',contract_sha256=digest,now=1000)
 
+    def business_call(self, now=1000):
+        return admission.candidates(self.e, self.h, task='business-idea-ideate',
+            capability='extract', system='system', contract_sha256='a'*64, now=now)
+
+    def test_business_expiry_is_advisory_without_renewing_evidence(self):
+        self.e[0].update(task='business-idea-ideate', expires_at=1000)
+        original = copy.deepcopy(self.e)
+        for now in (1000, 1000 + 365*86400):
+            self.h[0]['checked_at'] = now
+            with self.assertLogs('capability_admission', level='WARNING') as log:
+                self.assertEqual(len(self.business_call(now)), 1)
+            self.assertIn('No quality approval was renewed', log.output[0])
+        self.assertEqual(self.e, original)
+
+    def test_business_advisory_keeps_revocation_identity_contract_and_health_gates(self):
+        self.e[0].update(task='business-idea-ideate', expires_at=1000)
+        baseline = copy.deepcopy(self.e)
+        for field, value in [('approved', False), ('model', 'different'),
+                             ('prompt_sha256', 'b'*64), ('contract_sha256', 'b'*64),
+                             ('evidence_id', ''), ('expires_at', float('nan')),
+                             ('expires_at', 800), ('expires_at', 3000000),
+                             ('evaluated_at', 1001), ('quality', float('nan'))]:
+            with self.subTest(field=field):
+                self.e = copy.deepcopy(baseline); self.e[0][field] = value
+                self.assertEqual(self.business_call(), [])
+        self.e = baseline
+        self.h[0]['healthy'] = False
+        self.assertEqual(self.business_call(), [])
+        self.h[0].update(healthy=True, checked_at=699)
+        self.assertEqual(self.business_call(), [])
+
+    def test_other_tasks_cannot_use_advisory_expiry(self):
+        for task in ('halftime:events', 'halftime:catalogue:variety', 'snow',
+                     'business-idea-feed-discovery', 'business-idea-ideate:client', 't'):
+            with self.subTest(task=task):
+                self.e[0].update(task=task, expires_at=1000)
+                self.assertFalse(admission.expiry_is_advisory(task))
+                self.assertEqual(admission.candidates(self.e, self.h, task=task,
+                    capability='extract', system='system', contract_sha256='a'*64, now=1000), [])
+
+    def test_business_dispatch_preserves_privacy_and_budget_arguments(self):
+        self.e[0].update(task='business-idea-ideate', expires_at=1000)
+        with self.assertLogs('capability_admission', level='WARNING'):
+            with patch('capability_dispatch.dispatch', return_value=('ollama', 'ok')) as dispatch:
+                admission.dispatch_reviewed('system', 'user', {}, evaluations=self.e,
+                    health=self.h, task='business-idea-ideate', capability='extract',
+                    contract_sha256='a'*64, now=1000, max_cost_usd=0, privacy='LOCAL_ONLY')
+        self.assertEqual(len(dispatch.call_args.kwargs['candidates']), 1)
+        self.assertEqual(dispatch.call_args.kwargs['max_cost_usd'], 0)
+        self.assertEqual(dispatch.call_args.kwargs['privacy'], 'LOCAL_ONLY')
+
     def test_wrapper_passes_only_admitted_records(self):
         with patch('capability_dispatch.dispatch',return_value=('ollama','ok')) as dispatch:
             self.assertEqual(admission.dispatch_reviewed('system','user',{},evaluations=self.e,health=self.h,task='t',capability='extract',contract_sha256='a'*64,now=1000,max_cost_usd=0,privacy='LOCAL_ONLY'),('ollama','ok'))

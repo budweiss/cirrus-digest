@@ -5,7 +5,19 @@ This module does not approve an evaluation, probe a model, or refresh timestamps
 """
 import hashlib
 import math
+import logging
 import time
+
+
+# Buddy, S441 (2026-10-17): internal brainstorming continues with review flags.
+# This is application policy, never a model-provided or general caller option.
+ADVISORY_TASK = 'business-idea-ideate'
+ADVISORY_NOTE = ('Business ideation quality reviews are advisory and do not stop that job; '
+                 'client-facing approval expiry checks remain strict.')
+
+
+def expiry_is_advisory(task):
+    return task == ADVISORY_TASK
 
 
 def prompt_digest(system):
@@ -15,7 +27,8 @@ def prompt_digest(system):
 def candidates(evaluations, health, *, task, capability, system, contract_sha256, now=None):
     """Return eligible records; absent or malformed evidence fails closed.
 
-    Evaluation approval expires at most 30 days after evaluation. Health must
+    Review windows span at most 30 days. Only internal business ideation treats
+    their expiry as advisory; explicit revocation and every other gate remain. Health must
     identify the same model and be at most five minutes old. Context capacity
     is the lower of the evaluated and observed usable capacities. The caller
     hashes its versioned parser/schema/scoring contract; any change requires
@@ -58,7 +71,10 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
             or not isinstance(row.get('evidence_id'), str) or not row['evidence_id'].strip()):
             continue
         evaluated, expires = row.get('evaluated_at'), row.get('expires_at')
-        if not (number(evaluated) and number(expires) and 0 <= evaluated <= now < expires <= evaluated + 30*86400):
+        if not (number(evaluated) and number(expires) and 0 <= evaluated <= now and evaluated < expires <= evaluated + 30*86400):
+            continue
+        overdue = now >= expires
+        if overdue and not expiry_is_advisory(task):
             continue
         quality, capacity = row.get('quality'), row.get('usable_input_tokens')
         if not number(quality) or not 0 <= quality <= 1 or type(capacity) is not int or capacity <= 0:
@@ -70,6 +86,10 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
             or state.get('location') != location or not number(checked) or not 0 <= now-checked <= 300
             or type(observed_capacity) is not int or observed_capacity <= 0):
             continue
+        if overdue:
+            logging.getLogger(__name__).warning(
+                'Business ideation quality review is overdue: continuing internal brainstorming; '
+                'review flagged concerns before acting on ideas. No quality approval was renewed.')
         seen.add(key)
         admitted.append({'id':provider, 'model':model, 'enabled':True, 'healthy':True,
                          'health_checked_at':checked, 'location':location,

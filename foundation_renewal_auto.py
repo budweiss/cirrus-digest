@@ -505,7 +505,8 @@ def main():
             import job_status
             job_status.record("foundationrenewalauto", ok, note)
             if not ok:
-                renewal.notify("Foundation renewal automatic review needs attention on CIRRUS: " + note)
+                from capability_admission import ADVISORY_NOTE
+                renewal.notify("Foundation renewal automatic review needs attention on CIRRUS: " + note + ". " + ADVISORY_NOTE)
         print(json.dumps({"ok": ok, "note": note}))
         return 0 if ok else 1
 
