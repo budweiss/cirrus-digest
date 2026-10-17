@@ -400,6 +400,21 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
                 # a passing score, nor abort the whole scheduled job.
                 result["needs_review"].append({"name": name, "concerns": concerns})
                 result["rejected"].append(f"{name} (needs evidence/revision): " + "; ".join(concerns))
+                if not dry_run:
+                    slug, is_new = resolve_slug(name, name, db_path=db_path)
+                    reason = "Needs evidence/revision: " + "; ".join(concerns)
+                    if is_new:
+                        entity_kb.upsert_entity(
+                            KB_PROJECT, slug, name, entity_type="business_idea",
+                            lead_state="rejected", fields={
+                                "category": f"ideated:{lens['key']}",
+                                "what": idea.get("what", ""),
+                                "demand_evidence": idea.get("demand_evidence", "NONE"),
+                                "main_risk": reason}, db_path=db_path)
+                    # Preserve an existing candidate's state; this particular
+                    # new proposal still needs review and must not be admitted.
+                    entity_kb.add_signal(KB_PROJECT, slug, "requirements_review",
+                                         reason, confidence="high", db_path=db_path)
                 continue
             idea_text = _idea_as_text(idea)
             score, why, _label = _relevance(name, idea_text, creds)

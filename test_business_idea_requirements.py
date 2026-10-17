@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 import business_idea_ideate as B
 
@@ -35,5 +37,31 @@ class RequirementTests(unittest.TestCase):
         self.assertEqual(len(result['admitted']),1)
         self.assertEqual(fit.call_count,1);self.assertEqual(critique.call_count,1)
         self.assertNotIn('Bad proposal',fit.call_args.args[0])
+
+    def test_non_dry_run_preserves_concern_for_future_generation(self):
+        bad=dict(self.good(),name='Manual batch proposal',needs_building='Human QC per batch')
+        with tempfile.TemporaryDirectory() as tmp:
+            db=str(Path(tmp)/'ideas.db')
+            with patch.object(B,'generate',return_value=[bad]),patch.object(B,'_relevance') as fit:
+                result=B.run(only_lens=B.LENSES[0]['key'],db_path=db)
+            fit.assert_not_called()
+            self.assertFalse(result['admitted'])
+            lessons=B.past_failures(db_path=db)
+            self.assertIn('Manual batch proposal',lessons)
+            self.assertIn('human work',lessons)
+
+    def test_existing_candidate_state_is_preserved(self):
+        bad=dict(self.good(),needs_building='Human QC per batch')
+        with tempfile.TemporaryDirectory() as tmp:
+            db=str(Path(tmp)/'ideas.db')
+            B.entity_kb.upsert_entity(B.KB_PROJECT, 'existing', bad['name'],
+                                     entity_type='business_idea', lead_state='qualified', db_path=db)
+            with patch.object(B,'generate',return_value=[bad]), \
+                 patch.object(B,'resolve_slug',return_value=('existing',False)), \
+                 patch.object(B,'_relevance') as fit:
+                result=B.run(only_lens=B.LENSES[0]['key'],db_path=db)
+            fit.assert_not_called()
+            self.assertFalse(result['admitted'])
+            self.assertEqual(B.entity_kb.get_entity(B.KB_PROJECT,'existing',db_path=db)['lead_state'],'qualified')
 
 if __name__=='__main__':unittest.main()
