@@ -274,21 +274,80 @@ class RenewalAutoTest(unittest.TestCase):
         self.assertIn('"SYSTEM_INSTRUCTIONS": "Do not invent sources"', calls[0][1])
         self.assertIn('"PRIOR": "prior answer"', calls[0][1])
 
-    def test_held_on_any_review_failure(self):
+    def test_negative_vote_requests_evidence_not_confirmed_hold(self):
         verdicts = iter(("pass", "fail"))
         def reviewer(_rule, _case):
             return {"verdict": next(verdicts), "issue_type": "other", "reason": "regression"}
         approved, _, held, _ = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600, reviewer)
-        self.assertEqual((len(approved), held), (0, 1))
+        self.assertEqual((len(approved), held), (0, 0))
 
     def test_reviewer_timeout_holds_record(self):
         def reviewer(_rule, _case):
             raise TimeoutError("local model unavailable")
         approved, _, held, details = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600, reviewer)
+        self.assertEqual((len(approved), held), (0, 0))
+        self.assertEqual(details[0]["verdicts"], ["unsure", "unsure"])
+        self.assertEqual(details[0]["status"], "evidence_review_pending")
+
+    def test_preflight_rejects_always_negative_or_positive_reviewer(self):
+        for vote in ("pass", "fail", "unsure"):
+            self.assertFalse(auto.review_controls(lambda *_: {"verdict": vote}))
+        self.assertTrue(auto.review_controls(lambda _, case: {
+            "verdict": "fail" if case == auto.CONTROL else "pass"}))
+
+    def evidence_row(self):
+        key = ["foundation:test", "evaluations", 0]
+        item = json.loads((self.path / "decisions.json").read_text())["records"][0]
+        cases = auto.complete_cases(self.path, item, next(iter(auto.packet_sections(self.path).values())))
+        return {"record": key, "authority": "operator-evidence-review", "reviewer": "test-operator",
+                "record_sha256": auto.record_sha(self.record),
+                "case_sha256": [auto.hashlib.sha256(c.encode()).hexdigest() for c in cases],
+                "assessment": "clear", "rationale": "Compared the entire output against instructions and evidence.",
+                "all_requirements_checked": True,
+                "checks": [{"SYSTEM_INSTRUCTIONS": "Do not invent sources", "INPUT": "complete evidence",
+                            "NEW": "answer", "explanation": "Synthetic test assessment."}]}
+
+    def negative_review(self, *_):
+        return {"verdict": "fail", "issue_type": "other", "reason": "claim"}
+
+    def assess(self, row):
+        (self.path / "independent-evidence.json").write_text(json.dumps([row]))
+        return auto.review_packet(self.path, self.registry, time.time()+72*3600, self.negative_review)
+
+    def test_independent_clearance_overrides_two_negative_votes(self):
+        before = json.dumps(self.registry, sort_keys=True)
+        approved, _, held, details = self.assess(self.evidence_row())
+        self.assertEqual((len(approved), held), (1, 0))
+        self.assertEqual(details[0]["verdicts"], ["fail", "fail"])
+        self.assertEqual(details[0]["status"], "renewable")
+        self.assertEqual(json.dumps(self.registry, sort_keys=True), before)
+
+    def test_independent_confirmed_defect_holds(self):
+        row = self.evidence_row(); row["assessment"] = "confirmed_defect"
+        approved, _, held, details = self.assess(row)
         self.assertEqual((len(approved), held), (0, 1))
-        self.assertEqual(details[0]["verdicts"], ["unsure"])
+        self.assertEqual(details[0]["status"], "confirmed_defect")
+
+    def test_stale_unbound_or_reviewer_authored_clearance_cannot_renew(self):
+        for key, value in [("record_sha256", "wrong"), ("case_sha256", ["wrong"]),
+                           ("reviewer", auto.SECOND_MODEL), ("authority", "model-vote"),
+                           ("all_requirements_checked", False), ("checks", []), ("rationale", "")]:
+            row = self.evidence_row(); row[key] = value
+            approved, _, held, details = self.assess(row)
+            self.assertEqual((len(approved), held), (0, 0))
+            self.assertEqual(details[0]["status"], "evidence_review_pending")
+        row = self.evidence_row(); row["checks"][0]["NEW"] = "invented quote"
+        self.assertEqual(self.assess(row)[3][0]["status"], "evidence_review_pending")
+
+    def test_clearance_never_bypasses_mechanical_guard(self):
+        row = self.evidence_row()
+        packet = self.path / "PACKET.txt"
+        packet.write_text(packet.read_text().replace("shape=True", "shape=False"))
+        approved, _, held, details = self.assess(row)
+        self.assertEqual((len(approved), held), (0, 1))
+        self.assertEqual(details[0]["status"], "mechanical_failure")
 
     def test_changed_record_is_not_reapproved_from_old_packet(self):
         self.record["expires_at"] += 100

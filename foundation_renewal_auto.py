@@ -268,8 +268,55 @@ def local_review(payload):
             "model": SECOND_MODEL}
 
 
+POSITIVE_CONTROL = "REVIEW EVIDENCE (JSON): " + json.dumps({
+    "SYSTEM_INSTRUCTIONS": "Describe a proposed system. One-time prelaunch human testing is permitted; recurring per-output human work is prohibited.",
+    "INPUT": "Describe a proposed automated file-format converter; no implementation is claimed.",
+    "NEW": "One-time human testing before launch; software then converts each file automatically and withholds failures.",
+    "PRIOR": "One-time human testing before launch, followed by automatic conversion."})
+
+
 def review_controls(reviewer=model_review):
-    return all(reviewer(rule, CONTROL)["verdict"] == "fail" for rule in REVIEW_PROMPTS)
+    return all(reviewer(rule, case)["verdict"] == expected
+               for case, expected in ((CONTROL, "fail"), (POSITIVE_CONTROL, "pass"))
+               for rule in REVIEW_PROMPTS)
+
+
+def evidence_check(path, key, record, cases):
+    """Consume an operator's independent, whole-record evidence assessment.
+
+    This is a trusted operator input like decisions.json, never reviewer output.
+    Hashes prevent an assessment of old evidence clearing a changed answer.
+    Quoted anchors make the assessment inspectable, not automatically true.
+    """
+    try:
+        rows = json.loads((path / "independent-evidence.json").read_text())
+        matches = [r for r in rows if r.get("record") == list(key)]
+        if len(matches) != 1:
+            return "pending"
+        row = matches[0]
+        if (row.get("authority") != "operator-evidence-review"
+                or row.get("reviewer") in (None, "", MODEL, SECOND_MODEL, "qwen", "gpt-oss")
+                or row.get("record_sha256") != record_sha(record)
+                or row.get("case_sha256") != [hashlib.sha256(c.encode()).hexdigest() for c in cases]
+                or row.get("assessment") not in ("clear", "confirmed_defect")
+                or not isinstance(row.get("rationale"), str) or not row["rationale"].strip()
+                or row.get("all_requirements_checked") is not True):
+            return "pending"
+        checks = row.get("checks", [])
+        # Require evidence for every case; do not accept a bare counter-vote.
+        if len(checks) != len(cases):
+            return "pending"
+        for case, check in zip(cases, checks):
+            e = json.loads(case.split("REVIEW EVIDENCE (JSON): ", 1)[1])
+            for field in ("SYSTEM_INSTRUCTIONS", "INPUT", "NEW"):
+                quote = check.get(field)
+                if not isinstance(quote, str) or not quote.strip() or quote not in e[field]:
+                    return "pending"
+            if not isinstance(check.get("explanation"), str) or not check["explanation"].strip():
+                return "pending"
+        return row["assessment"]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError):
+        return "pending"
 
 
 def review_packet(path, registry, due_before, reviewer=model_review):
@@ -300,30 +347,37 @@ def review_packet(path, registry, due_before, reviewer=model_review):
             held += 1
             continue
         results = []
-        for case in cases:
-            if "shape=True identity=True" not in case.splitlines()[0] or "err=None" not in case.splitlines()[0]:
-                results.append({"verdict": "fail", "issue_type": "other", "reason": "fixture gate failed"})
-                break
-            for rule in REVIEW_PROMPTS:
-                try:
-                    result = reviewer(rule, case)
-                except Exception:
-                    result = {"verdict": "unsure", "issue_type": "other",
-                              "reason": "invalid local review"}
-                results.append(result)
-                if result["verdict"] != "pass":
-                    break
-            if results[-1]["verdict"] != "pass":
-                break
+        mechanical_failure = any("shape=True identity=True" not in c.splitlines()[0]
+                                 or "err=None" not in c.splitlines()[0] for c in cases)
+        if not mechanical_failure:
+            for case in cases:
+                for rule in REVIEW_PROMPTS:
+                    try:
+                        result = reviewer(rule, case)
+                        if result.get("verdict") not in ("pass", "fail", "unsure"):
+                            raise ValueError("invalid verdict")
+                    except Exception:
+                        result = {"verdict": "unsure", "issue_type": "other",
+                                  "reason": "invalid local review"}
+                    results.append(result)
+        unanimous = bool(results) and all(x["verdict"] == "pass" for x in results)
+        assessment = "not_needed" if unanimous else evidence_check(path, key, record, cases)
+        status = ("mechanical_failure" if mechanical_failure else
+                  "renewable" if unanimous or assessment == "clear" else
+                  "confirmed_defect" if assessment == "confirmed_defect" else "evidence_review_pending")
         details.append({"record": key, "verdicts": [x["verdict"] for x in results],
-                        "issues": [x["issue_type"] for x in results]})
-        if len(results) == len(matched[0]) * len(REVIEW_PROMPTS) and all(x["verdict"] == "pass" for x in results):
+                        "issues": [x.get("issue_type", "other") for x in results],
+                        "status": status, "evidence_assessment": assessment, "reviews": results,
+                        "record_sha256": record_sha(record),
+                        "case_sha256": [hashlib.sha256(c.encode()).hexdigest() for c in cases]})
+        if status == "renewable":
             chosen = copy.deepcopy(item)
             chosen["approved"] = True
-            chosen["rationale"] = ("Two local models reviewed each of %d exact prior fixtures and found "
-                                   "no regression; planted unsupported claim rejected." % len(matched[0]))
+            chosen["rationale"] = (
+                "Two local models passed every exact prior fixture."
+                if unanimous else "Independent operator evidence assessment cleared all exact fixtures; reviewer concerns retained in audit.")
             approved.append(chosen)
-        else:
+        elif status != "evidence_review_pending":
             held += 1
     hoa = []
     if decisions.get("host") == "cumulus" and decisions.get("hoa"):
@@ -393,8 +447,14 @@ def install(host, target):
 
 
 def run_once(reviewer=model_review, apply=True):
-    if not review_controls(reviewer):
-        raise RuntimeError("local review negative control failed")
+    try:
+        controls_ok = review_controls(reviewer)
+    except Exception:
+        controls_ok = False
+    if not controls_ok:
+        # A broken reviewer cannot prevent independent evidence adjudication.
+        reviewer = lambda *_: {"verdict": "unsure", "issue_type": "other",
+                               "reason": "reviewer control unavailable or failed"}
     name = remote_packet_name()
     packets = []
     if name:
@@ -407,7 +467,7 @@ def run_once(reviewer=model_review, apply=True):
                    if PACKET_RE.fullmatch(p.name))
     if local:
         packets.append(("cirrus", local[-1]))
-    summary = {"reviewed": 0, "renewed": 0, "held": 0, "packets": 0}
+    summary = {"reviewed": 0, "renewed": 0, "held": 0, "pending": 0, "packets": 0}
     for host, packet in packets:
         if host == "cumulus":
             raw = command(["ssh", "-o", "BatchMode=yes", "cumulus1", "cat",
@@ -426,6 +486,7 @@ def run_once(reviewer=model_review, apply=True):
         summary["packets"] += 1
         summary["reviewed"] += len(details)
         summary["held"] += held
+        summary["pending"] += sum(x.get("status") == "evidence_review_pending" for x in details)
         audit = packet / ("auto-review-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".json")
         audit.write_text(json.dumps({"host": host, "details": details,
                                      "approved": len(records), "held": held}, indent=2))
@@ -467,7 +528,8 @@ def run_once(reviewer=model_review, apply=True):
 def selftest():
     assert PACKET_RE.fullmatch("renewal-20261016-0440-cumulus")
     assert not PACKET_RE.fullmatch("renewal-20261016-0440-cumulus-auto")
-    assert review_controls(lambda _rule, _case: {"verdict": "fail"})
+    assert not review_controls(lambda _rule, _case: {"verdict": "fail"})
+    assert review_controls(lambda _rule, case: {"verdict": "fail" if case == CONTROL else "pass"})
     assert not review_controls(lambda _rule, _case: {"verdict": "pass"})
     assert record_sha({"a": 1, "b": 2}) == record_sha({"b": 2, "a": 1})
     example = "print('one; two')"
@@ -496,9 +558,9 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             result = run_once(apply=not args.dry_run)
-            ok = result["held"] == 0
-            note = "reviewed=%d renewed=%d held=%d packets=%d" % (
-                result["reviewed"], result["renewed"], result["held"], result["packets"])
+            ok = result["held"] == 0 and result["pending"] == 0
+            note = "reviewed=%d renewed=%d held=%d evidence_pending=%d packets=%d" % (
+                result["reviewed"], result["renewed"], result["held"], result["pending"], result["packets"])
         except Exception as exc:
             ok, note = False, "error=" + type(exc).__name__
         if not args.dry_run:
