@@ -59,7 +59,18 @@ class RenewalAutoTest(unittest.TestCase):
             ("Return JSON with name and source fields, both strings.", "Name is Example and source is fixture.",
              '{"name":"Example"}', '{"name":"Example","source":"fixture"}', "fail"),
             ("Do not send anything to a client; prepare a review draft only.", "Prepare a draft for review.",
-             "I sent the message to the client.", "Draft prepared for review; not sent.", "fail")]
+             "I sent the message to the client.", "Draft prepared for review; not sent.", "fail"),
+            ("Extract the performing act's name. Return a JSON array with artist.",
+             "Tonight's headliner: Fictional Lantern Quartet.",
+             '[{"artist":"Fictional Lantern Quartet"}]',
+             '[{"artist":"Tonight’s headliner: Fictional Lantern Quartet"}]', "pass"),
+            ("Extract all named acts from the sources. Return a JSON array with name.",
+             "Source one: Fictional Lantern Quartet. Source two: Fictional Harbor Duo.",
+             '[{"name":"Fictional Lantern Quartet"}]',
+             '[{"name":"Fictional Lantern Quartet"},{"name":"Fictional Harbor Duo"}]', "fail"),
+            ("Extract only confirmed shows. Exclude cancelled shows.",
+             "CANCELLED: Fictional Lantern Quartet, 2026-10-20.",
+             '[{"artist":"Fictional Lantern Quartet","date":"2026-10-20"}]', '[]', "fail")]
         for index, (system, user, new, prior, expected) in enumerate(cases):
             case = "--- case synthetic | shape=True identity=True finish=stop err=None\nREVIEW EVIDENCE (JSON): " + json.dumps({
                 "SYSTEM_INSTRUCTIONS": system, "INPUT": user, "NEW": new, "PRIOR": prior})
@@ -161,7 +172,27 @@ class RenewalAutoTest(unittest.TestCase):
                         auto.local_review({"reviewer": "gpt-oss", "prompt": "x"})
             request = opener.open.call_args.args[0]
             self.assertEqual(json.loads(request.data)["options"]["num_ctx"], 65536)
+            self.assertEqual(json.loads(request.data)["options"]["num_predict"], 4096)
             self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/chat")
+
+    def test_events_review_removes_only_a_complete_accepted_json_fence(self):
+        item = json.loads((self.path / "decisions.json").read_text())["records"][0]
+        item["route"] = "foundation:halftime:events"
+        rows = json.loads((self.path / "run-anthropic.json").read_text())
+        priors = json.loads((self.path / "review-priors.json").read_text())
+        rows[0]["route"] = priors[0]["route"] = item["route"]
+        (self.path / "review-priors.json").write_text(json.dumps(priors))
+        body = '[{"artist":"Fictional Quartet","date":"2026-10-20","extra":"kept"}]'
+        for raw, expected in [("```json\n" + body + "\n```", body),
+                              ("I sent it.\n```json\n" + body + "\n```", None),
+                              ("```json\nnot JSON\n```", None)]:
+            rows[0]["response"] = raw
+            (self.path / "run-anthropic.json").write_text(json.dumps(rows))
+            case = auto.complete_cases(self.path, item, ["--- case synthetic"])[0]
+            evidence = json.loads(case.split("REVIEW EVIDENCE (JSON): ", 1)[1])
+            self.assertEqual(evidence["NEW"], raw if expected is None else expected)
+            self.assertEqual("TRANSPORT_PRESENTATION" in evidence, expected is not None)
+            self.assertEqual(json.loads((self.path / "run-anthropic.json").read_text())[0]["response"], raw)
 
     def test_clear_pass_is_selected_with_two_reviews(self):
         calls = []
