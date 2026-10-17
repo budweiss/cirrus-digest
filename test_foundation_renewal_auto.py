@@ -30,10 +30,58 @@ class RenewalAutoTest(unittest.TestCase):
             "INPUT: evidence\nNEW: answer\nPRIOR: answer\n")
         (self.path / "run-anthropic.json").write_text(json.dumps([{
             "route": "foundation:test", "field": "evaluations", "index": 0,
-            "fixture_id": "test-fixture", "user": "complete evidence"}]))
+            "fixture_id": "test-fixture", "user": "complete evidence",
+            "system": "Do not invent sources", "response": "answer",
+            "old_record_sha256": auto.record_sha(self.record)}]))
+        (self.path / "review-priors.json").write_text(json.dumps([{
+            "route": "foundation:test", "field": "evaluations", "index": 0,
+            "fixture_id": "test-fixture", "record_sha256": auto.record_sha(self.record),
+            "prior": "prior answer"}]))
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_packet_writer_preserves_full_pinned_prior(self):
+        r = auto.renewal
+        prior = {"case": "case", "system": "instructions", "user": "input",
+                 "max_tokens": 100, "response": "x" * 2000 + "prior tail", "provider": "anthropic"}
+        old_path = self.path / "old.json"
+        old_path.write_text(json.dumps([prior]))
+        digest = r.sha(old_path.read_bytes())
+        record = dict(self.record, evidence_files={"old.json": digest})
+        projects = {"foundation:test": {"evaluations": [record]}}
+        fid = r.sha(json.dumps(r._body(prior), sort_keys=True).encode())
+        fresh = dict(prior, route="foundation:test", field="evaluations", index=0,
+                     fixture_id=fid, response="new", shape_valid=True, identity_valid=True,
+                     finish="stop", error_type=None, seconds=1,
+                     old_record_sha256=auto.record_sha(record))
+        (self.path / "run-anthropic.json").write_text(json.dumps([fresh]))
+        r.write_packet(self.path, "cumulus", projects, {digest: old_path})
+        decisions = json.loads((self.path / "decisions.json").read_text())
+        visible = next(iter(auto.packet_sections(self.path).values()))
+        full = auto.complete_cases(self.path, decisions["records"][0], visible)
+        self.assertIn("prior tail", full[0])
+        self.assertIn('"SYSTEM_INSTRUCTIONS": "instructions"', full[0])
+
+    def test_full_prior_is_not_truncated_and_missing_evidence_holds(self):
+        path = self.path / "review-priors.json"
+        priors = json.loads(path.read_text())
+        priors[0]["prior"] = "x" * 3000 + "final critical instruction"
+        path.write_text(json.dumps(priors))
+        cases = []
+        auto.review_packet(self.path, self.registry, time.time() + 72 * 3600,
+            lambda rule, case: cases.append(case) or {"verdict": "pass", "issue_type": "none", "reason": "ok"})
+        self.assertIn("final critical instruction", cases[0])
+        for value in (None, ""):
+            priors[0]["prior"] = value
+            path.write_text(json.dumps(priors))
+            approved, _, held, _ = auto.review_packet(self.path, self.registry,
+                time.time() + 72 * 3600, lambda *_: self.fail("incomplete evidence sent"))
+            self.assertEqual((len(approved), held), (0, 1))
+        priors[0].update(prior="prior", record_sha256="wrong")
+        path.write_text(json.dumps(priors))
+        self.assertEqual(auto.review_packet(self.path, self.registry,
+            time.time()+72*3600, lambda *_: self.fail("mismatched evidence sent"))[2], 1)
 
     def test_orchestrator_keeps_distinct_reviewers_and_private_stdin(self):
         from types import SimpleNamespace
@@ -100,7 +148,9 @@ class RenewalAutoTest(unittest.TestCase):
                          (1, 0, 0, 1, 2))
         self.assertTrue(approved[0]["approved"])
         self.assertTrue(approved[0]["rationale"])
-        self.assertIn("INPUT (complete): complete evidence", calls[0][1])
+        self.assertIn('"INPUT": "complete evidence"', calls[0][1])
+        self.assertIn('"SYSTEM_INSTRUCTIONS": "Do not invent sources"', calls[0][1])
+        self.assertIn('"PRIOR": "prior answer"', calls[0][1])
 
     def test_held_on_any_review_failure(self):
         verdicts = iter(("pass", "fail"))

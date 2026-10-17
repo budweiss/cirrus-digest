@@ -297,6 +297,7 @@ def write_packet(out_dir, host, projects, index):
     lines = ["RENEWAL PACKET -- %s -- %s" % (host, out_dir.name),
              "Gate failures (shape/identity/finish/error): %d of %d fixtures" % (len(bad), len(latest)), ""]
     decisions = {}
+    review_priors = []
     for (route, field, index_, fid), r in sorted(latest.items()):
         key = (route, field, index_)
         if key not in decisions:
@@ -305,6 +306,10 @@ def write_packet(out_dir, host, projects, index):
                               "evidence_file": "run-%s.json" % r["provider"]}
             lines += ["", "#" * 90, "# %s  %s[%d]  %s / %s" % (route, field, index_, r["provider"], r.get("model"))]
         decisions[key]["reviewed_fixtures"].append(fid)
+        review_priors.append({"route": route, "field": field, "index": index_,
+            "fixture_id": fid, "record_sha256": sha(json.dumps(
+                projects[route][field][index_], sort_keys=True).encode()),
+            "prior": prior.get((route, field, index_, fid))})
         lines += ["--- case %s | shape=%s identity=%s finish=%s err=%s | %ss" % (
             r["case"], r.get("shape_valid"), r.get("identity_valid"), r.get("finish"), r.get("error_type"), r.get("seconds")),
             "INPUT: " + (r["user"][-400:] if len(r["user"]) < 3000 else "[%d chars] %s" % (len(r["user"]), r["user"][:300])).replace("\n", " "),
@@ -313,6 +318,9 @@ def write_packet(out_dir, host, projects, index):
     hoa = load(out_dir / "hoa-retention.json", [])
     if hoa:
         lines += ["", "# hoa_screening (deterministic): " + ", ".join("%s passed=%s" % (x["case"], x["passed"]) for x in hoa)]
+    prior_path = out_dir / "review-priors.json"
+    prior_path.write_text(json.dumps(review_priors) + "\n")
+    prior_path.chmod(0o600)
     (out_dir / "PACKET.txt").write_text("\n".join(lines) + "\n")
     tmpl = {"host": host, "records": sorted(decisions.values(), key=lambda d: (d["route"], d["field"], d["index"])),
             "hoa": [{"index": i, "approved": None, "rationale": ""} for i in sorted({x["index"] for x in hoa})]}
