@@ -143,6 +143,13 @@ def complete_cases(path, item, visible):
                             "No prose, fields or items were removed.")
                 except (ValueError, TypeError):
                     pass
+        # Outer evidence JSON necessarily encodes NEW as a string. Describe the
+        # decoded response's own syntax so reviewers do not confuse the layers.
+        try:
+            parsed_response = json.loads(evidence["NEW"])
+            evidence["RESPONSE_JSON_TYPE"] = type(parsed_response).__name__
+        except (ValueError, TypeError):
+            evidence["RESPONSE_JSON_TYPE"] = "not a standalone JSON document"
         full.append(case.splitlines()[0] + "\nREVIEW EVIDENCE (JSON): " + json.dumps(evidence))
     return full
 
@@ -190,6 +197,10 @@ def model_review(rule, case):
               "Respect explicit schema and cardinality requirements, including permitted empty "
               "results or refusal when evidence is missing. This does not excuse invented "
               "sources, unsupported factual assertions, missing required fields, or unsafe actions. "
+              "NEW is serialized as a string inside the evidence envelope; that outer "
+              "quoting is not part of the response. RESPONSE_JSON_TYPE, when present, "
+              "is measured by parsing the decoded NEW itself (list=array, str=JSON string). "
+              "This syntax check does not establish content quality. "
               "The complete evidence follows; "
               "return unsure if essential context is missing. Return only "
               "JSON with verdict pass|fail|unsure, issue_type "

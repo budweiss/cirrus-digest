@@ -239,6 +239,26 @@ class RenewalAutoTest(unittest.TestCase):
             for rule in auto.REVIEW_PROMPTS:
                 self.assertEqual(auto.model_review(rule, case)["verdict"], expected)
 
+    def test_response_syntax_distinguishes_array_from_json_string(self):
+        item = json.loads((self.path / "decisions.json").read_text())["records"][0]
+        rows = json.loads((self.path / "run-anthropic.json").read_text())
+        for raw, kind in [('[]', 'list'), ('"[]"', 'str'), ('not json', 'not a standalone JSON document')]:
+            rows[0]["response"] = raw
+            (self.path / "run-anthropic.json").write_text(json.dumps(rows))
+            case = auto.complete_cases(self.path, item, ["--- case synthetic"])[0]
+            e = json.loads(case.split("REVIEW EVIDENCE (JSON): ", 1)[1])
+            self.assertEqual(e["RESPONSE_JSON_TYPE"], kind)
+            self.assertEqual(e["NEW"], raw)
+
+    @unittest.skipUnless(os.environ.get("RENEWAL_LIVE_CONTROLS") == "1", "owned models only")
+    def test_live_response_envelope_does_not_hide_invalid_json_type(self):
+        for raw, kind, expected in [('[]', 'list', 'pass'), ('"[]"', 'str', 'fail')]:
+            e = {"SYSTEM_INSTRUCTIONS": "Return only a JSON array. When no events are supplied, return [].",
+                 "INPUT": "No events supplied.", "NEW": raw, "PRIOR": "[]", "RESPONSE_JSON_TYPE": kind}
+            case = "--- synthetic\nREVIEW EVIDENCE (JSON): " + json.dumps(e)
+            for rule in auto.REVIEW_PROMPTS:
+                self.assertEqual(auto.model_review(rule, case)["verdict"], expected)
+
     def test_clear_pass_is_selected_with_two_reviews(self):
         calls = []
         def reviewer(rule, case):
