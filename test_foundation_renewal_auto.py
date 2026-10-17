@@ -330,6 +330,35 @@ class RenewalAutoTest(unittest.TestCase):
         self.assertEqual((len(approved), held), (0, 1))
         self.assertEqual(details[0]["status"], "confirmed_defect")
 
+    def test_positive_votes_cannot_override_confirmed_evidence(self):
+        row = self.evidence_row(); row["assessment"] = "confirmed_defect"
+        self.assess(row)
+        approved, _, held, details = auto.review_packet(
+            self.path, self.registry, time.time()+72*3600,
+            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "ok"})
+        self.assertEqual((len(approved), held), (0, 1))
+        self.assertEqual(details[0]["status"], "confirmed_defect")
+
+    def test_failed_preflight_still_allows_independent_clearance_in_run_once(self):
+        self.assess(self.evidence_row())
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            packet = root / "renewal-20261017-0440-cirrus"
+            auto.shutil.copytree(self.path, packet)
+            registry = root / "registry.json"
+            registry.write_text(json.dumps(self.registry))
+            before = registry.read_bytes()
+            with patch.object(auto, "EVROOT", root), patch.object(auto.renewal, "REGISTRY", registry), \
+                 patch.object(auto, "remote_packet_name", return_value=None), \
+                 patch.object(auto, "packet_age_hours", return_value=0), \
+                 patch.object(auto, "has_due_records", return_value=False), \
+                 patch.object(auto, "install") as install:
+                result = auto.run_once(self.negative_review, apply=False)
+            self.assertEqual(result["renewable"], 1)
+            self.assertEqual(result["pending"], 0)
+            install.assert_not_called()
+            self.assertEqual(before, registry.read_bytes())
+
     def test_stale_unbound_or_reviewer_authored_clearance_cannot_renew(self):
         for key, value in [("record_sha256", "wrong"), ("case_sha256", ["wrong"]),
                            ("reviewer", auto.SECOND_MODEL), ("authority", "model-vote"),

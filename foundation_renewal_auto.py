@@ -361,10 +361,10 @@ def review_packet(path, registry, due_before, reviewer=model_review):
                                   "reason": "invalid local review"}
                     results.append(result)
         unanimous = bool(results) and all(x["verdict"] == "pass" for x in results)
-        assessment = "not_needed" if unanimous else evidence_check(path, key, record, cases)
+        assessment = evidence_check(path, key, record, cases)
         status = ("mechanical_failure" if mechanical_failure else
-                  "renewable" if unanimous or assessment == "clear" else
-                  "confirmed_defect" if assessment == "confirmed_defect" else "evidence_review_pending")
+                  "confirmed_defect" if assessment == "confirmed_defect" else
+                  "renewable" if unanimous or assessment == "clear" else "evidence_review_pending")
         details.append({"record": key, "verdicts": [x["verdict"] for x in results],
                         "issues": [x.get("issue_type", "other") for x in results],
                         "status": status, "evidence_assessment": assessment, "reviews": results,
