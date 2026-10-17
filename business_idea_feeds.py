@@ -70,7 +70,8 @@ def active_feeds() -> list:
 # tag publishers put there for exactly this), then the handful of
 # conventional paths.
 _COMMON_FEED_PATHS = ("/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml",
-                      "/index.xml", "/feed/", "/blog/feed")
+                      "/index.xml", "/feed/", "/blog/feed",
+                      "/blog?format=rss", "/latest?format=rss")
 
 
 def find_feed_url(site: str, timeout: int = 15) -> str:
@@ -85,9 +86,11 @@ def find_feed_url(site: str, timeout: int = 15) -> str:
     if not site.startswith("http"):
         site = "https://" + site
     headers = {"User-Agent": "CIRRUS-digest/1.0"}
+    checked = set()
     try:
         r = requests.get(site, timeout=timeout, headers=headers)
         if r.status_code == 200:
+            site = r.url  # Relative links belong to the final redirected page.
             # RSS autodiscovery -- the authoritative answer when present.
             for m in _re.finditer(r"<link[^>]+>", r.text[:200000], _re.IGNORECASE):
                 tag = m.group(0)
@@ -95,11 +98,19 @@ def find_feed_url(site: str, timeout: int = 15) -> str:
                         r"application/(rss|atom)\+xml", tag, _re.IGNORECASE):
                     href = _re.search(r'href=["\']([^"\']+)["\']', tag, _re.IGNORECASE)
                     if href:
-                        return urljoin(site, href.group(1))
+                        from html import unescape
+                        candidate = urljoin(site, unescape(href.group(1)))
+                        if candidate not in checked:
+                            checked.add(candidate)
+                            if verify_feed(candidate, timeout=timeout)[0]:
+                                return candidate
     except Exception:
         pass
     for path in _COMMON_FEED_PATHS:
         cand = urljoin(site, path)
+        if cand in checked:
+            continue
+        checked.add(cand)
         ok, _detail = verify_feed(cand, timeout=timeout)
         if ok:
             return cand
@@ -132,6 +143,14 @@ def verify_feed(rss: str, timeout: int = 20) -> tuple:
         return False, f"{type(e).__name__}: {str(e)[:60]}"
 
 
+def _site_key(url: str) -> str:
+    """Match equivalent publication URLs, without conflating different paths."""
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url if "://" in url else "https://" + url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    return host + parsed.path.rstrip("/")
+
+
 def propose(n: int, creds: dict) -> list:
     """Ask the council for feeds we don't already read. Returns raw
     suggestions -- callers must verify before trusting any of them."""
@@ -140,6 +159,7 @@ def propose(n: int, creds: dict) -> list:
     # all_sources() for them here would recurse back into this module.
     known = {s["rss"] for s in all_sources(include_trials=False)}
     known |= {f["rss"] for f in d["trial"] + d["promoted"] + d["retired"]}
+    known |= {f["site"] for f in d["trial"] + d["promoted"] + d["retired"] if f.get("site")}
     avoid = "\n".join(f"- {u}" for u in sorted(known)[:60]) or "(none yet)"
     prompt = (
         f"{MISSION}\n\n{CAPABILITIES}\n\n"
@@ -183,18 +203,25 @@ def discover(n: int = 5) -> dict:
     d = _load()
     known = {s["rss"] for s in all_sources(include_trials=False)} | {
         f["rss"] for f in d["trial"] + d["promoted"] + d["retired"]}
+    known_sites = {_site_key(f.get("site") or f["rss"])
+                   for f in d["trial"] + d["promoted"] + d["retired"]}
     added, rejected = [], []
     for f in propose(n, creds):
         name = (f.get("name") or "").strip()
         site = (f.get("site") or f.get("rss") or "").strip()
         if not name or not site:
             continue
+        site_key = _site_key(site)
+        if site_key in known_sites:
+            rejected.append(f"{name}: publication already tried")
+            continue
+        known_sites.add(site_key)
         # Resolve the real feed from the site rather than trusting a guessed
         # path; accept a direct feed URL too, if one was given anyway.
         rss = site if verify_feed(site)[0] else find_feed_url(site)
         if not rss:
             rejected.append(f"{name}: no discoverable feed at {site}")
-            d["retired"].append({"name": name, "rss": site,
+            d["retired"].append({"name": name, "rss": site, "site": site,
                                  "retired": datetime.now().strftime("%Y-%m-%d"),
                                  "reason": "no discoverable feed"})
             continue
@@ -205,11 +232,11 @@ def discover(n: int = 5) -> dict:
         if not ok:
             rejected.append(f"{name}: {detail}")
             # Remember dead suggestions so the council can't re-propose them.
-            d["retired"].append({"name": name, "rss": rss,
+            d["retired"].append({"name": name, "rss": rss, "site": site,
                                  "retired": datetime.now().strftime("%Y-%m-%d"),
                                  "reason": f"failed verification ({detail})"})
             continue
-        d["trial"].append({"name": name, "rss": rss, "why": f.get("why", ""),
+        d["trial"].append({"name": name, "rss": rss, "site": site, "why": f.get("why", ""),
                            "started": datetime.now().strftime("%Y-%m-%d")})
         known.add(rss)
         added.append(f"{name} ({detail})")

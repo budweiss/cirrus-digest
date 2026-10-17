@@ -10,7 +10,7 @@ class DemandEvidenceTests(unittest.TestCase):
         self.assertIn('Demand evidence: NONE\n',B._idea_as_text({}))
 
     def test_both_scoring_stages_receive_evidence(self):
-        statement='UNVERIFIED HYPOTHESIS: no confirmed paying customer'
+        statement='Supplied fixture source: listed price per converted file'
         with patch.object(B,'generate',return_value=[{'name':'Synthetic candidate','what':'Synthetic proposal','demand_evidence':statement}]), \
              patch.object(B,'past_failures',return_value=''),patch.object(B,'shape_census',return_value=''), \
              patch.object(B,'_relevance',return_value=(10,'synthetic','synthetic')) as relevance, \

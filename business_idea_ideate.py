@@ -313,6 +313,45 @@ def generate(lens: dict, creds: dict, lessons: str = "", census: str = "") -> li
         return []
 
 
+def requirement_concerns(idea: dict) -> list:
+    """Conservative pre-score checks, not a claim of complete semantic review.
+
+    A matching proposal needs evidence/revision; the job continues with others.
+    Existing fit and adversarial scoring still evaluate every unflagged proposal.
+    """
+    import re
+    issues = []
+    demand = str(idea.get("demand_evidence") or "").strip()
+    if not demand or re.search(r"\b(?:NONE|UNVERIFIED|HYPOTHESIS)\b", demand, re.I):
+        issues.append("demand is missing or explicitly unverified")
+    core = " ".join(str(idea.get(k) or "") for k in ("name", "what"))
+    if re.search(r"\b(?:property management|real[ -]estate|HOAs?|homeowners? associations?|"
+                 r"snow removal|seasonal home services|property deeds?|title companies|"
+                 r"landlords?|zoning)\b", core, re.I):
+        issues.append("proposal describes an excluded sector")
+    if re.search(r"\b(?:compliance|violation|infringement|whistleblow|recall|enforcement)\w*\b", core, re.I):
+        issues.append("proposal needs review against the policing/compliance exclusion")
+    if (re.search(r"\b(?:digest|briefings?|alerts?|tracker|tracking|monitoring|recap)\b", core, re.I)
+            or re.search(r"\b(?:daily|weekly|newly|new)\b.*\b(?:news|filings?|rulings?|patents?|rules|ordinances)\b", core, re.I)):
+        issues.append("proposal needs review against the public-feed product exclusion")
+    work = " ".join(str(idea.get(k) or "") for k in ("autonomous_loop", "needs_building"))
+    for sentence in re.split(r"[.;\n]", work):
+        if not re.search(r"\b(?:human|manual|legal review|fact.check|spot.check)\b", sentence, re.I):
+            continue
+        # Explicit one-time prelaunch work is allowed. Contradictory per-item
+        # qualifiers still need review, even when the sentence says prelaunch.
+        if (re.search(r"\b(?:no|without|not require)\b[^.;]{0,35}\b(?:human|manual)\b", sentence, re.I)
+                and not re.search(r"\b(?:except|but|plus)\b", sentence, re.I)):
+            continue
+        recurring = re.search(r"\b(?:per[ -](?:episode|output|batch|video|record|document)|each|every|weekly|daily|periodic|ongoing|recurring|before (?:each|publish))\b", sentence, re.I)
+        if recurring or not re.search(r"\b(?:one.time|prelaunch|pre.launch|before launch)\b", sentence, re.I):
+            if not recurring and re.search(r"\b(?:no|without|not require)\b.*\b(?:human|manual|review)\b", sentence, re.I):
+                continue
+            issues.append("human work is recurring or its scope needs clarification")
+            break
+    return issues
+
+
 def todays_lens() -> dict:
     """Deterministically pick one lens per day, cycling through all of them.
 
@@ -338,7 +377,7 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
         lenses = [todays_lens()]
     else:
         lenses = [l for l in LENSES if not only_lens or l["key"] == only_lens]
-    result = {"generated": 0, "admitted": [], "corroborated": [], "rejected": []}
+    result = {"generated": 0, "admitted": [], "corroborated": [], "rejected": [], "needs_review": []}
 
     lessons = past_failures(db_path=db_path)
     census = shape_census(db_path=db_path)
@@ -354,6 +393,13 @@ def run(only_lens: str = None, dry_run: bool = False, db_path: str = None,
         for idea in ideas:
             name = (idea.get("name") or "").strip()
             if not name:
+                continue
+            concerns = requirement_concerns(idea)
+            if concerns:
+                # Keep the concern visible; never convert a missing fact into
+                # a passing score, nor abort the whole scheduled job.
+                result["needs_review"].append({"name": name, "concerns": concerns})
+                result["rejected"].append(f"{name} (needs evidence/revision): " + "; ".join(concerns))
                 continue
             idea_text = _idea_as_text(idea)
             score, why, _label = _relevance(name, idea_text, creds)
