@@ -35,6 +35,60 @@ class RenewalAutoTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_orchestrator_keeps_distinct_reviewers_and_private_stdin(self):
+        from types import SimpleNamespace
+        result = SimpleNamespace(returncode=0, stdout=json.dumps({"answer": json.dumps({
+            "verdict": "pass", "issue_type": "none", "reason": "supported"})}).encode())
+        with patch.object(auto.subprocess, "run", return_value=result) as run:
+            for rule in auto.REVIEW_PROMPTS:
+                auto.model_review(rule, "private-fixture")
+        payloads = [json.loads(c.kwargs["input"]) for c in run.call_args_list]
+        self.assertEqual([p["reviewer"] for p in payloads], ["qwen", "gpt-oss"])
+        for c in run.call_args_list:
+            self.assertNotIn("private-fixture", str(c.args))
+            self.assertIn("cumulus1", c.args[0])
+        with patch.object(auto.subprocess, "run", return_value=SimpleNamespace(returncode=1)):
+            with self.assertRaises(RuntimeError):
+                auto.model_review(auto.REVIEW_PROMPTS[0], "private-fixture")
+
+    def test_qwen_route_budget_identity_and_completion(self):
+        from contextlib import nullcontext
+        from unittest.mock import MagicMock
+        def run(count=40000, model=auto.MODEL, finish="stop", used=40000):
+            replies = [{"count": count}, {"model": model, "usage": {"prompt_tokens": used},
+                "choices": [{"finish_reason": finish, "message": {"content": "{}"}}]}]
+            opener = MagicMock()
+            opener.open.return_value.__enter__.return_value.read.side_effect = [
+                json.dumps(x) for x in replies]
+            with patch("media_pipeline.lease", return_value=nullcontext()), patch.object(
+                    auto.urllib.request, "build_opener", return_value=opener):
+                result = auto.local_review({"reviewer": "qwen", "prompt": "synthetic"})
+            self.assertTrue(all(c.args[0].full_url.startswith(auto.QWEN_ENDPOINT)
+                                for c in opener.open.call_args_list))
+            return result
+        self.assertEqual(run()["prompt_tokens"], 40000)
+        for kwargs in ({"count": 65000}, {"model": "wrong"}, {"finish": "length"}, {"used": 39999}):
+            with self.assertRaises(ValueError):
+                run(**kwargs)
+
+    def test_gpt_context_is_request_scoped_and_refuses_truncation(self):
+        from unittest.mock import MagicMock
+        for count, finish, good in [(40000, "stop", True), (65000, "stop", False),
+                                    (40000, "length", False)]:
+            opener = MagicMock()
+            opener.open.return_value.__enter__.return_value.read.return_value = json.dumps({
+                "model": auto.SECOND_MODEL, "prompt_eval_count": count,
+                "done_reason": finish, "message": {"content": "{}"}})
+            with patch.object(auto.urllib.request, "build_opener", return_value=opener):
+                if good:
+                    self.assertEqual(auto.local_review({"reviewer": "gpt-oss", "prompt": "x"})["prompt_tokens"], count)
+                else:
+                    with self.assertRaises(ValueError):
+                        auto.local_review({"reviewer": "gpt-oss", "prompt": "x"})
+            request = opener.open.call_args.args[0]
+            self.assertEqual(json.loads(request.data)["options"]["num_ctx"], 65536)
+            self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/chat")
+
     def test_clear_pass_is_selected_with_two_reviews(self):
         calls = []
         def reviewer(rule, case):

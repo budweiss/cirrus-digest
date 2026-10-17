@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unattended, fail-closed review/install of fresh foundation renewal packets.
 
-Runs on CIRRUS after both nightly packet builders. All packet text and Ollama
+Runs on CIRRUS after both nightly packet builders. All packet text and local
 inference stay on CIRRUS/CUMULUS; stdout and Telegram contain counts only.
 """
 import argparse
@@ -24,7 +24,10 @@ import foundation_renewal as renewal
 
 ROOT = Path(__file__).resolve().parent
 EVROOT = Path.home() / "model-evaluation"
-MODEL = "qwen3.8:27b"
+MODEL = "qwen3.8-27b-fp8"
+REVIEW_CONTEXT = 65536
+REVIEW_OUTPUT = 1024
+QWEN_ENDPOINT = "http://192.168.100.11:8000"
 SECOND_MODEL = "gpt-oss:120b"
 PACKET_RE = re.compile(r"^renewal-\d{8}-\d{4}-(?:cumulus|cirrus)$")
 HEADER_RE = re.compile(r"^# [^#].+  (?:evaluations|judge_evaluations)\[\d+\]")
@@ -135,35 +138,15 @@ def model_review(rule, case):
               "none|unsupported_claim|missed_change|instruction_failure|missing_context|other, "
               "and one short reason. Never include client rates, figures, quoted "
               "answers or other private details in the reason.\n\n" + case)
-    if rule == REVIEW_PROMPTS[0]:
-        body = json.dumps({"model": MODEL, "prompt": prompt, "stream": False,
-                           "format": "json", "think": False,
-                           "options": {"temperature": 0, "num_ctx": 32768}}).encode()
-        req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=240) as response:
-            raw = json.load(response)
-        answer = raw.get("response")
-    else:
-        # Use a genuinely different local model. Prompt bytes travel over SSH
-        # stdin and never appear in argv, URLs, logs or a cloud service.
-        body = json.dumps({"model": SECOND_MODEL,
-                           "messages": [{"role": "user", "content": prompt}],
-                           "stream": False, "format": "json",
-                           "options": {"temperature": 0, "num_ctx": 32768}}).encode()
-        script = ("import json,sys,urllib.request; "
-                  "r=urllib.request.Request('http://127.0.0.1:11434/api/chat',"
-                  "data=sys.stdin.buffer.read(),headers={'Content-Type':'application/json'}); "
-                  "print(json.dumps(json.load(urllib.request.urlopen(r,timeout=300))))")
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1",
-                               remote_python_command(script)],
-                              input=body, capture_output=True, timeout=330)
-        if proc.returncode:
-            raise RuntimeError("CUMULUS local reviewer failed")
-        raw = json.loads(proc.stdout)
-        answer = raw.get("message", {}).get("content")
-    if raw.get("prompt_eval_count", 0) >= 32256:
-        raise ValueError("local reviewer context truncated")
+    # Both requests execute on C1. Private prompts travel only over SSH stdin.
+    payload = {"reviewer": "qwen" if rule == REVIEW_PROMPTS[0] else "gpt-oss",
+               "prompt": prompt}
+    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1",
+                           "python3 /home/buddy/cirrus-digest/foundation_renewal_auto.py --review-local"],
+                          input=json.dumps(payload).encode(), capture_output=True, timeout=960)
+    if proc.returncode:
+        raise RuntimeError("CUMULUS local reviewer failed")
+    answer = json.loads(proc.stdout)["answer"]
     data = json.loads(answer or "null")
     if not isinstance(data, dict) or data.get("verdict") not in ("pass", "fail", "unsure"):
         raise ValueError("local reviewer returned no valid verdict")
@@ -173,6 +156,47 @@ def model_review(rule, case):
     if not isinstance(data.get("reason"), str) or not data["reason"].strip():
         raise ValueError("local reviewer returned no rationale")
     return data
+
+
+def local_review(payload):
+    """Renewal-only routes; no shared credentials, provider edits or fallback."""
+    from media_pipeline import lease
+    prompt = payload["prompt"]
+    def request(base, path, body):
+        req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=600) as response:
+            return json.load(response)
+    messages = [{"role": "user", "content": prompt}]
+    if payload["reviewer"] == "qwen":
+        with lease(Path.home() / "cirrus-digest/logs/media/worker.lock", timeout=300):
+            count = request(QWEN_ENDPOINT, "/tokenize", {"model": MODEL,
+                "messages": messages, "add_generation_prompt": True,
+                "chat_template_kwargs": {"enable_thinking": False}})["count"]
+            if count + REVIEW_OUTPUT > REVIEW_CONTEXT:
+                raise ValueError("renewal Qwen input exceeds context budget")
+            raw = request(QWEN_ENDPOINT, "/v1/chat/completions", {
+                "model": MODEL, "messages": messages, "temperature": 0,
+                "max_tokens": REVIEW_OUTPUT, "response_format": {"type": "json_object"},
+                "chat_template_kwargs": {"enable_thinking": False}})
+        choice = raw["choices"][0]
+        if (raw.get("model") != MODEL or choice.get("finish_reason") != "stop"
+                or raw.get("usage", {}).get("prompt_tokens") != count):
+            raise ValueError("renewal Qwen identity, completion or context mismatch")
+        return {"answer": choice["message"]["content"], "prompt_tokens": count,
+                "model": MODEL}
+    if payload["reviewer"] != "gpt-oss":
+        raise ValueError("unknown renewal reviewer")
+    raw = request("http://127.0.0.1:11434", "/api/chat", {
+        "model": SECOND_MODEL, "messages": messages, "stream": False,
+        "format": "json", "options": {"temperature": 0, "num_ctx": REVIEW_CONTEXT,
+                                        "num_predict": REVIEW_OUTPUT}})
+    count = raw.get("prompt_eval_count", 0)
+    if (raw.get("model") != SECOND_MODEL or raw.get("done_reason") != "stop"
+            or not 0 < count < REVIEW_CONTEXT - REVIEW_OUTPUT):
+        raise ValueError("renewal GPT-OSS identity, completion or context mismatch")
+    return {"answer": raw["message"]["content"], "prompt_tokens": count,
+            "model": SECOND_MODEL}
 
 
 def review_controls(reviewer=model_review):
@@ -385,8 +409,16 @@ def selftest():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--review-local", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.review_local:
+        try:
+            print(json.dumps(local_review(json.load(sys.stdin))))
+            return 0
+        except Exception:
+            print("local renewal reviewer refused", file=sys.stderr)
+            return 1
     if args.selftest:
         selftest()
         return 0
