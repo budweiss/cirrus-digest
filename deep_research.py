@@ -47,6 +47,7 @@ _EXTRACT_SYSTEM = (
     '"confidence": "high|medium|low"}]}. If nothing new is found (including '
     'when every source was ignored as off-context), return '
     '{"fields": {}, "signals": []}.'
+    ' For every signal with a date explicitly given in its source, include that date in the summary text. Do not omit a supplied event date and do not infer a date from the current date or a different event.'
 )
 
 

@@ -290,6 +290,7 @@ def _idea_as_text(idea: dict) -> str:
     from an article excerpt, so one gate serves both intake paths."""
     return (f"{idea.get('what', '')}\n\n"
             f"Paying customer: {idea.get('who_pays', '')}\n"
+            f"Demand evidence: {idea.get('demand_evidence', 'NONE')}\n"
             f"Autonomous daily loop: {idea.get('autonomous_loop', '')}\n"
             f"Still to build: {idea.get('needs_building', '')}\n"
             f"Why now: {idea.get('why_now', '')}")
