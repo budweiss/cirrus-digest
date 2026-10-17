@@ -194,6 +194,51 @@ class RenewalAutoTest(unittest.TestCase):
             self.assertEqual("TRANSPORT_PRESENTATION" in evidence, expected is not None)
             self.assertEqual(json.loads((self.path / "run-anthropic.json").read_text())[0]["response"], raw)
 
+    def test_authored_event_oracle_is_bound_to_exact_fixture_and_checks_dates(self):
+        from halftime_routing import _EXTRACT_SYSTEM
+        item = json.loads((self.path / "decisions.json").read_text())["records"][0]
+        item["route"] = "foundation:halftime:events"
+        row = json.loads((self.path / "run-anthropic.json").read_text())[0]
+        row.update(route=item["route"], case="stated", system=_EXTRACT_SYSTEM,
+                   user="LISTINGS:\n\nFictional The Example Quartet — jazz — 2026-11-05, Example Hall, Newark NJ.",
+                   max_tokens=8000)
+        fid = auto.record_sha(auto.renewal._body(row))
+        self.assertIn(fid, auto.EVENT_PREFIX_FIXTURES)
+        row["fixture_id"] = fid
+        item["reviewed_fixtures"] = [fid]
+        prior = json.loads((self.path / "review-priors.json").read_text())[0]
+        prior.update(route=item["route"], fixture_id=fid)
+        (self.path / "review-priors.json").write_text(json.dumps([prior]))
+        for artist, date, good in [("The Example Quartet", "2026-11-05", True),
+                                   ("Fictional The Example Quartet", "2026-11-05", True),
+                                   ("Different Quartet", "2026-11-05", False),
+                                   ("The Example Quartet", "2026-11-06", False)]:
+            row["response"] = json.dumps([{"artist": artist, "date": date}])
+            (self.path / "run-anthropic.json").write_text(json.dumps([row]))
+            case = auto.complete_cases(self.path, item, ["--- case synthetic"])[0]
+            evidence = json.loads(case.split("REVIEW EVIDENCE (JSON): ", 1)[1])
+            self.assertEqual(evidence["AUTHORED_FIXTURE_CHECK"]["name_date_passed"], good)
+        row["user"] += " Changed fixture."
+        (self.path / "run-anthropic.json").write_text(json.dumps([row]))
+        self.assertNotIn("AUTHORED_FIXTURE_CHECK",
+                         auto.complete_cases(self.path, item, ["--- case synthetic"])[0])
+
+    @unittest.skipUnless(os.environ.get("RENEWAL_LIVE_CONTROLS") == "1", "owned models only")
+    def test_live_authored_oracle_does_not_excuse_other_defects(self):
+        note = {"name_date_passed": True, "rule": "The original fixture permits removing "
+                "the synthetic annotation Fictional from the artist name. Name/date only; "
+                "independently check other fields and source fidelity."}
+        for style, expected in [("jazz", "pass"), ("metal", "fail")]:
+            evidence = {"SYSTEM_INSTRUCTIONS": "Extract artist, date and style as JSON. Style must "
+                        "match the source. Do not invent facts.",
+                        "INPUT": "Fictional The Example Quartet — jazz — 2026-11-05.",
+                        "NEW": json.dumps([{"artist": "The Example Quartet", "date": "2026-11-05", "style": style}]),
+                        "PRIOR": '[{"artist":"Fictional The Example Quartet","date":"2026-11-05","style":"jazz"}]',
+                        "AUTHORED_FIXTURE_CHECK": note}
+            case = "--- synthetic\nREVIEW EVIDENCE (JSON): " + json.dumps(evidence)
+            for rule in auto.REVIEW_PROMPTS:
+                self.assertEqual(auto.model_review(rule, case)["verdict"], expected)
+
     def test_clear_pass_is_selected_with_two_reviews(self):
         calls = []
         def reviewer(rule, case):

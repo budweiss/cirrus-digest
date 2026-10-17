@@ -30,6 +30,12 @@ REVIEW_OUTPUT = 1024
 GPT_REVIEW_OUTPUT = 4096  # Includes the reasoning model's completion budget.
 QWEN_ENDPOINT = "http://192.168.100.11:8000"
 SECOND_MODEL = "gpt-oss:120b"
+# Original S281 requalify_previous.py explicitly removes this synthetic prefix.
+# Bind that authored oracle to the exact system/input/token-limit fixture body.
+EVENT_PREFIX_FIXTURES = frozenset((
+    "7209232369366ac6b9489b63668cecc1363411c6d7f3bcf5c3c5695260083801",
+    "ddff8d7d412294d45c3a51038ed86ff66f20768215a38d8e682225a07a9a8fdb",
+))
 PACKET_RE = re.compile(r"^renewal-\d{8}-\d{4}-(?:cumulus|cirrus)$")
 HEADER_RE = re.compile(r"^# [^#].+  (?:evaluations|judge_evaluations)\[\d+\]")
 REVIEW_PROMPTS = (
@@ -112,6 +118,18 @@ def complete_cases(path, item, visible):
         # fields or invalid items. The original transport remains in the packet.
         if item["route"] == "foundation:halftime:events":
             from halftime_routing import parse_events
+            body = renewal._body(row)
+            body_sha = record_sha(body) if body else None
+            if body_sha in EVENT_PREFIX_FIXTURES and body_sha == fixture_id:
+                parsed = parse_events(row["response"])
+                actual = (sorted((x["artist"].removeprefix("Fictional "), x["date"])
+                                 for x in parsed) if parsed is not None else None)
+                evidence["AUTHORED_FIXTURE_CHECK"] = {
+                    "name_date_passed": actual == [("The Example Quartet", "2026-11-05")],
+                    "rule": "The original S281 test author explicitly permits removing the "
+                            "leading synthetic annotation 'Fictional ' from the artist name. "
+                            "This exact-fixture check covers name/date only. Independently "
+                            "check all other fields and source fidelity."}
             wrapped = re.fullmatch(r"\s*```(?:json)?\s*\n([\s\S]*?)\n```\s*",
                                    row["response"], re.I)
             if wrapped:
@@ -162,6 +180,9 @@ def model_review(rule, case):
               "comparison, not an authority. Differences in wording alone are not regressions. "
               "Check entity identity in the source before treating a differing name label as "
               "a missing entity; preserve meaningful qualifiers and any explicit verbatim requirement. "
+              "An AUTHORED_FIXTURE_CHECK, when present, records the original test author's "
+              "narrow acceptance rule, not a model's opinion; do not replace that rule with "
+              "a stricter one. It does not excuse failures outside the stated check. "
               "Before failing, identify an actual requirement in the fixture and a concrete "
               "conflict in NEW. Do not add requirements absent from the task, demand literal "
               "copying of PRIOR, or treat a proposed action, research question, or explicitly "
