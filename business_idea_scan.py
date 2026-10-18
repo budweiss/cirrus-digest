@@ -113,14 +113,14 @@ def all_sources(include_trials: bool = True) -> list:
 # returns real operators. Distinct from self_review.py's system-improvement
 # keywords, which look for ways to improve CIRRUS itself; nothing is shared.
 BUSINESS_SEARCH_QUERIES = [
-    "solo founder automated business monthly recurring revenue case study",
-    "one person software business run entirely by automation revenue",
-    "bootstrapped niche data subscription business monthly revenue",
-    "productized service AI automation recurring revenue teardown",
-    "indie hacker profitable side business automated no employees",
-    "small newsletter or media business automated production revenue",
-    "underserved niche B2B data product solo operator revenue",
-    "automated monitoring alerting service niche industry subscribers",
+    "supplier product catalog spreadsheet normalization import service pricing customer case study",
+    "print artwork prepress automation file preparation pricing customer case study",
+    "DTF gang sheet batch nesting automation pricing print shop customer",
+    "course caption subtitle revision processing service pricing customer workflow",
+    "sewing pattern publisher batch PDF preparation conversion service pricing",
+    "customer file conversion batch processing service per volume pricing case study",
+    "localization resource file packaging conversion automation customer case study",
+    "solo operator automated production service customer supplied files revenue",
 ]
 _QUERIES_PER_RUN = 3
 _RESULTS_PER_QUERY = 4
@@ -157,8 +157,19 @@ Score HIGH when all of these hold:
 
    Score HIGHEST when the work has a PUBLISHED GOING RATE per unit (translation
    per word, transcription per audio minute, data extraction per record). A
-   published rate is the strongest demand evidence that exists: it proves both
-   that the work is bought and what it is worth, with no guessing.
+   published rate establishes an offered service and its billing unit, not
+   proof of sales or willingness to pay for our proposed niche. Distinguish
+   listed offers, named customer usage, paid transactions and repeat purchases.
+   Keep niche demand, our price and profitability explicitly unproven until
+   supported by evidence; never convert vendor units without measurements.
+
+   Favor a specific buyer, customer-supplied inputs, a repeatable delivered
+   artifact and a measurable advantage over the current alternative. Explore
+   supplier catalog preparation, print production files, caption revisions and
+   pattern publishing as examples, not a closed list or approved businesses.
+   Research and internal proposals may continue. Customer outreach and paid
+   pilots are paused until Buddy reviews the ideas and explicitly authorizes
+   them. No score or discovered contact authorizes outreach.
 
    NOTE this is NOT the excluded "done-for-you agency labor" below. That
    exclusion is about billing BUDDY'S HOURS. Per-volume machine throughput with
