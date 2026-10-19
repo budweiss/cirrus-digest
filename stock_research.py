@@ -906,7 +906,16 @@ def status(home):
     print(packed(counts))
 
 
+def selftest():
+    """Expose the existing synthetic suite to the automated build gates."""
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromName('test_stock_research')
+    return unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful()
+
+
 def main(argv=None):
+    if (argv if argv is not None else __import__('sys').argv[1:]) in (['selftest'], ['--selftest']):
+        return 0 if selftest() else 1
     os.umask(0o077)
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--home', type=Path, default=DEFAULT_HOME)
