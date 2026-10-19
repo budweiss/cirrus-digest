@@ -51,6 +51,7 @@ import dev_loop
 import list_delivery
 import mailer
 import task_solver
+import intake_information
 
 # ── Paths & config ────────────────────────────────────────────────────────────
 
@@ -902,6 +903,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # council auto-answer: that answers from model memory, and nothing
         # checks a list of names and phones for invented entries before it goes.
         # Only 'answer' changes; a confirmation, resend or feedback is left be.
+        intake_information.route(rec, subject, body)
         if rec["kind"] == "answer" and task_solver.wants_deliverable(subject, body):
             rec["kind"] = "deliverable"
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
@@ -1025,7 +1027,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
             if rec["kind"] == "answer" and rec["status"] != "refused":
                 try:
-                    if (PROJECT_DIR / "config/answer-workflow-intake.enabled").exists():
+                    if rec.get('information_capability') == 'stock-source-inventory':
+                        solved = intake_information.solve_and_answer(rec, creds, from_addr, subject)
+                    elif (PROJECT_DIR / "config/answer-workflow-intake.enabled").exists():
                         solved = answer_workflow.solve_and_answer(rec, creds, from_addr, subject)
                     else:
                         solved = task_solver.solve_and_answer(rec, creds, from_addr, subject)
