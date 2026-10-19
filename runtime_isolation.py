@@ -129,6 +129,8 @@ def run(args, root, timeout=120, offline=True):
             env['HOME'] = str(Path.home())
             env['TARGET_ENV'] = os.environ.get('TARGET_ENV', 'dev')
             output = root / '.dryrun-output'
+            if output.is_symlink() or output.resolve().parent != root:
+                raise ValueError('dry-run output must stay inside the worktree')
             output.mkdir(exist_ok=True)
             env['COWORK_DRYRUN_ROOT'] = tempfile.mkdtemp(prefix='run-', dir=str(output))
         system = platform.system()

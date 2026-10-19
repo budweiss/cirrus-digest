@@ -65,6 +65,13 @@ print(json.dumps({'output':str(p),'blocked':blocked}))
             self.assertNotEqual(data[0]['output'],data[1]['output'])
             self.assertTrue(all(d['blocked']==[True,True] for d in data))
             self.assertEqual(other.read_text(),'safe')
+            import shutil
+            shutil.rmtree(wt/'.dryrun-output')
+            outside=root/'shared';outside.mkdir()
+            (wt/'.dryrun-output').symlink_to(outside,target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'inside the worktree'):
+                isolation.run([sys.executable,'-c','pass','--dry-run'],wt,offline=False)
+            self.assertEqual(list(outside.iterdir()),[])
 
     def test_timeout_stops_descendant_writes(self):
         import subprocess,time
