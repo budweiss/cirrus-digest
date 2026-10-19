@@ -223,6 +223,20 @@ def session_domain(url):
     return None
 
 
+def browser_url(post):
+    """Use Medium's own post-ID route for custom-domain Medium publications.
+
+    Cookies stay scoped to medium.com; never copy them to a publisher domain.
+    A configured Medium feed plus a valid Medium ID are both required.
+    """
+    url = post['url']
+    key = post_key(url)
+    if (post.get('kind') in ('medium', 'medium-tag') and session_domain(url) is None
+            and re.fullmatch(r'[0-9a-f]{10,12}', key)):
+        return 'https://medium.com/p/' + key
+    return url
+
+
 class Browser:
     """Member-only posts, read through a real headless Chromium carrying Buddy's
     own synced session (config/cookies.json; values are never printed).
@@ -353,7 +367,7 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
     for post in posts:
         text = full_text(post.pop("entry"), post["kind"], parse)
         if len(text) < TEASER:
-            member = browser.text(post["url"])
+            member = browser.text(browser_url(post))
             if len(member) > len(text):
                 text, post["via_browser"] = member, True
         post["teaser"] = len(text) < TEASER
@@ -365,8 +379,11 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
             # listed or counted for Buddy, never scored
             post.update(claims=[], failed=False)
             results.append(post)
-            seen.append(post["key"])
-            seen_set.add(post["key"])
+            # Unreadable is an access failure, not completed work. A later
+            # successful post must not persist this one as already consumed.
+            if post['foreign']:
+                seen.append(post["key"])
+                seen_set.add(post["key"])
             log("  %s | %s | %s" % (post["source"][:18], post["title"][:50],
                                     "not English, skipped" if post["foreign"] else "could not read"))
             continue
@@ -500,8 +517,13 @@ def render(results, day):
                   "(no session for that site, or it needs refreshing on the Mac).", ""]
         lines += ["- %s — %s  \n  %s" % (r["title"][:110], r["source"], r["url"]) for r in worth]
         lines += [""]
-    if len(unread) > len(worth):
-        lines += ["%d other post(s) could not be read and their titles are off-topic." % (len(unread) - len(worth)), ""]
+    other_unread = [r for r in unread if r not in worth]
+    if other_unread:
+        lines += ["## Other unreadable posts (%d)" % len(other_unread), "",
+                  "Kept for retry; their titles did not match the topic filters.", ""]
+        lines += ["- %s — %s  \n  %s" % (r['title'], r['source'], r['url'])
+                  for r in other_unread]
+        lines += [""]
     foreign = sum(1 for r in results if r.get("foreign"))
     if foreign:
         lines += ["%d post(s) not in English were skipped." % foreign, ""]
@@ -660,6 +682,12 @@ def _selftest(g):
     ck("session: a *.substack.com post -> substack.com session",
        session_domain("https://kaitchup.substack.com/p/x") == "substack.com")
     ck("session: a custom-domain Substack gets none", session_domain("https://www.latent.space/p/x") is None)
+    ck("browser: custom Medium uses the authenticated canonical post route",
+       browser_url({'url': 'https://publication.example/article-ab12cd34ef56',
+                    'kind': 'medium-tag'}) == 'https://medium.com/p/ab12cd34ef56')
+    ck("browser: custom Substack and non-Medium links keep their own route",
+       browser_url({'url': 'https://example.com/p/article-ab12cd34ef56',
+                    'kind': 'substack'}) == 'https://example.com/p/article-ab12cd34ef56')
     ck("areas: DGX Spark is hardware", "Hardware" in areas_for("Two DGX Spark nodes"))
     ck("areas: a CLAUDE.md tip is harness", areas_for("keep CLAUDE.md short")[0].startswith("Agent harness"))
     ck("areas: nothing matched is Other", areas_for("a recipe for bread") == ["Other"])
@@ -825,6 +853,25 @@ def _selftest(g):
         ck("unread: a post with no text is never sent to the model", len(seen_calls) == calls_before)
         ck("unread: ...and is listed for Buddy when its title is on-topic",
            s5["unread"] == 1 and "worth opening yourself" in s5["body"] and "Ollama tool calls" in s5["body"])
+        ck("unread: access failures are not persisted as seen",
+           post_key('https://y.substack.com/p/t') not in
+           load_json(Path(td) / 'seen5.json', {}).get('keys', []))
+        # A later successful item used to persist the unread key too.
+        pending_seen, pending_set, pending_results, pending_errors = [], set(), [], []
+        mixed = [dict(key='missing', url='https://y.substack.com/p/missing',
+                      title='Missing', source='Fixture', kind='substack', published='2026-10-19',
+                      entry=entry('https://y.substack.com/p/missing', 'Missing', 'short')),
+                 dict(key='readable', url='https://y.substack.com/p/readable',
+                      title='Readable', source='Fixture', kind='substack', published='2026-10-19',
+                      entry=entry('https://y.substack.com/p/readable', 'Readable', long_body))]
+        mixed_path = Path(td) / 'mixed-seen.json'
+        _read_posts(mixed, lambda _: F(entries=[]), analyze, FakeBrowser(),
+                    pending_results, pending_errors, pending_seen, pending_set,
+                    None, mixed_path, False)
+        ck("unread: subsequent successful work does not consume failed access",
+           load_json(mixed_path, {}).get('keys') == ['readable'])
+        ck("unread: off-topic metadata remains available for diagnosis",
+           'https://y.substack.com/p/missing' in render(pending_results, '2026-10-19'))
         ck("feed error: names the cause, not 'HTTP ?'", "nodename" in s5["errors"][0])
         member_url = "https://y.substack.com/p/t"
         fb = FakeBrowser({member_url: long_body})
