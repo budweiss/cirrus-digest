@@ -17,7 +17,8 @@ import llm_providers as lp
 
 ROOT = Path(__file__).resolve().parent
 CONTRACT = ("answer_workflow.py", "conversation_memory.py", "bot_workflow.py",
-            "capability_dispatch.py", "capability_admission.py", "answer_workflow_eval.py")
+            "capability_dispatch.py", "capability_admission.py", "answer_workflow_eval.py",
+            "inbox_evidence.py", "answer_attempts.py", "llm_providers.py", "answer_workflow_cli.py", "workflow_mail_sources.py")
 MAX_TOKENS = 1800
 
 
@@ -36,7 +37,12 @@ def fixtures():
         ("reconcile", dict(base, mode="review", drafts=[
             {"provider": "fixture-a", "answer": "The planning meeting is Saturday at noon."},
             {"provider": "fixture-b", "answer": note} ])),
-        ("bounded_context", dict(base, background=("Unrelated archived note. " * 440)))
+        ("bounded_context", dict(base, background=("Unrelated archived note. " * 440))),
+        ("irrelevant", dict(base,question="What is the weather forecast for tomorrow?",mode="review",
+             drafts=[{"provider":"fixture","answer":note}])),
+        ("coverage",dict(base,question="When and where is the meeting, and who owns it?",mode="review",
+             sources={"note":"The meeting is Thursday at 10 AM in Room 4. The owner is Lee."},
+             drafts=[{"provider":"fixture","answer":"The meeting is Thursday at 10 AM in Room 4."}]))
     ]
 
 
@@ -44,9 +50,15 @@ def score(case, raw, payload):
     result = aw.parse(raw, payload["sources"])
     if not result:
         return False
-    text = result["answer"].lower()
-    if case == "missing":
+    text = " ".join(result["answer"].lower().split())
+    if case in ("missing", "irrelevant"):
         return result["verdict"] == "needs_review"
+    if case == 'coverage':
+        if result['verdict']=='needs_review':
+            return bool(result.get('missing_request_quote')) and result['missing_request_quote'] in payload['question']
+        return aw.reviewed(result,payload['question']) and all(w in text for w in ['thursday','10','room 4','lee'])
+    if not aw.reviewed(result,payload['question']):
+        return False
     # Qualification scores correctness; runtime independently applies the
     # confidence threshold. Honest uncertainty must not be marked as a false fact.
     if result["verdict"] != "pass" or result["kind"] != "grounded":
@@ -72,7 +84,7 @@ def contract():
 
 
 def evidence_path(provider):
-    if provider not in ("ollama", "vllm", "kimi", "anthropic", "gemini"):
+    if provider not in ("ollama", "vllm", "kimi", "anthropic", "gemini", "openai"):
         raise ValueError("unsupported qualification provider")
     directory = ROOT / "data/conversations/evaluations"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -89,7 +101,7 @@ def save(path, data):
 
 def run(provider):
     creds = json.loads((ROOT / "config/credentials.json").read_text())
-    creds = dict(creds, anthropic_effort="low", vllm_timeout=120)
+    creds = dict(creds, anthropic_effort="low", vllm_timeout=90, openai_model="gpt-6-astra", openai_reasoning_effort="low")
     local = provider in ("ollama", "vllm")
     expected = (creds.get("claude_dev_model") or creds.get("claude_model")) if provider == "anthropic" else creds.get(provider + "_model")
     files, digest = contract()

@@ -34,10 +34,18 @@
         "deepseek"
       ],
       "max_cloud_providers": 2
+    },
+    "conversation": {
+      "cloud_order": [
+        "openai",
+        "anthropic",
+        "kimi"
+      ],
+      "max_cloud_providers": 1
     }
   },
   "tasks": {
-    "conversation-answer": "research",
+    "conversation-answer": "conversation",
     "halftime_catalogue": "extraction",
     "halftime_routing": "extraction",
     "alopecia-agent": "research",

@@ -228,6 +228,12 @@ class AccountingError(ProviderError):
 
 # ── transport ─────────────────────────────────────────────────────────────────
 def _http_post(url, headers, body, timeout=_TIMEOUT):
+    deadline = getattr(_LAST, 'request_deadline', None)
+    if deadline is not None:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise ProviderError('Request deadline exceeded')
+        timeout = min(timeout, remaining)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -258,6 +264,9 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
                          {"role": "user", "content": user}]}
     if extra:
         body.update(extra)
+    if model == 'gpt-6-astra' and url == 'https://api.openai.com/v1/chat/completions':
+        body['max_completion_tokens'] = body.pop('max_tokens')
+        body['reasoning_effort'] = 'low'
     started = time.monotonic()   # S364: client-measured wall for this attempt
     resp = _http_post(
         url,

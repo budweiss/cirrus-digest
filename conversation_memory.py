@@ -64,17 +64,20 @@ class Memory:
         with self.connect() as db:
             return self.row(db.execute("SELECT * FROM turns WHERE id=?", (key,)).fetchone())
 
-    def update(self, key, *, state=None, answer=None, meta=None):
+    def update(self, key, *, state=None, answer=None, meta=None, privacy=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = self.row(db.execute("SELECT * FROM turns WHERE id=?", (key,)).fetchone())
             if row is None:
                 raise ValueError("unknown request")
+            if privacy is not None and privacy != 'LOCAL_ONLY':
+                raise ValueError('Updates may only tighten privacy')
+            if privacy is not None:row['privacy']=privacy
             if meta:
                 row["meta"].update(meta)
-            db.execute("UPDATE turns SET state=?,answer=?,meta=?,updated=? WHERE id=?",
+            db.execute("UPDATE turns SET state=?,answer=?,meta=?,privacy=?,updated=? WHERE id=?",
                        (state or row["state"], row["answer"] if answer is None else answer,
-                        json.dumps(row["meta"]), time.time(), key))
+                        json.dumps(row["meta"]), row["privacy"], time.time(), key))
         return self.get(key)
 
     def claim(self, owner):

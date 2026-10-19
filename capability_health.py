@@ -105,6 +105,13 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
             capacity = data.get('context_length') or data.get('max_model_len')
         if identity != model:
             return dict(row, status='model_identity_mismatch')
+        # OpenAI's authenticated model list omits context capacity. Pin only
+        # this exact, separately qualified model to its published specification.
+        # https://developers.openai.com/api/docs/models/gpt-6-astra (2026-10-19)
+        # Admission still caps this at the smaller measured evaluation capacity.
+        if capacity is None and provider == 'openai' and model == 'gpt-6-astra':
+            capacity = 1_050_000
+            row['basis'] = 'authenticated_identity_and_published_capacity'
         if type(capacity) is not int or capacity <= 0:
             return dict(row, status='capacity_unknown')
         return dict(row, healthy=True, status='ready_metadata',

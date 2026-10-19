@@ -117,6 +117,10 @@
     "medgemma-text:27b-q8_0": {
       "in": 0.0,
       "out": 0.0
+    },
+    "gpt-6-astra": {
+      "in": 10.0,
+      "out": 50.0
     }
   },
   "discounts": {

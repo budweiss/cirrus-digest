@@ -16,7 +16,9 @@ def output(ok=True, answer="The planning meeting is Thursday at 10 AM.", quote=N
     return json.dumps({"answer": answer, "confidence": .95 if ok else .4,
         "verdict": "pass" if ok else "needs_review", "kind": "grounded",
         "evidence": [{"source": "note", "quote": quote or SOURCE["note"]}],
-        "reason": "The supplied note states the time."})
+        "reason": "The supplied note states the time.",
+        "checks":{k:ok for k in ("supported","complete","scope_correct","no_unperformed_actions")},
+        "missing_request_quote":"" if ok else "When"})
 
 
 class FakeModels:
@@ -146,28 +148,28 @@ class WorkflowTests(MemoryTests):
         self.assertTrue(result["answer"].endswith("Is this what you were looking for?"))
 
     def test_foundation_reconciles_local_uncertainty(self):
-        model = FakeModels([("ollama", output(False)), ("kimi", output())])
+        model = FakeModels([("ollama", output(False)), ("ollama", output(False)), ("kimi", output()), ("ollama", output())])
         result = aw.compose(self.m, self.add(), model, SOURCE)
         self.assertEqual(result["state"], "ready")
-        self.assertEqual([x[1]["pool"] for x in model.calls], ["local", "cloud"])
+        self.assertEqual([x[1]["pool"] for x in model.calls], ["local", "local", "cloud", "local"])
         self.assertEqual(model.calls[-1][0]["drafts"][0]["provider"], "ollama")
 
-    def test_panel_has_two_distinct_providers_and_local_reconciliation(self):
-        model = FakeModels([("ollama", output(False)), ("kimi", output(False)),
-                            ("anthropic", output()), ("ollama", output())])
+    def test_no_unbounded_panel_after_one_foundation(self):
+        model = FakeModels([('ollama', output(False)), ('ollama', output(False)), ('openai', output(False))])
         result = aw.compose(self.m, self.add(), model, SOURCE)
-        self.assertEqual(result["state"], "ready")
-        self.assertEqual(model.calls[2][1]["exclude"], ("kimi",))
-        self.assertEqual(len(model.calls[-1][0]["drafts"]), 3)
-        self.assertEqual(model.calls[-1][0]["mode"], "review")
+        self.assertEqual(result['state'], 'needs_review')
+        self.assertEqual([x[1]['pool'] for x in model.calls], ['local','local','cloud'])
+        before=len(model.calls)
+        aw.compose(self.m,result,model,SOURCE)
+        self.assertEqual(len(model.calls),before)
 
     def test_private_history_cannot_leak_to_cloud(self):
         self.add("old", privacy="LOCAL_ONLY")
-        model = FakeModels([("ollama", output(False))])
+        model = FakeModels([("ollama", output(False)), ("ollama", output(False))])
         result = aw.compose(self.m, self.add("new"), model, SOURCE)
         self.assertEqual(result["state"], "needs_review")
-        self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0][1]["privacy"], "LOCAL_ONLY")
+        self.assertEqual(len(model.calls), 2)
+        self.assertTrue(all(c[1]["privacy"]=="LOCAL_ONLY" and c[1]["pool"]=="local" for c in model.calls))
         self.assertTrue((self.m.directory / (result["id"] + "-review.json")).exists())
 
     def test_bad_evidence_and_malformed_json_fail(self):
@@ -207,12 +209,14 @@ class WorkflowTests(MemoryTests):
 
     def test_checkpoint_replay_does_not_repeat_completed_inference(self):
         parsed = aw.parse(output(), SOURCE)
-        row = self.add(meta={"stages": {"local": {"provider": "ollama", "parsed": parsed}}})
-        model = FakeModels([("ollama", output())])
-        result = aw.compose(self.m, row, model, SOURCE)
-        self.assertEqual(result["state"], "ready")
-        self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0][0]["mode"], "review")
+        row=self.add()
+        payload={'question':row['question'],'sources':dict(SOURCE, **{'user-provided-request':row['question']}),'history':[],'mode':'draft','drafts':[]}
+        self.m.update(row['id'],meta={'stages':{'local':{'provider':'ollama','parsed':parsed,'input_sha256':aw.answer_attempts.input_hash(payload)}}})
+        model=FakeModels([('ollama',output())])
+        result=aw.compose(self.m,row,model,SOURCE)
+        self.assertEqual(result['state'],'ready')
+        self.assertEqual(len(model.calls),1)
+        self.assertEqual(model.calls[0][0]['mode'],'review')
 
     def test_interruption_holds_unconfirmed_inference(self):
         row = self.add(state="running")
@@ -224,20 +228,19 @@ class WorkflowTests(MemoryTests):
     def test_no_headway_hold_and_one_progress_check(self):
         for n in ("a", "b"):
             row = self.add(n)
-            self.m.update(row["id"], state="delivered", answer="Earlier answer " + n)
-        result = aw.compose(self.m, self.add("c", question="Still wrong, the same answer again."),
-                            FakeModels([]), SOURCE)
-        self.assertEqual(result["state"], "needs_review")
-        other = self.add("d", question="What about this instead?")
+            self.m.update(row["id"], state="delivered", answer="Earlier answer " + n, meta={"delivery_confirmed":True})
+        other = self.add('c', question='What about this instead?')
         result = aw.compose(self.m, other, FakeModels([]), SOURCE)
-        self.assertTrue(result["meta"]["progress_check"])
-        result = aw.compose(self.m, self.add("e", question="Please try again"), FakeModels([]), SOURCE)
-        self.assertEqual(result["state"], "needs_review")
+        self.assertTrue(result['meta']['progress_check'])
+        result = aw.compose(self.m, self.add('d', question='Please try again'), FakeModels([]), SOURCE)
+        self.assertEqual(result['state'],'needs_review')
+        result = aw.compose(self.m, self.add('e', question='Still wrong, the same answer again.'), FakeModels([]), SOURCE)
+        self.assertEqual(result['state'],'needs_review')
 
     def test_genuine_progress_is_not_stopped_by_turn_count(self):
         for n in range(4):
             row = self.add(str(n))
-            self.m.update(row["id"], state="delivered", answer="Earlier answer")
+            self.m.update(row["id"], state="delivered", answer="Earlier answer", meta={"delivery_confirmed":True})
         model = FakeModels([("ollama", output()), ("ollama", output())])
         result = aw.compose(self.m, self.add("next", question="Closer, when is the meeting?"), model, SOURCE)
         self.assertEqual(result["state"], "ready")
@@ -374,6 +377,7 @@ class IntakeTests(MemoryTests):
         model = FakeModels([("ollama", json.dumps(good)), ("ollama", json.dumps(good))])
         with patch.object(ts, "PROJECT_DIR", self.root), \
              patch.object(ts, "try_entity_kb_answer", return_value=SOURCE["note"]), \
+             patch("workflow_mail_sources.collect", return_value={}), \
              patch.object(ts, "_send_mail", return_value=True) as send, \
              patch.object(ts, "_record_promise"), patch.object(ts.dev_loop, "ledger_append"), \
              patch.object(aw, "Models", return_value=model):

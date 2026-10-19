@@ -25,7 +25,13 @@ def sources(root, question, public=False):
     try:
         from cirrus_rag import retrieve
         for i, row in enumerate(retrieve(question, top_k=2)):
-            result["digest-" + str(i)] = str(row["text"])[:1600]
+            from inbox_evidence import evidence_spans
+            chunks=evidence_spans('digest-'+str(i),str(row['text']),'reference')
+            selected=[]
+            for chunk in chunks:
+                if sum(len(x) for x in selected)+len(chunk['text']) <= 1600:
+                    selected.append(chunk['text'])
+            if selected:result['digest-'+str(i)]='\n\n'.join(selected)
     except Exception:
         pass
     return result
@@ -82,7 +88,7 @@ def handle(message, chat_id, *, root, allowed_id):
         thread=parent["thread"] if parent else identity(client, str(message["message_id"])),
         message_id=str(message["message_id"]), question=question,
         privacy=parent["privacy"] if parent else ("CLOUD_ALLOWED" if command == "/workpublic" else "LOCAL_ONLY"),
-        meta={"chat_id": chat_id, "source": "telegram", "parent": parent["id"] if parent else ""})
+        meta={"chat_id": chat_id, "source": "telegram", "parent": parent["id"] if parent else "", "request_origin": str(message["message_id"])})
     return ("Request " + row["id"] + " " + ("queued." if row["state"] == "queued" else "already recorded.") +
             "\nI'll prepare a checked answer. No shell commands or outside messages are part of this workflow."
             "\nCheck /workstatus " + row["id"])
