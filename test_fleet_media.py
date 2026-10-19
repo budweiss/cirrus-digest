@@ -14,6 +14,8 @@ def policy():
  return p
 
 class MediaAdmissionTests(unittest.TestCase):
+ def test_admission_reserves_the_workers_largest_output(self):
+  self.assertGreaterEqual(live_policy()['projects']['articles-infra']['max_output_tokens'],m.MAX_OUTPUT_TOKENS)
  def setUp(self):
   guard=patch.object(f,'policy',side_effect=policy);guard.start();self.addCleanup(guard.stop)
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)

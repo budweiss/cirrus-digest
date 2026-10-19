@@ -29,7 +29,7 @@ def policy():
     p['projects']['articles-infra'] = {'workers':['cumulus2-qwen'],
       'model_ids':{'cumulus2-qwen':'qwen3.8-27b-fp8'},'validator':'media_manifest',
       'max_retries':2,'stall_seconds':600,'heartbeat_seconds':30,'max_input_bytes':2000000,
-      'request_context_bound':10000,'max_output_tokens':2048,'qualification_until':QUALIFIED_UNTIL,
+      'request_context_bound':10000,'max_output_tokens':8192,'qualification_until':QUALIFIED_UNTIL,
       'contract':'media-s307-v3','mode':'pilot','owner':'fleet-media','resource':'articles-infra',
       'delivery':'none'}
     return p

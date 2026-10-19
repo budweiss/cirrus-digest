@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 MODEL = 'qwen3.8-27b-fp8'
 ENDPOINT = 'http://192.168.100.11:8000'
 VERSION = 's307-v3'  # S307: contiguous-quote rule in the claims prompt
+MAX_OUTPUT_TOKENS = 8192
 
 
 class YouTubeDeadline(BaseException):
@@ -161,7 +162,7 @@ def complete(system, text, task, attempts=3):
             # Retrying a deterministic truncation with the same output limit
             # repeats the failure. Grow only the output allowance, preserving
             # the full input and a framing reserve within the context ceiling.
-            output_limit = min(output_limit * 2, 8192, 32768 - input_tokens - 256)
+            output_limit = min(output_limit * 2, MAX_OUTPUT_TOKENS, 32768 - input_tokens - 256)
         if attempt < attempts:
             time.sleep(10 * attempt)
     raise failure
