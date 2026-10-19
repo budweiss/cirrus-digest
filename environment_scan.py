@@ -17,7 +17,7 @@ FEEDS = {
     'vLLM': 'vllm-project/vllm', 'llama.cpp': 'ggml-org/llama.cpp',
     'Ollama': 'ollama/ollama', 'MLX': 'ml-explore/mlx',
     'Qdrant': 'qdrant/qdrant', 'LiteLLM': 'BerriAI/litellm',
-    'Playwright': 'microsoft/playwright',
+    'Playwright': 'microsoft/playwright', 'Tailscale': 'tailscale/tailscale',
 }
 QUERIES = (
     'site:nvidia.com DGX Spark DGX Station memory bandwidth price 2026',
@@ -33,7 +33,9 @@ CONTEXT = ('CIRRUS is a Mac Studio running schedules and delivery; CUMULUS1 hand
     'CUMULUS2 serves qwen3.8-27b-fp8. Apple-only MLX releases apply to CIRRUS or future STRATUS Macs, '
     'never directly to the Linux DGX Spark serving runtime. SMTP sends email; browser automation is used '
     'for web workflows and verification. Existing stack: '
-    'vLLM, Ollama, MLX, llama.cpp, Qdrant, LiteLLM, Playwright. '
+    'vLLM, Ollama, MLX, llama.cpp, Qdrant, LiteLLM, Playwright, Tailscale. '
+    'For Tailscale prioritize security fixes and macOS/Linux connectivity changes; '
+    'monitoring does not authorize automatic upgrades or access-route changes. '
     'Buddy is waiting for a new Mac Studio; no order date or purchase is authorized, '
     'and the expensive refurbished option is declined. The separate official Apple '
     'watch owns Mac Studio specs, pricing and ordering alerts. Do not duplicate it. '
