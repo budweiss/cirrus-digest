@@ -128,7 +128,8 @@ def split_text(text, count=token_count, limit=6000, overlap=300):
 
 def complete(system, text, task, attempts=3):
     # Include instructions, framing and output reserve; never rely on truncation.
-    if token_count(system + '\n' + text) + 2300 > 32768:
+    input_tokens = token_count(system + '\n' + text)
+    if input_tokens + 2300 > 32768:
         raise ValueError('media request exceeds context budget')
     # S423: under load, vLLM occasionally returns an empty or truncated
     # response (finish != stop / wrong model id), which surfaced as
@@ -139,10 +140,11 @@ def complete(system, text, task, attempts=3):
     # NOT retried here -- so a bounded 3-attempt loop with short backoff is
     # safe, and the raised error names what the final attempt saw.
     failure = RuntimeError('incomplete_or_wrong_media_model:not_attempted')
+    output_limit = 2048
     for attempt in range(1, max(1, attempts) + 1):
         result = request('/v1/chat/completions', {'model': MODEL,
             'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
-            'temperature': 0, 'max_tokens': 2048,
+            'temperature': 0, 'max_tokens': output_limit,
             'chat_template_kwargs': {'enable_thinking': False}})
         choice = result['choices'][0]
         answer = choice['message'].get('content') or ''
@@ -155,6 +157,11 @@ def complete(system, text, task, attempts=3):
             return answer.strip()
         failure = RuntimeError('incomplete_or_wrong_media_model:model=%s finish=%s answer_chars=%d'
                                % (result.get('model'), choice.get('finish_reason'), len(answer)))
+        if choice.get('finish_reason') == 'length':
+            # Retrying a deterministic truncation with the same output limit
+            # repeats the failure. Grow only the output allowance, preserving
+            # the full input and a framing reserve within the context ceiling.
+            output_limit = min(output_limit * 2, 8192, 32768 - input_tokens - 256)
         if attempt < attempts:
             time.sleep(10 * attempt)
     raise failure
@@ -729,12 +736,13 @@ def selftest():
         def flaky(path, payload):
             if path == '/tokenize':
                 return {'count': 1}
-            attempts.append(1)
+            attempts.append(payload['max_tokens'])
             return (fake_response(MODEL, 'length', '') if len(attempts) <= 2
                     else fake_response(MODEL, 'stop', 'All good.'))
         globals()['request'] = flaky
         assert complete('System', 'Body', 'test:lane') == 'All good.'
         assert len(attempts) == 3, attempts
+        assert attempts == [2048, 4096, 8192], attempts
         assert sleeps == [10, 20], sleeps
         assert len(recorded) == 3  # every attempt is budgeted, not just the last
 
@@ -754,6 +762,17 @@ def selftest():
             assert message.startswith('incomplete_or_wrong_media_model'), message
             assert 'finish=length' in message and 'answer_chars=0' in message, message
         assert len(attempts) == 3
+        # A larger output must never exceed the original context ceiling.
+        attempts = []
+        def near_context(path, payload):
+            if path == '/tokenize':
+                return {'count': 30400}
+            attempts.append(payload['max_tokens'])
+            return (fake_response(MODEL, 'length', '') if len(attempts) == 1
+                    else fake_response(MODEL, 'stop', 'Bounded.'))
+        globals()['request'] = near_context
+        assert complete('System', 'Body', 'test:lane') == 'Bounded.'
+        assert attempts == [2048, 2112], attempts
     finally:
         globals()['request'] = real_request
         time.sleep = real_sleep

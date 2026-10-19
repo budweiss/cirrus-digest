@@ -555,10 +555,10 @@ def email_body(results, day, n=EMAIL_TOP):
 
 def is_healthy(stats):
     """Unhealthy when half or more feeds are unreadable (the ytwatch lesson, S307),
-    or when there was work and every analysis failed."""
+    or when any requested analysis failed. Partial work is not a healthy run."""
     feeds_down = stats["feed_errors"] and stats["feed_errors"] * 2 >= max(stats["feeds"], 1)
     analysis_down = (stats.get("analysis_attempted", 0) > 0
-                     and stats.get("analysis_succeeded", 0) == 0)
+                     and stats.get("analysis_succeeded", 0) < stats["analysis_attempted"])
     unread_only = (stats.get("unread", 0) > 0
                    and stats.get("analysis_succeeded", 0) == 0)
     return not feeds_down and not analysis_down and not unread_only
@@ -772,6 +772,8 @@ def _selftest(g):
         ck("run: a worker outage marks nothing seen (retried tomorrow)",
            load_json(sp2, {}).get("keys", []) == [] and s3["processed"] == 0)
         ck("health: every analysis failing is unhealthy", not is_healthy(s3))
+        ck("health: partial analysis failure is unhealthy",
+           not is_healthy(dict(s3, analysis_attempted=66, analysis_succeeded=10)))
         mixed_map = {"https://mixed.substack.com/feed": F(status=200, entries=[
             entry("https://mixed.substack.com/p/full", "Worker test", long_body),
             entry("https://mixed.substack.com/p/locked", "Locked test", "short"),
