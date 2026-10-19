@@ -110,9 +110,9 @@ def run_selftests(root, rels):
         rc, tail = 0, ""
         for a in argvs:
             try:
-                r = subprocess.run([sys.executable, str(fp)] + a, cwd=str(root),
-                                   capture_output=True, text=True,
-                                   timeout=RUN_TIMEOUT)
+                import runtime_isolation
+                r = runtime_isolation.run([sys.executable, str(fp)] + a, root,
+                                          timeout=RUN_TIMEOUT)
                 rc = r.returncode
                 tail = ((r.stdout or "") + (r.stderr or ""))[-1200:]
             except subprocess.TimeoutExpired:
@@ -234,6 +234,10 @@ def verify_on_cumulus(worktree, changed):
             res["ran"] = "cumulus(unreachable)"
             res["detail"] = err
             return res
+
+        if any(before.get(r, {}).get('rc') == 125 for r in cands):
+            return dict(res, ok=False, ran='cumulus(isolation failed)',
+                        detail='remote containment unavailable; baseline not excused')
 
         live = [r for r in cands if before.get(r, {}).get("rc") == 0]
         for r in cands:

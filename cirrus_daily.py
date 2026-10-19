@@ -88,6 +88,11 @@ if _OVERLAY_PATH.exists():
 
 OUTPUT_DIR  = Path(DIGEST_CFG["output_dir"])
 LOG_DIR     = Path(DIGEST_CFG["log_dir"])
+# Worktree dry-runs retain read-only source/config access, but own their output.
+if DRY_RUN and os.environ.get('COWORK_DRYRUN_ROOT'):
+    OUTPUT_DIR = Path(os.environ['COWORK_DRYRUN_ROOT']) / 'digests'
+    LOG_DIR = Path(os.environ['COWORK_DRYRUN_ROOT']) / 'logs'
+
 # ── Node-aware profile (2026-08-04) ──────────────────────────────────
 # Each box runs its own optimal model + context window, chosen by TARGET_ENV
 # (dev=CIRRUS, beta=CUMULUS, prod=STRATUS — set in the systemd units/platform.env).
@@ -197,7 +202,8 @@ def log_paywall_hit(url: str, sender: str, subject: str):
 
 COOKIES_PATH     = Path.home() / "projects/cirrus-digest/config/cookies.json"
 WATCHLIST_PATH   = Path.home() / "projects/cirrus-digest/config/cookie_watchlist.json"
-REFRESH_FLAG     = Path.home() / "projects/cirrus-digest/logs/cookie_refresh.needed"
+REFRESH_FLAG     = (LOG_DIR / 'cookie_refresh.needed' if DRY_RUN and os.environ.get('COWORK_DRYRUN_ROOT')
+                    else Path.home() / "projects/cirrus-digest/logs/cookie_refresh.needed")
 _SITE_COOKIES: dict = {}
 _SITE_COOKIES_LOADED = False
 _COOKIE_WATCHLIST: list = []

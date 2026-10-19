@@ -11,7 +11,7 @@ logs/dev-loop/build-queue.jsonl), and runs the pipeline:
               changed module's own selftest; the selftest of every module that
               IMPORTS it; and a full daily --dry-run when a core digest file is
               touched (paths in cirrus_daily are absolute, so a worktree run
-              reads live config but can only write DRYRUN-* files)
+              reads live config, with writes contained to this worktree)
     repair  — on failure, show the model how its patch broke and try again, up
               to MAX_REPAIR_ATTEMPTS. Attempts 1-2 Claude alone; attempt 3
               escalates to the keyed panel. A repair may NOT edit test code,
@@ -462,7 +462,7 @@ def build_model_patch(system: str, user: str, attempts: int = 2):
 
 
 # ── git / shell helpers ───────────────────────────────────────────────────────
-def _run(args, cwd=None, timeout=120):
+def _run(args, cwd=None, timeout=120, isolated=False):
     # S161: a probe that HANGS must come back as an ordinary failure, not as a
     # TimeoutExpired escaping to build_item's catch-all — that is what killed
     # prop-2026-09-07-705585 twice (a mis-dispatched bare `selftest` ran the
@@ -471,9 +471,16 @@ def _run(args, cwd=None, timeout=120):
     # already treats rc != 0 as failure, so a hung suite is recorded as red
     # (and excused as prebroken) instead of killing the build.
     try:
-        r = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                           capture_output=True, text=True, timeout=timeout)
+        if isolated:
+            import runtime_isolation
+            r = runtime_isolation.run(args, cwd, timeout=timeout,
+                                      offline=isolated != 'dryrun')
+        else:
+            r = subprocess.run(args, cwd=str(cwd) if cwd else None,
+                               capture_output=True, text=True, timeout=timeout)
         return r.returncode, (r.stdout + r.stderr).strip()
+    except (RuntimeError, OSError) as exc:
+        return 125, "isolation/launch failed: " + type(exc).__name__ + ": " + str(exc)[:200]
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout}s: {' '.join(str(a) for a in args)[:200]}"
 
@@ -875,7 +882,9 @@ def failing_selftests(wt, mods) -> set:
             continue
         for argv in selftest_argvs(fp):
             rc, _out = _run([sys.executable, str(fp)] + argv,
-                            cwd=wt, timeout=SELFTEST_TIMEOUT)
+                            cwd=wt, timeout=SELFTEST_TIMEOUT, isolated=True)
+            if rc == 125:
+                raise RuntimeError('test containment unavailable; refusing baseline')
             if rc != 0:
                 out.add(m)
                 break
@@ -904,7 +913,8 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=(),
     ran.append("compile")
     for p in changed:
         if p.endswith(".py"):
-            rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)])
+            rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)],
+                           cwd=wt, isolated=True)
             if rc != 0:
                 d = "py_compile %s: %s" % (p, out[:400])
                 return {"ok": False, "gate": "compile", "detail": d,
@@ -930,7 +940,7 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=(),
         rc, out = 0, ""
         for a in args:
             rc, out = _run([sys.executable, str(fp)] + a,
-                           cwd=wt, timeout=SELFTEST_TIMEOUT)
+                           cwd=wt, timeout=SELFTEST_TIMEOUT, isolated=True)
             if rc != 0:
                 break
         if rc != 0:
@@ -961,7 +971,7 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=(),
             rc, out = 0, ""
             for a in args:
                 rc, out = _run([sys.executable, str(fp)] + a,
-                               cwd=wt, timeout=SELFTEST_TIMEOUT)
+                               cwd=wt, timeout=SELFTEST_TIMEOUT, isolated=True)
                 if rc != 0:
                     break
             if rc != 0:
@@ -993,7 +1003,7 @@ def verify_build(wt, changed, run_dryrun: bool = True, prebroken=(),
                        or dryrun_reachable(changed, wt)):
         ran.append("dryrun")
         rc, out = _run([sys.executable, str(wt / "cirrus_daily.py"), "--dry-run"],
-                       cwd=wt, timeout=DRYRUN_TIMEOUT)
+                       cwd=wt, timeout=DRYRUN_TIMEOUT, isolated='dryrun')
         if rc != 0:
             d = "daily --dry-run failed:\n%s" % out[-1200:]
             return {"ok": False, "gate": "dryrun", "detail": d,
@@ -1688,7 +1698,8 @@ def ship(n: int):
     # quick re-compile after rebase
     for p in changed:
         if p.endswith(".py"):
-            rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)])
+            rc, out = _run([sys.executable, "-m", "py_compile", str(wt / p)],
+                           cwd=wt, isolated=True)
             if rc != 0:
                 b["status"] = "test-failed"
                 builds_save(builds)

@@ -162,3 +162,6 @@ private/shore-schedule/
 private/personal-holdings/
 
 private/personal-schedule/
+
+# Per-worktree isolated digest verification output (S455)
+.dryrun-output/
