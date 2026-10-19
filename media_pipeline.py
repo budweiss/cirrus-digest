@@ -135,10 +135,10 @@ def complete(system, text, task, attempts=3):
     # response (finish != stop / wrong model id), which surfaced as
     # incomplete_or_wrong_media_model and failed the whole video
     # deterministically (~84s into the MOTM 2026-09-29/22 analyses). A
-    # temperature-0 retry can only succeed when that failure was
-    # load-transient -- schema/content mistakes are caught downstream and are
-    # NOT retried here -- so a bounded 3-attempt loop with short backoff is
-    # safe, and the raised error names what the final attempt saw.
+    # Retry at most three times. S451 also grows a truncated answer's output
+    # allowance: repeating the same deterministic token cap cannot recover.
+    # Schema/content mistakes are still caught downstream, not accepted here.
+    # The raised error names what the final attempt saw.
     failure = RuntimeError('incomplete_or_wrong_media_model:not_attempted')
     output_limit = 2048
     for attempt in range(1, max(1, attempts) + 1):
