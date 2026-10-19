@@ -140,6 +140,20 @@ class MediaTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'Cumulus_media_worker_failed'):
                 m.call('analyze',text='full text',instructions='test')
 
+    def test_remote_failure_has_exit_and_single_line_cause(self):
+        for stderr, expected in [('', 'no stderr returned'),
+                                 ('\nmedia worker failed:\n Refused: admission stopped\n',
+                                  'media worker failed: Refused: admission stopped')]:
+            with self.subTest(stderr=stderr), \
+                 patch.object(m.socket, 'gethostname', return_value='cirrus'), \
+                 patch.object(m.subprocess, 'run') as run:
+                run.return_value.returncode = 255
+                run.return_value.stderr = stderr
+                with self.assertRaises(RuntimeError) as caught:
+                    m.call('analyze', text='fixture', instructions='test')
+                self.assertEqual(str(caught.exception),
+                                 'Cumulus_media_worker_failed (exit 255): ' + expected)
+
     def test_lane_ceilings_bounded_work_is_capped(self):
         # S382: the Oct 5 digest froze silently on the "Become a $1M/yr FDE"
         # item and the 2026-10-07 run repeated the freeze ON item [10/10] —

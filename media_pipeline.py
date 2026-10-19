@@ -542,7 +542,10 @@ def call(action, **kwargs):
     if p.returncode:
         if action == 'youtube' and p.returncode == 75:
             raise YouTubeDeadline('youtube_deadline_expired')
-        raise RuntimeError('Cumulus_media_worker_failed: '+p.stderr[-300:])
+        # Keep the cause on the first alert line, including when SSH returned
+        # no stderr. A leading newline used to leave only an empty label.
+        detail = ' '.join((p.stderr or '').split())[-300:] or 'no stderr returned'
+        raise RuntimeError('Cumulus_media_worker_failed (exit %s): %s' % (p.returncode, detail))
     return json.loads(p.stdout)['result']
 
 
