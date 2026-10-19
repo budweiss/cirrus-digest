@@ -78,6 +78,12 @@ class LimitsTests(unittest.TestCase):
   self.assertFalse(bad['healthy'])
   bad=health.observe_cloud(dict(creds,openai_model='unknown'),'openai',get=lambda *a:{'data':[{'id':'unknown'}]})
   self.assertEqual(bad['status'],'capacity_unknown')
+ def test_post_send_bookkeeping_cannot_escape_attempt_budget(self):
+  import task_solver
+  (self.root/'config').mkdir();(self.root/'config/answer-workflow-intake.enabled').touch()
+  with patch.object(task_solver,'PROJECT_DIR',self.root),patch.object(task_solver.promise_detect,'record') as record:
+   task_solver._record_promise({'requester':'Fixture'},"I'll send a report tomorrow.",{},'Fixture')
+   record.assert_not_called()
  def test_cloud_draft_gets_local_verification(self):
   model=FakeModels([('ollama',output(False)),('ollama',output(False)),('openai',output()),('ollama',output())])
   row=aw.compose(self.m,self.row(privacy='CLOUD_ALLOWED'),model,SOURCE)

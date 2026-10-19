@@ -493,8 +493,13 @@ detect_promise = promise_detect.detect_promise
 
 def _record_promise(rec: dict, text: str, creds: dict, orig_subject: str) -> None:
     """Non-raising wrapper -- see promise_detect.record()."""
+    # The bounded answer-only adapter cannot promise actions; post-send model
+    # bookkeeping would escape its privacy and attempt ledger. Keep it local
+    # and deterministic by doing no promise inference for this route.
+    if (PROJECT_DIR / "config/answer-workflow-intake.enabled").exists():
+        return
     promise_detect.record(
-        text, creds,
+        text, dict(creds, llm_privacy=intake_privacy(rec, creds)),
         client=rec.get("requester") or "",
         project=(rec.get("projects") or ["general"])[0],
         subject=orig_subject or rec.get("title", ""),
