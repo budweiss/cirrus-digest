@@ -459,7 +459,12 @@ def get_quote(ticker, now=None, fetcher=None, archive_dir=None):
         out['corporate_actions'] = _actions(rows[0])
     except urllib.error.HTTPError as exc:
         out['source_errors'].append('provider_http_' + str(exc.code))
-        exc.close()
+        try:
+            exc.close()
+        except Exception:
+            # Python 3.9 HTTPError without a response body can fail on close.
+            # Cleanup must not replace the safe provider failure above.
+            pass
     except (urllib.error.URLError, TimeoutError, OSError):
         out['source_errors'].append('provider_network_or_archive_error')
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
@@ -467,3 +472,14 @@ def get_quote(ticker, now=None, fetcher=None, archive_dir=None):
         # URL, response body or other unexpected material.
         out['source_errors'].append('provider_response_invalid')
     return validate_quote(out, ticker=ticker, now=now)
+
+def selftest():
+    """Run the existing synthetic regression suite through the build gate."""
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromNames(['test_stock_paper_market', 'test_http_error_cleanup'])
+    return unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful()
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] in (['selftest'], ['--selftest']):
+        raise SystemExit(0 if selftest() else 1)

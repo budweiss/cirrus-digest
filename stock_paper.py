@@ -316,7 +316,16 @@ def tax_export(home, ledger, year):
     return result
 
 
+
+def selftest():
+    """Run the existing synthetic regression suite through the build gate."""
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromName('test_stock_paper')
+    return unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful()
+
 def main(argv=None):
+    if (argv if argv is not None else __import__('sys').argv[1:]) in (['selftest'], ['--selftest']):
+        return 0 if selftest() else 1
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--home', type=Path, default=HOME)
