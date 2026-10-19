@@ -809,7 +809,7 @@ def selftest():
     ck("channels: every entry has a UC-shaped id (and there IS at least one)",
        bool(live) and all(re.fullmatch(r"UC[A-Za-z0-9_-]{22}", c["channel_id"]) for c in live))
     ck("channels: every entry declares a known lane (and there IS at least one)",
-       bool(live) and all(c.get("lane") in ("hardware", "news") for c in live))
+       bool(live) and all(c.get("lane") in ("hardware", "news", "investing", "aggie") for c in live))
     ck("channels: all five requested channels are present", {"UCajiMK_CY9icRhLepS8_3ug", "UC9HwoV7VQpDRDXOzviV2DIQ", "UC0C-17n9iuUQPylguM1d-lQ", "UCmeU2DYiVy80wMBGZzEWnbw", "UCYVU6rModlGxvJbszCclGGw"}.issubset({c["channel_id"] for c in live}))
 
     print("\n%d passed, %d failed" % (ok, fail))

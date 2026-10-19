@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated watch list. Channel identity and live RSS checked on each entry\u2019s verified date. Lane drives claim review; see YT-WATCH-SPEC.md.",
+  "_comment": "Curated watch list. Channel identity and live RSS checked on each entry’s verified date. Lane drives claim review; see YT-WATCH-SPEC.md.",
   "channels": [
     {
       "name": "Alex Ziskind",
@@ -83,7 +83,7 @@
       "lane": "aggie",
       "why": "OFFER client Aggie's 2026-10-02 email ('YouTube Video Summarization'): daily briefs on stock picks, market direction and government matters. Faith-and-finance channel (Ryan Cunningham), ~weekly uploads; YouTube feed is its free 'prophetic word' outlet.",
       "verified": "2026-10-12 (S412, live RSS + canonical): title 'Money On The Move', newest video 2026-10-06",
-      "note": "Name must stay EXACTLY the YouTube feed title \u2014 aggie_yt_digest.py parses findings sections by this name."
+      "note": "Name must stay EXACTLY the YouTube feed title — aggie_yt_digest.py parses findings sections by this name."
     },
     {
       "name": "Financial Education",
@@ -98,7 +98,7 @@
       "handle": "@TakeFive-HisGlory",
       "channel_id": "UC35ppIAFdiBlk77UPbSktNQ",
       "lane": "aggie",
-      "why": "OFFER client Aggie's 2026-10-02 email: her named channels for the daily stock/market/government brief. Pastor Dave Scarlett's show \u2014 YouTube channel is DORMANT (newest upload 2025-07-03, ep. 1964) with active daily episodes on Rumble instead. Kept on the watch list so a YouTube return is picked up; Aggie and Buddy told 2026-10-12, Rumble lane on offer.",
+      "why": "OFFER client Aggie's 2026-10-02 email: her named channels for the daily stock/market/government brief. Pastor Dave Scarlett's show — YouTube channel is DORMANT (newest upload 2025-07-03, ep. 1964) with active daily episodes on Rumble instead. Kept on the watch list so a YouTube return is picked up; Aggie and Buddy told 2026-10-12, Rumble lane on offer.",
       "verified": "2026-10-12 (S412, live RSS): title 'Take FiVe - His Glory', newest video 2025-07-03 (STALE)"
     },
     {
