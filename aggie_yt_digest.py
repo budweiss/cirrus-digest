@@ -54,8 +54,62 @@ def aggie_channels():
             if c.get("lane") == "aggie" and c.get("channel_id")]
 
 
+
+def uploads_videos(channel_id, count=1):
+    """Read the same channel's uploads when YouTube's RSS endpoint is down.
+
+    The uploads playlist includes streams as well as ordinary videos. Dates
+    come from each watch page, never relative labels or a stale cached feed.
+    yt-dlp only lists metadata; it downloads no audio or video.
+    """
+    import subprocess
+    from html.parser import HTMLParser
+    if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel_id):
+        raise ValueError("invalid_channel_id")
+    result = subprocess.run([
+        sys.executable, '-m', 'yt_dlp', '--flat-playlist', '--dump-single-json',
+        '--skip-download', '--quiet', '--no-warnings', '--ignore-config',
+        '--playlist-end', str(max(1, min(int(count), 15))),
+        '--socket-timeout', '15', '--retries', '0', '--extractor-retries', '0',
+        'https://www.youtube.com/playlist?list=UU' + channel_id[2:]],
+        capture_output=True, text=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError('uploads_listing_failed')
+    data = json.loads(result.stdout)
+    if data.get('id') != 'UU' + channel_id[2:]:
+        raise ValueError('uploads_playlist_mismatch')
+
+    class Dates(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.published = ''
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == 'meta' and attrs.get('itemprop') == 'datePublished':
+                self.published = attrs.get('content', '')
+
+    out = []
+    for entry in (data.get('entries') or [])[:max(1, min(int(count), 15))]:
+        vid = entry.get('id', '')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{11}', vid) or not entry.get('title'):
+            raise ValueError('invalid_upload_entry')
+        url = 'https://www.youtube.com/watch?v=' + vid
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            parser = Dates()
+            parser.feed(response.read().decode('utf-8', 'replace'))
+        published = datetime.fromisoformat(parser.published).date().isoformat()
+        out.append(dict(video_id=vid, title=entry['title'], published=published, url=url))
+    if not out:
+        raise ValueError('empty_uploads_playlist')
+    return out
+
+
 def feed_videos(channel_id, count=1):
     """The channel's newest `count` RSS entries, newest first. Read-only.
+
+    RSS remains primary; S452 tries the uploads playlist once on failure.
+    Both sources failing still raises after the bounded RSS retries.
 
     Three attempts with backoff (S417): the 2026-10-15 00:30 collection had
     ALL aggie channels fail with a single HTTPError each, while the same
@@ -83,6 +137,13 @@ def feed_videos(channel_id, count=1):
             break
         except Exception as exc:
             last_exc = exc
+            if attempt == 0:
+                try:
+                    videos = uploads_videos(channel_id, count)
+                    log('  RSS unavailable; verified uploads playlist used')
+                    return videos
+                except Exception as fallback_exc:
+                    log('  uploads fallback failed: ' + type(fallback_exc).__name__)
             log("  feed fetch attempt %d/5 failed: %s" % (attempt + 1, str(exc)[:80]))
     else:
         raise last_exc

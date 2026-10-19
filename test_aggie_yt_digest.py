@@ -33,7 +33,8 @@ class FeedRetryTests(unittest.TestCase):
             side.append(self.urlopen_fixture(self.RSS))
         with patch.object(digest.urllib.request, 'urlopen', side_effect=side) as urlopen, \
                 patch('time.sleep') as sleep, \
-                patch.object(digest, 'log'):
+                patch.object(digest, 'log'), \
+                patch.object(digest, 'uploads_videos', side_effect=RuntimeError('fixture unavailable')):
             if failures >= 5:
                 with self.assertRaises(Exception):
                     digest.feed_videos('fixture')
@@ -52,6 +53,43 @@ class FeedRetryTests(unittest.TestCase):
         attempts, sleeps = self.run_fetch(failures=5)
         self.assertEqual(attempts, 5)
         self.assertEqual([c.args[0] for c in sleeps], [30, 60, 90, 120])
+
+
+class UploadFallbackTests(unittest.TestCase):
+    CHANNEL = 'UC' + 'a' * 22
+    def test_rss_failure_uses_uploads_without_sleep(self):
+        expected = [{'video_id': 'fixture0001'}]
+        with patch.object(digest.urllib.request, 'urlopen', side_effect=OSError('feed down')), \
+                patch.object(digest, 'uploads_videos', return_value=expected) as fallback, \
+                patch('time.sleep') as sleep, patch.object(digest, 'log'):
+            self.assertEqual(digest.feed_videos(self.CHANNEL, 3), expected)
+            fallback.assert_called_once_with(self.CHANNEL, 3)
+            sleep.assert_not_called()
+
+    def fetch(self, html, playlist=None):
+        payload = dict(id=playlist or 'UU' + 'a' * 22,
+                       entries=[dict(id='fixture0001', title='Public fixture')])
+        with patch('subprocess.run', return_value=types.SimpleNamespace(
+                returncode=0, stdout=json.dumps(payload))) as run, \
+                patch.object(digest.urllib.request, 'urlopen',
+                             return_value=FeedRetryTests.urlopen_fixture(html)):
+            result = digest.uploads_videos(self.CHANNEL)
+            self.assertIn('--skip-download', run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'], 90)
+            return result
+
+    def test_exact_watch_date_preserved_including_old_video(self):
+        result = self.fetch('<meta content="2025-07-03T11:20:10-07:00" itemprop="datePublished">')
+        self.assertEqual(result[0]['published'], '2025-07-03')
+        self.assertEqual(result[0]['url'], 'https://www.youtube.com/watch?v=fixture0001')
+
+    def test_missing_date_fails_closed(self):
+        with self.assertRaises(ValueError):
+            self.fetch('<html>Consent or error page</html>')
+
+    def test_wrong_playlist_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, 'mismatch'):
+            self.fetch('', playlist='wrong')
 
 
 class DeliveryTests(unittest.TestCase):
