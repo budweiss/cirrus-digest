@@ -108,7 +108,12 @@ class InvestigationTests(unittest.TestCase):
         import sys
         from contextlib import ExitStack
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        import stall_check
+        try:
+            import stall_check
+        except ModuleNotFoundError as exc:
+            if exc.name == 'stall_check':
+                self.skipTest('CIRRUS entry-point test runs in the application checkout')
+            raise
         expected = {'state': 'STALL', 'name': 'synthetic', 'msg': 'keep warning'}
         single = ['check_devloop_builds', 'check_yield_ledger', 'check_council_diversity',
                   'check_prompt_cache', 'check_link_extraction']
