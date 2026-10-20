@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from alert_policy import IncidentPolicy, issues, RETRY_SECONDS
 import opus_approval
 
@@ -134,6 +134,76 @@ class AlertTests(unittest.TestCase):
              patch.object(agent, 'ledger_append'):
             self.assertFalse(agent._handle_trigger('offline test', False))
             self.assertEqual(record.call_args.args[0], .25)
+
+
+    def agent(self):
+        try:
+            import supervisor_agent
+            return supervisor_agent
+        except ModuleNotFoundError as exc:
+            if exc.name == 'claude_agent_sdk':
+                self.skipTest('SDK test runs in the real supervisor venv')
+            raise
+
+    def test_failed_budget_notice_does_not_start_quiet_period(self):
+        agent = self.agent()
+        with patch.object(agent.budget, 'allow', return_value=(False, 10, 'cap')), \
+             patch.object(agent, 'ledger_append'), \
+             patch.object(agent, '_should_notify_skip', return_value=True), \
+             patch.object(agent, '_mark_skip_notified') as mark, \
+             patch.object(agent.tools, 'send_telegram', side_effect=['FAILED: offline', 'FAILED: offline', 'sent']) as send:
+            for _ in range(3):
+                self.assertFalse(agent._handle_trigger('fictional incident', False))
+            self.assertEqual(send.call_count, 3)
+            mark.assert_called_once_with()
+
+    def test_urgent_alert_precedes_failed_shadow_and_is_not_acknowledged(self):
+        agent = self.agent()
+        for error in (OSError('fictional storage unavailable'), ValueError('fictional invalid feed')):
+            with self.subTest(error=type(error).__name__):
+                order = []
+                policy = Mock()
+                policy.observe.return_value = ['unit:fictional.service']
+                policy.summary.return_value = {}
+                heartbeat = hb(['fictional.service'], detail='fictional urgent failure')
+                def trigger(*args, **kwargs):
+                    order.append('alert')
+                    return False
+                def failed_feed():
+                    order.append('investigation')
+                    raise error
+                with patch.object(agent, 'IncidentPolicy', return_value=policy), \
+                     patch.object(agent.heartbeat, 'run_heartbeat', return_value=heartbeat), \
+                     patch.object(agent.opus_approval, 'retry_failed_deliveries'), \
+                     patch.object(agent.opus_approval, 'check_for_reply'), \
+                     patch.object(agent.opus_approval, 'ready_reply_id', return_value=None), \
+                     patch.object(agent, '_daily_check_due', return_value=False), \
+                     patch.object(agent, '_handle_trigger', side_effect=trigger), \
+                     patch.object(agent.local_reason, 'maybe_shadow', return_value={'ran': False}), \
+                     patch.object(agent, 'ledger_append'), \
+                     patch.object(agent.heartbeat.completeness, 'supervisor_feed', side_effect=failed_feed), \
+                     patch.object(agent.tools, 'send_telegram') as send, \
+                     patch.object(agent.time, 'sleep', side_effect=StopIteration):
+                    with self.assertRaises(StopIteration):
+                        agent.main_loop()
+                self.assertEqual(order, ['alert', 'investigation'])
+                self.assertIs(policy.complete.call_args.args[0], False)
+                send.assert_not_called()
+
+    def test_failed_request_delivery_is_bounded_and_retried_after_six_hours(self):
+        with patch.object(opus_approval, 'STATE_DIR', self.root), \
+             patch.object(opus_approval, 'REQUEST_FILE', self.root/'request.json'), \
+             patch.object(opus_approval.time, 'time', return_value=100):
+            opus_approval.create_guidance_request('fictional issue', 'fictional question', 'fixture')
+            opus_approval.record_request_delivery(False)
+            sender = Mock(return_value='FAILED: offline')
+            opus_approval.retry_failed_deliveries(sender)
+            sender.assert_not_called()
+            with patch.object(opus_approval.time, 'time', return_value=100+6*3600):
+                opus_approval.retry_failed_deliveries(sender)
+                opus_approval.retry_failed_deliveries(sender)
+            sender.assert_called_once()
+            self.assertEqual(json.loads(opus_approval.REQUEST_FILE.read_text())['status'], 'delivery_failed')
 
 
 if __name__ == '__main__':
