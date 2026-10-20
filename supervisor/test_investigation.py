@@ -95,6 +95,29 @@ class InvestigationTests(unittest.TestCase):
             self.assertFalse(result['alerts_changed'])
             self.assertNotIn('do not leak', str(err.write.call_args_list))
 
+    def test_concurrent_workers_and_restart_do_not_duplicate_runs(self):
+        from concurrent.futures import ThreadPoolExecutor
+        jobs={'example':self.row()}
+        inv.investigate(jobs,'CIRRUS',self.db,now=self.now)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results=list(pool.map(lambda _:inv.safe_observe(lambda:
+                inv.investigate(jobs,'CIRRUS',self.db,now=self.now+1)),range(12)))
+        self.assertTrue(all(not r['alerts_changed'] for r in results))
+        # New connection is the persistence boundary used after a restart.
+        result=inv.investigate(jobs,'CIRRUS',self.db,now=self.now+2)
+        self.assertEqual(result['new_receipts'],0)
+        with closing(sqlite3.connect(self.db)) as db:
+            self.assertEqual(db.execute('select count(*) from receipts').fetchone()[0],1)
+
+    def test_unwritable_destination_keeps_alerts_and_no_recovery(self):
+        target=self.root/'not-a-directory'
+        target.write_text('fixture')
+        result=inv.safe_observe(lambda:inv.investigate(
+            {'example':self.row()},'CIRRUS',target/'receipts',now=self.now))
+        self.assertTrue(result['observer_failed'])
+        self.assertFalse(result['alerts_changed'])
+        self.assertEqual(result['actions_taken'],0)
+
     def test_database_contention_is_bounded_and_history_unchanged(self):
         inv.investigate({'a': self.row()}, 'CIRRUS', self.db, now=self.now)
         with closing(sqlite3.connect(self.db)) as lock, lock:

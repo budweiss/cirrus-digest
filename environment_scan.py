@@ -110,6 +110,42 @@ def validate(data,rows):
     return items
 
 
+REVIEW_REASONS = {
+    'unsupported_quote': 'a quoted passage did not match its source',
+    'invalid_findings': 'the findings had an invalid structure',
+    'invalid_source_index': 'a finding referenced an invalid source',
+    'invalid_verdict': 'a finding had an invalid recommendation',
+    'summary_length': 'a summary failed the length check',
+    'obsolete_purchase_instruction': 'a finding repeated an obsolete purchase instruction',
+    'media request exceeds context budget': 'the review exceeded the local context budget',
+    'parse_or_transport': 'the model response could not be read or validated',
+    'evidence_review_rejected': 'the independent evidence review did not approve the findings',
+}
+
+
+class ReviewFailed(ValueError):
+    def __init__(self, reason):
+        super().__init__('environment_review_failed')
+        self.controlled_reason = reason if reason in REVIEW_REASONS else 'parse_or_transport'
+
+
+def failure_result(exc):
+    reason = str(exc) if str(exc) in (
+        'environment_review_failed', 'environment_report_exceeds_400_words',
+        'all_sources_unavailable', 'telegram_not_confirmed') else 'source_or_model_failure'
+    result = {'status': 'failed', 'error_type': type(exc).__name__, 'reason': reason}
+    if isinstance(exc, ReviewFailed):
+        result['controlled_reason'] = exc.controlled_reason
+    return result
+
+
+def failure_note(result):
+    reason = result.get('controlled_reason')
+    if reason in REVIEW_REASONS:
+        return 'Review held: ' + REVIEW_REASONS[reason] + ' [' + reason + ']'
+    return 'Environment scan failed: ' + result['reason']
+
+
 def review(rows,prior,caller=None,audit=None):
     if caller is None:
         import media_pipeline
@@ -127,6 +163,7 @@ def review(rows,prior,caller=None,audit=None):
         'not a completed install. Prices require verification before purchase. '
         'Use an empty findings list if nothing meaningful changed.\nPrior report:\n')+prior[-7000:]+'\nSources:\n'+evidence
     feedback=''
+    last_reason='evidence_review_rejected'
     for _ in range(2):
         try:
             findings=validate(parse(caller(prompt+feedback)),rows)
@@ -137,13 +174,15 @@ def review(rows,prior,caller=None,audit=None):
                 'Return only JSON {"approved":true,"problems":[]} or false with problems.\n'+
                 json.dumps({'prior':prior[-7000:],'sources':rows,'findings':findings})))
             if checked.get('approved') is True and checked.get('problems')==[]:return findings
+            last_reason='evidence_review_rejected'
             feedback='\nCorrect these findings: '+json.dumps(checked)
             if audit:audit({'stage':'evidence_review','review':checked})
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
             reason=str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction') else type(exc).__name__
+            last_reason=str(exc) if isinstance(exc,ValueError) and str(exc) in REVIEW_REASONS else 'parse_or_transport'
             feedback='\nPrevious output rejected: '+reason+'. Use exact quotes and summaries of no more than 45 words each.'
             if audit:audit({'stage':'schema','error_type':type(exc).__name__, 'controlled_reason':str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction','media request exceeds context budget') else 'parse_or_transport'})
-    raise ValueError('environment_review_failed')
+    raise ReviewFailed(last_reason)
 
 
 def atomic(path,data):
@@ -197,12 +236,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--dry-run',action='store_true');a=p.parse_args()
     try:result=run(a.dry_run)
     except Exception as exc:
-        result={'status':'failed','error_type':type(exc).__name__, 'reason':str(exc) if str(exc) in ('environment_review_failed','environment_report_exceeds_400_words','all_sources_unavailable','telegram_not_confirmed') else 'source_or_model_failure'}
+        result=failure_result(exc)
         if not a.dry_run:
             import job_status
             from vendor_mail_watch import telegram
-            job_status.record('environmentscan',False,result['error_type'])
-            telegram('The environment review could not finish its source/review checks and needs attention.')
+            job_status.record('environmentscan',False,failure_note(result))
+            telegram(failure_note(result)+'. The scan did not complete; source and review checks remain enforced.')
         print(json.dumps(result));return 1
     print(json.dumps(result));return 0
 
