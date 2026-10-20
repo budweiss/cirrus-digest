@@ -740,6 +740,13 @@ def run_all():
     res.append(check_prompt_cache())
     res.append(check_link_extraction())
     res += check_stuck_jobs()
+    # Shadow evidence is separate from res: it cannot silence/reword warnings.
+    # No network, models, retries or sends; failures leave the original result.
+    try:
+        from supervisor.investigation import safe_observe, observe_local
+        safe_observe(lambda: observe_local(REPO, _here().upper()))
+    except Exception:
+        print('Skywarden shadow investigator unavailable; alerts unchanged', file=sys.stderr)
     return res
 
 

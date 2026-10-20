@@ -354,15 +354,34 @@ def main_loop():
             except Exception:
                 pass  # shadow must never break the heartbeat loop
             policy.complete(success, time.time(), tools.INCIDENT_ACTIONS)
+        # Independent shadow receipt only, after existing alert handling.
+        # Reuse the heartbeat's cached restricted feed; no new remote authority.
+        observe_investigation()
         time.sleep(HEARTBEAT_INTERVAL_SEC)
+
+
+def observe_investigation():
+    try:
+        from investigation import safe_observe, investigate
+        def observe():
+            feed = heartbeat.completeness.supervisor_feed() or {}
+            return investigate(feed.get('jobs'), 'CUMULUS',
+                               STATE_DIR / 'shadow-investigation.sqlite',
+                               cadence=feed.get('cadence_h'))
+        return safe_observe(observe)
+    except Exception:
+        print('Skywarden shadow investigator unavailable; alerts unchanged', flush=True)
+        return None
 
 
 # ── selftest ──────────────────────────────────────────────────────────────────
 def selftest() -> bool:
     import unittest
     import test_alert_policy
+    import test_investigation
     result = unittest.TextTestRunner(verbosity=2).run(
-        unittest.defaultTestLoader.loadTestsFromModule(test_alert_policy))
+        unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromModule(module)
+                           for module in (test_alert_policy, test_investigation)))
     return result.wasSuccessful()
 
 
