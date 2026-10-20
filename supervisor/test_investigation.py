@@ -75,6 +75,18 @@ class InvestigationTests(unittest.TestCase):
         os.utime(path, (self.now-20, self.now-20))
         self.assertEqual(inv.local_evidence(self.root, jobs)['environment_reason'], 'unsupported_quote')
 
+    def test_historical_queue_is_not_active_work_and_build_errors_remain_pending(self):
+        folder = self.root / 'logs/dev-loop'
+        folder.mkdir(parents=True)
+        (folder/'build-queue.jsonl').write_text(json.dumps({'item': {'dev_spec': {'tier': 1, 'id': 'fictional'}}})+'\n')
+        history = folder/'builds.json'
+        history.write_text(json.dumps([{'id': 'fictional', 'status': 'shipped'}]))
+        self.assertTrue(inv.local_evidence(self.root, {})['queue_empty'])
+        history.write_text(json.dumps([{'id': 'fictional', 'status': 'build-error'}]))
+        self.assertFalse(inv.local_evidence(self.root, {})['queue_empty'])
+        history.write_text('invalid')
+        self.assertNotIn('queue_empty', inv.local_evidence(self.root, {}))
+
     def test_observer_errors_never_escape_or_change_alert_decision(self):
         with patch.object(inv, 'investigate', side_effect=OSError('do not leak exception content')):
             with patch('sys.stderr') as err:

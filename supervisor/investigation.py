@@ -52,13 +52,20 @@ def local_evidence(root, jobs):
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     try:
-        # Empty physical queue is corroboration, not the run note alone.
+        # Queue is append-only history. Corroborate no unattempted Tier-1 item
+        # against builds, rather than mistaking historical rows for active work.
         path = root / 'logs/dev-loop/build-queue.jsonl'
         with path.open('rb') as stream:
             data = stream.read(MAX_BYTES + 1)
         if len(data) <= MAX_BYTES:
-            evidence['queue_empty'] = not data.strip()
-    except OSError:
+            queued = [json.loads(line) for line in data.splitlines() if line.strip()]
+            builds = read_json(root / 'logs/dev-loop/builds.json')
+            if not isinstance(builds, list):
+                raise ValueError('invalid_build_history')
+            done = {b['id'] for b in builds if b.get('status') != 'build-error'}
+            specs = [q['item']['dev_spec'] for q in queued]
+            evidence['queue_empty'] = all(s['tier'] != 1 or s['id'] in done for s in specs)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
     return evidence
 
@@ -78,7 +85,7 @@ def diagnose(job, row, now, cadence=None, evidence=None):
     if row['ok']:
         if job == 'devloop' and age <= 26 * 3600 and row.get('note') == '0 queued, nothing to build':
             if evidence.get('queue_empty') is True:
-                return dict(result, classification='waiting', reason='empty_approved_queue',
+                return dict(result, classification='waiting', reason='no_unattempted_approved_work',
                             next_step='await_approved_work')
             return dict(result, reason='queue_not_corroborated')
         return dict(result, classification='run_succeeded', reason='recorded_success',
