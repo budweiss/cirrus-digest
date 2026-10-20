@@ -594,8 +594,14 @@ def _kimi(creds, system, user, max_tokens):
         if effort not in ('low', 'high', 'max'):
             raise ProviderError('invalid Kimi reasoning effort')
         extra = dict(extra or {}, reasoning_effort=effort)
+    # Long research answers can exceed the generic 120-second socket timeout.
+    # Explicit per-call setting; existing scheduled callers retain their default.
+    timeout = creds.get('kimi_timeout', _TIMEOUT)
+    if type(timeout) not in (int, float) or not 0 < timeout <= 600:
+        raise ProviderError('invalid Kimi timeout: expected seconds in (0, 600]')
     return _openai_compatible("https://api.moonshot.ai/v1/chat/completions",
-                              key, model, system, user, max_tokens, extra=extra)
+                              key, model, system, user, max_tokens,
+                              timeout=timeout, extra=extra)
 
 
 def _ollama(creds, system, user, max_tokens):
