@@ -796,6 +796,13 @@ def selftest_chunks():
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+def delivery_succeeded(results):
+    """Both configured delivery paths must report success, not merely return."""
+    return (isinstance(results, list) and len(results) == 2 and
+            results[0] == 'email: sent' and isinstance(results[1], str) and
+            re.fullmatch(r'telegram: sent(?: \(\d+ parts\))?', results[1]) is not None)
+
+
 def main():
     # T57: dispatch the subcommand BEFORE doing any work. A selftest that runs
     # after compose() is a selftest that sends mail on the way to being run.
@@ -815,14 +822,18 @@ def main():
         print(body)
         return
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] sending morning brief…")
-    for r in send_all(subject, body):
+    results = send_all(subject, body)
+    for r in results:
         print("  ", r)
+    delivered = delivery_succeeded(results)
     try:
         import job_status
-        job_status.record("morningbrief", True)
+        job_status.record("morningbrief", delivered, "" if delivered else "delivery_failed_or_skipped")
     except Exception:
         pass
     print("done.")
+    if not delivered:
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()

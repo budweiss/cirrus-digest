@@ -13,7 +13,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 _HOME = tempfile.mkdtemp(prefix="mb-home-")
 os.environ["HOME"] = _HOME
@@ -169,6 +169,31 @@ class MorningBriefScenarios(unittest.TestCase):
         body = self.body()
         self.assertIn("(CUMULUS): unreachable — can't confirm", body)
         self.assertIn("✅ CIRRUS healthy", body)
+
+
+    def test_delivery_failure_cannot_record_success(self):
+        cases = [(['email: sent', 'telegram: sent'], True),
+                 (['email: sent', 'telegram: sent (2 parts)'], True),
+                 (['email: sent', 'telegram: failed'], False),
+                 (['email: error fictional', 'telegram: sent'], False),
+                 (['email: sent', 'telegram: no token/user configured — skipped'], False),
+                 ([], False)]
+        for results, expected in cases:
+            with self.subTest(results=results):
+                ledger = types.ModuleType('job_status')
+                ledger.record = Mock()
+                with patch.dict(sys.modules, {'job_status': ledger}), \
+                     patch.object(sys, 'argv', ['morning_brief.py']), \
+                     patch.object(mb, 'compose', return_value=('fictional', 'fictional')), \
+                     patch.object(mb, 'send_all', return_value=results):
+                    if expected:
+                        mb.main()
+                    else:
+                        with self.assertRaises(SystemExit) as err:
+                            mb.main()
+                        self.assertEqual(err.exception.code, 1)
+                ledger.record.assert_called_once_with('morningbrief', expected,
+                    '' if expected else 'delivery_failed_or_skipped')
 
     def test_missing_backup_outranks_everything_but_the_digest(self):
         with patch.object(mb, "gather_timemachine", lambda: ("Time Machine: volume locked", False)):
