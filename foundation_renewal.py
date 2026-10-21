@@ -523,6 +523,25 @@ def install(host, mode, dirs):
                       "rejected": [c[0] + "/" + c[1] for c in changes if not c[2]], "unrelated_records_unchanged": True}))
 
 
+def renewal_health(creds, provider):
+    """Load an idle configured Ollama model before verifying renewed admission."""
+    import capability_health as H
+    row = H.observe(creds, provider) if provider in LOCAL else H.observe_cloud(creds, provider)
+    if provider != 'ollama' or row.get('status') != 'not_resident':
+        return row
+    import urllib.request
+    from urllib.parse import urlsplit, urlunsplit
+    endpoint = urlsplit(creds['ollama_url'])
+    url = urlunsplit((endpoint.scheme, endpoint.netloc, '/api/generate', '', ''))
+    body = json.dumps({'model': creds['ollama_model'], 'stream': False}).encode()
+    request = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=180) as response:
+        result = json.load(response)
+    if result.get('model') != creds['ollama_model'] or result.get('done') is not True:
+        raise RuntimeError('renewal model load did not confirm configured identity')
+    return H.observe(creds, provider)
+
+
 def verify(host, dirs):
     """Port of verify_installed.py: admission code, fresh health, no inference."""
     import capability_registry as C, capability_admission as A, capability_health as H
@@ -534,7 +553,7 @@ def verify(host, dirs):
     for d in [r for r in recs if r["provider"] in here_providers]:
         route = p[d["route"]]; record = route[d["field"]][d["index"]]; provider = record["id"]
         if provider not in health:
-            health[provider] = H.observe(creds, provider) if provider in LOCAL else H.observe_cloud(creds, provider)
+            health[provider] = renewal_health(creds, provider)
         rows = load(Path(d["_dir"]) / d["evidence_file"], [])
         r = next(r for r in rows if (r["route"], r["field"], r["index"]) == (d["route"], d["field"], d["index"]) and r.get("response"))
         args = dict(task=record["task"], capability=record["capability"], system=r["system"],

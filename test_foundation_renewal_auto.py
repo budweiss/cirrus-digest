@@ -11,6 +11,26 @@ import foundation_renewal_auto as auto
 
 
 class RenewalAutoTest(unittest.TestCase):
+    def test_idle_local_model_is_loaded_then_rechecked(self):
+        import io
+        import capability_health as health
+        creds={'ollama_url':'http://localhost:11434/api/chat','ollama_model':'fixture-model'}
+        cold={'status':'not_resident','healthy':False}
+        warm={'status':'ready_metadata','healthy':True}
+        with patch.object(health,'observe',side_effect=[cold,warm]) as observe, \
+             patch('urllib.request.urlopen',return_value=io.BytesIO(b'{"model":"fixture-model","done":true}')) as load:
+            self.assertEqual(auto.renewal.renewal_health(creds,'ollama'),warm)
+            self.assertEqual(observe.call_count,2)
+            body=json.loads(load.call_args.args[0].data)
+            self.assertEqual(body,{'model':'fixture-model','stream':False})
+        with patch.object(health,'observe',return_value={'status':'observation_failed','healthy':False}), \
+             patch('urllib.request.urlopen') as load:
+            self.assertFalse(auto.renewal.renewal_health(creds,'ollama')['healthy'])
+            load.assert_not_called()
+        with patch.object(health,'observe',return_value=cold), \
+             patch('urllib.request.urlopen',return_value=io.BytesIO(b'{"model":"wrong","done":true}')):
+            with self.assertRaises(RuntimeError):auto.renewal.renewal_health(creds,'ollama')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name)
