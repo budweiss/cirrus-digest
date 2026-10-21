@@ -34,6 +34,8 @@ class CollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'review_failed'):
             c.summarize(claims, caller)
         self.assertEqual(caller.call_count, 4)
+        self.assertIn("The outcome is guaranteed.",caller.call_args_list[2].args[1])
+        self.assertIn("lost uncertainty",caller.call_args_list[2].args[1])
 
     def test_reviewed_summary_keeps_evidence(self):
         caller = Mock(side_effect=[

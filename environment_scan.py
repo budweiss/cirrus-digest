@@ -203,7 +203,7 @@ def review(rows,prior,caller=None,audit=None):
                 json.dumps({'prior':prior[-7000:],'sources':rows,'findings':findings})))
             if checked.get('approved') is True and checked.get('problems')==[]:return findings
             last_reason='evidence_review_rejected'
-            feedback='\nCorrect these findings: '+json.dumps(checked)
+            feedback='\nRevise these rejected findings: '+json.dumps(findings)+'\nCorrect these findings: '+json.dumps(checked)
             if audit:audit({'stage':'evidence_review','review':checked})
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
             reason=str(exc) if isinstance(exc,ValueError) and str(exc) in ('invalid_findings','invalid_source_index','unsupported_quote','invalid_verdict','summary_length','obsolete_purchase_instruction') else type(exc).__name__

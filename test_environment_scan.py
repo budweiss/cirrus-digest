@@ -44,8 +44,12 @@ class EnvironmentChecks(unittest.TestCase):
     def test_review_rejection_never_publishes(self):
         import json
         answers=iter([json.dumps(GOOD),'{"approved":false,"problems":["unsupported"]}']*2)
+        prompts=[]
+        def caller(prompt):prompts.append(prompt);return next(answers)
         with self.assertRaisesRegex(ValueError,'environment_review_failed'):
-            scan.review(ROWS,'',lambda _:next(answers))
+            scan.review(ROWS,'',caller)
+        self.assertIn(GOOD['findings'][0]['summary'],prompts[2])
+        self.assertIn('unsupported',prompts[2])
 
     def test_bounded_quote_rejection_has_safe_explanation(self):
         import copy, json
