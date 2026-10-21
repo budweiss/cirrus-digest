@@ -117,6 +117,8 @@ class RenewalAutoTest(unittest.TestCase):
         decisions = json.loads((self.path / "decisions.json").read_text())
         visible = next(iter(auto.packet_sections(self.path).values()))
         full = auto.complete_cases(self.path, decisions["records"][0], visible)
+        envelope = json.loads(full[0].split("REVIEW EVIDENCE (JSON): ", 1)[1])
+        self.assertLess(list(envelope).index("PRIOR"), list(envelope).index("NEW"))
         self.assertIn("prior tail", full[0])
         self.assertIn('"SYSTEM_INSTRUCTIONS": "instructions"', full[0])
 
@@ -315,7 +317,20 @@ class RenewalAutoTest(unittest.TestCase):
         for vote in ("pass", "fail", "unsure"):
             self.assertFalse(auto.review_controls(lambda *_: {"verdict": vote}))
         self.assertTrue(auto.review_controls(lambda _, case: {
-            "verdict": "fail" if case == auto.CONTROL else "pass"}))
+            "verdict": "fail" if case in (auto.CONTROL, auto.NEW_DEFECT_CONTROL) else "pass"}))
+
+    def test_controls_detect_confusing_prior_with_new(self):
+        def confused(_rule, case):
+            return {"verdict": "fail" if case in (
+                auto.CONTROL, auto.PRIOR_ONLY_DEFECT_CONTROL) else "pass"}
+        self.assertFalse(auto.review_controls(confused))
+        seen = []
+        def correct(rule, case):
+            seen.append((rule, case))
+            return {"verdict": "fail" if case in (
+                auto.CONTROL, auto.NEW_DEFECT_CONTROL) else "pass"}
+        self.assertTrue(auto.review_controls(correct))
+        self.assertEqual(len(seen), 8)
 
     def evidence_row(self):
         key = ["foundation:test", "evaluations", 0]

@@ -147,6 +147,7 @@ _ANSWER_SYSTEM = (
     "this goes straight into an email body). If the question is genuinely "
     "outside what you can answer from general knowledge, say so plainly rather "
     "than guessing."
+    ' Write the answer as short plain-text paragraphs only: no headings, bullet or numbered lists, tables, Markdown emphasis, or code fences. Explain checklist items in consecutive sentences or paragraphs. Do not add a greeting, placeholder addressee, or signature; the sending application owns those. Distinguish general advice from verified facts; never fill an illustrative comparison with invented vendor findings, prices, or certifications.'
 )
 
 
