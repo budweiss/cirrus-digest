@@ -149,6 +149,8 @@ def status():
     except Exception:
         pass
 
+    from macbook_availability import status as availability_status
+    result["macbook_availability"] = availability_status()
     return jsonify(result)
 
 # ── Heartbeat (Session 35: MacBook runner watchdog) ───────────────────────────

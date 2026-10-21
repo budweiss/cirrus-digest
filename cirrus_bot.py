@@ -38,6 +38,7 @@ from pathlib import Path
 # process became ~268,000 log lines. The policy lives in its own module so it
 # can be selftested -- this file deliberately has none (see __main__).
 from api_backoff import Backoff, retry_after_from
+from macbook_availability import status as macbook_availability, overdue as macbook_overdue, clear_returned_window
 
 try:
     import llm_budget as _B      # S135: ledger every cloud call (LOCAL-MODEL-PLAN.md step 6b)
@@ -526,7 +527,14 @@ def cmd_status():
 
     # MacBook watchdog heartbeat (Session 35; sleep-notice Session 39)
     hb = _load_heartbeat("macbook")
-    if hb:
+    availability = macbook_availability()
+    if availability["mode"] == "offline":
+        until = datetime.fromtimestamp(availability["until"]).strftime("%Y-%m-%d %H:%M")
+        status_text += f"\n\n💤 MacBook: planned offline until {until} (server time)"
+    elif availability["mode"] == "expired" and (not hb or hb.get("status") == "sleeping" or
+            datetime.fromisoformat(hb["ts"]).timestamp() < availability["until"]):
+        status_text += "\n\n⚠️ MacBook: planned offline window expired; return not confirmed"
+    elif hb:
         age = int((datetime.now() - datetime.fromisoformat(hb["ts"])).total_seconds() // 60)
         if hb.get("status") == "sleeping":
             # Deliberate sleep (sleepwatcher notice) — expected quiet, not a fault.
@@ -569,6 +577,20 @@ def check_heartbeats():
         return
     _hb_watch["last_check"] = now
     hb = _load_heartbeat("macbook")
+    availability = macbook_availability()
+    hb_time = 0.0
+    try:
+        hb_time = datetime.fromisoformat(hb["ts"]).timestamp() if hb and hb.get("status") != "sleeping" else 0.0
+    except (ValueError, KeyError, TypeError):
+        pass
+    missed_return = macbook_overdue(availability, hb_time, now)
+    if missed_return:
+        if not _hb_watch["stale_alerted"]:
+            _hb_watch["stale_alerted"] = True
+            send_message(ALLOWED_ID, "⚠️ MacBook planned offline window expired; no heartbeat since the expected return. Check the MacBook or extend its offline window.")
+        return
+    if availability["mode"] == "expired" and hb_time >= availability["until"]:
+        clear_returned_window(availability)
     if not hb:
         return   # never seen — don't alarm on a not-yet-installed watchdog
     try:
@@ -577,10 +599,13 @@ def check_heartbeats():
         return
 
     if age_min > HB_STALE_MIN:
+        if availability["mode"] == "offline":
+            _hb_watch["stale_alerted"] = False
+            return
         # Deliberate sleep (Session 39): the MacBook's sleepwatcher pings
         # status=sleeping on its way down. A stale-but-sleeping heartbeat is
         # expected quiet — never alert. Wake resumes normal ok heartbeats.
-        if hb.get("status") == "sleeping":
+        if hb.get("status") == "sleeping" and availability["mode"] != "invalid":
             _hb_watch["stale_alerted"] = False
             return
         # Quiet hours (22:00–08:00): the MacBook is usually just asleep —
