@@ -44,6 +44,7 @@ ADDING A JOB: put it in RULES. A job with no rule is NOT silently ignored —
 """
 
 import json
+import math
 import os
 import re
 import time
@@ -801,12 +802,15 @@ def overdue_jobs(status=None, now=None, scheduled=None, state=None, save=True):
         cad = CADENCE_H.get(job)
         if not cad:
             continue                       # no expected cadence => nothing to judge
-        epoch = entry.get("epoch")
-        if not epoch:
-            continue                       # pre-epoch entry; summarize() covers it
+        epoch = entry.get("epoch") if isinstance(entry, dict) else None
         try:
-            age_h = (now.timestamp() - float(epoch)) / 3600.0
-        except (TypeError, ValueError):
+            stamp = float(epoch)
+            if isinstance(epoch, bool) or not math.isfinite(stamp) or stamp <= 0 or stamp > now.timestamp() + 60:
+                raise ValueError("invalid timestamp")
+            age_h = (now.timestamp() - stamp) / 3600.0
+        except (TypeError, ValueError, OverflowError):
+            out.append({"job": job, "hours": cad, "age_h": 0,
+                        "why": "missing, invalid or future run timestamp — freshness is unverified"})
             continue
         if age_h > cad:
             out.append({
@@ -936,8 +940,9 @@ def check(status=None, state=None, now=None):
 
         run_id = str(entry.get("epoch") or entry.get("last_run") or "")
         js = state.setdefault(job, {"zero_runs": 0, "last_run_id": ""})
-        if run_id and run_id == js.get("last_run_id"):
-            continue                       # already counted this run
+        same_run = bool(run_id and run_id == js.get("last_run_id"))
+        # S472: deduplicate counting, not the unresolved diagnosis. A repeated
+        # heartbeat must not turn a stalled/unreadable run into a healthy one.
 
         produced, matched = rule.productivity(entry.get("note", ""))
         if produced < 0:
@@ -957,7 +962,8 @@ def check(status=None, state=None, now=None):
         elif produced > 0:
             js["zero_runs"] = 0
         else:
-            js["zero_runs"] = js.get("zero_runs", 0) + 1
+            if not same_run:
+                js["zero_runs"] = js.get("zero_runs", 0) + 1
             if js["zero_runs"] >= rule.max_zero_runs:
                 stalled.append({
                     "job": job,
@@ -1068,7 +1074,7 @@ def selftest() -> bool:
     # The same run seen twice on consecutive 60s ticks must count once.
     state = {}
     for _ in range(5):
-        r = check({"hoaleads": {"ok": True, "epoch": _NOW_E + 99, "note": real}}, state)
+        r = check({"hoaleads": {"ok": True, "epoch": _NOW_E, "note": real}}, state)
     ck("re-reading one run does not inflate the streak",
        state["hoaleads"]["zero_runs"] == 1 and r["ok"] is True)
 
@@ -1407,12 +1413,12 @@ def selftest() -> bool:
        overdue_jobs({"billsnow": {"epoch": _yesterday, "ok": True,
                                   "note": "sent"}}, _now) == [])
 
-    # Malformed epochs must be skipped, not crash the supervisor's 60s tick.
-    ck("a junk epoch is skipped rather than raising",
+    # Malformed epochs must be visible, not crash or appear healthy.
+    ck("a junk epoch reports unknown freshness rather than raising",
        overdue_jobs({"pedagogy": {"epoch": "not-a-number", "ok": True,
-                                  "note": "x"}}, _now) == [])
-    ck("a missing epoch is skipped rather than raising",
-       overdue_jobs({"pedagogy": {"ok": True, "note": "x"}}, _now) == [])
+                                  "note": "x"}}, _now) != [])
+    ck("a missing epoch reports unknown freshness rather than raising",
+       overdue_jobs({"pedagogy": {"ok": True, "note": "x"}}, _now) != [])
 
     # An empty ledger is not a clean bill of health, but it is also not an
     # incident -- nothing to judge, so nothing reported.

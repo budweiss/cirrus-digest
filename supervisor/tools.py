@@ -763,10 +763,16 @@ def send_telegram(message: str) -> str:
         url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
-        result = "sent"
-    except urllib.error.URLError as e:
-        result = f"FAILED: {e}"
+            reply = json.loads(resp.read())
+        receipt = reply.get("result") if isinstance(reply, dict) else None
+        confirmed = (isinstance(reply, dict) and reply.get("ok") is True and
+                     isinstance(receipt, dict) and type(receipt.get("message_id")) is int and
+                     receipt["message_id"] > 0)
+        result = "sent" if confirmed else "FAILED: telegram response unconfirmed"
+    except (OSError, ValueError, TypeError):
+        # Network errors can contain request URLs and credentials. Never return
+        # or ledger their raw text, nor mistake an invalid response for delivery.
+        result = "FAILED: telegram transport or response error"
     ledger_append({"event": "notify", "tool": "send_telegram",
                    "tier_name": "notify", "detail": message[:80],
                    "result": result})
