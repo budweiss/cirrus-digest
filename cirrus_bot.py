@@ -2402,9 +2402,8 @@ def run_bot():
                 message = update.get("message", {})
                 words = message.get("text", "").strip().split(maxsplit=1)
                 workflow_update = bool(words and words[0].lower() in bot_workflow.COMMANDS)
-                if not workflow_update:
-                    offset = update["update_id"] + 1
                 if not message:
+                    offset = update["update_id"] + 1
                     continue
 
                 chat_id = message.get("chat", {}).get("id")
@@ -2415,6 +2414,11 @@ def run_bot():
                 if user_id != ALLOWED_ID:
                     offset = update["update_id"] + 1
                     log(f"Ignored message from unauthorized user: {user_id}")
+                    continue
+
+                from telegram_handoff import forward as forward_supervisor
+                if forward_supervisor(update, ALLOWED_ID):
+                    offset = update["update_id"] + 1
                     continue
 
                 if workflow_update:

@@ -208,12 +208,15 @@ def check_for_reply():
         if r.get('status')=='pending' and now-r.get('requested_at',0)>_expiry(r):
             r['status']='expired'; _write_json(path,r)
     pending=[r for _,r in rows if r.get('status')=='pending']
-    if not pending: return
+    if not pending and not os.environ.get("SKYWARDEN_TELEGRAM_INBOX"): return
     try:
         secrets=_load_secrets()
         token,chat_id=secrets['telegram_bot_token'],str(secrets['telegram_user_id'])
         offset=int(UPDATE_OFFSET_FILE.read_text()) if UPDATE_OFFSET_FILE.exists() else 0
-        result=_api_call('getUpdates',{'offset':offset,'timeout':0},token)
+        inbox = os.environ.get('SKYWARDEN_TELEGRAM_INBOX')
+        files = sorted(Path(inbox).glob('*.json'), key=lambda p: int(p.stem)) if inbox else []
+        result = ({'result': [json.loads(p.read_text()) for p in files]} if inbox else
+                  _api_call('getUpdates',{'offset':offset,'timeout':0},token))
     except (OSError, ValueError, KeyError, urllib.error.URLError, TimeoutError):
         return
     max_id=offset-1
@@ -233,6 +236,9 @@ def check_for_reply():
                 answer(legacy[0].get('requested_at'),text,at=date)
     if max_id>=offset:
         UPDATE_OFFSET_FILE.write_text(str(max_id+1))
+    if inbox:
+        for path in files:
+            path.unlink(missing_ok=True)
 
 
 @locked
