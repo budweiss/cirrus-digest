@@ -36,6 +36,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -185,6 +186,52 @@ def build_manifest(projects, providers, served, index, bodies):
     return out, missing
 
 
+def qualification_shape_valid(case, text):
+    """Check the promised response, not merely a tolerant consumer's parse.
+
+    S478: exact JSON contracts and a judge's required sections must survive
+    qualification. This is a format check, never a factual-quality verdict.
+    The events route retains its separately authored wrapper allowance.
+    """
+    import foundation_contracts as F
+    task, user = case['task'], case.get('user', '')
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if task in ('billsnow', 'business-idea-estimate', 'research:decompose',
+                'halftime:catalogue:program', 'halftime:catalogue:variety'):
+        try:
+            value = json.loads(text)
+        except (ValueError, TypeError):
+            return False
+        expected = list if task.startswith('halftime:catalogue:') else dict
+        if not isinstance(value, expected):
+            return False
+    if task == 'alopecia-brief':
+        block = re.search(r'Use EXACTLY these sections, in this order:\s*\n'
+                          r'((?:## [^\n]+\n?)+)', user)
+        if block:
+            required = [s.strip() for s in block.group(1).splitlines()]
+            actual = re.findall(r'^## [^\n]+', text, re.M)
+            if [s.strip() for s in actual] != required:
+                return False
+        dated = re.search(r"Write this week's brief, dated (\d{4}-\d{2}-\d{2})\.", user)
+        if dated:
+            day = datetime.strptime(dated.group(1), '%Y-%m-%d')
+            forms = [dated.group(1)]
+            for month in (day.strftime('%B'), day.strftime('%b')):
+                forms.extend(['%s %d, %d' % (month, day.day, day.year),
+                              '%d %s %d' % (day.day, month, day.year)])
+            if not any(value in text for value in forms):
+                return False
+        return F.valid(task, text, user)
+    if task == 'intake-answer' and re.search(
+            r'^\s*(?:#{1,6}\s|```|\|)|\*\*[^*\n]+\*\*', text, re.M):
+        return False
+    if case['field'] == 'judge_evaluations':
+        return True  # Other judge contracts retain their existing check.
+    return F.valid(task, text, user)
+
+
 def run_provider(manifest_path, provider, out_path, session):
     """Fresh inference evidence only (port of S287/S315 run_checks.py). No approval writes."""
     import capability_registry as C, capability_health as H, llm_providers as L, llm_budget as B
@@ -225,8 +272,7 @@ def run_provider(manifest_path, provider, out_path, session):
             health = H.observe(c, provider) if private else H.observe_cloud(c, provider)
             row.update(response=raw, model=L.last_model(), finish=L.last_finish_reason(), usage=L._LAST.usage,
                        health=health)
-            row["shape_valid"] = (bool(raw.strip()) if case["field"] == "judge_evaluations"
-                                  else F.valid(case["task"], raw, case["user"]))
+            row["shape_valid"] = qualification_shape_valid(case, raw)
             row["identity_valid"] = row["model"] == case["expected_model"]
         except Exception as ex:
             row.update(error_type=type(ex).__name__, error=str(ex)[:300])
@@ -470,6 +516,7 @@ def install(host, mode, dirs):
             assert attempts, "missing fixture"; row = attempts[-1]
             assert row["old_record_sha256"] == sha(json.dumps(old, sort_keys=True).encode()), "approval changed concurrently"
             assert row.get("shape_valid") and row.get("identity_valid") and not row.get("error_type")
+            assert qualification_shape_valid(row, row.get('response')), "response violates its output contract"
             assert row["model"] == old["model"] and row["finish"] not in ("length", "max_tokens")
             assert sha(row["system"].encode()) == old["prompt_sha256"]
             h = row["health"]; assert h["healthy"] and h["model"] == old["model"] and h["location"] == old["location"]
