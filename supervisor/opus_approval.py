@@ -16,10 +16,10 @@ never overwritten; repeated guidance for the same incident is suppressed:
   tool that could address it (CLAUDE.md sec 3) — not for routine anomalies
   it can already report-and-move-on from via send_telegram.
 
-Module polls for Buddy's Telegram reply via short, non-blocking `getUpdates`
-calls (offset-tracked) folded into the existing 60s heartbeat tick —
-deliberately NOT a persistent long-poll listener like cirrus_bot.py, since
-Skywarden's process model is wake/check/sleep, not a standing service.
+On CUMULUS, the main bot is the sole Telegram receiver. Its durable local
+inbox (SKYWARDEN_TELEGRAM_INBOX) is drained by the existing heartbeat tick.
+Short polling is retained only for standalone deployments with a separate
+bot identity; never enable it alongside another receiver of the same token.
 """
 import json
 import fcntl

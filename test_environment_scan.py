@@ -6,6 +6,18 @@ ROWS=[{'url':'https://amd.com/example','title':'Synthetic release','published':'
 GOOD={'findings':[{'source_index':0,'quote':'supports a bounded 128 GB configuration.','summary':'A synthetic configuration needs review before use.','verdict':'DEFER'}]}
 
 class EnvironmentChecks(unittest.TestCase):
+    def test_indexed_evidence_is_exact_and_review_still_required(self):
+        import json, copy
+        item=copy.deepcopy(GOOD);item['findings'][0].pop('quote');item['findings'][0]['quote_index']=0
+        answers=iter([json.dumps(item),'{"approved":true,"problems":[]}'])
+        result=scan.review(ROWS,'',lambda _:next(answers))
+        self.assertEqual(result[0]['quote'],ROWS[0]['text'])
+        for bad in [-1,True,999]:
+            item['findings'][0]['quote_index']=bad
+            with self.assertRaises(ValueError):scan.bind_excerpts(item,[scan.source_excerpts(ROWS[0]['text'])])
+        text=('Source sentence with exact spacing. '*40)
+        self.assertTrue(all(15<=len(q)<=500 and q in text for q in scan.source_excerpts(text)))
+
     def test_article_fetch_flag_is_paywall_not_title(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
