@@ -301,6 +301,27 @@ def review_controls(reviewer=model_review):
                for rule in REVIEW_PROMPTS)
 
 
+
+def case_hashes(cases, legacy_order=False):
+    """Bind all evidence and mechanics; support only the former envelope order.
+
+    S480: presenting PRIOR before NEW must not erase existing operator holds.
+    Reconstructing the old four-key order changes no field value, case order,
+    metadata or mechanical prefix. Any content change still breaks the binding.
+    """
+    hashes = []
+    for case in cases:
+        if legacy_order:
+            prefix, body = case.split("REVIEW EVIDENCE (JSON): ", 1)
+            evidence = json.loads(body)
+            ordered = {k: evidence[k] for k in (
+                "SYSTEM_INSTRUCTIONS", "INPUT", "NEW", "PRIOR")}
+            ordered.update((k, v) for k, v in evidence.items() if k not in ordered)
+            case = prefix + "REVIEW EVIDENCE (JSON): " + json.dumps(ordered)
+        hashes.append(hashlib.sha256(case.encode()).hexdigest())
+    return hashes
+
+
 def evidence_check(path, key, record, cases):
     """Consume an operator's independent, whole-record evidence assessment.
 
@@ -317,7 +338,8 @@ def evidence_check(path, key, record, cases):
         if (row.get("authority") != "operator-evidence-review"
                 or row.get("reviewer") in (None, "", MODEL, SECOND_MODEL, "qwen", "gpt-oss")
                 or row.get("record_sha256") != record_sha(record)
-                or row.get("case_sha256") != [hashlib.sha256(c.encode()).hexdigest() for c in cases]
+                or (row.get("case_sha256") != case_hashes(cases)
+                    and row.get("case_sha256") != case_hashes(cases, legacy_order=True))
                 or row.get("assessment") not in ("clear", "confirmed_defect")
                 or not isinstance(row.get("rationale"), str) or not row["rationale"].strip()
                 or row.get("all_requirements_checked") is not True):

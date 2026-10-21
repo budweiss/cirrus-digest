@@ -374,6 +374,49 @@ class RenewalAutoTest(unittest.TestCase):
         self.assertEqual((len(approved), held), (0, 1))
         self.assertEqual(details[0]["status"], "confirmed_defect")
 
+    def legacy_assessment(self):
+        item = json.loads((self.path / "decisions.json").read_text())["records"][0]
+        cases = auto.complete_cases(self.path, item, next(iter(auto.packet_sections(self.path).values())))
+        # Independently reproduce the pre-S479 serialized envelope, not the helper.
+        old_cases = []
+        for case in cases:
+            prefix, body = case.split("REVIEW EVIDENCE (JSON): ", 1)
+            e = json.loads(body)
+            old = {"SYSTEM_INSTRUCTIONS": e["SYSTEM_INSTRUCTIONS"], "INPUT": e["INPUT"],
+                   "NEW": e["NEW"], "PRIOR": e["PRIOR"]}
+            old.update((k, v) for k, v in e.items() if k not in old)
+            old_cases.append(prefix + "REVIEW EVIDENCE (JSON): " + json.dumps(old))
+        row = self.evidence_row()
+        row["case_sha256"] = [auto.hashlib.sha256(c.encode()).hexdigest() for c in old_cases]
+        self.assertNotEqual(row["case_sha256"], auto.case_hashes(cases))
+        return row, cases
+
+    def test_legacy_hold_survives_presentation_order_with_positive_votes(self):
+        row, _ = self.legacy_assessment(); row["assessment"] = "confirmed_defect"
+        self.assess(row)
+        approved, _, held, details = auto.review_packet(
+            self.path, self.registry, time.time()+72*3600,
+            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "ok"})
+        self.assertEqual((len(approved), held), (0, 1))
+        self.assertEqual(details[0]["status"], "confirmed_defect")
+
+    def test_legacy_clearance_retains_existing_operator_policy(self):
+        row, _ = self.legacy_assessment()
+        approved, _, held, _ = self.assess(row)
+        self.assertEqual((len(approved), held), (1, 0))
+
+    def test_legacy_binding_rejects_changed_content_and_mechanics(self):
+        row, cases = self.legacy_assessment(); self.assess(row)
+        key = ("foundation:test", "evaluations", 0)
+        prefix, body = cases[0].split("REVIEW EVIDENCE (JSON): ", 1)
+        for field in ("SYSTEM_INSTRUCTIONS", "INPUT", "NEW", "PRIOR", "extra"):
+            with self.subTest(field=field):
+                e = json.loads(body); e[field] = str(e.get(field, "")) + " changed"
+                changed = [prefix + "REVIEW EVIDENCE (JSON): " + json.dumps(e)]
+                self.assertEqual(auto.evidence_check(self.path, key, self.record, changed), "pending")
+        self.assertEqual(auto.evidence_check(self.path, key, self.record,
+                         ["changed mechanics " + cases[0]]), "pending")
+
     def test_failed_preflight_still_allows_independent_clearance_in_run_once(self):
         self.assess(self.evidence_row())
         with tempfile.TemporaryDirectory() as root:
