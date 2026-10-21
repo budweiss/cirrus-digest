@@ -14,6 +14,53 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_decision_waits_for_busy_worker_but_has_a_deadline(self):
+        import json
+        from pathlib import Path
+        evidence=copy.deepcopy(EV)
+        evidence['companies'][0]['draft']={'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]}
+        for elapsed, succeeds in ((90,True),(301,False)):
+            with self.subTest(elapsed=elapsed),tempfile.TemporaryDirectory() as td, \
+                 patch.object(S,'ROOT',Path(td)),patch.object(S,'policy',return_value='Synthetic policy'), \
+                 patch.object(S.media.time,'monotonic',side_effect=[0,elapsed]), \
+                 patch.object(S.media.time,'sleep'), \
+                 patch.object(S.media.fcntl,'flock',side_effect=[BlockingIOError(),None]), \
+                 patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["unsupported"]}') as reviewer:
+                caller=unittest.mock.Mock(return_value=json.dumps(DEC))
+                with self.assertRaisesRegex(ValueError if succeeds else RuntimeError,
+                                            'paper_decision_review_failed' if succeeds else 'media_worker_busy'):
+                    S.choose(evidence,{}, {},'2026-10-14','am',caller=caller)
+                self.assertEqual(caller.call_count,2 if succeeds else 0)
+                self.assertEqual(reviewer.call_count,2 if succeeds else 0)
+
+    def test_sent_retry_preserves_failed_or_missing_review_without_side_effects(self):
+        import json
+        from pathlib import Path
+        for review in ('failed_media_worker_busy','passed',None):
+            with self.subTest(review=review),tempfile.TemporaryDirectory() as td:
+                home=Path(td);(home/'delivery').mkdir()
+                (home/'delivery/2026-10-14-am.json').write_text('{"status":"sent"}')
+                if review:(home/'request.json').write_text(json.dumps({'decision_review':review}))
+                with patch.object(S,'HOME',home),patch.object(S,'snapshot') as snapshot, \
+                     patch.object(S,'refresh_research') as research,patch.object(S.sender,'send_verified_once') as send:
+                    result=S.daily('am',True,'2026-10-14',home)
+                self.assertEqual(result['decision_review'],review or 'failed_missing_review_receipt')
+                self.assertEqual(result['status'],'already_sent')
+                snapshot.assert_not_called();research.assert_not_called();send.assert_not_called()
+
+    def test_dispatch_keeps_sent_receipt_and_failed_review_separate(self):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        value={'status':'sent','decision_review':'failed_media_worker_busy','job':'am'}
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout=json.dumps(value))), \
+             patch.object(S,'record_status') as record,patch('vendor_mail_watch.telegram',return_value=True):
+            result=S.dispatch('am',live=True)
+        self.assertEqual(result['status'],'sent')
+        self.assertEqual(result['decision_review'],'failed_media_worker_busy')
+        record.assert_called_once_with('am',False,'status=sent decision_review=failed_media_worker_busy')
+
     def test_every_scheduled_job_records_its_own_monitor_key(self):
         with patch('job_status.record') as record:
             for job in S.JOBS:

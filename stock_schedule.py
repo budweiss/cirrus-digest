@@ -227,7 +227,9 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
     feedback_text=''
     if not evidence['companies']:
         return {'request_id':'server-'+date+'-'+slot,'decisions':[]},'No trades: no company passed the source/research review. Collect verified primary evidence before considering any paper decision.'
-    with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
+    # A scheduled decision can arrive behind an active media request. Keep the
+    # shared lock and a bounded wait, but allow a normal request to finish.
+    with media.lease(ROOT/'logs/media/worker.lock',timeout=300):
         for _ in range(2):
             try:
                 raw=parse(caller(system,json.dumps(context)+feedback_text,'stock-schedule-decision') if caller else
@@ -274,7 +276,18 @@ def daily(job,live,date,folder):
     receipt=HOME/'delivery'/(date+'-'+job+'.json')
     if live and receipt.exists():
         prior=json.loads(receipt.read_text())
-        if prior.get('status')=='sent':return {'status':'already_sent','job':job,'date':date,'recipients':1}
+        if prior.get('status')=='sent':
+            # Delivery success does not establish decision-review success.
+            # Preserve that independent result without fetching, trading or sending.
+            review='failed_missing_review_receipt'
+            for name in ('request.json','result.json'):
+                saved=folder/name
+                if saved.exists():
+                    value=json.loads(saved.read_text()).get('decision_review')
+                    if isinstance(value,str) and (value=='passed' or value.startswith('failed_')):
+                        review=value
+                        break
+            return {'status':'already_sent','job':job,'date':date,'recipients':1,'decision_review':review}
         raise ValueError('prior_delivery_requires_reconciliation')
     market=paper.market_session()
     if market['reason']=='exchange_holiday':return {'status':'holiday','job':job,'date':date}
@@ -662,10 +675,13 @@ def dispatch(job,live=False):
                              text=True,capture_output=True,timeout=1800)
         lines=[x for x in proc.stdout.splitlines() if x.startswith('{')]
         result=json.loads(lines[-1]) if lines else {'status':'failed','job':job,'error_type':'remote_result_missing'}
-        if proc.returncode:result['status']='failed'
+        review_failed=result.get('decision_review','').startswith('failed')
+        if proc.returncode and not (result.get('status') in ('sent','already_sent') and review_failed):
+            result['status']='failed'
         ok=result.get('status') in ('sent','already_sent','holiday','preview','complete') and not result.get('decision_review','').startswith('failed')
         if live:
-            record_status(job,ok,'status='+result.get('status','unknown'))
+            record_status(job,ok,'status='+result.get('status','unknown')+
+                          ' decision_review='+result.get('decision_review','not_reported'))
             if result.get('status') not in ('already_sent','holiday'):
                 result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))
         atomic(root/(job+('-live' if live else '-preview')+'.json'),result)
