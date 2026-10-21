@@ -1,4 +1,6 @@
 import unittest
+import contextlib
+import io
 from datetime import date, timedelta
 from unittest.mock import patch
 import business_idea_scan as B
@@ -25,5 +27,16 @@ class DiscoveryDirectionTests(unittest.TestCase):
         self.assertIn('Customer outreach and paid\n   pilots are paused',packet)
         self.assertNotIn('it proves both',packet)
         self.assertIn('SCORE: <0-10>',packet)
+
+    def test_commercial_search_selftest_accepts_pricing_but_rejects_generic_ideas(self):
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertTrue(B.selftest())
+        queries=list(B.BUSINESS_SEARCH_QUERIES)
+        queries[0]='best generic startup ideas'
+        output=io.StringIO()
+        with patch.object(B,'BUSINESS_SEARCH_QUERIES',queries), contextlib.redirect_stdout(output):
+            self.assertFalse(B.selftest())
+        self.assertIn("FAIL  search terms target revenue/operating businesses, not 'ideas'",output.getvalue())
 
 if __name__=='__main__':unittest.main()

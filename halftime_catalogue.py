@@ -257,7 +257,8 @@ If a field is not stated in the sources, use "". NEVER invent a contact, a fee
 or a client list -- an empty field is correct and useful; a guessed one poisons
 the catalogue. A performance credit alone does not establish a booking: leave
 clients empty unless the source explicitly identifies a team or school as
-booking the act. If the sources contain no qualifying act, return []."""
+booking the act. If the sources contain no qualifying act, return [].
+Return a standalone JSON array starting with [ and ending with ]; never use Markdown fences. A university football appearance establishes college level; use unknown only when neither professional nor college level can be established. This does not establish booking: clients still requires explicit booking evidence."""
 
 
 _MUSIC_SYSTEM = """You catalogue MUSICAL acts that have actually PERFORMED at

@@ -1089,7 +1089,8 @@ def repair_prompt(item, blobs, conventions, edit_only, failure, prior, attempt):
         "rewrite a file that contains tests as long as every existing "
         "assertion survives. If the only way you can make the gate pass is to "
         "delete a check, the patch is wrong -- return CANNOT_BUILD and say so "
-        "in notes.")
+        "in notes."
+        '\nFirst decide whether the ORIGINAL approved proposal can be implemented under the hard rules. If the original proposal is forbidden, return CANNOT_BUILD with empty files and edits. A previous failure message or an incidental defect in the supplied files does not authorize a substitute task or patch. Do not fix an unrelated test merely to avoid refusing the original proposal.')
     parts = [user, "",
              "===== HOW ATTEMPT %d BROKE =====" % (attempt - 1),
              "FAILED GATE: %s" % failure.get("gate", "?"),

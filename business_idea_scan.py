@@ -614,6 +614,7 @@ _ESTIMATE_SYSTEM = (
     "described. Price only the DELTA -- what genuinely has to be built or paid "
     "for on top of what exists. Be concrete and conservative; prefer a range "
     "over false precision. Do not pad estimates to seem thorough."
+        '\nReturn exactly one JSON object with build_effort, run_cost, time_to_revenue and first_step as strings. No Markdown fences or surrounding prose. In run_cost distinguish incremental software/API costs from physical operating costs. For usage-dependent costs, name the units or missing quantities rather than inventing an all-in monthly total. Existing equipment is not a new infrastructure purchase; consumables and other genuinely incremental expenses still matter.'
 )
 
 
@@ -1330,7 +1331,7 @@ def selftest() -> bool:
 
     checks.append(("search terms target revenue/operating businesses, not 'ideas'",
                    all(any(w in q for w in ("revenue", "profitable", "subscribers",
-                                            "business"))
+                                            "business", "pricing", "customer case study"))
                        for q in BUSINESS_SEARCH_QUERIES)))
 
     checks.append(("a fatal flaw sinks a high-fit idea (min, not average)",
