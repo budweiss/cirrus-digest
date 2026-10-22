@@ -201,25 +201,31 @@ def synthesise(question, requirements, findings, creds):
     reqs = "\n".join(f"- {r}" for r in requirements) or "(none stated)"
 
     sys_p = (
-        "You are advising someone who will ACT on this and cannot afford a "
-        "flattering answer.\n"
-        "Rules, all mandatory:\n"
-        "1. Every factual claim carries its source URL inline. No URL, mark it "
-        "   UNSOURCED.\n"
-        "2. Compare the real candidate options against the stated requirements. "
-        "   Say which requirement each option FAILS — an option with no downside "
-        "   listed means you have not looked hard enough.\n"
-        "3. Recommend ONE, and give the single strongest argument AGAINST your "
-        "   own recommendation.\n"
-        "4. 'No good option found' is a valid answer. Say it plainly if true.\n"
-        "5. End with WHAT I DID NOT CHECK — angles with no sources retrieved, "
-        "   claims you could not verify. Absence of a caveat must never be "
-        "   mistaken for absence of risk.\n"
-        "6. Missing retrieval means UNCHECKED, never that no evidence, study, "
-        "or product exists. Say 'no evidence was supplied or retrieved', not "
-        "'no evidence exists'. Never infer undocumented product features or "
-        "limitations; distinguish source facts from your hypothetical risks.\n"
-        "Markdown. No preamble."
+        (
+            'You are advising someone who will ACT on this and cannot afford a flattering answer.\nRules, all '
+            'mandatory:\n1. Every factual claim carries its source URL inline. No URL, mark it    UNSOURCED.\n2. '
+            'Compare the real candidate options against the stated requirements.    Name supported failures or '
+            'documented downsides. If none is documented, state the evidence gap as an uncertainty; never '
+            'manufacture a flaw to fill this comparison.\n3. Recommend ONE, and give the single strongest '
+            "argument AGAINST your    own recommendation.\n4. 'No good option found' is a valid answer. Say it "
+            'plainly if true.\n5. End with WHAT I DID NOT CHECK — angles with no sources retrieved,    claims you '
+            'could not verify. Absence of a caveat must never be    mistaken for absence of risk.\n6. Missing '
+            "retrieval means UNCHECKED, never that no evidence, study, or product exists. Say 'no evidence was "
+            "supplied or retrieved', not 'no evidence exists'. Never infer undocumented product features or "
+            'limitations; distinguish source facts from your hypothetical risks.\nMarkdown. No preamble.\nFor '
+            'every requirement report supported, contradicted, or UNCHECKED. Describe undocumented properties as '
+            'unknown. A conditional risk must remain conditional and cannot introduce an undocumented product '
+            'limitation. Before returning, check each claimed feature or limitation against the supplied source '
+            'sentence, including claims in the counterargument. Put unverified questions in WHAT I DID NOT '
+            'CHECK.\nEvidence entailment: running offline does not by itself establish that no cloud account, '
+            'cloud dependency, or third-party data transfer is required. Mark such a requirement UNCHECKED '
+            'unless the supplied source explicitly establishes it. A missing mention is not proof of absence. '
+            'Never call an option fully compliant when any hard requirement is UNCHECKED; a provisional '
+            'preference must name the unresolved condition. Do not compare the severity of risks without '
+            'supplied evidence or stated user priorities. Keep a hypothetical risk visibly conditional, and '
+            'distinguish that reasoning from sourced product facts. Prefer a short grounded answer over '
+            'speculative elaboration.'
+        )
     )
     usr = (f"BRIEF\n{question}\n\nREQUIREMENTS\n{reqs}\n\nEVIDENCE\n"
            + "\n".join(ev)[:90000])
