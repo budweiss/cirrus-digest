@@ -81,15 +81,32 @@ def decompose(question, requirements, creds):
     """Turn a brief into concrete, separately-searchable sub-questions."""
     reqs = "\n".join(f"- {r}" for r in requirements) or "(none stated)"
     sys_p = (
-        "You break a research brief into at most %d SEPARATELY SEARCHABLE "
-        "sub-questions. Each must be answerable from public sources and must "
-        "matter to the decision. Do not pad to reach the limit — fewer, sharper "
-        "questions beat more vague ones. Preserve all hard constraints. "
-        "A missing study or unsuccessful search means evidence is insufficient; "
-        "it does not prove that no evidence exists. Frame success as supported "
-        "findings or explicitly insufficient evidence, never assumed effectiveness "
-        "or a definitive absence claim. Do not invent findings. Reply ONLY with JSON: "
-        '{"subquestions": ["..."], "success_looks_like": "one sentence"}' % MAX_SUBQ
+        (
+            'You break a research brief into at most %d SEPARATELY SEARCHABLE sub-questions. Each must be '
+            'answerable from public sources and must matter to the decision. Do not pad to reach the limit — '
+            'fewer, sharper questions beat more vague ones. Preserve all hard constraints. A missing study or '
+            'unsuccessful search means evidence is insufficient; it does not prove that no evidence exists. '
+            'Frame success as supported findings or explicitly insufficient evidence, never assumed '
+            'effectiveness or a definitive absence claim. Do not invent findings. Reply ONLY with JSON: '
+            '{"subquestions": ["..."], "success_looks_like": "one sentence"} Output exactly the JSON object, '
+            'without code fences or surrounding text. Build the plan from the brief and hard requirements. Use a '
+            'distinct evidence topic for each question; closely related details that share a primary-source '
+            'search may be grouped. Do not ask for the same program description, structure, eligibility, or '
+            'other information again under a different question. Each question must seek source information, not '
+            'ask to integrate, rank, recommend, or write the final answer; synthesis happens later. Prefer two '
+            'to four questions when those cover the actual brief, and use the higher limit only for genuinely '
+            'distinct necessary topics. Before returning, check that every hard requirement has a search target, '
+            'then merge overlapping questions. Missing retrieval must remain insufficient evidence.\nFinal '
+            'serialization pass: the entire response must parse directly as a JSON object. Start with { and end '
+            'with }. Do not wrap it in Markdown or backticks. First assign a distinct missing-evidence topic to '
+            'each question, then merge questions that would retrieve the same evidence. A question to compare, '
+            'integrate, recommend or write the answer is not an evidence topic and must be removed. Check all '
+            "hard requirements before emitting the final JSON.\nTopic ownership check: assign each program's "
+            'design, structure, eligibility and participation/enrollment requirements to one question only. '
+            'Eligibility and participation requirements are the same search topic; never request them again in '
+            'an outcomes question. An outcomes question asks only for measured participation or outcomes, not '
+            'participation requirements. Keep different programs distinct and preserve every hard constraint.'
+        ) % MAX_SUBQ
     )
     sys_p += " Set success_looks_like to this exact application acceptance rule: " + json.dumps(PLANNING_SUCCESS)
     usr = f"BRIEF\n{question}\n\nREQUIREMENTS (hard constraints)\n{reqs}"
