@@ -189,6 +189,14 @@ _JUDGE_SYSTEM = (
 )
 
 
+def judge_system(task):
+    """Select the task's exact judge contract before admission and budget planning."""
+    if task == 'alopecia-brief':
+        from alopecia_brief import JUDGE_SYSTEM
+        return JUDGE_SYSTEM
+    return _JUDGE_SYSTEM
+
+
 def _judge_prompt(orig_system, orig_user, members, draft):
     parts = ["=== ORIGINAL TASK (the members all received this) ===",
              "--- system ---", orig_system, "--- user ---", orig_user, ""]
@@ -219,6 +227,7 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
     from capability_health import observe, observe_cloud
     try:
         contract = contract_digest(route, root)
+        synthesis_system = judge_system(task)
         options = route.get('provider_options', {})
         if (not isinstance(options, dict) or
             any(k not in ('anthropic_effort', 'kimi_reasoning_effort') or
@@ -268,12 +277,12 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
         total = sum(r['estimated_request_cost_usd'] for r in selected)
         if reviewers == 2 and not panel_only:
             judge_records = candidates(route.get('judge_evaluations', []), health,
-                task=task, capability=capability + ':synthesis', system=_JUDGE_SYSTEM,
+                task=task, capability=capability + ':synthesis', system=synthesis_system,
                 contract_sha256=contract)
             # Reserve maximum possible member answer bytes before paying anyone.
             reserve = _judge_prompt(system, user, [(r['id'], 'x' * (4 * max_tokens))
                                                    for r in selected], '')
-            judge, _ = plan(_JUDGE_SYSTEM, reserve, creds, candidates=judge_records,
+            judge, _ = plan(synthesis_system, reserve, creds, candidates=judge_records,
                            session_id=session_id or task, **dict(args, capability=capability + ':synthesis'))
             total += judge['estimated_request_cost_usd']
             cloud_ids = {r['id'] for r in selected + [judge] if r['id'] not in R.LOCAL}
@@ -294,9 +303,27 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
                 draft_by='', draft_error='', models={})
     answers = []
     def invoke(rows, sysmsg=system, usrmsg=user, call_args=None):
-        return dispatch(sysmsg, usrmsg, creds, candidates=rows,
-                        parse=(lambda raw: raw if validate(raw) else None) if validate else None,
-                        session_id=session_id or task, **(call_args or args))
+        parse = (lambda raw: raw if validate(raw) else None) if validate else None
+        raw_medical = []
+        if task == 'alopecia-brief' and route.get('validate_task_output'):
+            from foundation_contracts import prepare_medical_brief
+            def parse(raw):
+                # The actual judge envelope permits real member disagreements;
+                # validating it as the original generator task would reject them.
+                delivered = prepare_medical_brief(raw, usrmsg)
+                if delivered is None or (caller_validator is not None and not caller_validator(delivered)):
+                    return None
+                raw_medical.append(raw)
+                return delivered
+        provider, delivered = dispatch(sysmsg, usrmsg, creds, candidates=rows,
+                        parse=parse, session_id=session_id or task, **(call_args or args))
+        if raw_medical:
+            if raw_medical[0] != delivered:
+                meta['format_normalizations'] = meta.get('format_normalizations', 0) + 1
+            if keep_answers:
+                meta.setdefault('raw_answers', []).append(dict(provider=provider,
+                    role='judge' if sysmsg == synthesis_system else 'member', text=raw_medical[0]))
+        return provider, delivered
     for choice in selected:
         rows = [r for r in records if r['id'] == choice['id']]
         try:
@@ -324,7 +351,7 @@ def _dynamic_answer(system, user, creds, *, route, root, task, max_tokens,
     if reviewers == 2 and not panel_only:
         planned_judge = [r for r in judge_records if r['id'] == judge['id']]
         remaining_limit = max(0, limit - sum(r['estimated_request_cost_usd'] for r in selected))
-        provider, text = invoke(planned_judge, _JUDGE_SYSTEM,
+        provider, text = invoke(planned_judge, synthesis_system,
             _judge_prompt(system, user, answers, ''),
             dict(args, capability=capability + ':synthesis', max_cost_usd=remaining_limit))
         meta['judge'] = provider

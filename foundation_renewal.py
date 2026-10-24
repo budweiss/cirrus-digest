@@ -207,22 +207,6 @@ def qualification_shape_valid(case, text):
         if not isinstance(value, expected):
             return False
     if task == 'alopecia-brief':
-        block = re.search(r'Use EXACTLY these sections, in this order:\s*\n'
-                          r'((?:## [^\n]+\n?)+)', user)
-        if block:
-            required = [s.strip() for s in block.group(1).splitlines()]
-            actual = re.findall(r'^## [^\n]+', text, re.M)
-            if [s.strip() for s in actual] != required:
-                return False
-        dated = re.search(r"Write this week's brief, dated (\d{4}-\d{2}-\d{2})\.", user)
-        if dated:
-            day = datetime.strptime(dated.group(1), '%Y-%m-%d')
-            forms = [dated.group(1)]
-            for month in (day.strftime('%B'), day.strftime('%b')):
-                forms.extend(['%s %d, %d' % (month, day.day, day.year),
-                              '%d %s %d' % (day.day, month, day.year)])
-            if not any(value in text for value in forms):
-                return False
         return F.valid(task, text, user)
     if task == 'intake-answer' and re.search(
             r'^\s*(?:#{1,6}\s|```|\|)|\*\*[^*\n]+\*\*', text, re.M):
@@ -270,9 +254,15 @@ def run_provider(manifest_path, provider, out_path, session):
                          task=case["task"], session_id=session, privacy="LOCAL_ONLY" if private else None,
                          strict_accounting=True)
             health = H.observe(c, provider) if private else H.observe_cloud(c, provider)
-            row.update(response=raw, model=L.last_model(), finish=L.last_finish_reason(), usage=L._LAST.usage,
+            delivered = raw
+            if case['task'] == 'alopecia-brief':
+                prepared = F.prepare_medical_brief(raw, case['user'])
+                delivered = prepared if prepared is not None else raw
+                row.update(raw_response=raw, raw_shape_valid=qualification_shape_valid(case, raw),
+                           format_normalized=delivered != raw)
+            row.update(response=delivered, model=L.last_model(), finish=L.last_finish_reason(), usage=L._LAST.usage,
                        health=health)
-            row["shape_valid"] = qualification_shape_valid(case, raw)
+            row["shape_valid"] = qualification_shape_valid(case, delivered)
             row["identity_valid"] = row["model"] == case["expected_model"]
         except Exception as ex:
             row.update(error_type=type(ex).__name__, error=str(ex)[:300])

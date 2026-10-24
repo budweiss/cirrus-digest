@@ -14,6 +14,68 @@ def json_value(text):
     return json.loads(text)
 
 
+def medical_brief_valid(text, user):
+    """One format gate for live dispatch and qualification; not a factual verdict."""
+    # Only the generated task header defines the format, never source/member text.
+    header = user.split('\nTHE ITEMS:', 1)[0]
+    dated = re.search(r"Write this week's brief, dated (\d{4}-\d{2}-\d{2})\.", header)
+    template = re.search(r'Use EXACTLY these sections, in this order:\s*\n'
+                         r'((?:## [^\n]+\n?)+)', header)
+    if not dated or not template:
+        return False
+    from datetime import date
+    date.fromisoformat(dated.group(1))
+    if not text.startswith('Brief date: ' + dated.group(1) + '\n'):
+        return False
+    required = template.group(1).splitlines()
+    actual = re.findall(r'^## [^\n]+', text, re.M)
+    if actual != required:
+        return False
+    bodies = re.split(r'^## [^\n]+\n?', text, flags=re.M)[1:]
+    if not all(body.strip() for body in bodies):
+        return False
+    questions = re.findall(r'^[123]\. ([^\n?]+\?)', header, re.M)
+    if len(questions) != 3:
+        return False
+    # A generator receives source items only; it cannot observe council votes.
+    # Determine that role from the trusted task prefix, not source contents.
+    if header.startswith("Write this week's brief, dated "):
+        disagreements = bodies[required.index('## Council disagreements')]
+        if disagreements.strip() != 'No material disagreement.':
+            return False
+    section = bodies[required.index('## Standing questions — where they stand')]
+    return all(section.count(question) == 1 for question in questions)
+
+
+def prepare_medical_brief(text, user):
+    """Order complete named sections; never create, drop or rewrite their prose.
+
+    Only an exact permutation of the trusted six-section template is eligible.
+    Date, content, questions and disagreement checks still run on the result.
+    Raw replies are retained by callers; this is formatting, not factual approval.
+    """
+    try:
+        if medical_brief_valid(text, user):
+            return text
+        header = user.split('\nTHE ITEMS:', 1)[0]
+        template = re.search(r'Use EXACTLY these sections, in this order:\s*\n'
+                             r'((?:## [^\n]+\n?)+)', header)
+        if not template:
+            return None
+        required = template.group(1).splitlines()
+        matches = list(re.finditer(r'^## [^\n]+', text, re.M))
+        names = [m.group() for m in matches]
+        if len(required) != 6 or len(set(required)) != 6 or sorted(names) != sorted(required):
+            return None
+        blocks = {m.group(): text[m.start():matches[i+1].start() if i+1 < len(matches) else len(text)]
+                  for i, m in enumerate(matches)}
+        # Only boundary newlines may change when the final block moves inward.
+        ordered = text[:matches[0].start()] + '\n\n'.join(blocks[name].rstrip('\n') for name in required)
+        return ordered if medical_brief_valid(ordered, user) else None
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def valid(task, text, user=''):
     try:
         if not isinstance(text, str) or not text.strip():
@@ -96,7 +158,7 @@ def valid(task, text, user=''):
         if task == 'research:synthesise':
             return 'WHAT I DID NOT CHECK' in text.upper()
         if task == 'alopecia-brief':
-            return '## Council disagreements' in text and '## Trials watch' in text and '## Standing questions' in text
+            return medical_brief_valid(text, user)
         if task == 'intake-answer':
             return len(text.strip()) >= 80
         return False
