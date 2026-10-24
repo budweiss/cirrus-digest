@@ -14,7 +14,7 @@ WORKERS={
  'cumulus1-gptoss':{'model':'gpt-oss:120b','endpoint':'http://127.0.0.1:8000','min_available_mib':8192},
  'cumulus2-qwen':{'model':'qwen3.8-27b-fp8','endpoint':'http://192.168.100.11:8000','min_available_mib':8192}}
 # S385 reviewed local fixtures and archived article replay; scope unchanged.
-QUALIFIED_UNTIL=1792689885.217  # renewed 2026-10-15; evidence: s418-fleet-renewal
+QUALIFIED_UNTIL=1793444894.746  # renewed 2026-10-24; evidence: s418-fleet-renewal
 MESSAGES=[{'role':'system','content':'Extract only supplied facts. Reply with a JSON object only, keys sample (integer), control_group (boolean), trial_date (null if absent). No markdown.'},
  {'role':'user','content':'S318 SYNTHETIC TEST ONLY. The study included 12 participants and had no control group. No trial date was supplied.'}]
 
