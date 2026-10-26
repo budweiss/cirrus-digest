@@ -44,4 +44,17 @@ class StatusTests(unittest.TestCase):
   self.assertEqual(w.fleet_findings(far,now),[])                         # healthy and >48 h: quiet
   self.assertEqual(w.fleet_findings({'ok':False},now),[w.FLEET_DEGRADED])  # unexplained degradation stays visible
   self.assertEqual(w.fleet_findings(None,now),[w.FLEET_DEGRADED])
+ def test_watchdog_gives_the_auto_clearer_time_before_alerting(self):
+  # S497 P1: fleet_autoreconcile clears no-delivery stuck jobs within ~20 min;
+  # the human alert waits STUCK_GRACE_S so it fires only if that did not happen.
+  import cirrus_watchdog as w
+  jid='55ef5b5a17094ae0b05cca51f55d4a9c';now=1_800_000_000;seen={}
+  data={'ok':False,'unsettled':[{'id':jid,'state':'unknown'}],'qualifications':[]}
+  self.assertEqual(w.fleet_findings(data,now,seen),[])                 # no stuck alert, no vague "degraded" either
+  self.assertEqual(seen,{jid:now})
+  self.assertEqual(w.fleet_findings(data,now+w.STUCK_GRACE_S-1,seen),[])
+  late=w.fleet_findings(data,now+w.STUCK_GRACE_S,seen)
+  self.assertTrue(any(jid in x and 'HUMAN NEEDED' in x for x in late))
+  w.fleet_findings({'ok':True,'unsettled':[],'qualifications':[]},now+w.STUCK_GRACE_S+60,seen)
+  self.assertEqual(seen,{})                                             # cleared job forgotten
 if __name__=='__main__':unittest.main()

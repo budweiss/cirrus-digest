@@ -176,6 +176,9 @@ CADENCE_H = {
     # where the cap is hit every day still can't become a permanent false
     # OVERDUE for a job that simply never records.
     "alopeciaagent":    26,
+    # S497: CUMULUS user timer every 10 min (fleet-autoreconcile.timer); watched from
+    # day one so a clearer that stops running, or a stale controller, is visible.
+    "fleetautoreconcile": 1,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -193,6 +196,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciacollect",                       # S82, runs on CUMULUS
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
+                 "fleetautoreconcile",                    # S497, CUMULUS user timer
                  "foundationrenewalcumulus",              # S316, runs on CUMULUS
                  "immaculatetick",                         # S253, runs on CUMULUS
                  # S254: runs on CUMULUS since S169 but was never listed here,

@@ -276,9 +276,13 @@ def fleet_controller_health():
 
 
 FLEET_DEGRADED = "CUMULUS fleet controller unavailable/degraded; observation only, no failover"
+# S497 P1: fleet_autoreconcile (CUMULUS, every 10 min, after 10 min of silence) clears
+# no-delivery stuck jobs. The human alert waits this long so it only fires when that
+# did not happen (delivering project, busy worker, daily cap, refused step).
+STUCK_GRACE_S = 40 * 60
 
 
-def fleet_findings(data, now=None):
+def fleet_findings(data, now=None, seen=None):
     """S497 (Buddy, 2026-10-26): name what needs a human, with the exact fix.
 
     A stuck fleet job (unknown/orphaned) blocked learnwatch for days three times
@@ -292,10 +296,14 @@ def fleet_findings(data, now=None):
     now = _time.time() if now is None else now
     if not data:
         return [FLEET_DEGRADED]
-    out = []
+    out, waiting, current = [], False, set()
     for job in data.get("unsettled") or []:
         jid = str(job.get("id", "")) if isinstance(job, dict) else ""
         if not re.fullmatch(r"[0-9a-f]{32}", jid):
+            continue
+        current.add(jid)
+        if seen is not None and now - seen.setdefault(jid, now) < STUCK_GRACE_S:
+            waiting = True        # the auto-clearer's turn first
             continue
         state = job.get("state", "?")
         fix = ("runner fleet-reconcile args.id=" + jid if state in ("unknown", "suspected_stall", "cancelling")
@@ -314,7 +322,10 @@ def fleet_findings(data, now=None):
                    "lapses, before learnwatch's next 01:15 run (the command cannot extend it early)"
                    % (q.get("project", "?"), "EXPIRED" if exp <= now else "expires",
                       datetime.fromtimestamp(exp).strftime("%a %m-%d %H:%M")))
-    if data.get("ok") is not True and not out:
+    if seen is not None:
+        for jid in [k for k in seen if k not in current]:
+            del seen[jid]
+    if data.get("ok") is not True and not out and not waiting:
         out.append(FLEET_DEGRADED)
     return out
 
@@ -328,7 +339,8 @@ def check_and_heal():
     st = launchctl_state()
     findings, repairs = [], []
     if (PROJECT_DIR / "config/fleet-observer.enabled").exists():
-        findings.extend(fleet_findings(fleet_controller_status()))
+        findings.extend(fleet_findings(fleet_controller_status(),
+                                       seen=state.setdefault("_fleet_stuck_seen", {})))
     try:
         from runtime_config import check_all
         check_all(Path(__file__).resolve().parent / "config")
