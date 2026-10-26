@@ -24,6 +24,22 @@ class CollectionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.validate_bullets({'bullets': [item]}, claims)
 
+    def test_drafting_reserves_alleges_for_accusations(self):
+        # S497: the S471 wording made drafts call ordinary market data "alleged";
+        # the unchanged reviewer rejected that every night from 10-21. The
+        # candidate below was verified against the live reviewer before shipping.
+        seen = {}
+        def caller(system, text, task):
+            seen.setdefault(task, system)
+            if task.endswith('summary'):
+                return json.dumps({'bullets': [{'text': 'The presenter says the market may rise.', 'evidence': [0]}]})
+            return json.dumps({'approved': True, 'problems': []})
+        c.summarize([{'quote': 'I think the market could go higher from here into next year.'}], caller=caller)
+        system = seen['media:aggie:summary']
+        self.assertIn('neutral verb', system)
+        self.assertIn('use "alleges" only for an accusation', system)
+        self.assertNotIn('including religious predictions and allegations', system)
+
     def test_negative_review_never_becomes_approved(self):
         claims = [{'quote': 'The presenter says this is uncertain, not a guaranteed result.'}]
         caller = Mock(side_effect=[
