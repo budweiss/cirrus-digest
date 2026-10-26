@@ -562,7 +562,11 @@ def adopt_sources(trials,questions,folder):
             'Return JSON {"passed":true,"issues":[]} or false.',
             json.dumps({'trials':trials,'decisions':choices}),'stock-source-adoption-review'))
         atomic(folder/'adoption-check.json',checked)
-        if not checked['passed']:raise ValueError('source_adoption_review_failed')
+        if not checked['passed']:
+            # S497 P4(a): keep the decisions the reviewer rejected beside its verdict
+            # (private folder, stays on the server) so a failure is diagnosable.
+            atomic(folder/'adoption-rejected.json',{'decisions':choices,'review':checked})
+            raise ValueError('source_adoption_review_failed')
     return choices
 
 

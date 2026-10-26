@@ -42,6 +42,24 @@ class CollectionTests(unittest.TestCase):
         # Buddy 2026-10-26: prophecy is left out of Aggie's summaries entirely.
         self.assertIn('Leave out religious or prophetic predictions entirely', system)
 
+    def test_rejection_keeps_every_draft_and_finding(self):
+        # S497 P4(a): a rejected summary used to leave no trace at all.
+        problems = {'approved': False, 'problems': ['Bullet 1 states a prediction as fact.']}
+        def caller(system, text, task):
+            if task.endswith('summary'):
+                return json.dumps({'bullets': [{'text': 'The presenter says the market may rise.', 'evidence': [0]}]})
+            return json.dumps(problems)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'vid.rejected.json'
+            with self.assertRaisesRegex(ValueError, '^aggie_summary_review_failed$'):   # same error code
+                c.summarize([{'quote': 'I think the market could go higher from here into next year.'}],
+                            caller=caller, reject_path=path)
+            saved = json.loads(path.read_text())
+            self.assertEqual(len(saved['attempts']), 2)
+            self.assertEqual(saved['attempts'][1]['review'], problems)
+            self.assertIn('market may rise', saved['attempts'][0]['draft'])
+            self.assertEqual(saved['evidence'][0]['id'], 0)
+
     def test_negative_review_never_becomes_approved(self):
         claims = [{'quote': 'The presenter says this is uncertain, not a guaranteed result.'}]
         caller = Mock(side_effect=[

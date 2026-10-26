@@ -51,7 +51,7 @@ def validate_bullets(data, claims):
     return bullets
 
 
-def summarize(claims, caller=media.complete):
+def summarize(claims, caller=media.complete, reject_path=None):
     if not claims:
         return [], {'approved': True, 'reason': 'no relevant source claims'}
     evidence = [{'id': i, 'quote': c['quote']} for i, c in enumerate(claims)]
@@ -74,8 +74,12 @@ def summarize(claims, caller=media.complete):
               'copy passages or add tickers, prices or dates absent from the evidence. Return JSON '
               '{"bullets":[{"text":"The presenter ...", "evidence":[0]}]}.')
     feedback = ''
+    # S497 P4(a): keep every draft and the reviewer's findings. A rejection used to
+    # leave nothing, and diagnosing six failed nights took two diagnostic reruns.
+    attempts = []
     for attempt in range(2):
         raw = caller(system, json.dumps(evidence) + feedback, 'media:aggie:summary')
+        attempts.append({'attempt': attempt + 1, 'draft': raw[:6000]})
         try:
             bullets = validate_bullets(parse_json(raw), claims)
             review = parse_json(caller(
@@ -87,11 +91,16 @@ def summarize(claims, caller=media.complete):
                 '{"approved":true,"problems":[]} only if all bullets pass, otherwise false '
                 'with concrete problems.',
                 json.dumps({'evidence': evidence, 'bullets': bullets}), 'media:aggie:review'))
+            attempts[-1]['review'] = review
             if review.get('approved') is True and review.get('problems') == []:
                 return [b['text'] for b in bullets], {'approved': True, 'bullets': bullets, 'review': review}
             feedback = '\nRevise this rejected draft: ' + json.dumps({'bullets': bullets}) + '\nCorrect these review findings: ' + json.dumps(review)
         except (ValueError, TypeError, KeyError) as exc:
+            attempts[-1]['error'] = '%s: %s' % (type(exc).__name__, exc)
             feedback = '\nPrevious response was rejected: ' + type(exc).__name__ + ': ' + str(exc)
+    if reject_path is not None:
+        media.atomic_json(reject_path, {'failed_at': datetime.now(digest.NY).isoformat(),
+                                        'evidence': evidence, 'attempts': attempts})
     raise ValueError('aggie_summary_review_failed')
 
 
@@ -123,7 +132,7 @@ def build_video(video):
                            claims=True, metadata=video, report=report)
     if not claims and report.get('dropped'):
         raise ValueError('all_source_claims_failed_grounding')
-    bullets, review = summarize(claims)
+    bullets, review = summarize(claims, reject_path=cache.with_name(vid + '.rejected.json'))
     result = {'video': video, 'version': VERSION, 'bullets': bullets, 'stale': False,
               'review': review, 'source_sha256': hashlib.sha256(text.encode()).hexdigest(),
               'evidence_folder': report['folder'], 'model': media.MODEL,

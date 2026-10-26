@@ -122,6 +122,23 @@ class ScheduleChecks(unittest.TestCase):
         with patch.object(S.sys,'argv',['stock_schedule.py','--job','am']),patch.object(S,'run',return_value={'status':'preview','decision_review':'failed_paper_decision_review_failed'}),contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(S.main(),1)
 
+    def test_rejected_source_adoption_keeps_the_rejected_decisions(self):
+        # S497 P4(a): only the verdict was saved; the decisions it judged were lost.
+        import json
+        from pathlib import Path
+        trials=[{'status':'fetched','published':'2026-10-20','text':'Synthetic public source text.'}]
+        decision={'trial':0,'decision':'REJECT','reason':'An index page with no original dated content.','quote':''}
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.media,'complete',return_value=json.dumps({'decisions':[decision]})), \
+             patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["Reason overstates coverage."]}'):
+            folder=Path(td)/'run';folder.mkdir()
+            with self.assertRaisesRegex(ValueError,'^source_adoption_review_failed$'):
+                S.adopt_sources(trials,['need'],folder)
+            saved=json.loads((folder/'adoption-rejected.json').read_text())
+            self.assertEqual(saved['decisions'],[decision])
+            self.assertEqual(saved['review'],{'passed':False,'issues':['Reason overstates coverage.']})
+            self.assertEqual(oct((folder/'adoption-rejected.json').stat().st_mode)[-3:],'600')
+
     def test_http_success_without_dated_original_content_cannot_be_adopted(self):
         trials=[{'status':'fetched','text':QUOTE,'published':None}]
         choice={'trial':0,'decision':'ADOPT','reason':'Synthetic useful original article for a research question.','quote':QUOTE}

@@ -73,6 +73,25 @@ class OpinionTests(unittest.TestCase):
             triage.assert_called_once_with([])
             self.assertEqual(len(list(home.glob('*.receipt.json'))), 1)
 
+    def test_failed_triage_keeps_drafts_and_findings_in_private_evidence(self):
+        # S497 P4(a): the 10-25 failure left only "ValueError" behind.
+        import json
+        triage_json = json.dumps({'items': [{'index': 0, 'verdict': 'SKIP', 'kind': 'other',
+                                             'reason': 'Not useful for current lanes.', 'trial_evidence': ''}]})
+        finding = {'approved': False, 'problems': ['SKIP ignores a useful technique.']}
+        caller = Mock(side_effect=lambda system, text, task: triage_json if task.endswith('triage') else json.dumps(finding))
+        with self.assertRaisesRegex(ValueError, '^triage_review_failed$') as ctx:
+            r.triage([POST], caller=caller)
+        self.assertEqual([a['review'] for a in ctx.exception.attempts], [finding, finding])
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(r, 'fetch_posts', return_value=([POST], {})), \
+                patch.object(r, 'triage', side_effect=ctx.exception):
+            r.run(False, Path(tmp))
+            saved = json.loads(next(Path(tmp).glob('*-preview-evidence.json')).read_text())
+        self.assertEqual(saved['failure'], 'ValueError')
+        self.assertEqual(saved['failure_detail'], 'triage_review_failed')
+        self.assertEqual(saved['review_attempts'][1]['review'], finding)
+
     def test_preview_failed_review_does_not_claim_actionable_findings(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(r, 'fetch_posts', return_value=([POST], {})), \
