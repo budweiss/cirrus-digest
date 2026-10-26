@@ -254,7 +254,7 @@ def log_error_rates(now=None, log_dir=None):
     return findings
 
 
-def fleet_controller_health():
+def fleet_controller_status():
     """Independent observation only; never fail over or restart another controller."""
     try:
         r = subprocess.run([
@@ -263,10 +263,57 @@ def fleet_controller_health():
             "/usr/bin/python3 /home/buddy/cirrus-digest/fleet_status.py"],
             capture_output=True, text=True, timeout=15)
         if r.returncode:
-            return False
-        return json.loads(r.stdout).get("ok") is True
+            return None
+        data = json.loads(r.stdout)
+        return data if isinstance(data, dict) else None
     except Exception:
-        return False
+        return None
+
+
+def fleet_controller_health():
+    data = fleet_controller_status()
+    return bool(data) and data.get("ok") is True
+
+
+FLEET_DEGRADED = "CUMULUS fleet controller unavailable/degraded; observation only, no failover"
+
+
+def fleet_findings(data, now=None):
+    """S497 (Buddy, 2026-10-26): name what needs a human, with the exact fix.
+
+    A stuck fleet job (unknown/orphaned) blocked learnwatch for days three times
+    (S366, S406, S497) behind a vague "degraded" line, and the articles-infra
+    qualification lapsed twice with no warning. Wording uses job ids and the
+    expiry CLOCK time, never a countdown, so the per-episode Telegram dedupe in
+    alert_if_needed() fires once per problem, not every 30-minute pass.
+    "HUMAN NEEDED" makes the pass 'degraded' (⚠️), which is what these are.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    if not data:
+        return [FLEET_DEGRADED]
+    out = []
+    for job in data.get("unsettled") or []:
+        jid = str(job.get("id", "")) if isinstance(job, dict) else ""
+        if not re.fullmatch(r"[0-9a-f]{32}", jid):
+            continue
+        state = job.get("state", "?")
+        fix = ("runner fleet-reconcile args.id=" + jid if state in ("unknown", "suspected_stall", "cancelling")
+               else "runner fleet-abandon args.id=" + jid if state == "queued"
+               else "inspect with runner fleet-inspect")
+        out.append("CUMULUS fleet job %s is STUCK (%s), blocking its lane — HUMAN NEEDED: %s"
+                   % (jid[:8], state, fix))
+    for q in data.get("qualifications") or []:
+        exp = q.get("expires") if isinstance(q, dict) else None
+        if not isinstance(exp, (int, float)) or exp - now > 48 * 3600:
+            continue
+        out.append("%s research qualification %s %s — HUMAN NEEDED: renew with runner fleet-qualify-renew "
+                   "(research admission stops at expiry)"
+                   % (q.get("project", "?"), "EXPIRED" if exp <= now else "expires",
+                      datetime.fromtimestamp(exp).strftime("%a %m-%d %H:%M")))
+    if data.get("ok") is not True and not out:
+        out.append(FLEET_DEGRADED)
+    return out
 
 
 def check_and_heal():
@@ -277,8 +324,8 @@ def check_and_heal():
         state = {}
     st = launchctl_state()
     findings, repairs = [], []
-    if (PROJECT_DIR / "config/fleet-observer.enabled").exists() and not fleet_controller_health():
-        findings.append("CUMULUS fleet controller unavailable/degraded; observation only, no failover")
+    if (PROJECT_DIR / "config/fleet-observer.enabled").exists():
+        findings.extend(fleet_findings(fleet_controller_status()))
     try:
         from runtime_config import check_all
         check_all(Path(__file__).resolve().parent / "config")
