@@ -195,6 +195,10 @@ def decide(client: str, subject: str, reply_text: str, *,
     "queue" (everything else -- tier1/tier2/never at any turn, or tier0
     once the turn limit is passed). would_send mirrors action as a bool,
     for a caller that just wants a yes/no without the label.
+
+    The returned dict also carries `logged`: whether the shadow row was
+    actually written. S502: the S243 hook ignored that, so a ledger that never
+    appeared was indistinguishable from no traffic. It is not part of the row.
     """
     key = client_promises.thread_key(subject)
     turn = turn_count(client, subject, path) + 1
@@ -228,8 +232,7 @@ def decide(client: str, subject: str, reply_text: str, *,
         "would_send": action == "auto_send",
         "shadow": True,
     }
-    _append(record, path)
-    return record
+    return dict(record, logged=_append(record, path))
 
 
 def selftest() -> int:
@@ -323,6 +326,13 @@ def selftest() -> int:
         ck("the shadow ledger recorded every decision made above", len(ents) == 6)
         ck("every logged decision is explicitly marked shadow=True (never a real send)",
            all(e.get("shadow") is True for e in ents))
+        ck("a written decision reports logged=True, and the flag is not stored in the row",
+           d1["logged"] is True and all("logged" not in e for e in ents))
+        # S502: a directory where the ledger should be makes every write fail.
+        with tempfile.TemporaryDirectory() as blocked:
+            dx = decide("bill", "Re: anything", "Thanks.", path=Path(blocked))
+        ck("a failed ledger write reports logged=False instead of passing silently",
+           dx["logged"] is False and dx["action"] == "auto_send")
     finally:
         if tmp.exists():
             tmp.unlink()

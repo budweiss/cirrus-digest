@@ -390,6 +390,76 @@ class IntakeTests(MemoryTests):
         self.assertEqual(row["state"], "delivered")
         self.assertIn("Thursday", row["answer"])
 
+    def _deliver(self, message_id):
+        """The real email adapter with a confirmed fake send. -> (result, send, ledger)"""
+        import task_solver as ts
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": message_id,
+               "body_head": "When is the planning meeting?", "kind": "answer", "title": "Meeting"}
+        good = json.loads(output())
+        good["evidence"][0]["source"] = "project-record"
+        model = FakeModels([("ollama", json.dumps(good)), ("ollama", json.dumps(good))])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "try_entity_kb_answer", return_value=SOURCE["note"]), \
+             patch("workflow_mail_sources.collect", return_value={}), \
+             patch.object(ts, "_send_mail", return_value=True) as send, \
+             patch.object(ts, "_record_promise"), \
+             patch.object(ts.dev_loop, "ledger_append") as ledger, \
+             patch.object(aw, "Models", return_value=model):
+            # Non-empty creds, so a hook that passed them on would reach promise_detect.
+            creds = {"outlook_email": "fixture@example.invalid"}
+            result = aw.solve_and_answer(rec, creds, "fixture@example.invalid", "Meeting")
+            aw.solve_and_answer(rec, creds, "fixture@example.invalid", "Meeting")
+        return result, send, ledger
+
+    def test_delivered_reply_is_shadow_observed_once(self):
+        import switchboard
+        live = switchboard.LEDGER
+        before = live.stat().st_mtime_ns if live.exists() else None
+        with patch("promise_detect.detect_promise") as detect:
+            result, send, ledger = self._deliver("mail-shadow")
+        rows = [json.loads(line) for line in
+                (self.root / "logs" / "switchboard-shadow.jsonl").read_text().splitlines()]
+        self.assertTrue(result["answered"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(len(rows), 1, "one observation per delivered reply; the replay adds none")
+        self.assertEqual((rows[0]["client"], rows[0]["turn"], rows[0]["shadow"]),
+                         ("fixture-client", 1, True))
+        self.assertIn("regex-only", rows[0]["reason"])
+        detect.assert_not_called()
+        self.assertEqual(ledger.call_args[0][0]["switchboard_shadow"], "logged")
+        self.assertEqual(live.stat().st_mtime_ns if live.exists() else None, before,
+                         "a test must never write the live shadow ledger (T32)")
+
+    def test_shadow_failure_is_visible_and_never_blocks_delivery(self):
+        import switchboard
+        (self.root / "logs" / "switchboard-shadow.jsonl").mkdir(parents=True)
+        result, send, ledger = self._deliver("mail-blocked")
+        self.assertTrue(result["answered"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(self.m.get(result["request_id"])["state"], "delivered")
+        self.assertEqual(ledger.call_args[0][0]["switchboard_shadow"], "write-failed")
+        with patch.object(switchboard, "decide", side_effect=RuntimeError("fixture")):
+            result, send, ledger = self._deliver("mail-raises")
+        self.assertTrue(result["answered"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(ledger.call_args[0][0]["switchboard_shadow"], "error:RuntimeError")
+
+    def test_every_client_answer_route_reaches_switchboard(self):
+        """S498: the S243 hook sat in a dispatch branch the enabled flag routed around."""
+        src = Path(aw.__file__).parent
+
+        def calls(module, attr):
+            tree = ast.parse((src / f"{module}.py").read_text())
+            return {n.func.value.id for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == attr and isinstance(n.func.value, ast.Name)}
+        # intake_information answers Buddy's own owner questions, not client mail.
+        self.assertEqual(calls("intake", "solve_and_answer"),
+                         {"answer_workflow", "task_solver", "intake_information"},
+                         "a new answer route needs a Switchboard decision before it ships")
+        for module in ("answer_workflow", "task_solver"):
+            self.assertIn("switchboard", calls(module, "decide"), module)
+
     def test_unconfirmed_email_delivery_is_not_retried(self):
         import task_solver as ts
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "mail-2",
@@ -405,6 +475,8 @@ class IntakeTests(MemoryTests):
         self.assertFalse(second["answered"])
         self.assertEqual(send.call_count, 1)
         self.assertEqual(self.m.get(row["id"])["state"], "delivery_unknown")
+        self.assertFalse((self.root / "logs" / "switchboard-shadow.jsonl").exists(),
+                         "an unconfirmed reply is not an observation")
 
 
 if __name__ == "__main__":

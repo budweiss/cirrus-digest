@@ -424,6 +424,14 @@ def compose():
         # neutral in summarize(), and a job whose last run succeeded is ✅.
         bad = [l[1:].strip(" ️").split(":", 1)[0] for l in jlines if l.startswith("⚠")]
         att.append(f"scheduled job(s) failed or overdue: {', '.join(bad) or 'see list'} — see Scheduled jobs")
+    # S502: a delivered reply Switchboard did not record is a lost observation.
+    try:
+        import client_watch
+        _sb_att = client_watch.shadow_brief()[1]
+    except Exception as e:
+        _sb_att = f"Switchboard shadow coverage UNKNOWN: client_watch could not load ({type(e).__name__})"
+    if _sb_att:
+        att.append(_sb_att)
 
     healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 

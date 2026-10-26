@@ -301,6 +301,17 @@ def compose():
             lines += events[client]
         lines.append("")
 
+    # S502: only appears on a day a reply went out, or when coverage is unknown.
+    try:
+        import client_watch
+        shadow_items = client_watch.shadow_brief()[0]
+    except Exception as e:
+        shadow_items = [f"⚠️ Switchboard shadow coverage UNKNOWN: client_watch could not load ({type(e).__name__})"]
+    if shadow_items:
+        lines.append("**Switchboard shadow (delivered replies, 24h)**")
+        lines += [f"  {item}" for item in shadow_items]
+        lines.append("")
+
     lines.append("**Skywarden (CUMULUS supervisor)**")
     lines += sky
     try:

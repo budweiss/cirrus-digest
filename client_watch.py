@@ -199,6 +199,49 @@ def stalled_threads(path=None, hours: int = 48) -> list:
     return sorted(stalls, key=lambda s: s["age_hours"], reverse=True)
 
 
+# ── Check 3c: did Switchboard actually observe the replies it shadows? ───────
+
+def shadow_coverage(path=None, hours: int = 24) -> dict:
+    """{"observed": n, "failed": [...]} for delivered answer-workflow replies.
+
+    S502. answer_workflow stamps `switchboard_shadow` on its auto-answered row:
+    "logged", or why the shadow row was not written. Rows without the stamp are
+    routes Switchboard does not observe (owner questions, the legacy solver)
+    and are skipped, not counted as failures. S498 is why this exists: the
+    shadow ledger never appeared for five weeks and nothing said so.
+    """
+    observed, failed = 0, []
+    for r in read_ledger(path, hours=hours):
+        if r.get("event") != "auto-answered" or "switchboard_shadow" not in r:
+            continue
+        if r["switchboard_shadow"] == "logged":
+            observed += 1
+        else:
+            failed.append({"requester": r.get("requester"), "at": r["_ts"].strftime(TS_FMT),
+                           "status": r["switchboard_shadow"]})
+    return {"observed": observed, "failed": failed}
+
+
+def shadow_brief(path=None, hours: int = 24):
+    """(items, attention) for a daily brief. A quiet day returns ([], None), so a
+    line only appears when a reply went out; a failed observation or an
+    unreadable ledger becomes attention, never silence."""
+    try:
+        cov = shadow_coverage(path, hours)
+    except Exception as e:
+        msg = f"Switchboard shadow coverage UNKNOWN: self-changes ledger unreadable ({type(e).__name__})"
+        return [f"⚠️ {msg}"], msg
+    items = []
+    if cov["observed"]:
+        items.append(f"✅ Switchboard shadow recorded {cov['observed']} delivered reply(s) ({hours}h)")
+    if not cov["failed"]:
+        return items, None
+    statuses = ", ".join(sorted({f["status"] for f in cov["failed"]}))
+    msg = (f"Switchboard shadow NOT recorded for {len(cov['failed'])} delivered reply(s) "
+           f"({statuses}); the observation period is losing data")
+    return items + [f"⚠️ {msg}"], msg
+
+
 # ── Check 5: is intake actually WORKING, not merely running? ─────────────────
 
 INTAKE_LOG = APP_DIR / "logs" / "intake.log"
@@ -565,6 +608,29 @@ def selftest() -> int:
                        '"answer_skeleton_sha": "s"}\n')
         check("a corrupt line is skipped and the rest still folds",
               len(duplicate_answers(led)) == 1)
+
+        # ---- shadow_coverage / shadow_brief (S502) ------------------------
+        write([
+            {"ts": ts(2), "event": "auto-answered", "requester": "bill", "switchboard_shadow": "logged"},
+            {"ts": ts(1), "event": "auto-answered", "requester": "bill", "switchboard_shadow": "write-failed"},
+            # owner question / legacy route: no stamp, so not Switchboard's to observe
+            {"ts": ts(1), "event": "auto-answered", "requester": "buddy"},
+            {"ts": ts(30), "event": "auto-answered", "requester": "bill", "switchboard_shadow": "error:OSError"},
+        ])
+        cov = shadow_coverage(led)
+        check("shadow coverage counts recorded replies and lists failed ones, inside the window",
+              cov["observed"] == 1 and [f["status"] for f in cov["failed"]] == ["write-failed"])
+        items, attention = shadow_brief(led)
+        check("a failed shadow write becomes a brief attention item, not silence",
+              attention and "NOT recorded for 1" in attention and len(items) == 2)
+        write([{"ts": ts(1), "event": "auto-answered", "requester": "bill", "switchboard_shadow": "logged"}])
+        check("a clean day reports the recorded count and raises nothing",
+              shadow_brief(led) == (["✅ Switchboard shadow recorded 1 delivered reply(s) (24h)"], None))
+        write([{"ts": ts(1), "event": "auto-answered", "requester": "buddy"}])
+        check("a quiet day (no observed route) adds no brief line", shadow_brief(led) == ([], None))
+        items, attention = shadow_brief(gone)
+        check("an unreadable ledger is UNKNOWN attention, not a clean brief",
+              attention and "UNKNOWN" in attention and items)
 
         # ---- high_value_overwrites --------------------------------------
         db = Path(td) / "kb.sqlite3"

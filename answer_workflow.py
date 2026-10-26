@@ -350,11 +350,28 @@ def _solve_and_answer(rec, creds, to_addr, subject):
         memory.review_packet(memory.get(row["id"]))
         ts._fallback_to_ticket(dict(rec, privacy=row["privacy"]))
         return dict(result, reason="Delivery unconfirmed; held to prevent a duplicate send.")
+    shadow = _switchboard_shadow(root, rec["requester"], subj, row["answer"])
     ts._record_promise(rec, row["answer"], creds, subject)
     ts.dev_loop.ledger_append({"event": "auto-answered", "requester": rec["requester"],
-        "title": rec.get("title"), "request_id": row["id"],
+        "title": rec.get("title"), "request_id": row["id"], "switchboard_shadow": shadow,
         "thread": row["thread"], **ts._answer_fingerprint(row["answer"])}, root)
     return dict(result, answered=True, reason=row["meta"].get("reason", "Verified answer."))
+
+
+def _switchboard_shadow(root, client, subject, answer):
+    """S502, SHADOW ONLY: log what Switchboard would have decided about a reply
+    that was already delivered. It runs after the confirmed send, so it cannot
+    gate, delay or alter delivery, and it never raises. No creds: regex-only,
+    because S463 keeps model bookkeeping off this route. The status is stamped
+    on the auto-answered row for client_watch.shadow_coverage, so a failed write
+    is visible rather than a missing ledger that reads like no traffic (S498)."""
+    try:
+        import switchboard
+        decision = switchboard.decide(client, subject, answer,
+                                      path=Path(root) / "logs" / "switchboard-shadow.jsonl")
+        return "logged" if decision.get("logged") else "write-failed"
+    except Exception as exc:
+        return "error:" + type(exc).__name__
 
 
 def selftest():
