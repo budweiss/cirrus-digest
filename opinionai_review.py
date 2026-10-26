@@ -204,6 +204,15 @@ def run(live=False, home=REVIEW_DIR, at=None):
         media.atomic_json(home / (date + ('-evidence' if live else '-preview-evidence') + '.json'),
                           {'posts': posts, 'triage': items, 'failure': failure, 'coverage': coverage,
                            'failure_detail': detail, 'review_attempts': attempts})
+        if failure:
+            # S497 P5: non-private summary (fixed labels, counts, identifier codes only).
+            import failure_summary
+            failure_summary.write(home / (date + ('' if live else '-preview') + '-failure-summary.json'),
+                                  failure_summary.build(
+                                      'opinionaireview', failure_summary.error_code(detail or failure),
+                                      issues=[p for a in attempts or [] for p in (a.get('review') or {}).get('problems') or []],
+                                      errors=[a['error'] for a in attempts or [] if a.get('error')],
+                                      attempts=len(attempts or [])))
         if not live:
             return {'status': 'preview', 'path': str(path), 'posts': len(posts), 'failure': failure,
                     'coverage': coverage}

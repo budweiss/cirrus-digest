@@ -566,6 +566,11 @@ def adopt_sources(trials,questions,folder):
             # S497 P4(a): keep the decisions the reviewer rejected beside its verdict
             # (private folder, stays on the server) so a failure is diagnosable.
             atomic(folder/'adoption-rejected.json',{'decisions':choices,'review':checked})
+            # S497 P5: a NON-private summary (fixed labels, counts) beside it, so the
+            # failure can be triaged without moving private text off the server.
+            import failure_summary
+            failure_summary.write(folder/'failure-summary.json',failure_summary.build(
+                'stockdiscovery','source_adoption_review_failed',issues=checked.get('issues',[]),attempts=1))
             raise ValueError('source_adoption_review_failed')
     return choices
 
