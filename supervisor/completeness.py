@@ -544,6 +544,9 @@ NO_ZERO_STATE = {
     "foundationrenewalauto": "Unattended renewal records explicit pass/hold/failure; no due records is valid and cadence is checked separately.",
     "immaculatewednesdayreport": "Called after games by immaculatetick, not a Wednesday timer. Sent, off-season and duplicate-suppressed are valid; failed send sets ok=False. Parent tick owns cadence.",
     "fleetcontroller": "Live fleet sidecar freshness and both worker identities are validated by the fixed status feed.",
+    # S501: the two S497 timers were reported as 'no completeness rule for'.
+    "fleetautoreconcile": "Clearing nothing is its normal run ('0 cleared'); a refusal or stale controller status sets ok=False. A job it leaves is escalated by cirrus_watchdog's stuck-job HUMAN NEEDED finding. Cadence (1 h) is checked separately.",
+    "fleetqualify": "'not due', 'deferred while a fleet job runs' and 'renewed' are all correct runs; insufficient evidence or failed verification sets ok=False, and cirrus_watchdog warns 24 h before expiry. Cadence (13 h) is checked separately.",
     "runtimeconfig": "Host configuration is validated live by the status feed.",
     "accesscheck": "Connectivity is binary; failures and cadence are checked.",
     "intake": "A quiet inbox is valid; successful polls and failure status are checked.",
@@ -1360,6 +1363,14 @@ def selftest() -> bool:
            {"cumulusdailybrief": {"ok": True, "epoch": _NOW_E, "note": "sent"}}))
     ck("no job is both exempt AND ruled (that would be a contradiction)",
        not (set(NO_ZERO_STATE) & set(RULES)))
+    # S501: Skywarden's 10-26 pass said "no completeness rule for:
+    # fleetautoreconcile, fleetqualify" -- the S497 timers' real notes.
+    ck("the S497 fleet timers are explicitly exempt, not silently unmonitored (S501)",
+       unmonitored_jobs({
+           "fleetautoreconcile": {"ok": True, "epoch": _NOW_E,
+                                  "note": "0 cleared, 0 refused, 0 left for a human"},
+           "fleetqualify": {"ok": True, "epoch": _NOW_E,
+                            "note": "not due; expires Sat 10-31 07:08"}}) == [])
 
     # The whole point: nothing on CUMULUS is unmonitored any more.
     _live = {j: {"ok": True, "epoch": _NOW_E, "note": "x"} for j in
