@@ -28,6 +28,7 @@ sys.modules["runtime_config"] = _stub
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import morning_brief as mb  # noqa: E402
 import job_status as real_job_status  # noqa: E402  (before any test swaps the module)
+import client_watch  # noqa: E402
 
 
 def _no_send(*a, **k):
@@ -57,6 +58,26 @@ class MorningBriefScenarios(unittest.TestCase):
         p = patch.dict(sys.modules, {"job_status": self.ledger})
         p.start()
         self.addCleanup(p.stop)
+        # S502: the Switchboard shadow input is a scratch ledger, never the live one.
+        self.changes = self.tmp / "self-changes.jsonl"
+        self.write_changes({"event": "user-intake"})
+        p = patch.object(client_watch, "LEDGER", self.changes)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def write_changes(self, *rows):
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.changes.write_text("".join(json.dumps(dict(r, ts=now)) + "\n" for r in rows))
+
+    def test_switchboard_shadow_failure_is_attention(self):
+        self.write_changes({"event": "auto-answered", "switchboard_shadow": "logged"},
+                           {"event": "auto-answered", "switchboard_shadow": "error:OSError"})
+        body = self.body()
+        self.assertIn("⚠️ Needs a look", body)
+        self.assertIn("- Switchboard shadow NOT recorded for 1 delivered reply(s) (error:OSError)", body)
+        self.write_changes({"event": "auto-answered", "switchboard_shadow": "logged"})
+        self.assertIn("✅ CIRRUS healthy", self.body())
 
     def body(self):
         subject, body = mb.compose()

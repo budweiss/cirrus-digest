@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
+import client_watch
 import cumulus_daily_brief as daily
 import entity_kb as kb
 import entity_kb_weekly_digest as weekly
@@ -22,7 +23,9 @@ class ReportScenarios(unittest.TestCase):
         self.stack=contextlib.ExitStack();self.addCleanup(self.stack.close)
         for target in ['socket.socket.connect','socket.create_connection','urllib.request.urlopen','subprocess.run','subprocess.Popen','smtplib.SMTP','smtplib.SMTP_SSL']:
             self.stack.enter_context(patch(target,side_effect=AssertionError('external operation forbidden')))
-        for mod,name,value in [(daily,'JOBS_STATUS_PATH',self.jobs),(daily,'SKY_STATE_DIR',self.sky),(daily,'TODAY','2026-09-28'),(daily,'datetime',Clock),(daily,'CREDS_PATH',self.root/'absent-creds'),(kb,'DATA_DIR',self.root/'db'),(weekly,'datetime',Clock),(weekly,'CREDS_PATH',self.root/'absent-creds')]:
+        self.changes=self.root/'self-changes.jsonl'  # S502: the brief's Switchboard input, never the live ledger
+        self.changes.write_text(json.dumps({'ts':datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'event':'user-intake'})+'\n')
+        for mod,name,value in [(client_watch,'LEDGER',self.changes),(daily,'JOBS_STATUS_PATH',self.jobs),(daily,'SKY_STATE_DIR',self.sky),(daily,'TODAY','2026-09-28'),(daily,'datetime',Clock),(daily,'CREDS_PATH',self.root/'absent-creds'),(kb,'DATA_DIR',self.root/'db'),(weekly,'datetime',Clock),(weekly,'CREDS_PATH',self.root/'absent-creds')]:
             self.stack.enter_context(patch.object(mod,name,value))
         self.stack.enter_context(patch.object(daily,'_sudo_cat',side_effect=self.read_sky))
         self.stack.enter_context(patch.object(daily,'send_telegram',side_effect=AssertionError('send forbidden')))
@@ -45,6 +48,13 @@ class ReportScenarios(unittest.TestCase):
         body=self.output();self.assertEqual(body.count('✅'),4);self.assertEqual(body.count('valid quiet: no changes'),4)
         self.assertIn('1 routine check(s), 0 anomaly/issue flag(s), 0 escalation(s)',body)
         self.assertIn('Unresolved incidents: 0',body);self.assertIn('$0.00 spent today',body);self.assertNotIn('UNKNOWN',body)
+        self.assertNotIn('Switchboard',body)
+    def test_switchboard_shadow_failure_is_shown(self):
+        now=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.changes.write_text(''.join(json.dumps({'ts':now,'event':'auto-answered','requester':'fixture','switchboard_shadow':s})+'\n' for s in ('logged','write-failed')))
+        body=self.output()
+        self.assertIn('**Switchboard shadow (delivered replies, 24h)**',body)
+        self.assertIn('⚠️ Switchboard shadow NOT recorded for 1 delivered reply(s) (write-failed)',body)
     def test_mixed_daily_weekly_failure_stale_missing(self):
         self.status['billsnow']['last_run']='2026-09-21 04:00';self.status['billnewdev'].update(ok=False,note='source artifact missing');del self.status['pedagogy'];self.jobs.write_text(json.dumps(self.status))
         body=self.output();self.assertEqual(body.count('✅'),1)
