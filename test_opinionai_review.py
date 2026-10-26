@@ -93,6 +93,23 @@ class OpinionTests(unittest.TestCase):
             self.assertFalse(record.call_args.args[1])
             self.assertIn('needs attention', notify.call_args.args[0])
 
+    def test_failed_dispatch_keeps_reason_and_remote_delivery_status(self):
+        # S497: 10-25 recorded only "RuntimeError" for a run whose email WAS
+        # accepted by both recipients (the remote triage review had failed).
+        # Proving that took a server receipt; the ledger must say it directly.
+        import json, subprocess
+        with tempfile.TemporaryDirectory() as tmp, patch.object(r, 'REVIEW_DIR', Path(tmp)), \
+                patch.object(r.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1,
+                             '{"status":"sent","recipients":2,"failure":"ValueError"}', '')), \
+                patch('job_status.record') as record, patch('vendor_mail_watch.telegram', return_value=True):
+            result = r.dispatch(True)
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['detail'], 'remote_run_failed')
+            self.assertEqual(result['remote'], {'status': 'sent', 'recipients': 2, 'failure': 'ValueError'})
+            note = json.loads(record.call_args_list[0].args[2])
+            self.assertFalse(record.call_args_list[0].args[1])
+            self.assertEqual((note['detail'], note['remote']['recipients']), ('remote_run_failed', 2))
+
     def test_duplicate_dispatch_is_quiet_and_keeps_confirmed_delivery(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp, patch.object(r, 'REVIEW_DIR', Path(tmp)), \

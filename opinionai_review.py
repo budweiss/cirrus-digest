@@ -229,7 +229,11 @@ def dispatch(live=False):
             if live and result.get('recipients') != 2:
                 raise RuntimeError('both_recipients_not_confirmed')
         except Exception as exc:
-            result = {'status': 'failed', 'failure': type(exc).__name__}
+            # S497: keep WHY and what the remote run reported, not only the type.
+            # 10-25 recorded a bare "RuntimeError" for a run whose email both
+            # recipients had accepted; only the server receipt could prove it.
+            result = {'status': 'failed', 'failure': type(exc).__name__, 'detail': str(exc)[:200],
+                      'remote': {k: result[k] for k in ('status', 'recipients', 'failure') if k in result}}
         ok = result['status'] != 'failed' and not result.get('failure')
         if live:
             job_status.record('opinionaireview', ok, json.dumps(result))
