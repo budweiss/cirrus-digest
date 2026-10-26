@@ -39,6 +39,8 @@ class CollectionTests(unittest.TestCase):
         self.assertIn('neutral verb', system)
         self.assertIn('use "alleges" only for an accusation', system)
         self.assertNotIn('including religious predictions and allegations', system)
+        # Buddy 2026-10-26: prophecy is left out of Aggie's summaries entirely.
+        self.assertIn('Leave out religious or prophetic predictions entirely', system)
 
     def test_negative_review_never_becomes_approved(self):
         claims = [{'quote': 'The presenter says this is uncertain, not a guaranteed result.'}]

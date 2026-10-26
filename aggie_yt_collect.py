@@ -66,6 +66,9 @@ def summarize(claims, caller=media.complete):
               'Attribute every sentence to the presenter with a neutral verb (says, notes, expects, '
               'recommends); use "alleges" only for an accusation against a named person or organisation. '
               'Predictions and accusations are the presenter\'s views, not established facts. '
+              # S497, Buddy 2026-10-26: leave prophecy out (Money On The Move mixes market
+              # views with religious prophecy, which the unchanged reviewer rejects).
+              'Leave out religious or prophetic predictions entirely; summarise only market and policy points. '
               'Never give the reader advice. Preserve '
               'negation, conditions and uncertainty. Omit ads and unsupported conclusions. Do not '
               'copy passages or add tickers, prices or dates absent from the evidence. Return JSON '
