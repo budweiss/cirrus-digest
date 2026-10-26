@@ -14,7 +14,23 @@ WORKERS={
  'cumulus1-gptoss':{'model':'gpt-oss:120b','endpoint':'http://127.0.0.1:8000','min_available_mib':8192},
  'cumulus2-qwen':{'model':'qwen3.8-27b-fp8','endpoint':'http://192.168.100.11:8000','min_available_mib':8192}}
 # S385 reviewed local fixtures and archived article replay; scope unchanged.
-QUALIFIED_UNTIL=1793444894.746  # renewed 2026-10-24; evidence: s418-fleet-renewal
+# S497 P8: the qualification date lives in a STATE file outside version control, so
+# a renewal never edits this tracked file. The S418/S493 code bumps left the CUMULUS
+# checkout modified and blocked the next deploy (T155). Both copies (checkout and the
+# controller's installed copy) read the same file, so they always agree. This constant
+# is only the fallback until the first state-file renewal (fleet_qualify.py).
+QUALIFIED_UNTIL_DEFAULT=1793444894.746  # renewed 2026-10-24; evidence: s418-fleet-renewal
+QUALIFICATION_STATE=Path('/home/buddy/model-serving/fleet/state-v2/qualification.json')
+
+
+def qualified_until(path=None):
+    try:
+        value=json.loads(Path(path or QUALIFICATION_STATE).read_text())['qualified_until']
+        if isinstance(value,(int,float)) and not isinstance(value,bool) and value>0:
+            return float(value)
+    except (OSError,ValueError,KeyError,TypeError):
+        pass
+    return QUALIFIED_UNTIL_DEFAULT
 MESSAGES=[{'role':'system','content':'Extract only supplied facts. Reply with a JSON object only, keys sample (integer), control_group (boolean), trial_date (null if absent). No markdown.'},
  {'role':'user','content':'S318 SYNTHETIC TEST ONLY. The study included 12 participants and had no control group. No trial date was supplied.'}]
 
@@ -25,11 +41,12 @@ def request(endpoint,path,payload=None,timeout=120):
 
 
 def policy():
-    p = {'workers':WORKERS,'projects':{w:{'workers':[w],'model_ids':{w:s['model']},'validator':'fixture_json','max_retries':2,'stall_seconds':150,'heartbeat_seconds':30,'max_input_bytes':2048,'max_output_tokens':1024,'qualification_until':QUALIFIED_UNTIL,'contract':'synthetic-v1','mode':'pilot','owner':'fleet-pilot','resource':w,'delivery':'none'} for w,s in WORKERS.items()}}
+    until = qualified_until()
+    p = {'workers':WORKERS,'projects':{w:{'workers':[w],'model_ids':{w:s['model']},'validator':'fixture_json','max_retries':2,'stall_seconds':150,'heartbeat_seconds':30,'max_input_bytes':2048,'max_output_tokens':1024,'qualification_until':until,'contract':'synthetic-v1','mode':'pilot','owner':'fleet-pilot','resource':w,'delivery':'none'} for w,s in WORKERS.items()}}
     p['projects']['articles-infra'] = {'workers':['cumulus2-qwen'],
       'model_ids':{'cumulus2-qwen':'qwen3.8-27b-fp8'},'validator':'media_manifest',
       'max_retries':2,'stall_seconds':600,'heartbeat_seconds':30,'max_input_bytes':2000000,
-      'request_context_bound':10000,'max_output_tokens':8192,'qualification_until':QUALIFIED_UNTIL,
+      'request_context_bound':10000,'max_output_tokens':8192,'qualification_until':until,
       'contract':'media-s307-v3','mode':'pilot','owner':'fleet-media','resource':'articles-infra',
       'delivery':'none'}
     return p

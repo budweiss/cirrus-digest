@@ -42,6 +42,8 @@ class StatusTests(unittest.TestCase):
   self.assertTrue(any('EXPIRED' in x for x in w.fleet_findings(data,now)))
   far={'ok':True,'unsettled':[],'qualifications':[{'project':'articles-infra','expires':now+3600*72}]}
   self.assertEqual(w.fleet_findings(far,now),[])                         # healthy and >48 h: quiet
+  auto=dict(far,qualifications=[{'project':'articles-infra','expires':now+3600*30}])
+  self.assertEqual(w.fleet_findings(auto,now),[])                        # 24-48 h: automatic renewal's turn (P2)
   self.assertEqual(w.fleet_findings({'ok':False},now),[w.FLEET_DEGRADED])  # unexplained degradation stays visible
   self.assertEqual(w.fleet_findings(None,now),[w.FLEET_DEGRADED])
  def test_watchdog_gives_the_auto_clearer_time_before_alerting(self):

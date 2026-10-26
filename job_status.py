@@ -179,6 +179,8 @@ CADENCE_H = {
     # S497: CUMULUS user timer every 10 min (fleet-autoreconcile.timer); watched from
     # day one so a clearer that stops running, or a stale controller, is visible.
     "fleetautoreconcile": 1,
+    # S497 P2: fleet_qualify.timer 10:30 + 22:30 on CUMULUS (renews on evidence).
+    "fleetqualify": 13,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -197,6 +199,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciabrief",                         # S95, runs on CUMULUS
                  "alopeciaagent",                         # S177, runs on CUMULUS
                  "fleetautoreconcile",                    # S497, CUMULUS user timer
+                 "fleetqualify",                          # S497, CUMULUS user timer
                  "foundationrenewalcumulus",              # S316, runs on CUMULUS
                  "immaculatetick",                         # S253, runs on CUMULUS
                  # S254: runs on CUMULUS since S169 but was never listed here,

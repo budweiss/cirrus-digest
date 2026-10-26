@@ -280,6 +280,7 @@ FLEET_DEGRADED = "CUMULUS fleet controller unavailable/degraded; observation onl
 # no-delivery stuck jobs. The human alert waits this long so it only fires when that
 # did not happen (delivering project, busy worker, daily cap, refused step).
 STUCK_GRACE_S = 40 * 60
+QUAL_ALERT_S = 24 * 3600   # fleet_qualify.py gets the first 24 h of its 48 h window
 
 
 def fleet_findings(data, now=None, seen=None):
@@ -313,13 +314,13 @@ def fleet_findings(data, now=None, seen=None):
                    % (jid[:8], state, fix))
     for q in data.get("qualifications") or []:
         exp = q.get("expires") if isinstance(q, dict) else None
-        if not isinstance(exp, (int, float)) or exp - now > 48 * 3600:
+        if not isinstance(exp, (int, float)) or exp - now > QUAL_ALERT_S:
             continue
-        # fleet-qualify-renew deliberately will not extend an UNEXPIRED qualification
-        # ("an existing live renewal wins", S418), so the advice is: renew once it
-        # lapses, before the next nightly learnwatch run (01:15) needs admission.
-        out.append("%s research qualification %s %s — HUMAN NEEDED: run runner fleet-qualify-renew once it "
-                   "lapses, before learnwatch's next 01:15 run (the command cannot extend it early)"
+        # S497 P2: fleet_qualify.py renews automatically on evidence from 48 h out,
+        # twice a day. Reaching 24 h means it has not managed to -- usually because
+        # the evidence gate failed; its ledger row says why.
+        out.append("%s research qualification %s %s and automatic renewal has not succeeded — HUMAN NEEDED: "
+                   "see the fleetqualify ledger note; manual override: runner fleet-qualify-renew"
                    % (q.get("project", "?"), "EXPIRED" if exp <= now else "expires",
                       datetime.fromtimestamp(exp).strftime("%a %m-%d %H:%M")))
     if seen is not None:
