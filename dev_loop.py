@@ -298,6 +298,32 @@ def _ticket_path(project_dir):
     return base / "ticket-queue.jsonl"
 
 
+# S497 P9 (Buddy, 2026-10-26): these exact messages are POLICY holds that our own
+# routing/qualification/budget code raises on purpose -- an approval under review, a
+# lapsed qualification, a spend cap. They are not code defects, so a repair ticket
+# built from one sends the dev-agent to "fix" a deliberate hold: Skywarden's
+# alopecia-brief tickets failed as cannot-build on 10-23 and 10-25. Such a ticket
+# goes to a Cowork session (status 'session'), never the unattended build queue.
+# Exact phrases only (each verified to exist in the raising code), so a real bug
+# that merely mentions approvals is still built.
+POLICY_HOLD_MARKERS = (
+    "foundation route requires review or deferral",          # ensemble.py
+    "capability selection unavailable or requirements unmet",  # capability_dispatch.py
+    "foundation contract changed; review required",          # capability_registry.py
+    "no validated model meets requirements",                 # capability_selection.py
+    "qualification expired",                                 # fleet_queue / fleet_controller
+    "aggregate budget denied",                               # ensemble.py
+    "route budget exhausted",                                # ensemble.py
+    "project reviewer limit exceeded",                       # ensemble.py
+)
+
+
+def policy_hold(text: str):
+    """The first policy-hold marker in `text`, or None."""
+    low = (text or "").lower()
+    return next((m for m in POLICY_HOLD_MARKERS if m in low), None)
+
+
 def ticket_create(requester: str, projects, title: str, detail: str = "",
                   origin: str = "ticket", project_dir=None, meta: dict = None):
     """Classify + append one end-user ticket. Returns the ticket dict.
@@ -317,6 +343,11 @@ def ticket_create(requester: str, projects, title: str, detail: str = "",
         status = "session"
     else:
         status = "queued"
+    hold = policy_hold(detail + "\n" + title)
+    if status == "queued" and hold:
+        status = "session"
+        reason = ("policy hold, not a code defect (%s): Cowork review, not the build queue; "
+                  % hold) + reason
     ticket = {
         "id": f"ticket-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
