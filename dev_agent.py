@@ -672,6 +672,54 @@ _SAFE_MAIN_IMPORTS = {"sys"}
 _EXIT_CALLS = {"exit", "SystemExit"}
 
 
+def _dash_dispatch(text) -> bool:
+    """True if the module TESTS for "--selftest" (or declares it to argparse).
+
+    S501, measured on CIRRUS: _DISPATCH_DASH_RX matched ANY quoted "--selftest",
+    so five halftime modules were invoked as `--selftest` because of
+        if not any(arg in sys.argv for arg in ("selftest", "--selftest", ...))
+    (a guard) or `main(["--selftest"]) == 2` (a test that the flag is REFUSED).
+    That ran their production path, which fails without credentials, so the
+    baseline marked them "already red" and gate 3 excused them on every build:
+    a gate that never looked. Their real `selftest` suites pass.
+
+    Counted only where the literal is an operand of ==, !=, in, not in (alone
+    or inside a tuple/list/set), or the first argument of add_argument(). A
+    comprehension's iterable, a call argument and a string fixture are not.
+    Unparseable source falls back to the old regex; gate 1 reports the syntax.
+    """
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return bool(_DISPATCH_DASH_RX.search(text))
+
+    def flag(n):
+        return isinstance(n, ast.Constant) and n.value == "--selftest"
+
+    def holds(n):
+        if flag(n):
+            return True
+        if isinstance(n, (ast.Tuple, ast.List, ast.Set)):
+            # one level down covers `sys.argv[1:] in (["selftest"], ["--selftest"])`
+            return any(flag(e) or (isinstance(e, (ast.Tuple, ast.List))
+                                   and any(flag(x) for x in e.elts))
+                       for e in n.elts)
+        return False
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Compare)
+                and all(isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn))
+                        for op in node.ops)
+                and any(holds(x) for x in [node.left] + node.comparators)):
+            return True
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args and flag(node.args[0])):
+            return True
+    return False
+
+
 def _main_is_only_selftest_ast(text) -> bool:
     """True only if `if __name__ == "__main__":` does nothing but call selftest.
 
@@ -766,7 +814,7 @@ def selftest_argvs(fp):
     # and a heuristic here would have reintroduced it one layer down. Guessing
     # was the bug; not guessing is the fix.
     out = []
-    if _DISPATCH_DASH_RX.search(text):
+    if _dash_dispatch(text):
         out.append(["--selftest"])
     if _DISPATCH_BARE_RX.search(text):
         out.append(["selftest"])
@@ -3198,6 +3246,33 @@ def _selftest():
             "if __name__ == '__main__':\n    print('real work')\n")
         check("selftest_argvs: a docstring mention is not a dispatch",
               selftest_argvs(conv / "mentions.py") == [])
+        # S501: the dashed rule had the same hole. The halftime modules quote
+        # "--selftest" in a guard and in a refusal test, dispatch only on the
+        # bare word, and were run as `--selftest` -> production -> "already
+        # red" -> excused from gate 3 on every build.
+        (conv / "dashguard.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "def main(argv):\n    return 2 if argv else 0\n"
+            "def _t():\n    assert main(['--selftest']) == 2\n"
+            "if __name__ == '__main__':\n    args = sys.argv[1:]\n"
+            "    if 'selftest' in args:\n        sys.exit(0)\n"
+            "    if not any(a in sys.argv for a in ('selftest', '--selftest')):\n"
+            "        print('PRODUCTION PATH')\n")
+        check("selftest_argvs: a quoted --selftest in a guard or refusal test is not a dispatch (S501)",
+              selftest_argvs(conv / "dashguard.py") == [["selftest"]])
+        (conv / "argparsed.py").write_text(
+            "import argparse, sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n    ap = argparse.ArgumentParser()\n"
+            "    ap.add_argument('--selftest', action='store_true')\n"
+            "    if ap.parse_args().selftest:\n        sys.exit(0)\n")
+        (conv / "tupled.py").write_text(
+            "import sys\ndef selftest():\n    return True\n"
+            "if __name__ == '__main__':\n"
+            "    if sys.argv[1:] in (['--selftest'],):\n        sys.exit(0)\n")
+        check("selftest_argvs: argparse --selftest is still a dispatch (S501)",
+              selftest_argvs(conv / "argparsed.py") == [["--selftest"]])
+        check("selftest_argvs: argv compared to a tuple of lists is still a dispatch (S501)",
+              selftest_argvs(conv / "tupled.py") == [["--selftest"]])
 
         # -- S81: gate 4 must follow the IMPORT GRAPH, not just filenames ------
         # self_review.py is a DRYRUN_TRIGGER and imports ensemble, so a change
