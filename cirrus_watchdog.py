@@ -307,8 +307,11 @@ def fleet_findings(data, now=None):
         exp = q.get("expires") if isinstance(q, dict) else None
         if not isinstance(exp, (int, float)) or exp - now > 48 * 3600:
             continue
-        out.append("%s research qualification %s %s — HUMAN NEEDED: renew with runner fleet-qualify-renew "
-                   "(research admission stops at expiry)"
+        # fleet-qualify-renew deliberately will not extend an UNEXPIRED qualification
+        # ("an existing live renewal wins", S418), so the advice is: renew once it
+        # lapses, before the next nightly learnwatch run (01:15) needs admission.
+        out.append("%s research qualification %s %s — HUMAN NEEDED: run runner fleet-qualify-renew once it "
+                   "lapses, before learnwatch's next 01:15 run (the command cannot extend it early)"
                    % (q.get("project", "?"), "EXPIRED" if exp <= now else "expires",
                       datetime.fromtimestamp(exp).strftime("%a %m-%d %H:%M")))
     if data.get("ok") is not True and not out:
