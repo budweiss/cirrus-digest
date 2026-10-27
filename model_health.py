@@ -895,56 +895,199 @@ def check_local_runtime():
         if _ver_tuple(cur) >= _ver_tuple(latest):
             return (f"ollama {cur} — current (latest {latest})", False)
 
-        line = f"ollama {cur} is BEHIND latest {latest}"
-        # ── S141, watcher audit item 3: once-only vs. nagging ───────────────
-        # The original rule notified once per NEW upstream release and then
-        # went quiet, for a good reason that is written above this line in
-        # every previous version: a finding repeated every morning while nobody
-        # acts is how an alert channel gets muted (T9), and this one repeats for
-        # weeks by design because the fix is a deliberate upgrade.
-        #
-        # T78 says the opposite and is also right: a STANDING CONDITION that
-        # stops being mentioned has been silently accepted. CIRRUS sat on
-        # ollama 0.24.0 while its configured model could not load, and the
-        # drift line had long since gone quiet.
-        #
-        # Both are right in different regimes, so the answer is neither side --
-        # it is a CADENCE. Speak on the day a new release lands, then hold for
-        # a week, then speak again while it is still true, saying how long it
-        # has been. Daily is nagging; never is amnesia; weekly-with-an-age is
-        # a reminder.
-        #
-        # Note this is only correct for a standing CONDITION. The sibling
-        # checks -- a new cloud model, a changed registry digest -- are EVENTS,
-        # true once, and they correctly stay once-only.
-        prev = {}
-        try:
-            prev = json.loads(RUNTIME_STATE.read_text())
-        except Exception:
-            pass
-        new_release = prev.get("notified_latest") != latest
-        since = _days_since(prev.get("at"))
-        due = (since is not None and since >= RUNTIME_NAG_DAYS)
-        notify = new_release or due
-        first_seen = prev.get("first_seen") or datetime.now().strftime("%Y-%m-%d")
-        if new_release:
-            first_seen = datetime.now().strftime("%Y-%m-%d")
-        else:
-            age = _days_since(first_seen)
-            if age:
-                line += f" — still behind after {age}d"
-        if notify:
-            try:
-                RUNTIME_STATE.parent.mkdir(parents=True, exist_ok=True)
-                RUNTIME_STATE.write_text(json.dumps(
-                    {"notified_latest": latest, "installed": cur,
-                     "first_seen": first_seen,
-                     "at": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
-            except Exception:
-                pass
-        return (line, notify)
+        return _standing_notify(RUNTIME_STATE, latest,
+                                f"ollama {cur} is BEHIND latest {latest}",
+                                {"installed": cur})
     except Exception as e:  # noqa: BLE001
         return (f"ollama drift check failed: {type(e).__name__}: {e}", False)
+
+
+def _standing_notify(state_path, key, line, extra, still="still behind"):
+    """(line, notify) on the S141 cadence for a STANDING condition. `key` is
+    what counts as news (the upstream release for a runtime); a key that
+    never changes gives a plain weekly reminder."""
+    # ── S141, watcher audit item 3: once-only vs. nagging ───────────────
+    # The original rule notified once per NEW upstream release and then
+    # went quiet, for a good reason that is written above this line in
+    # every previous version: a finding repeated every morning while nobody
+    # acts is how an alert channel gets muted (T9), and this one repeats for
+    # weeks by design because the fix is a deliberate upgrade.
+    #
+    # T78 says the opposite and is also right: a STANDING CONDITION that
+    # stops being mentioned has been silently accepted. CIRRUS sat on
+    # ollama 0.24.0 while its configured model could not load, and the
+    # drift line had long since gone quiet.
+    #
+    # Both are right in different regimes, so the answer is neither side --
+    # it is a CADENCE. Speak on the day a new release lands, then hold for
+    # a week, then speak again while it is still true, saying how long it
+    # has been. Daily is nagging; never is amnesia; weekly-with-an-age is
+    # a reminder.
+    #
+    # Note this is only correct for a standing CONDITION. The sibling
+    # checks -- a new cloud model, a changed registry digest -- are EVENTS,
+    # true once, and they correctly stay once-only.
+    prev = {}
+    try:
+        prev = json.loads(state_path.read_text())
+    except Exception:
+        pass
+    new_release = prev.get("notified_latest") != key
+    since = _days_since(prev.get("at"))
+    due = (since is not None and since >= RUNTIME_NAG_DAYS)
+    notify = new_release or due
+    first_seen = prev.get("first_seen") or datetime.now().strftime("%Y-%m-%d")
+    if new_release:
+        first_seen = datetime.now().strftime("%Y-%m-%d")
+    else:
+        age = _days_since(first_seen)
+        if age:
+            line += f" — {still} after {age}d"
+    if notify:
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(
+                {"notified_latest": key, **extra,
+                 "first_seen": first_seen,
+                 "at": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
+        except Exception:
+            pass
+    return (line, notify)
+
+
+# ── cloudflared + OS package drift (S510) ────────────────────────────────────
+# Buddy, 2026-10-26, after Cloudflare's eMudhra advisory found every connector
+# months behind (CIRRUS 2026.6.1, cumulus1 2026.7.3; fix is >= 2026.10.2): "I
+# thought we had a process that make sure we were using update software."
+# We did -- the S91 block above -- but it watched ONE runtime, ollama. Nothing
+# watched the tunnel that every route into both boxes depends on, and nothing
+# watched the OS packages: cumulus1 had 479 pending (315 security) behind an
+# apt-daily timer that had not refreshed its lists since 2026-08-31, because
+# systemd-networkd-wait-online times out on a NetworkManager box and apt
+# then exits "success" having fetched nothing. cumulus1's cloudflared came from
+# a bare .deb with no repo behind it, so even a working apt would not list it.
+# Report-only, same as ollama: restarting the tunnel blips client hostnames.
+CLOUDFLARED_STATE = HERE / "logs" / "runtime-drift-cloudflared.json"
+CLOUDFLARED_RELEASES = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
+PACKAGE_STATE = HERE / "logs" / "package-backlog.json"
+APT_STAMP = Path("/var/lib/apt/periodic/update-success-stamp")
+APT_STALE_DAYS = 3
+
+
+def _running_cloudflared():
+    """Version the RUNNING connector reports on its metrics port. The binary
+    can be upgraded while the old process keeps serving -- the S91 trap."""
+    for port in range(20241, 20246):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3) as r:
+                m = re.search(r'^build_info\{[^}]*version="([0-9][0-9.]*)"',
+                              r.read().decode(errors="replace"), re.M)
+            if m:
+                return m.group(1)
+        except Exception:
+            continue
+    return ""
+
+
+def _installed_cloudflared():
+    for exe in ("/opt/homebrew/bin/cloudflared", "/usr/bin/cloudflared",
+                "/usr/local/bin/cloudflared"):
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20)
+            m = re.search(r"version ([0-9][0-9.]*)", r.stdout + r.stderr)
+            if m:
+                return m.group(1)
+        except Exception:
+            continue
+    return ""
+
+
+def _latest_cloudflared():
+    try:
+        req = urllib.request.Request(
+            CLOUDFLARED_RELEASES, headers={"User-Agent": "cirrus-modelhealth"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return (json.loads(r.read().decode()).get("tag_name") or "").lstrip("v")
+    except Exception:
+        return ""
+
+
+def check_cloudflared():
+    """(line, should_notify). Never raises."""
+    try:
+        running, binary = _running_cloudflared(), _installed_cloudflared()
+        if not running and not binary:
+            return ("cloudflared: not installed on this box", False)
+        cur = running or binary
+        src = "running" if running else "binary; running connector UNREADABLE"
+        latest = _latest_cloudflared()
+        if not latest:
+            return (f"cloudflared {cur} ({src}); latest UNKNOWN (release API "
+                    f"unreachable) — drift not checked", False)
+        if _ver_tuple(cur) >= _ver_tuple(latest):
+            return (f"cloudflared {cur} ({src}) — current (latest {latest})", False)
+        line = f"cloudflared {cur} ({src}) is BEHIND latest {latest}"
+        if running and binary and _ver_tuple(binary) > _ver_tuple(running):
+            line += f"; binary {binary} is installed — restart the connector"
+        return _standing_notify(CLOUDFLARED_STATE, latest, line, {"installed": cur})
+    except Exception as e:  # noqa: BLE001
+        return (f"cloudflared drift check failed: {type(e).__name__}: {e}", False)
+
+
+def _package_backlog():
+    """{"tool", "pending", "security", "lists_age"} for THIS box, or None."""
+    env = dict(os.environ, LC_ALL="C", HOME=str(Path.home()), HOMEBREW_NO_ENV_HINTS="1")
+    if sys.platform == "darwin":
+        brew = "/opt/homebrew/bin/brew"
+        if not os.path.exists(brew):
+            return None
+        r = subprocess.run([brew, "outdated", "--quiet"], capture_output=True,
+                           text=True, timeout=300, env=env)
+        if r.returncode != 0:
+            raise RuntimeError(f"brew outdated rc={r.returncode}: {r.stderr.strip()[:120]}")
+        return {"tool": "brew", "pending": r.stdout.split(), "security": None,
+                "lists_age": None}
+    if not shutil.which("apt"):
+        return None
+    r = subprocess.run(["apt", "list", "--upgradable"], capture_output=True,
+                       text=True, timeout=120, env=env)
+    rows = [l.split()[0] for l in r.stdout.splitlines() if "/" in l.split(" ")[0]]
+    age = None
+    if APT_STAMP.exists():
+        age = (datetime.now() - datetime.fromtimestamp(APT_STAMP.stat().st_mtime)).days
+    return {"tool": "apt", "pending": [x.split("/")[0] for x in rows],
+            "security": [x.split("/")[0] for x in rows if "-security" in x],
+            "lists_age": age}
+
+
+def check_package_backlog(backlog=None):
+    """(line, should_notify). Weekly while anything is pending. Never raises."""
+    try:
+        b = backlog if backlog is not None else _package_backlog()
+        if b is None:
+            return ("packages: no brew/apt on this box — not checked", False)
+        n = len(b["pending"])
+        if b["tool"] == "brew":
+            line = f"brew: {n} outdated"
+            if n:
+                line += ": " + ", ".join(b["pending"][:10]) + (" …" if n > 10 else "")
+            problem = n > 0
+        else:
+            line = f"apt: {n} pending, {len(b['security'])} security"
+            age = b["lists_age"]
+            stale = age is None or age > APT_STALE_DAYS
+            if age is None:
+                line += "; list refresh time UNKNOWN — counts unverified"
+            elif stale:
+                line += (f"; package lists {age}d STALE (apt-daily is not "
+                         f"refreshing) — the real backlog is larger")
+            problem = bool(b["security"]) or stale
+        if not problem:
+            return (line + " — nothing needs attention", False)
+        return _standing_notify(PACKAGE_STATE, b["tool"], line, {"pending": n},
+                                still="still pending")
+    except Exception as e:  # noqa: BLE001
+        return (f"package backlog check failed: {type(e).__name__}: {e}", False)
 
 
 MODEL_DRIFT_STATE = HERE / "logs" / "model-drift.json"
@@ -1564,6 +1707,8 @@ def main():
     ep_line, ep_notify = check_endpoint_config(creds)             # S141
     dj_line, dj_notify = check_detached_jobs(creds)               # S141
     tn_line, tn_notify = check_tailnet(creds)                     # S173
+    cf_line, cf_notify = check_cloudflared()                      # S510
+    pk_line, pk_notify = check_package_backlog()                  # S510
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
@@ -1575,6 +1720,8 @@ def main():
     print(f"  detach:  {dj_line}")
     print(f"  tailnet: {tn_line}")
     print(f"  runtime: {runtime_line}")
+    print(f"  tunnel:  {cf_line}")
+    print(f"  pkgs:    {pk_line}")
     if sl_line:
         print(f"  servebin: {sl_line}")
     print(f"  {models_line}")
@@ -1589,7 +1736,8 @@ def main():
     # Notify only when something needs attention or changed.
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify or pe_notify
-            or ep_notify or dj_notify or dl_notify or tn_notify or sl_notify):
+            or ep_notify or dj_notify or dl_notify or tn_notify or sl_notify
+            or cf_notify or pk_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
@@ -1678,6 +1826,16 @@ def main():
                       "_Report only — upgrading the runtime that serves the digest "
                       "is a decision, not a self-heal. You are told once per new "
                       "upstream release, not daily._"]
+        if cf_notify:
+            lines += ["*the Cloudflare tunnel connector is behind:*", f"• {cf_line}",
+                      "_Every route into this box rides it. Upgrade with the same "
+                      "package manager it came from (brew on CIRRUS; the GitHub "
+                      ".deb on cumulus1), then restart it over the OTHER box's "
+                      "tunnel. Told per new release, and weekly while behind._"]
+        if pk_notify:
+            lines += ["*OS package updates are waiting:*", f"• {pk_line}",
+                      "_Report only — kernel/driver updates need a planned window "
+                      "and a job check afterwards. Reminded weekly while pending._"]
         tg("\n".join(lines))
 
     # Run-status ledger (best-effort).
@@ -1686,7 +1844,8 @@ def main():
         note = build_note({"ok": len(healthy), "healed": len(healed),
                            "broken": len(broken), "needs_funding": len(needs_funding),
                            "err": len(errored),
-                           "lines": [local_line, runtime_line, models_line, cloud_line]})
+                           "lines": [local_line, runtime_line, cf_line, pk_line,
+                                     models_line, cloud_line]})
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding
                               and not local_notify),
@@ -1993,6 +2152,102 @@ def _selftest_nag(ck):
             sv_state, sv_inst, sv_latest)
 
 
+def _selftest_cloudflared(ck):
+    """S510 — the connector that was four months behind with nothing watching."""
+    import tempfile, json as _j
+    from pathlib import Path as _P
+    _g = globals()
+    names = ("CLOUDFLARED_STATE", "_running_cloudflared", "_installed_cloudflared",
+             "_latest_cloudflared")
+    saved = {k: _g[k] for k in names}
+    d = _P(tempfile.mkdtemp())
+    try:
+        _g["CLOUDFLARED_STATE"] = d / "cf.json"                # T32: never live
+        ck("cf: 2026.9.1 is BEHIND 2026.10.4 (numeric, not lexical)",
+           _ver_tuple("2026.9.1") < _ver_tuple("2026.10.4"))
+        _g["_running_cloudflared"] = lambda: "2026.6.1"
+        _g["_installed_cloudflared"] = lambda: "2026.6.1"
+        _g["_latest_cloudflared"] = lambda: "2026.10.4"
+        line, n = check_cloudflared()
+        ck("cf: the real S510 case is BEHIND and notifies", n and "BEHIND" in line)
+        line, n = check_cloudflared()
+        ck("cf: ...and is quiet on the next run", not n and "BEHIND" in line)
+
+        _g["_installed_cloudflared"] = lambda: "2026.10.4"
+        line, n = check_cloudflared()
+        ck("cf: an upgraded binary under an OLD process is still BEHIND, and "
+           "says restart", "BEHIND" in line and "restart" in line)
+
+        _g["_running_cloudflared"] = lambda: "2026.10.4"
+        line, n = check_cloudflared()
+        ck("cf: a current running connector is silent", not n and "current" in line)
+
+        _g["_running_cloudflared"] = lambda: ""
+        line, n = check_cloudflared()
+        ck("cf: an unreadable running version says what it DID inspect",
+           "UNREADABLE" in line and "binary" in line)
+
+        _g["_latest_cloudflared"] = lambda: ""
+        line, n = check_cloudflared()
+        ck("cf: an unreachable release API says UNKNOWN, never 'current'",
+           "UNKNOWN" in line and not n)
+
+        _g["_installed_cloudflared"] = lambda: ""
+        line, n = check_cloudflared()
+        ck("cf: no cloudflared at all is said, not skipped",
+           "not installed" in line and not n)
+    finally:
+        _g.update(saved)
+
+
+def _selftest_packages(ck):
+    """S510 — OS updates, and lists that silently stopped refreshing."""
+    import tempfile, json as _j
+    from pathlib import Path as _P
+    _g = globals()
+    saved = _g["PACKAGE_STATE"]
+    d = _P(tempfile.mkdtemp())
+    apt = lambda pend, sec, age: {"tool": "apt", "pending": pend, "security": sec,
+                                  "lists_age": age}
+    try:
+        _g["PACKAGE_STATE"] = d / "pk.json"                    # T32: never live
+        line, n = check_package_backlog(apt(["openssl", "x"], ["openssl"], 0))
+        ck("pkgs: a pending SECURITY update notifies", n and "1 security" in line)
+        line, n = check_package_backlog(apt(["openssl", "x"], ["openssl"], 0))
+        ck("pkgs: ...and holds the next day (no daily nagging)", not n)
+        st = _j.loads((d / "pk.json").read_text())
+        old = datetime.now() - timedelta(days=RUNTIME_NAG_DAYS + 1)
+        st["at"], st["first_seen"] = old.strftime("%Y-%m-%d %H:%M"), old.strftime("%Y-%m-%d")
+        (d / "pk.json").write_text(_j.dumps(st))
+        line, n = check_package_backlog(apt(["openssl"], ["openssl"], 0))
+        ck("pkgs: a week later it speaks again, with the age",
+           n and "still pending after" in line)
+
+        (d / "pk.json").unlink()
+        line, n = check_package_backlog(apt(["x"], [], 1))
+        ck("pkgs: non-security only, fresh lists -> quiet",
+           not n and "nothing needs attention" in line)
+        line, n = check_package_backlog(apt([], [], 56))
+        ck("pkgs: STALE lists notify even at zero pending -- the S510 shape, "
+           "where a dead apt-daily made the backlog look small", n and "STALE" in line)
+        (d / "pk.json").unlink()
+        line, n = check_package_backlog(apt([], [], None))
+        ck("pkgs: an unknown refresh time is not 'up to date'", n and "UNKNOWN" in line)
+
+        (d / "pk.json").unlink()
+        line, n = check_package_backlog({"tool": "brew", "pending": [], "security": None,
+                                         "lists_age": None})
+        ck("pkgs: brew with nothing outdated is quiet", not n)
+        line, n = check_package_backlog({"tool": "brew", "pending": ["ca-certificates"],
+                                         "security": None, "lists_age": None})
+        ck("pkgs: brew outdated notifies and NAMES the package",
+           n and "ca-certificates" in line)
+        line, n = check_package_backlog({"tool": "brew"})
+        ck("pkgs: a malformed reading never raises", "failed" in line and not n)
+    finally:
+        _g["PACKAGE_STATE"] = saved
+
+
 def _selftest_endpoint_config(ck):
     """S141 — the endpoint must be judged on what the ENGINE resolved."""
     REAL = ("INFO [cuda.py:486] Using FLASHINFER attention backend out of "
@@ -2124,6 +2379,8 @@ def selftest():
     _selftest_fallback(ck)       # S141: is the WORK actually going there?
     _selftest_truncation(ck)     # S141: did WE cut the local model off?
     _selftest_nag(ck)            # S141: does a standing condition keep speaking?
+    _selftest_cloudflared(ck)    # S510: is the tunnel connector current?
+    _selftest_packages(ck)       # S510: are OS updates (and their lists) current?
     _selftest_endpoint_config(ck)  # S141: did the engine resolve what we asked?
 
     # ── S92: the self-heal must not undo a human's tier decision ─────────────
