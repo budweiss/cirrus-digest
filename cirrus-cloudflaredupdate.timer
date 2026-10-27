@@ -1,0 +1,13 @@
+# S515: 02:40 nightly, an hour before CIRRUS's 03:40 run -- each tunnel is the
+# other box's way back, so the two connectors never restart in one window.
+# Persistent=false on purpose: a missed night waits for the next one rather
+# than restarting the tunnel in the middle of a boot.
+[Unit]
+Description=cloudflared auto-update timer (S515)
+
+[Timer]
+OnCalendar=*-*-* 02:40:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

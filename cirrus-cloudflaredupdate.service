@@ -1,0 +1,16 @@
+# S515: keep cumulus1's cloudflared connector current (cloudflared_update.py).
+# Installed by runner `cloudflared-update-install`. Runs as buddy; the restart
+# and dpkg -i go through sudo -n. CIRRUS runs the same script at 03:40.
+[Unit]
+Description=cloudflared auto-update for the cumulus1 connector (S515)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+ExecStart=/usr/bin/python3 /home/buddy/cirrus-digest/cloudflared_update.py
+TimeoutStartSec=1200

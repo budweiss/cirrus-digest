@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- S515: keep CIRRUS's brew cloudflared connector (com.cirrus.tunnel) current.
+     03:40 nightly, an hour after cumulus1's 02:40 run: never both tunnels at once.
+     Installed by runner `cloudflared-update-install`. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.cirrus.cloudflaredupdate</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/buddy/projects/cirrus-digest/cloudflared_update.py</string>
+	</array>
+	<key>UserName</key>
+	<string>buddy</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/buddy</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>40</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/cloudflaredupdate-launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/cloudflaredupdate-launchd.log</string>
+</dict>
+</plist>

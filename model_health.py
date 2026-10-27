@@ -962,13 +962,16 @@ def _standing_notify(state_path, key, line, extra, still="still behind"):
 # We did -- the S91 block above -- but it watched ONE runtime, ollama. Nothing
 # watched the tunnel that every route into both boxes depends on, and nothing
 # watched the OS packages: cumulus1 had 479 pending (315 security) behind an
-# apt-daily timer that had not refreshed its lists since 2026-08-31, because
-# systemd-networkd-wait-online times out on a NetworkManager box and apt
-# then exits "success" having fetched nothing. cumulus1's cloudflared came from
-# a bare .deb with no repo behind it, so even a working apt would not list it.
-# Report-only, same as ollama: restarting the tunnel blips client hostnames.
+# apt-daily timer that had not refreshed its lists since 2026-08-31. (S515
+# correction: the cause is NVIDIA's /etc/apt/apt.conf.d/99update-notifier-nvidia
+# setting Update-Package-Lists "0", so apt.systemd.daily exits 0 doing nothing;
+# the networkd wait-online timeout is real but ignored. T160.) cumulus1's
+# cloudflared came from a bare .deb with no repo behind it, so even a working
+# apt would not list it. Report-only: cloudflared_update.py (S515) does the
+# upgrade, one box per night, and this check shows its last result.
 CLOUDFLARED_STATE = HERE / "logs" / "runtime-drift-cloudflared.json"
 CLOUDFLARED_RELEASES = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
+CLOUDFLARED_UPDATE_STATE = HERE / "logs" / "cloudflared-update.json"
 PACKAGE_STATE = HERE / "logs" / "package-backlog.json"
 APT_STAMP = Path("/var/lib/apt/periodic/update-success-stamp")
 APT_STALE_DAYS = 3
@@ -1029,6 +1032,14 @@ def check_cloudflared():
         line = f"cloudflared {cur} ({src}) is BEHIND latest {latest}"
         if running and binary and _ver_tuple(binary) > _ver_tuple(running):
             line += f"; binary {binary} is installed — restart the connector"
+        try:
+            job = json.loads(CLOUDFLARED_UPDATE_STATE.read_text())
+            line += (f"; auto-update {job.get('at', '?')}: {job.get('result', '?')}"
+                     + (f" ({job['detail']})" if job.get("detail") else ""))
+        except FileNotFoundError:
+            line += "; auto-update has never run on this box"
+        except Exception as e:  # noqa: BLE001
+            line += f"; auto-update state unreadable ({type(e).__name__})"
         return _standing_notify(CLOUDFLARED_STATE, latest, line, {"installed": cur})
     except Exception as e:  # noqa: BLE001
         return (f"cloudflared drift check failed: {type(e).__name__}: {e}", False)
@@ -2157,12 +2168,13 @@ def _selftest_cloudflared(ck):
     import tempfile, json as _j
     from pathlib import Path as _P
     _g = globals()
-    names = ("CLOUDFLARED_STATE", "_running_cloudflared", "_installed_cloudflared",
-             "_latest_cloudflared")
+    names = ("CLOUDFLARED_STATE", "CLOUDFLARED_UPDATE_STATE", "_running_cloudflared",
+             "_installed_cloudflared", "_latest_cloudflared")
     saved = {k: _g[k] for k in names}
     d = _P(tempfile.mkdtemp())
     try:
         _g["CLOUDFLARED_STATE"] = d / "cf.json"                # T32: never live
+        _g["CLOUDFLARED_UPDATE_STATE"] = d / "cf-update.json"
         ck("cf: 2026.9.1 is BEHIND 2026.10.4 (numeric, not lexical)",
            _ver_tuple("2026.9.1") < _ver_tuple("2026.10.4"))
         _g["_running_cloudflared"] = lambda: "2026.6.1"
@@ -2172,6 +2184,13 @@ def _selftest_cloudflared(ck):
         ck("cf: the real S510 case is BEHIND and notifies", n and "BEHIND" in line)
         line, n = check_cloudflared()
         ck("cf: ...and is quiet on the next run", not n and "BEHIND" in line)
+        ck("cf: a box the auto-update never ran on says so", "never run" in line)
+        (d / "cf-update.json").write_text(_j.dumps(
+            {"at": "2026-10-28T02:40:05", "result": "rolled-back",
+             "detail": "connector shows version=2026.10.4 ready=0 new_id=True"}))
+        line, n = check_cloudflared()
+        ck("cf: a rolled-back auto-update shows in the drift line",
+           "BEHIND" in line and "rolled-back" in line)
 
         _g["_installed_cloudflared"] = lambda: "2026.10.4"
         line, n = check_cloudflared()
