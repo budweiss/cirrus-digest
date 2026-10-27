@@ -527,6 +527,22 @@ def _selftest_record(ck):
     d = _P(tempfile.mkdtemp())
     try:
         g["STATUS_PATH"] = d / "jobs-status.json"     # T32: never the live file
+        # S506: keep the descriptor alive so GC cannot hide a missing close.
+        from unittest.mock import patch
+        import builtins
+        real_open = builtins.open
+        locks = []
+        def _test_tracked_open(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            if str(path) == str(g["STATUS_PATH"]) + _LOCK_SUFFIX:
+                locks.append(handle)
+            return handle
+        with patch("builtins.open", _test_tracked_open):
+            record("lock_probe", True, "fictional test")
+        ck("record: closes its acquired lock before returning",
+           len(locks) == 1 and locks[0].closed)
+        for handle in locks:
+            handle.close()
         three = {j: {"last_run": "x", "epoch": 1, "ok": True, "note": ""}
                  for j in ("accesscheck", "alopeciacollect", "hoaleads")}
 
