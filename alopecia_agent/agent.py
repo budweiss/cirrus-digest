@@ -407,8 +407,8 @@ def main(dry_run=False):
 # ── selftest ──────────────────────────────────────────────────────────────────
 def selftest():
     """Offline: no network, no live SDK call, no live Telegram/job_status (T32).
-    Tests main()'s decision logic and _job_status_record's safety net --
-    NOT run_reasoning_pass itself (that drives a real claude_agent_sdk
+    Tests main()'s decision logic, _job_status_record's safety net and the
+    tool-result size guard in _build_mcp_tools() -- NOT run_reasoning_pass itself (that drives a real claude_agent_sdk
     query(), same reason supervisor_agent.py's own selftest tests its pure
     decision functions like _hb_signature/_should_escalate_hb but not
     run_reasoning_pass there either)."""
@@ -426,6 +426,7 @@ def selftest():
     saved_job_status_mod = sys.modules.get("job_status")
     saved_allow = budget.allow
     saved_send_telegram = tools.send_telegram_summary
+    saved_memory = notebook.memory
 
     recorded = []
     ledgered = []
@@ -497,9 +498,39 @@ def selftest():
               "-- only a REAL scheduled run may (T32/S177: a manual test "
               "must not mask a genuine scheduled failure the same day)",
               recorded == [])
+
+        # ── S515: response()'s size guard, through the real tool handler ──
+        # S514/T161: an oversized memory read reached the SDK, which swapped
+        # it for a "saved to a file" notice the agent could not open.
+        memory_tool = next(t for t in _build_mcp_tools()
+                           if t.name == "read_research_memory")
+        notebook.memory = lambda query, offset: {"steps": ["x" * (TOOL_RESULT_CHAR_CAP + 1)]}
+        ledgered.clear()
+        text = asyncio.run(memory_tool.handler({"query": "", "offset": 0}))["content"][0]["text"]
+        try:
+            refused = json.loads(text)
+        except ValueError:
+            refused = {}
+        check("read_research_memory: a result over TOOL_RESULT_CHAR_CAP is "
+              "refused as tool_output_too_large JSON, not passed on",
+              refused.get("error") == "tool_output_too_large"
+              and refused.get("chars", 0) > TOOL_RESULT_CHAR_CAP
+              and len(text) < TOOL_RESULT_CHAR_CAP)
+        check("read_research_memory: the refusal is ledgered as "
+              "tool-output-too-large",
+              [e.get("event") for e in ledgered] == ["tool-output-too-large"])
+
+        small = {"steps": ["short"], "next_offset": None}
+        notebook.memory = lambda query, offset: small
+        ledgered.clear()
+        text = asyncio.run(memory_tool.handler({"query": "", "offset": 0}))["content"][0]["text"]
+        check("read_research_memory: a normal-size result passes through "
+              "unchanged and is not ledgered",
+              json.loads(text) == small and ledgered == [])
     finally:
         g["run_reasoning_pass"] = saved_run_pass
         g["ledger_append"] = saved_ledger_append
+        notebook.memory = saved_memory
         budget.allow = saved_allow
         tools.send_telegram_summary = saved_send_telegram
         if saved_job_status_mod is not None:
