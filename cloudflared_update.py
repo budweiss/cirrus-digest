@@ -206,7 +206,7 @@ def run(ops, state, check=False, force=False, wait=90):
     target, source = ops.target()
     rec["target"] = f"{target} ({source})"
     if vt(running) >= vt(target) and not force:
-        rec.update(result="current", failed_version="")
+        rec.update(result="current", failed_version="", detail=f"{source} offers {target}")
         return 0, rec
     if target == rec["failed_version"] and not force:
         rec.update(result="skipped", detail=f"{target} was rolled back before; not retrying it")
