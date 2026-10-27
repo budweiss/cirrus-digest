@@ -38,6 +38,7 @@ from alopecia_agent.ledger import ledger_append, STATE_DIR  # noqa: E402
 
 CREDS_PATH = PROJECT_DIR / "config" / "credentials.json"
 EST_COST_PER_RUN_USD = 2.00
+TOOL_RESULT_CHAR_CAP = 40_000
 TRANSCRIPT_DIR = STATE_DIR / "transcripts"
 
 SYSTEM_PROMPT = """You are the Alopecia etiology-synthesis agent (S177, v1).
@@ -143,7 +144,16 @@ def _build_mcp_tools(dry_run=False, no_send=False):
                                                              args["question"])}]}
 
     def response(value):
-        return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+        # S513: past ~45k chars the SDK swaps a result for a "saved to a file"
+        # notice this agent cannot open (no file tools), and nothing recorded it.
+        # Refuse with a narrowing hint instead, and ledger it so it is seen.
+        text = json.dumps(value, ensure_ascii=False)
+        if len(text) > TOOL_RESULT_CHAR_CAP:
+            ledger_append({"event": "tool-output-too-large", "tool": "agent",
+                           "detail": f"{len(text)} chars", "result": "refused"})
+            text = json.dumps({"error": "tool_output_too_large", "chars": len(text),
+                               "hint": "narrow the query or use next_offset; do not retry unchanged"})
+        return {"content": [{"type": "text", "text": text}]}
 
     @tool("read_research_agenda", "Open questions, previous investigations and next path. Read this EVERY run, even with no new collector items.", {})
     async def _agenda(args):
@@ -177,7 +187,7 @@ def _build_mcp_tools(dry_run=False, no_send=False):
     async def _memory(args):
         return response(notebook.memory(args["query"],args["offset"]))
 
-    @tool("update_research_avenue", "Create/update a hypothesis node. avenue_json fields: id (empty for new), parent_ids, question, path_id, concept_ids, construct (onset/diagnosis/severity/persistence/remission), prediction, alternative, next_action, status (active/blocked/parked/exhausted_current_sources), reason, reopen_when. IDs/concepts from memory; exhaustion needs two different successful searches and a saved comparison. Pausing never proves false.", {"avenue_json": str})
+    @tool("update_research_avenue", "Create/update a hypothesis node. To update, send id plus ONLY the fields that change; omitted fields keep their saved values. A new avenue needs every field. avenue_json fields: id (empty for new), parent_ids, question, path_id, concept_ids, construct (onset/diagnosis/severity/persistence/remission), prediction, alternative, next_action, status (active/blocked/parked/exhausted_current_sources), reason, reopen_when. IDs/concepts from memory; exhaustion needs two different successful searches and a saved comparison. Pausing never proves false.", {"avenue_json": str})
     async def _avenue(args):
         return response(notebook.update(json.loads(args["avenue_json"])))
 
@@ -329,7 +339,8 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
         # explicitly asks for the missing handoff from the notebook. Only a
         # still-missing handoff raises. Remediation cost is recorded like the
         # main pass and rolls into the returned run cost.
-        _log("close-out: graded evidence without handoff — one remediation pass")
+        ledger_append({"event": "close-out", "tool": "agent",
+                       "detail": "graded evidence without handoff — one remediation pass"})
         rem_cost = 0.0
         async for msg in query(prompt=(
             "CLOSE-OUT REMEDIATION. This run's saved research steps contain "
@@ -350,7 +361,8 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
                                        run_id=run_id, app_dir=str(PROJECT_DIR))
         cost += rem_cost
         packets=research.load(research.STATE / "handoffs.json", [])[handoffs_before:]
-        _log(f"close-out remediation: handoffs after retry = {len(packets)}")
+        ledger_append({"event": "close-out", "tool": "agent",
+                       "detail": f"remediation: handoffs after retry = {len(packets)}"})
     if not dry_run and graded_evidence and not packets:
         raise RuntimeError("research_medical_handoff_missing")
     return cost, transcript_path

@@ -53,6 +53,11 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(r.agenda()['suggested_path'],'thymus')
         result=r.record_step(self.step());self.assertTrue(result['saved'])
         self.assertIn('UNREVIEWED',result['status']);self.assertEqual(r.agenda()['suggested_path'],'childhood')
+    def test_uncertainties_list_is_joined_not_refused(self):
+        # S513: 17 first attempts sent a list and lost a turn to incomplete_uncertainties.
+        data=self.step();data['uncertainties']=['Abstract only, no full text.','No onset age reported.']
+        self.assertTrue(r.record_step(data)['saved'])
+        self.assertEqual(r.load(self.state/'steps.json',[])[-1]['uncertainties'],'Abstract only, no full text.; No onset age reported.')
     def test_false_quotes_and_unknown_sources_refused(self):
         for claim in [{'source_id':'pmid:123','quote':'Invented quotation that never appeared in a retrieved source.'}, {'source_id':'pmid:999','quote':QUOTE}]:
             data=self.step();data['supporting']=[claim]

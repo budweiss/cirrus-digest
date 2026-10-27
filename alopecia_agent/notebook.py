@@ -53,40 +53,65 @@ def avenue_index(nodelist=None):
     its own agenda and skipped the close-out step write as a result."""
     idx=[]
     for n in nodelist if nodelist is not None else nodes():
+        # path_id/concept_ids/parent_ids are what record_research_step,
+        # search_research_avenue and update_research_avenue must match.
         idx.append({'id':n['id'],'status':n['status'],'construct':n.get('construct',''),
+                    'path_id':n.get('path_id',''),'concept_ids':n.get('concept_ids',[]),
+                    'parent_ids':n.get('parent_ids',[]),
                     'question':str(n.get('question',''))[:160],
                     'next_action':str(n.get('next_action',''))[:120]})
     return {'avenue_index':idx,'avenue_count':len(idx)}
 
 
-def _bound(x, cap=400):
-    """Read-side text cap (S377): the DURABLE record on disk stays complete;
-    only the memory READ truncates so a page can never exceed the agent's
-    token-output limit. Verbatim quotes for new comparisons come from the
-    source cache via retrieve_research_source, not from a memory read."""
-    if isinstance(x,str):return x[:cap]
-    if isinstance(x,list):return [_bound(v,cap) for v in x]
-    if isinstance(x,dict):return {k:_bound(v,cap) for k,v in x.items()}
-    return x
+MEMORY_CHAR_CAP = 30_000  # SDK saved an 81k read to a file the agent cannot open; 45k got through
+
+
+def _step_view(s):
+    """Compact step projection: full study_context/quotes made 10 steps ~60k chars."""
+    ids=lambda k:[c.get('source_id') for c in s.get(k,[]) if isinstance(c,dict)]
+    return {'step_id':s.get('step_id',''),'created':str(s.get('created',''))[:10],
+            'avenue_id':s.get('avenue_id',''),'path_id':s.get('path_id',''),
+            'compare_to':s.get('compare_to',[]),'supporting_ids':ids('supporting'),
+            'contradicting_ids':ids('contradicting'),
+            **{k:str(s.get(k,''))[:240] for k in ('hypothesis','comparison','uncertainties','falsifier','next_step')}}
 
 
 def memory(query='', offset=0):
+    """Paged notebook read, bounded to MEMORY_CHAR_CAP (S513).
+
+    S377 bounded step text but transitions, handoffs and model reviews still
+    carried full records; the read grew to ~149k chars, and from 2026-09-30
+    90 of 94 calls returned only the SDK's "saved to a file" notice. The
+    agent never saw its concepts or avenue index, guessed IDs, and ran out
+    of turns. Full records stay on disk; retrieve_research_source and
+    consult_research_models return the long texts.
+    """
     if not isinstance(query,str) or len(query)>200 or not isinstance(offset,int) or offset<0:
         raise ValueError('invalid_memory_request')
     matches=[s for s in steps() if query.lower() in json.dumps(s,ensure_ascii=False).lower()]
     history=r.load(r.STATE/'searches.json', [])
     events=r.load(r.STATE/'avenue-events.json', [])
     handoffs=r.load(r.STATE/'handoffs.json', [])
-    page=matches[offset:offset+10]
-    out={'steps':[_bound(s) for s in page], 'total_steps_matching':len(matches),
+    reviews=r.load(r.STATE/'model-reviews.json', [])[-1:]
+    out={'concepts':config()['concepts'], **avenue_index(),
+         'steps':[_step_view(s) for s in matches[offset:offset+10]], 'total_steps_matching':len(matches),
          'next_offset':offset+10 if offset+10<len(matches) else None,
-         'searches':[s for s in history if query.lower() in json.dumps(s).lower()][-15:],
-         'recent_transitions':events[-10:], 'recent_handoffs':handoffs[-5:],
-         'concepts':config()['concepts'], 'sources':config()['source_sites'],
-         'record_complete_on_disk':'read-side text bound; retrieve_research_source for verbatim quotes',
-         'model_reviews':r.load(r.STATE/'model-reviews.json', [])[-1:],
+         'searches':[{k:s.get(k) for k in ('id','avenue_id','query','order','at','status','count','new_source_ids')}
+                     for s in history if query.lower() in json.dumps(s).lower()][-10:],
+         'recent_transitions':[{'at':e.get('at'),'id':(e.get('after') or {}).get('id'),
+                                'before':(e.get('before') or {}).get('status'),'after':(e.get('after') or {}).get('status'),
+                                'reason':str((e.get('after') or {}).get('reason',''))[:160]} for e in events[-10:]],
+         'recent_handoffs':[{k:h.get(k) for k in ('id','avenue_id','status','created','source_ids')}
+                            | {'question':str(h.get('question',''))[:200]} for h in handoffs[-5:]],
+         'model_reviews':[{'at':v.get('at'),'status':v.get('status'),
+                           'answers':[{'provider':a.get('provider'),'status':a.get('status'),
+                                       'text':str(a.get('text',''))[:600]} for a in v.get('answers',[])]}
+                          for v in reviews],
+         'sources':config()['source_sites'],
+         'record_complete_on_disk':'read-side bound; retrieve_research_source for verbatim quotes, consult_research_models for the full cached review',
          'scope':'Hypotheses, comparisons and study context are unreviewed; model agreement is not evidence.'}
-    out.update(avenue_index())
+    while len(json.dumps(out,ensure_ascii=False))>MEMORY_CHAR_CAP and out['steps']:
+        out['steps'].pop();out['next_offset']=offset+len(out['steps'])
     return out
 
 
@@ -105,15 +130,26 @@ def summary():
             'note':'Counts measure activity, not scientific progress. Read what changed and what remains unresolved.'}
 
 
+def check_concepts(concept_ids):
+    """The error names the valid IDs so one retry can succeed (S513: 81 calls failed on guessed IDs, Oct 1-27)."""
+    keys=config()['concepts']
+    if not isinstance(concept_ids,list) or not 1<=len(concept_ids)<=3 or any(c not in keys for c in concept_ids):
+        raise ValueError('invalid_concepts: use 1-3 of '+','.join(sorted(keys)))
+
+
 def update(data):
     required={'id','parent_ids','question','path_id','concept_ids','construct','prediction',
               'alternative','next_action','status','reason','reopen_when'}
+    # S513: an existing avenue takes only the changed fields; the rest come from
+    # the saved node. Re-typing all twelve cost runs invalid_concepts retries.
+    old=next((x for x in nodes() if x['id']==data.get('id')),None) if isinstance(data,dict) and data.get('id') else None
+    if old and set(data)<=required:data={**{k:old[k] for k in required if k in old},**data}
     if not isinstance(data,dict) or set(data)!=required:raise ValueError('invalid_avenue_fields')
     for field in ('question','prediction','alternative','next_action','reason','reopen_when'):
         if not isinstance(data[field],str) or not 15<=len(data[field])<=1500:raise ValueError('invalid_'+field)
     if data['status'] not in STATUSES or data['construct'] not in CONSTRUCTS:raise ValueError('invalid_research_state')
     if data['path_id'] not in {p['id'] for p in r.catalog()['paths']}:raise ValueError('unknown_path')
-    if not isinstance(data['concept_ids'],list) or not 1<=len(data['concept_ids'])<=3 or any(c not in config()['concepts'] for c in data['concept_ids']):raise ValueError('invalid_concepts')
+    check_concepts(data['concept_ids'])
     if not isinstance(data['parent_ids'],list) or len(data['parent_ids'])>3:raise ValueError('invalid_parents')
     r.STATE.mkdir(parents=True,exist_ok=True)
     with (r.STATE/'notebook.lock').open('a') as lock:
@@ -145,7 +181,7 @@ def update(data):
 
 def search(avenue_id, concept_ids, age_scope='pediatric', order='relevance'):
     get(avenue_id)
-    if not isinstance(concept_ids,list) or not 1<=len(concept_ids)<=3 or any(c not in config()['concepts'] for c in concept_ids):raise ValueError('invalid_concepts')
+    check_concepts(concept_ids)
     ages={'pediatric':'(child* OR pediatric OR adolescent OR prepubertal)', 'adult':'adult', 'all':''}
     if age_scope not in ages or order not in ('relevance','date'):raise ValueError('invalid_search_mode')
     clauses=['"alopecia areata"']+[config()['concepts'][c] for c in sorted(set(concept_ids))]

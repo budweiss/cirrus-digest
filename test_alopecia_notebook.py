@@ -35,15 +35,43 @@ class NotebookTests(unittest.TestCase):
         nodes=n.nodes()
         for node in nodes:node['question']=big;node['next_action']=big
         r.save(self.state/'avenues.json',nodes)
+        # S513: S377 grew only steps and avenues, so this passed while the live
+        # read was 149k chars (transitions, handoffs and reviews were unbounded)
+        # and 90 of 94 reads reached the agent as the SDK's file notice. Grow
+        # every field the read returns, at above-production sizes.
+        ctx=[dict(source_id='pmid:1',**{k:big[:800] for k in ['species','population','age_measure','design','temporality','cohort_key','limitations']})]*10
+        for s in ss:s.update(study_context=ctx,uncertainties=big,falsifier=big,next_step=big,source_snapshots={'pmid:1':{'u':big}})
+        r.save(self.state/'steps.json',ss)
+        r.save(self.state/'avenue-events.json',[{'at':n.now(),'before':nodes[0],'after':nodes[1]}]*30)
+        r.save(self.state/'handoffs.json',[{'id':'med-1','avenue_id':nodes[0]['id'],'status':'returned','question':big,
+                                            'source_ids':['pmid:1'],'passages':{'pmid:1':big},'result':{'t':big}}]*30)
+        r.save(self.state/'model-reviews.json',[{'at':n.now(),'status':'x','answers':[{'provider':'p','status':'returned','text':'y'*16000}]*2}])
+        r.save(self.state/'searches.json',[{'id':'q','avenue_id':nodes[0]['id'],'query':big[:600],'status':'ok','source_ids':['pmid:1']*5}]*40)
         import json as js
-        self.assertLess(len(js.dumps(n.memory(),default=str)),40_000)
+        memory=n.memory()
+        self.assertLessEqual(len(js.dumps(memory,ensure_ascii=False)),n.MEMORY_CHAR_CAP)
+        self.assertEqual(memory['steps'][0]['step_id'],'step-00001')
+        self.assertEqual(n.memory(offset=memory['next_offset'])['steps'][0]['step_id'],'step-%05d'%(memory['next_offset']+1))
         agenda=r.agenda()
         self.assertLess(len(js.dumps(agenda,default=str)),40_000)
         # compact projections keep the pointer fields the agent needs
         self.assertEqual(agenda['recent_steps'][-1]['step_id'],'step-00012')
         self.assertTrue(all('study_context' not in s for s in agenda['recent_steps']))
-        self.assertIn('avenue_index',n.memory())
-        self.assertLessEqual(len(n.memory()['avenue_index'][0]['question']),160)
+        self.assertEqual(set(memory['concepts']),set(n.config()['concepts']))
+        self.assertLessEqual(len(memory['avenue_index'][0]['question']),160)
+        self.assertEqual(memory['avenue_index'][0]['concept_ids'],nodes[0]['concept_ids'])
+        self.assertEqual(memory['avenue_index'][0]['path_id'],nodes[0]['path_id'])
+    def test_existing_avenue_takes_only_changed_fields(self):
+        # S513: all 32 failing updates re-typed concept_ids the index no longer showed.
+        row=n.update({'id':self.node['id'],'next_action':'Compare onset with diagnosis age in a second cohort.'})
+        self.assertEqual(row['next_action'],'Compare onset with diagnosis age in a second cohort.')
+        self.assertEqual((row['concept_ids'],row['parent_ids'],row['question']),
+                         (self.node['concept_ids'],self.node['parent_ids'],self.node['question']))
+        with self.assertRaisesRegex(ValueError,'invalid_avenue_fields'):n.update({'id':'','next_action':'A new avenue still needs every field.'})
+        with self.assertRaisesRegex(ValueError,'invalid_avenue_fields'):n.update({'id':self.node['id'],'invented':'x'})
+    def test_invalid_concepts_error_names_the_vocabulary(self):
+        with self.assertRaises(ValueError) as e:n.search(self.node['id'],['thymic-output'])
+        self.assertTrue(all(k in str(e.exception) for k in n.config()['concepts']))
     def test_duplicate_and_false_finality_refused(self):
         data=dict(self.node,id='')
         with self.assertRaisesRegex(ValueError,'duplicate'):n.update(data)

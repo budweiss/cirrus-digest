@@ -186,6 +186,9 @@ def record_step(data):
     required={'path_id','hypothesis','supporting','contradicting','uncertainties','falsifier','next_step','solution_direction'}
     extra={'avenue_id','compare_to','comparison','study_context'}
     if not isinstance(data,dict) or set(data) not in (required,required|extra):raise ValueError('invalid_step_fields')
+    # S513: the plural name draws a list; 17 calls failed on it (Oct 1-27).
+    if isinstance(data['uncertainties'],list) and all(isinstance(u,str) for u in data['uncertainties']):
+        data['uncertainties']='; '.join(data['uncertainties'])
     if data['path_id'] not in {p['id'] for p in catalog()['paths']}:raise ValueError('unknown_research_path')
     for field in ['hypothesis','uncertainties','falsifier','next_step','solution_direction']:
         if not isinstance(data[field],str) or not 15<=len(data[field])<=2500:raise ValueError('incomplete_'+field)
