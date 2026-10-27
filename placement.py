@@ -48,6 +48,10 @@ from pathlib import Path
 # through. These are not "projects" -- they are each box watching itself.
 ALLOWED_BOTH = {
     "modelhealth": "each box checks the health of ITS OWN model endpoints",
+    "cloudflaredupdate": ("S515: each box upgrades ITS OWN tunnel connector, an "
+                          "hour apart, so the two tunnels never restart together"),
+    "autoupdate": ("S516: each box classifies (later: applies) ITS OWN pending OS "
+                   "updates, at different hours; one box cannot patch the other"),
     "netsample": "each box samples its own counters; the whole point is per-box",
     "watchdog": "each box watches its own services",
     "deadman": "each box proves its own liveness",
