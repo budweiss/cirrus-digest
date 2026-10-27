@@ -1,0 +1,19 @@
+# S516: nightly DRY RUN of the tiered auto-update agent on cumulus1 (auto_update.py,
+# step 1 of docs/AUTO-UPDATE-AGENT-PLAN.md). Lists and classifies pending apt and
+# snap updates, writes logs/auto-update/<date>.json, records 'autoupdate' to
+# job_status. Applies nothing. NoNewPrivileges: buddy has NOPASSWD sudo here, so
+# this keeps even a buggy run from ever reaching root.
+[Unit]
+Description=auto-update dry run for cumulus1 (S516)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+ExecStart=/usr/bin/python3 /home/buddy/cirrus-digest/auto_update_cumulus.py
+NoNewPrivileges=true
+TimeoutStartSec=900

@@ -1,0 +1,12 @@
+# S516: 01:30 nightly, from window-audit 10-27 (nothing calendar-scheduled on
+# CUMULUS 22:00-02:15). cumulus2, the canary, runs at 01:00; model_health at
+# 05:30 stays the independent watcher.
+[Unit]
+Description=auto-update dry run timer (S516)
+
+[Timer]
+OnCalendar=*-*-* 01:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

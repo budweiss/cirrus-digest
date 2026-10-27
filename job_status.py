@@ -85,6 +85,8 @@ CADENCE_H = {
     "intake":         2,
     "morningbrief":  26,        # daily 07:30
     "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
+    "autoupdate":    26,        # S516: daily dry run, CIRRUS 00:45 + cumulus1 01:30 (both
+                                # record, like modelhealth; cumulus2 has no ledger reader)
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace

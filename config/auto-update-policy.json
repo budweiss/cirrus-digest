@@ -1,0 +1,42 @@
+{
+  "_doc": "Tier policy for auto_update.py. Spec: docs/AUTO-UPDATE-AGENT-PLAN.md (Buddy approved 2026-10-27). Step 1 is a dry run: every rule here classifies, nothing applies. First matching rule wins, most restrictive first.",
+  "machines": {
+    "cumulus2": {"kind": "apt", "hostnames": ["cumulus2"], "ledger": false,
+                 "tier2_note": "canary: apply, restart the affected user units, verify Qwen answers"},
+    "cumulus1": {"kind": "apt", "hostnames": ["cumulus1"], "ledger": true,
+                 "tier2_note": "only after cumulus2 has run Tier 2 clean for 3 days; restarts follow RUNBOOK-TUNNEL-AND-REBOOT order (open decision 1)"},
+    "cirrus":   {"kind": "mac", "hostnames": ["cirrus"], "ledger": true,
+                 "service_formulae_tier3": true,
+                 "apple": ["tier3", "macOS/Apple update on CIRRUS: nobody logs in, so it never installs itself; fold into the monthly reboot (open decision 2)"]},
+    "macbook":  {"kind": "mac", "hostnames": ["Buddyss-MacBook-Pro-2"], "ledger": false,
+                 "service_formulae_tier3": false,
+                 "apple": ["external", "macOS auto-install is on for the MacBook; Apple applies it"]}
+  },
+  "apt": {
+    "blocked_name_globs": ["linux-*", "nvidia*", "libnvidia*", "cuda*", "libcuda*", "libnccl*", "*firmware*", "dkms"],
+    "_blocked_source_globs": "Added 2026-10-27 from live data: xserver-xorg-video-nvidia-580 (source nvidia-graphics-drivers-580) is pending from noble-security on both servers and matches no name glob, so it would have landed in Tier 1 and split the 580 driver stack.",
+    "blocked_source_globs": ["nvidia*", "*firmware*"],
+    "blocked_origin_hosts": ["*.nvidia.com", "nvidia.com"],
+    "ubuntu_hosts": ["ports.ubuntu.com", "archive.ubuntu.com", "*.archive.ubuntu.com", "*.ports.ubuntu.com", "security.ubuntu.com", "esm.ubuntu.com"],
+    "eligible_suites": ["noble-security"],
+    "tier2_sources": {
+      "glibc": "glibc: every running process maps it",
+      "systemd": "systemd/udev: PID 1 and udevd re-exec",
+      "dbus": "dbus: the system bus",
+      "openssl": "openssl: every TLS client and server links it"
+    }
+  },
+  "snap": ["tier1", "snapd auto-refresh applies it, timed into the window; this agent never runs snap (Firefox/Thunderbird/Snap Store: open decision 3)"],
+  "external": {
+    "cloudflared": "cloudflared_update.py owns it (S515); this agent only reports it"
+  },
+  "brew": {
+    "deny": {
+      "tailscale": "T68: brew upgrade orphans its daemon",
+      "ollama": "model runtime: runner cirrus-ollama-upgrade / re-qualification, never a blind brew upgrade",
+      "llama.cpp": "local-model stack: verified models need re-qualification (docs/LOCAL-MODEL-IMPROVEMENT.md)",
+      "mlx": "local-model stack: verified models need re-qualification (docs/LOCAL-MODEL-IMPROVEMENT.md)",
+      "mlx-c": "local-model stack: verified models need re-qualification (docs/LOCAL-MODEL-IMPROVEMENT.md)"
+    }
+  }
+}

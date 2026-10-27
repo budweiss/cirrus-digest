@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- S516: nightly DRY RUN of the tiered auto-update agent on CIRRUS (auto_update.py,
+     step 1 of docs/AUTO-UPDATE-AGENT-PLAN.md): classifies brew and softwareupdate
+     items, writes logs/auto-update/<date>.json, records 'autoupdate'. Applies
+     nothing. 00:45 from window-audit 10-27 (aggiecollect ends 00:45, learnwatch 01:15). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.cirrus.autoupdate</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/buddy/projects/cirrus-digest/auto_update.py</string>
+	</array>
+	<key>UserName</key>
+	<string>buddy</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/buddy/projects/cirrus-digest</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/buddy</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>0</integer>
+		<key>Minute</key>
+		<integer>45</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/autoupdate-launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/autoupdate-launchd.log</string>
+</dict>
+</plist>

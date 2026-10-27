@@ -1,0 +1,11 @@
+# S516: 01:00 nightly on cumulus2 (the canary), half an hour before cumulus1.
+# Installed as cowork-autoupdate.timer.
+[Unit]
+Description=auto-update dry run timer, cumulus2 (S516)
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

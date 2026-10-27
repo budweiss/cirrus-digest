@@ -1,0 +1,15 @@
+# S516: the same dry run on cumulus2, as a USER unit beside fleet-worker (cumulus2
+# has no repo checkout; the script and policy are copied to
+# ~/model-serving/auto-update). Installed as cowork-autoupdate.service. cumulus2
+# has no job_status reader, so the policy sets ledger=false; the report file is
+# the record.
+[Unit]
+Description=auto-update dry run for cumulus2 (S516)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/model-serving/auto-update
+ExecStart=/usr/bin/python3 %h/model-serving/auto-update/auto_update_cumulus.py
+NoNewPrivileges=true
+TimeoutStartSec=900
