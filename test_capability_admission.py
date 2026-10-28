@@ -80,8 +80,44 @@ class AdmissionTests(unittest.TestCase):
         self.h[0].update(healthy=True, checked_at=699)
         self.assertEqual(self.business_call(), [])
 
+    def test_snow_date_is_advisory_for_both_drafts_and_judge_pool(self):
+        self.e[0].update(task='billsnow', capability='billsnow:reviewed-s279', expires_at=1000)
+        second = dict(self.e[0], id='kimi', model='k3')
+        self.e.append(second)
+        self.h.append(dict(self.h[0], id='kimi', model='k3'))
+        original = copy.deepcopy(self.e)
+        for capability, system in [('billsnow:reviewed-s279', 'system'),
+                                   ('billsnow:reviewed-s279:synthesis', 'judge system')]:
+            for row in self.e:
+                row['capability'] = capability
+                row['prompt_sha256'] = admission.prompt_digest(system)
+            with self.assertLogs('capability_admission', level='WARNING') as log:
+                admitted = admission.candidates(self.e,self.h,task='billsnow',
+                    capability=capability,system=system,contract_sha256='a'*64,now=1000)
+            self.assertEqual({r['id'] for r in admitted},{'ollama','kimi'})
+            self.assertEqual(len(log.output),2)
+            self.assertTrue(all('No quality approval was renewed' in s for s in log.output))
+        self.assertEqual([r['expires_at'] for r in self.e],
+                         [r['expires_at'] for r in original])
+
+    def test_snow_advisory_does_not_override_revocation_contract_or_health(self):
+        self.e[0].update(task='billsnow', expires_at=1000)
+        baseline = copy.deepcopy(self.e)
+        for field, value in [('approved',False),('prompt_sha256','b'*64),
+                             ('contract_sha256','b'*64),('evidence_id',''),
+                             ('expires_at',float('nan')),('expires_at',800)]:
+            with self.subTest(field=field):
+                self.e = copy.deepcopy(baseline);self.e[0][field] = value
+                self.assertEqual(admission.candidates(self.e,self.h,task='billsnow',
+                    capability='extract',system='system',contract_sha256='a'*64,now=1000),[])
+        self.e = baseline
+        self.h[0]['healthy'] = False
+        self.assertEqual(admission.candidates(self.e,self.h,task='billsnow',
+            capability='extract',system='system',contract_sha256='a'*64,now=1000),[])
+
     def test_other_tasks_cannot_use_advisory_expiry(self):
         for task in ('halftime:events', 'halftime:catalogue:variety', 'snow',
+                     'billnewdev', 'alopecia-brief', 'billsnow:other',
                      'business-idea-feed-discovery', 'business-idea-ideate:client', 't'):
             with self.subTest(task=task):
                 self.e[0].update(task=task, expires_at=1000)

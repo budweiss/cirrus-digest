@@ -9,15 +9,15 @@ import logging
 import time
 
 
-# Buddy, S441 (2026-10-17): internal brainstorming continues with review flags.
-# This is application policy, never a model-provided or general caller option.
-ADVISORY_TASK = 'business-idea-ideate'
-ADVISORY_NOTE = ('Business ideation quality reviews are advisory and do not stop that job; '
-                 'client-facing approval expiry checks remain strict.')
+# Buddy, S441/S524: these two task-specific review dates warn without stopping
+# the job. This is application policy, never a model-provided caller option.
+ADVISORY_TASKS = ('business-idea-ideate', 'billsnow')
+ADVISORY_NOTE = ('Business ideation and SNOW quality review dates are advisory; '
+                 'other client-facing approval expiry checks remain strict.')
 
 
 def expiry_is_advisory(task):
-    return task == ADVISORY_TASK
+    return task in ADVISORY_TASKS
 
 
 def prompt_digest(system):
@@ -27,8 +27,8 @@ def prompt_digest(system):
 def candidates(evaluations, health, *, task, capability, system, contract_sha256, now=None):
     """Return eligible records; absent or malformed evidence fails closed.
 
-    Review windows span at most 30 days. Only internal business ideation treats
-    their expiry as advisory; explicit revocation and every other gate remain. Health must
+    Review windows span at most 30 days. Business ideation and SNOW treat
+    expiry as advisory; explicit revocation and every other gate remain. Health must
     identify the same model and be at most five minutes old. Context capacity
     is the lower of the evaluated and observed usable capacities. The caller
     hashes its versioned parser/schema/scoring contract; any change requires
@@ -87,9 +87,12 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
             or type(observed_capacity) is not int or observed_capacity <= 0):
             continue
         if overdue:
-            logging.getLogger(__name__).warning(
-                'Business ideation quality review is overdue: continuing internal brainstorming; '
-                'review flagged concerns before acting on ideas. No quality approval was renewed.')
+            warning = ('Business ideation quality review is overdue: continuing internal brainstorming; '
+                       'review flagged concerns before acting on ideas. No quality approval was renewed.'
+                       if task == 'business-idea-ideate' else
+                       'SNOW quality review is overdue: continuing with the previously approved model; '
+                       'review flagged concerns before delivery. No quality approval was renewed.')
+            logging.getLogger(__name__).warning(warning)
         seen.add(key)
         admitted.append({'id':provider, 'model':model, 'enabled':True, 'healthy':True,
                          'health_checked_at':checked, 'location':location,

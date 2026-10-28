@@ -31,12 +31,12 @@ class FoundationTests(unittest.TestCase):
         route.update(changes)
         return route
 
-    def invoke(self, route, **kwargs):
+    def invoke(self, route, task='pedagogy-topic', **kwargs):
         with patch('capability_registry.foundation_route',return_value=route), \
              patch('capability_health.observe_cloud',side_effect=lambda c,p:next(h for h in self.health if h['id']==p)), \
              patch.object(L,'escalate',side_effect=AssertionError('legacy fallback forbidden')):
             return ensemble.best_answer('sys','PRIVATE PAYLOAD',self.creds,
-                task='pedagogy-topic',max_tokens=100,app_dir=self.root,**kwargs)
+                task=task,max_tokens=100,app_dir=self.root,**kwargs)
 
     def test_escalate_bridge_preserves_result_shapes_and_never_legacy_falls_back(self):
         meta={'answers':[('kimi','one'),('anthropic','two')], 'judge':'kimi'}
@@ -209,6 +209,24 @@ class FoundationTests(unittest.TestCase):
         meta,text=self.invoke(route)
         self.assertEqual(meta['members'],['gemini','anthropic'])
         self.assertEqual(meta['judge'],'gemini');self.assertEqual(len(self.calls),3)
+
+    def test_snow_expired_review_dates_do_not_stop_reviewed_report_route(self):
+        route=self.route(reviewers=2,review_reason='reviewed SNOW report')
+        route['evaluations']=[row for row in route['evaluations']
+                              if row['id'] in ('anthropic','kimi')]
+        self.health=[row for row in self.health if row['id'] in ('anthropic','kimi')]
+        now=time.time()
+        for row in route['evaluations']:
+            row.update(task='billsnow',evaluated_at=now-1000,expires_at=now-1)
+        route['judge_evaluations']=[dict(row,capability='research:synthesis',
+            prompt_sha256=prompt_digest(ensemble._JUDGE_SYSTEM)) for row in route['evaluations']]
+        self.creds.update(kimi_api_key='fixture',kimi_model='m')
+        with patch.dict(L._PROVIDERS,{'kimi':L._PROVIDERS['anthropic']}), \
+             self.assertLogs('capability_admission',level='WARNING'):
+            meta,text=self.invoke(route,task='billsnow')
+        self.assertEqual(set(meta['members']),{'anthropic','kimi'})
+        self.assertIn(meta['judge'],[row['id'] for row in route['judge_evaluations']])
+        self.assertEqual(len(self.calls),3)
 
     def test_accounting_failure_never_spends_on_recovery(self):
         route=self.route(max_recovery_attempts=1)
