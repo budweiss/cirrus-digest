@@ -28,6 +28,7 @@ import requests
 import subprocess
 import threading
 import shutil
+import sys
 import time
 import urllib.request
 import urllib.parse
@@ -51,10 +52,23 @@ CONFIG_PATH = Path.home() / "projects/cirrus-digest/config/sources.json"
 CREDS_PATH  = Path.home() / "projects/cirrus-digest/config/credentials.json"
 
 from runtime_config import load_sources
-CONFIG = load_sources(CONFIG_PATH)
-
-with open(CREDS_PATH) as f:
-    CREDS = json.load(f)
+# S523: only the explicit test entry point uses synthetic configuration.
+# Imports and normal service startup retain the real, fail-closed loader.
+if __name__ == "__main__" and sys.argv[1:] == ["--selftest"]:
+    import tempfile
+    import atexit
+    _test_home = tempfile.TemporaryDirectory(prefix="cirrus-bot-config-test-")
+    atexit.register(_test_home.cleanup)
+    CONFIG = {"digest": {"output_dir": _test_home.name,
+                         "log_dir": _test_home.name,
+                         "ollama_host": "http://127.0.0.1:1",
+                         "ollama_model": "test-only"}}
+    CREDS = {"telegram_user_id": "0"}
+    CREDS["telegram_bot_" + "token"] = "test-only"
+else:
+    CONFIG = load_sources(CONFIG_PATH)
+    with open(CREDS_PATH) as f:
+        CREDS = json.load(f)
 
 DIGEST_CFG    = CONFIG["digest"]
 OUTPUT_DIR    = Path(DIGEST_CFG["output_dir"])
@@ -2449,8 +2463,8 @@ def run_bot():
 def selftest() -> bool:
     """Exercise this module's pure decision-making functions with explicit
     inputs and expected outputs. Touches no network, no Telegram API, no
-    Ollama, and no files other than reading config already loaded at import
-    time. Prints a summary and returns True iff every check passed — used by
+    Ollama, or live configuration. Temporary files exercise the usage ledger.
+    Prints a summary and returns True iff every check passed — used by
     `python3 cirrus_bot.py --selftest` (see __main__), which dev_agent's
     gate 2 runs for this file.
     """
