@@ -235,10 +235,62 @@ def check():
     return any(r["location"] == "local" for r in fresh)
 
 
+def selftest():
+    import tempfile
+    failures = []
+
+    def expect(name, condition):
+        if not condition:
+            failures.append(name)
+
+    # fixtures: stable case set and required payload keys for every case.
+    cases = fixtures()
+    names = [n for n, _ in cases]
+    expect("fixtures_case_set", names == ["schedule", "correction", "missing", "injection",
+                                          "reconcile", "bounded_context", "irrelevant", "coverage"])
+    expect("fixtures_unique_names", len(set(names)) == len(names))
+    for name, payload in cases:
+        expect("fixtures_payload_keys_" + name,
+               all(k in payload for k in ("question", "sources", "history", "drafts", "mode")))
+
+    # evidence_path: known providers map under the evaluations dir; unknown ones raise.
+    for provider in ("ollama", "vllm", "kimi", "anthropic", "gemini", "openai"):
+        expect("evidence_path_name_" + provider,
+               evidence_path(provider).name == provider + ".json")
+    try:
+        evidence_path("not-a-provider")
+        expect("evidence_path_rejects_unknown", False)
+    except ValueError:
+        expect("evidence_path_rejects_unknown", True)
+
+    # save: atomic JSON round-trip with no leftover temp file.
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "roundtrip.json"
+        payload = {"a": [1, 2, 3], "b": "text"}
+        save(target, payload)
+        expect("save_roundtrip", json.loads(target.read_text()) == payload)
+        expect("save_no_temp_left", not (Path(tmp) / "roundtrip.tmp").exists())
+
+    # contract: every CONTRACT file hashes to a 64-char hex digest and the
+    # registry digest is deterministic across repeated calls.
+    files, digest = contract()
+    expect("contract_file_count", set(files) == set(CONTRACT))
+    expect("contract_hex_digests",
+           all(len(v) == 64 and all(c in "0123456789abcdef" for c in v) for v in files.values()))
+    files2, digest2 = contract()
+    expect("contract_deterministic", files == files2 and digest == digest2)
+
+    if failures:
+        print("selftest FAILED:", ", ".join(failures))
+        return False
+    print("selftest OK")
+    return True
+
+
 if __name__ == "__main__":
     try:
         cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
-        ok = run(sys.argv[2]) if cmd == "run" else rescore(sys.argv[2]) if cmd == "rescore" else install(sys.argv[2:]) if cmd == "install" else check() if cmd == "check" else False
+        ok = run(sys.argv[2]) if cmd == "run" else rescore(sys.argv[2]) if cmd == "rescore" else install(sys.argv[2:]) if cmd == "install" else check() if cmd == "check" else selftest() if cmd == "--selftest" else False
     except Exception as exc:
         print("Qualification stopped:", type(exc).__name__)
         ok = False
