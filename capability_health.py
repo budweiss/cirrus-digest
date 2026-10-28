@@ -121,6 +121,12 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
         if capacity is None and provider == 'openai' and model == 'gpt-4o-mini':
             capacity = 128_000
             row['basis'] = 'authenticated_identity_and_published_capacity'
+        # CIRRUS uses this separate exact OpenAI model. Its authenticated list
+        # also omits capacity; the published context window is 1,047,576.
+        # https://developers.openai.com/api/docs/models/gpt-4.1
+        if capacity is None and provider == 'openai' and model == 'gpt-4.1':
+            capacity = 1_047_576
+            row['basis'] = 'authenticated_identity_and_published_capacity'
         if type(capacity) is not int or capacity <= 0:
             return dict(row, status='capacity_unknown')
         return dict(row, healthy=True, status='ready_metadata',
@@ -229,6 +235,11 @@ def selftest():
                       get=lambda url, headers: {'data': [{'id': 'gpt-4'}]})
     check('cloud unpinned missing capacity stays unhealthy (openai)',
           r['status'] == 'capacity_unknown' and r['healthy'] is False)
+    r = observe_cloud({'openai_model': 'gpt-4.1', 'openai_api_key': 'sk-x'}, 'openai',
+                      get=lambda url, headers: {'data': [{'id': 'gpt-4.1'}]})
+    check('cloud published capacity for exact CIRRUS model (openai)',
+          r['healthy'] is True and r['usable_input_tokens'] == 1047576 and
+          r['basis'] == 'authenticated_identity_and_published_capacity')
 
     def get_deepseek_window(url, headers):
         return {'data': [{'id': 'deepseek-flash', 'context_window': 1048576}]}
