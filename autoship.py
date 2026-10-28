@@ -245,6 +245,16 @@ def selftest():
                                ("b.py", base, prod)])[0])
     ck("no files means no autoship", not may_autoship(good, [])[0])
 
+    # 9. S527: may_autoship read "ran" while build_item writes rec["gates_ran"].
+    #    Each suite built its fixture with its own key, so both passed and
+    #    auto-ship never fired. `good` now carries the real key; this pins the
+    #    producer. It lives here because dev_agent.py is a foundation-route
+    #    contract file: editing it, even its selftest, blocks routes (T115).
+    from pathlib import Path
+    _da = Path(__file__).with_name("dev_agent.py")
+    ck("dev_agent's build_item writes the key may_autoship reads",
+       _da.exists() and 'rec["gates_ran"] = verdict["ran"]' in _da.read_text())
+
     print(f"\n  {ok} passed, {fail} failed")
     return 1 if fail else 0
 

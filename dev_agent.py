@@ -3456,21 +3456,6 @@ def _selftest():
         check("...and build_item itself does NOT auto-ship",
               "maybe_autoship" not in (_source_between(
                   "def build_item(item: dict)", "\ndef maybe_autoship(") or ""))
-        # S527: each half was tested against its OWN fixture -- autoship's said
-        # "ran", the records here say "gates_ran" -- so both suites passed while
-        # every real build was refused "the selftest gate did not run" (15 of
-        # 15 since S97). Pin the handoff: the key build_item writes is the key
-        # may_autoship reads, using a record carrying only that key.
-        import autoship as _autoship
-        _b = "def f():\n    return 1\ndef selftest():\n    assert f() == 1\n"
-        check("build_item records the gates as rec['gates_ran']",
-              'rec["gates_ran"] = verdict["ran"]' in (_source_between(
-                  "def build_item(item: dict)", "\ndef maybe_autoship(") or ""))
-        check("...and may_autoship accepts a record carrying only that key",
-              _autoship.may_autoship(
-                  {"council": {"verdict": "approve"},
-                   "gates_ran": ["compile", "selftest(1/1)"]},
-                  [("m.py", _b, _b + "    assert f() != 2\n")])[0])
 
         # -- the journal ------------------------------------------------------
         jf = wt / "repairs.jsonl"
