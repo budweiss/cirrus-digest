@@ -67,6 +67,68 @@ SCRATCH_RX = re.compile(r"^/tmp/rv-[A-Za-z0-9]{6,}$")
 
 # ── the half that runs ON CUMULUS ────────────────────────────────────────────
 
+# S517: use the same dispatch recognition as the main build gate (T97/T158).
+_DISPATCH_DASH_RX = re.compile(r"[\"']--selftest[\"']")
+
+_DISPATCH_BARE_RX = re.compile(
+    r"arg[sv][^\n]*[\"']selftest[\"']"       # "selftest" in args / argv[1] == "selftest"
+    r"|[\"']selftest[\"'][^\n]*arg[sv]"
+    # cmd == "selftest" / argv[1] == "selftest" — the lvalue must be the
+    # dispatch variable. S161: the old bare `== "selftest"` alternative also
+    # matched ASSERTIONS inside a suite (cirrus_daily.py: `r.get("box") ==
+    # "selftest"`), so gate 2/3 invoked that module as `selftest` — which its
+    # dispatch does not know — and fell through to the PRODUCTION __main__
+    # (a 20-minute digest fetch, or in cirrus_bot.py's case THE LIVE BOT).
+    r"|(?:\bcmd|\bargv(?:\[\d+\])?)\s*==\s*[\"']selftest[\"']")
+
+def _dash_dispatch(text) -> bool:
+    """True if the module TESTS for "--selftest" (or declares it to argparse).
+
+    S501, measured on CIRRUS: _DISPATCH_DASH_RX matched ANY quoted "--selftest",
+    so five halftime modules were invoked as `--selftest` because of
+        if not any(arg in sys.argv for arg in ("selftest", "--selftest", ...))
+    (a guard) or `main(["--selftest"]) == 2` (a test that the flag is REFUSED).
+    That ran their production path, which fails without credentials, so the
+    baseline marked them "already red" and gate 3 excused them on every build:
+    a gate that never looked. Their real `selftest` suites pass.
+
+    Counted only where the literal is an operand of ==, !=, in, not in (alone
+    or inside a tuple/list/set), or the first argument of add_argument(). A
+    comprehension's iterable, a call argument and a string fixture are not.
+    Unparseable source falls back to the old regex; gate 1 reports the syntax.
+    """
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return bool(_DISPATCH_DASH_RX.search(text))
+
+    def flag(n):
+        return isinstance(n, ast.Constant) and n.value == "--selftest"
+
+    def holds(n):
+        if flag(n):
+            return True
+        if isinstance(n, (ast.Tuple, ast.List, ast.Set)):
+            # one level down covers `sys.argv[1:] in (["selftest"], ["--selftest"])`
+            return any(flag(e) or (isinstance(e, (ast.Tuple, ast.List))
+                                   and any(flag(x) for x in e.elts))
+                       for e in n.elts)
+        return False
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Compare)
+                and all(isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn))
+                        for op in node.ops)
+                and any(holds(x) for x in [node.left] + node.comparators)):
+            return True
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args and flag(node.args[0])):
+            return True
+    return False
+
+
 def selftest_argvs(path):
     """Every spelling this module answers to, or [] if it has no suite.
 
@@ -81,9 +143,9 @@ def selftest_argvs(path):
     if not re.search(r"^\s*def\s+_?selftest\s*\(", src, re.M):
         return []
     args = []
-    if '"--selftest"' in src or "'--selftest'" in src:
+    if _dash_dispatch(src):
         args.append(["--selftest"])
-    if re.search(r"""["']selftest["']""", src):
+    if _DISPATCH_BARE_RX.search(src):
         args.append(["selftest"])
     return args
 
@@ -310,6 +372,23 @@ def selftest():
            selftest_argvs(t / "none.py") == [])
         ck("a selftest nothing can INVOKE is not verifiable",
            selftest_argvs(t / "defined_only.py") == [])
+
+        (t / "mentions.py").write_text(
+            'def selftest():\n    assert main(["--selftest"]) == 2\n'
+            '    assert {"mode": "selftest"}.get("mode") == "selftest"\n')
+        ck("refusal tests and assertion strings are not dispatch",
+           selftest_argvs(t / "mentions.py") == [])
+        (t / "guard.py").write_text(
+            'import sys\ndef selftest():\n    return 0\n'
+            'if not any(arg in sys.argv for arg in ("selftest", "--selftest")):\n'
+            '    pass\nif "selftest" in sys.argv: selftest()\n')
+        ck("a guard tuple does not invent a dashed dispatch",
+           selftest_argvs(t / "guard.py") == [["selftest"]])
+        (t / "dash.py").write_text(
+            'def selftest():\n    return 0\n'
+            'parser.add_argument("--selftest", action="store_true")\n')
+        ck("argparse dashed dispatch remains recognized",
+           selftest_argvs(t / "dash.py") == [["--selftest"]])
 
         # --- run_selftests --------------------------------------------------
         (t / "green.py").write_text(
