@@ -55,6 +55,33 @@ class MediaAdmissionTests(unittest.TestCase):
   with self.assertRaises(TimeoutError):self.run_media(fail)
   q=Queue(self.state/'queue.db',policy());self.assertEqual(q.status()['jobs'][0]['state'],'unknown')
   with self.assertRaises(Refused):self.run_media()
+ def test_bad_claim_format_retries_once_then_recovers(self):
+  answers=iter(['{"claims":[{"claim":"missing fields"}]}','{"claims":[]}'])
+  def analyze(*args,**kwargs):
+   return m.analyze(*args,**kwargs,caller=lambda *a:next(answers),counter=len)
+  self.assertEqual(self.run_media(analyze),[])
+  self.assertEqual(Queue(self.state/'queue.db',policy()).status()['jobs'][0]['state'],'succeeded')
+ def test_bad_claim_format_is_quarantined_and_next_item_runs(self):
+  from fleet_queue import ResearchQuarantined
+  calls=[]
+  def bad(*args,**kwargs):
+   return m.analyze(*args,**kwargs,caller=lambda *a:(calls.append(1) or '{"claims":[{}]}'),counter=len)
+  with self.assertRaises(ResearchQuarantined):self.run_media(bad)
+  self.assertEqual(len(calls),2)
+  q=Queue(self.state/'queue.db',policy())
+  self.assertEqual(q.status()['jobs'][0]['state'],'failed')
+  with self.assertRaises(Refused):self.run_media()
+  self.assertEqual(self.run_media(payload=dict(self.payload,text=self.text+' A second article.')),[])
+  self.assertEqual([r['state'] for r in q.status()['jobs']],['failed','succeeded'])
+ def test_retry_timeout_keeps_slot_for_reconciliation(self):
+  calls=[]
+  def uncertain(*args,**kwargs):
+   calls.append(1)
+   if len(calls)==1:raise m.ClaimFormatError('invalid_media_claim')
+   raise TimeoutError('backend state unconfirmed')
+  with self.assertRaises(TimeoutError):self.run_media(uncertain)
+  self.assertEqual(len(calls),2)
+  self.assertEqual(Queue(self.state/'queue.db',policy()).status()['jobs'][0]['state'],'unknown')
  def test_F05_unsupported_quote_refused(self):
   self.run_media();p=next((self.root/'media').rglob('result.json'));p.write_text(json.dumps({'result':[{'quote':'This unsupported quotation is entirely invented and must fail.'}]}))
   with self.assertRaises(ValueError):self.run_media()

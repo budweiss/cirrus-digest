@@ -363,6 +363,7 @@ def default_analyze(text, meta):
 
 def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
                 last_ok, seen_path, dry_run):
+    from fleet_queue import ResearchQuarantined
     attempted = succeeded = 0
     for post in posts:
         text = full_text(post.pop("entry"), post["kind"], parse)
@@ -390,6 +391,11 @@ def _read_posts(posts, parse, analyze, browser, results, errors, seen, seen_set,
         try:
             attempted += 1
             claims = analyze("%s\n\n%s" % (post["title"], text), meta) if text else []
+        except ResearchQuarantined as e:
+            # Both completed answers were malformed. Keep a visible failed
+            # record and move to the next article; the queue slot is released.
+            errors.append("%s: %s" % (post["title"][:50], str(e)[:240]))
+            claims = None
         except (RuntimeError, OSError) as e:
             # the worker or the link is down: NOT seen, so tomorrow retries it
             # S406: keep up to 240 chars so the worker's exception message
@@ -824,6 +830,21 @@ def _selftest(g):
         invalid_stats = run(dry_run=True, browser=FakeBrowser(), feeds=feeds[:1], parse=parse,
                             analyze=invalid, seen_path=Path(td) / "invalid-seen.json", now=now, pause=0)
         ck("health: deterministic analysis failures are unhealthy", not is_healthy(invalid_stats))
+        from fleet_queue import ResearchQuarantined
+        def quarantined(text, meta):
+            if meta['title'] == 'Spark tips':
+                raise ResearchQuarantined('research_item_quarantined')
+            return []
+        quarantined_path = Path(td) / 'quarantined-seen.json'
+        quarantined_stats = run(browser=FakeBrowser(), feeds=feeds[:2], parse=parse,
+                                analyze=quarantined, seen_path=quarantined_path,
+                                out_dir=Path(td) / 'quarantined-out', now=now, pause=0,
+                                claims_log=Path(td) / 'quarantined-claims.jsonl')
+        ck("run: a quarantined article is recorded and later articles continue",
+           quarantined_stats['analysis_attempted'] == 2 and quarantined_stats['analysis_succeeded'] == 1
+           and set(load_json(quarantined_path, {})['keys']) ==
+           {post_key(author_full['link']), post_key('https://x.substack.com/p/a')}
+           and not is_healthy(quarantined_stats))
         quiet_path = Path(td) / "quiet-seen.json"
         quiet = run(browser=FakeBrowser(), feeds=feeds[:1], parse=parse, analyze=lambda t, m: [],
                     seen_path=quiet_path, out_dir=Path(td) / "quiet-out", now=now, pause=0,

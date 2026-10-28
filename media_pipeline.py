@@ -32,6 +32,10 @@ class YouTubeDeadline(BaseException):
     """Not swallowed by per-video Exception handlers: end the entire worker."""
 
 
+class ClaimFormatError(ValueError):
+    """The model returned a complete but malformed claims answer."""
+
+
 def youtube_deadline(now=None):
     """90 minutes including queue wait; daytime restriction lifted October 12."""
     now = now or datetime.now(ZoneInfo('America/New_York'))
@@ -188,16 +192,19 @@ def source_quote(quote, source):
 
 def parse_claims(raw, source, dropped=None):
     raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ClaimFormatError('invalid_media_claim_json') from exc
     if not isinstance(data, dict) or not isinstance(data.get('claims'), list):
-        raise ValueError('invalid_media_claim_schema')
+        raise ClaimFormatError('invalid_media_claim_schema')
     if len(data['claims']) > 6:
-        raise ValueError('too_many_media_claims')
+        raise ClaimFormatError('too_many_media_claims')
     kept = []
     for claim in data['claims']:
         if not isinstance(claim, dict) or any(not isinstance(claim.get(k), str)
                 for k in ('claim', 'why_it_applies', 'how_to_test', 'quote')):
-            raise ValueError('invalid_media_claim')
+            raise ClaimFormatError('invalid_media_claim')
         try:
             quote, start, end = source_quote(claim['quote'], source)
         except ValueError as exc:
@@ -550,6 +557,9 @@ def call(action, **kwargs):
     if p.returncode:
         if action == 'youtube' and p.returncode == 75:
             raise YouTubeDeadline('youtube_deadline_expired')
+        if action == 'analyze' and p.returncode == 76:
+            from fleet_queue import ResearchQuarantined
+            raise ResearchQuarantined('research_item_quarantined')
         # Keep the cause on the first alert line, including when SSH returned
         # no stderr. A leading newline used to leave only an empty label.
         detail = ' '.join((p.stderr or '').split())[-300:] or 'no stderr returned'
@@ -812,4 +822,6 @@ if __name__ == '__main__':
         # detail the caller needed to diagnose a chunk failure remotely ('Refused'
         # told nothing about WHICH admission check refused).
         print('media worker failed: %s: %s' % (type(exc).__name__, str(exc)[:200]),file=sys.stderr)
-        raise SystemExit(75 if isinstance(exc, YouTubeDeadline) else 1)
+        from fleet_queue import ResearchQuarantined
+        raise SystemExit(75 if isinstance(exc, YouTubeDeadline) else
+                         76 if isinstance(exc, ResearchQuarantined) else 1)

@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime,timezone
 from pathlib import Path
-from fleet_queue import Queue, Refused
+from fleet_queue import Queue, Refused, ResearchQuarantined
 from fleet_pilot import policy
 
 STATE=Path('/home/buddy/model-serving/fleet/state-v2')
@@ -74,8 +74,20 @@ def run_analysis(payload,root=None,state=STATE,observer=None,analyzer=None,wait_
     def advanced(n):
         progress[0]=n;q.progress(job,r['fence'],n,'analyzing')
     try:
-        result=(analyzer or media.analyze)(payload['text'],payload['instructions'],payload['domain'],True,
-            root=root,metadata=payload.get('metadata'),report=report,progress=advanced)
+        for attempt in range(2):
+            try:
+                result=(analyzer or media.analyze)(payload['text'],payload['instructions'],payload['domain'],True,
+                    root=root,metadata=payload.get('metadata'),report=report,progress=advanced)
+                break
+            except media.ClaimFormatError as exc:
+                if heartbeat_error:raise Refused('lost attempt ownership')
+                # A response arrived and failed schema validation. The model
+                # call is over, so a bounded retry can safely reuse checkpoints.
+                q.progress(job,r['fence'],progress[0],'retrying_claim_format')
+                if attempt == 0:
+                    continue
+                q.fail_completed_research(job,r['fence'],'claim format failed after one retry: '+str(exc))
+                raise ResearchQuarantined('research_item_quarantined') from exc
         if heartbeat_error:raise Refused('lost attempt ownership')
         folder=Path(report['folder']).resolve()
         if not folder.is_relative_to((root/'media/articles-infra').resolve()):raise Refused('artifact outside project')
@@ -84,6 +96,8 @@ def run_analysis(payload,root=None,state=STATE,observer=None,analyzer=None,wait_
         manifest={**coverage,'artifact':str(folder),'input_hash':r['input_hash'],'source_verified':True}
         if not q.complete(job,r['fence'],manifest):raise Refused('completion validation failed')
         return result
+    except ResearchQuarantined:
+        raise
     except Exception as exc:
         # Do not guess that a timed-out backend stopped. Keep the slot until
         # explicit reconciliation; the original scheduler records its failure.

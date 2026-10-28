@@ -140,6 +140,15 @@ class MediaTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'Cumulus_media_worker_failed'):
                 m.call('analyze',text='full text',instructions='test')
 
+    def test_completed_research_quarantine_survives_remote_boundary(self):
+        from fleet_queue import ResearchQuarantined
+        with patch.object(m.socket,'gethostname',return_value='cirrus'), \
+             patch.object(m.subprocess,'run') as run:
+            run.return_value.returncode=76
+            run.return_value.stderr='media worker failed: ResearchQuarantined: research_item_quarantined'
+            with self.assertRaises(ResearchQuarantined):
+                m.call('analyze',text='fixture',instructions='test')
+
     def test_remote_failure_has_exit_and_single_line_cause(self):
         for stderr, expected in [('', 'no stderr returned'),
                                  ('\nmedia worker failed:\n Refused: admission stopped\n',

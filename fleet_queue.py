@@ -24,6 +24,10 @@ class Refused(ValueError):
     pass
 
 
+class ResearchQuarantined(RuntimeError):
+    """A completed no-delivery research item failed validation twice."""
+
+
 class Queue:
     def __init__(self, path, policy, clock=time.time, monotonic=time.monotonic, epoch=None):
         self.path = str(path)
@@ -226,6 +230,16 @@ class Queue:
                       (state,'validated',json.dumps(result) if valid else None,'' if valid else 'completion validator failed',job))
             self.event(c,job,state,{'validator':self.policy['projects'][row['project']]['validator']})
             return valid
+
+    def fail_completed_research(self,job,fence,reason):
+        """Release a worker after a returned, invalid result; retain the failed job."""
+        with self.db() as c:
+            row=self.owned(c,job,fence)
+            if (row['state'] not in ('running','validating','suspected_stall')
+                    or self.policy['projects'][row['project']]['delivery']!='none'):
+                raise Refused('only completed no-delivery research may be quarantined')
+            c.execute("UPDATE jobs SET state='failed',stage='validated',reason=? WHERE id=?",(reason,job))
+            self.event(c,job,'failed',{'reason':reason})
 
     def unknown(self,job,fence,reason):
         with self.db() as c:
