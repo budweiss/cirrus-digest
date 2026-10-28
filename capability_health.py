@@ -103,6 +103,8 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
         capacity = data.get('max_input_tokens') if provider == 'anthropic' else data.get('inputTokenLimit')
         if provider not in ('anthropic', 'gemini'):
             capacity = data.get('context_length') or data.get('max_model_len')
+        if capacity is None and provider == 'deepseek':
+            capacity = data.get('context_window')
         if identity != model:
             return dict(row, status='model_identity_mismatch')
         # OpenAI's authenticated model list omits context capacity. Pin only
@@ -111,6 +113,13 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
         # Admission still caps this at the smaller measured evaluation capacity.
         if capacity is None and provider == 'openai' and model == 'gpt-6-astra':
             capacity = 1_050_000
+            row['basis'] = 'authenticated_identity_and_published_capacity'
+        # The authenticated OpenAI model list omits context capacity for this
+        # exact model too; use its published 128k specification only after the
+        # configured ID is found in that account's authenticated list.
+        # https://developers.openai.com/api/docs/models/gpt-4o-mini
+        if capacity is None and provider == 'openai' and model == 'gpt-4o-mini':
+            capacity = 128_000
             row['basis'] = 'authenticated_identity_and_published_capacity'
         if type(capacity) is not int or capacity <= 0:
             return dict(row, status='capacity_unknown')
@@ -208,6 +217,25 @@ def selftest():
     r = observe_cloud({'openai_model': 'gpt-4', 'openai_api_key': 'sk-x'}, 'openai',
                        get=get_openai_mismatch)
     check('cloud model_identity_mismatch (openai)', r['status'] == 'model_identity_mismatch')
+
+    def get_openai_no_capacity(url, headers):
+        return {'data': [{'id': 'gpt-4o-mini'}]}
+    r = observe_cloud({'openai_model': 'gpt-4o-mini', 'openai_api_key': 'sk-x'}, 'openai',
+                      get=get_openai_no_capacity)
+    check('cloud published capacity only after authenticated exact identity (openai)',
+          r['healthy'] is True and r['usable_input_tokens'] == 128000 and
+          r['basis'] == 'authenticated_identity_and_published_capacity')
+    r = observe_cloud({'openai_model': 'gpt-4', 'openai_api_key': 'sk-x'}, 'openai',
+                      get=lambda url, headers: {'data': [{'id': 'gpt-4'}]})
+    check('cloud unpinned missing capacity stays unhealthy (openai)',
+          r['status'] == 'capacity_unknown' and r['healthy'] is False)
+
+    def get_deepseek_window(url, headers):
+        return {'data': [{'id': 'deepseek-flash', 'context_window': 1048576}]}
+    r = observe_cloud({'deepseek_model': 'deepseek-flash', 'deepseek_api_key': 'key'}, 'deepseek',
+                      get=get_deepseek_window)
+    check('cloud context_window capacity (deepseek)',
+          r['healthy'] is True and r['usable_input_tokens'] == 1048576)
 
     # observe_cloud: ready_metadata for anthropic (direct id/capacity fields)
     def get_anthropic_ready(url, headers):
