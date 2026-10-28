@@ -299,6 +299,11 @@ def main(argv):
         state_path.write_text(json.dumps(rec, indent=1) + "\n")
         with open(LOGS / "cloudflared-update.log", "a") as f:
             f.write(line + "\n")
+        # S517: feed the daily missed/failed-job monitor, not only our own log.
+        import job_status
+        job_status.record("cloudflaredupdate", ok=(code == 0 and rec.get("result") in
+                          {"current", "upgraded", "reinstalled"}),
+                          note=rec.get("result", "unknown"))
     return code
 
 
