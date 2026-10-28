@@ -86,8 +86,8 @@ CADENCE_H = {
     "morningbrief":  26,        # daily 07:30
     "modelhealth":   26,        # daily 05:30 (API-model check + self-heal, S56)
     "cloudflaredupdate": 26,    # S517: daily connector updater on each box
-    "autoupdate":    26,        # S516: daily dry run, CIRRUS 00:45 + cumulus1 01:30 (both
-                                # record, like modelhealth; cumulus2 has no ledger reader)
+    "autoupdate": 26,           # CIRRUS dry run, 00:45
+    "autoupdatecumulus": 26,    # S520: cumulus1 dry run, 01:30; distinct ledger name
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
@@ -216,6 +216,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  # monitor being dead, and this is the only monitor that watches
                  # cumulus2 at all. Exactly the omission the comment above warns
                  # about, made four rows below the warning.
+                 "autoupdatecumulus",                     # S520: read cumulus1 ledger
                  "accesscheck"}                           # S101, runs on cumulus1
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1
@@ -861,6 +862,9 @@ def selftest():
        "accesscheck" in REMOTE_JOBS)
     ck("intake is NOT remote — both boxes run their own, on SEPARATE mailboxes",
        "intake" in CADENCE_H and "intake" not in REMOTE_JOBS)
+    ck("both dry-run ledger names are watched on the correct host",
+       CADENCE_H.get("autoupdate") == 26 and CADENCE_H.get("autoupdatecumulus") == 26
+       and "autoupdatecumulus" in REMOTE_JOBS and "autoupdate" not in REMOTE_JOBS)
     ck("every REMOTE_JOBS name has a cadence, or it is never checked at all",
        REMOTE_JOBS <= set(CADENCE_H))
 
@@ -1017,7 +1021,12 @@ def selftest():
                 for arg in line.split():
                     base = arg.rsplit("/", 1)[-1]
                     _on_cumulus |= _by_file.get(base, set())
-    _not_remote = sorted(_on_cumulus - REMOTE_JOBS)
+    # Connector updater intentionally records the same local name on both hosts.
+    # Its unit is in this repo, unlike modelhealth; do not redirect CIRRUS to C1.
+    _both_local = {"cloudflaredupdate"}
+    ck("connector updater remains locally watched on each host",
+       CADENCE_H.get("cloudflaredupdate") == 26 and "cloudflaredupdate" not in REMOTE_JOBS)
+    _not_remote = sorted(_on_cumulus - REMOTE_JOBS - _both_local)
     # SCOPE: unit FILES in this repo. The cirrus-* units (billsnow, hoaleads,
     # ...) are written by runner install commands, not stored here, so this
     # scan cannot see them -- they are listed in REMOTE_JOBS by hand today. The
