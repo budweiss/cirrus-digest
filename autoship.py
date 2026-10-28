@@ -138,7 +138,10 @@ def may_autoship(rec, file_pairs):
     verdict = ((rec or {}).get("council") or {}).get("verdict")
     if verdict != "approve":
         return False, f"council verdict is {verdict!r}, not approve"
-    ran = " ".join((rec or {}).get("ran") or [])
+    # S527: read `gates_ran`, the key build_item actually writes. This read
+    # `ran` (verify_build's return key) from S97 on, so every real record
+    # failed this line and auto-ship never fired once in 15 eligible builds.
+    ran = " ".join((rec or {}).get("gates_ran") or [])
     if "selftest(" not in ran:
         return False, "the selftest gate did not run — unverified"
     for path, before, after in file_pairs:
@@ -225,17 +228,17 @@ def selftest():
     ck("an identical file is not a change", not is_test_only_change(base, base)[0])
 
     # 8. build-level gating
-    good = {"council": {"verdict": "approve"}, "ran": ["compile", "selftest(1/1)"]}
+    good = {"council": {"verdict": "approve"}, "gates_ran": ["compile", "selftest(1/1)"]}
     ck("an approved test-only build may autoship",
        may_autoship(good, [("m.py", base, more_tests)])[0])
     ck("a council REJECT blocks autoship even for test-only",
        not may_autoship({**good, "council_hold": True},
                         [("m.py", base, more_tests)])[0])
     ck("a council verdict that is not approve blocks autoship",
-       not may_autoship({"council": {"verdict": "revise"}, "ran": ["selftest(1/1)"]},
+       not may_autoship({"council": {"verdict": "revise"}, "gates_ran": ["selftest(1/1)"]},
                         [("m.py", base, more_tests)])[0])
     ck("a build whose selftest gate never ran is not autoshipped",
-       not may_autoship({"council": {"verdict": "approve"}, "ran": ["compile"]},
+       not may_autoship({"council": {"verdict": "approve"}, "gates_ran": ["compile"]},
                         [("m.py", base, more_tests)])[0])
     ck("one production file among many blocks the WHOLE build",
        not may_autoship(good, [("a.py", base, more_tests),
