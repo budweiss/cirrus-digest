@@ -138,8 +138,11 @@ def observe_cloud(creds, provider, *, get=None, clock=None):
 def selftest():
     """Exercise observe()/observe_cloud() decision paths with fake get/clock."""
     failures = []
+    checked = 0
 
     def check(label, condition):
+        nonlocal checked
+        checked += 1
         if not condition:
             failures.append(label)
 
@@ -288,7 +291,7 @@ def selftest():
     if failures:
         print('FAIL: capability_health.selftest ->', '; '.join(failures))
         return False
-    print('OK: capability_health.selftest (%d checks)' % 18)
+    print('OK: capability_health.selftest (%d checks)' % checked)
     return True
 
 
