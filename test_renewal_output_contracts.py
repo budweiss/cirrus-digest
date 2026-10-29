@@ -29,20 +29,21 @@ class OutputContracts(unittest.TestCase):
         self.assertTrue(R.qualification_shape_valid(self.case('halftime:events'), '```json\n[]\n```'))
 
     def test_judge_cannot_omit_required_sections_or_date(self):
-        headings = ['## What changed', '## Trials watch', '## Subgroup focus',
-                    '## Community pulse', '## Standing questions — where they stand',
-                    '## Council disagreements']
-        user = ("Write this week's brief, dated 2026-10-21.\n\n"
-                "Use EXACTLY these sections, in this order:\n" + '\n'.join(headings) +
-                '\n\nSection rules:\n')
+        # S534: S490 replaced the S478 brief format (exact "Brief date:
+        # YYYY-MM-DD" first line, standing questions, council line). Same
+        # intent, current shape; a long-form date is no longer accepted.
+        import test_medical_judge as M
+        good, user = M.brief(), M.task()
+        missing = good.replace('## Community pulse\nNothing in the supplied items this period.\n\n', '')
+        self.assertNotEqual(missing, good)
         for field in ['evaluations', 'judge_evaluations']:
-            case = self.case('alopecia-brief', field, user)
-            good = '2026-10-21\n'+'\n\n'.join(h+'\nNo supplied update.' for h in headings)
+            envelope = (M.ensemble._judge_prompt(M.medical.SYSTEM, user, [('a', 'old draft')], '')
+                        if field == 'judge_evaluations' else user)
+            case = self.case('alopecia-brief', field, envelope)
             self.assertTrue(R.qualification_shape_valid(case, good))
-            self.assertFalse(R.qualification_shape_valid(case, good.replace(
-                '## Community pulse\nNo supplied update.\n\n', '')))
-            self.assertFalse(R.qualification_shape_valid(case, good.replace('2026-10-21', '')))
-            self.assertTrue(R.qualification_shape_valid(case, good.replace('2026-10-21', 'October 21, 2026')))
+            self.assertFalse(R.qualification_shape_valid(case, missing))
+            self.assertFalse(R.qualification_shape_valid(case, good.split('\n', 1)[1]))
+            self.assertFalse(R.qualification_shape_valid(case, good.replace(M.DAY, 'September 24, 2026')))
             self.assertFalse(R.qualification_shape_valid(case, 'nonempty'))
 
     def test_intake_plain_prose_rejects_headers_and_fences(self):
