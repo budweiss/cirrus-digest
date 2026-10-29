@@ -190,6 +190,19 @@ class WorkflowTests(MemoryTests):
         self.assertTrue(evaluation.score("correction", json.dumps(data), cases["correction"]))
         data["answer"] = "Thursday at 10 AM is the time, not Friday at 2 PM."
         self.assertFalse(evaluation.score("correction", json.dumps(data), cases["correction"]))
+        # S530: GPT-6 Astra's two 10-29 answers, verbatim. Correct, and failed
+        # only because the lead named Thursday without "moved to".
+        for answer in ("Use Friday at 2 PM for the planning meeting; this replaces Thursday at 10 AM.",
+                       "Use Friday at 2 PM for the planning meeting—the correction supersedes the earlier Thursday time."):
+            data["answer"] = answer
+            self.assertTrue(evaluation.score("correction", json.dumps(data), cases["correction"]), answer)
+        for answer in ("Friday at 2 PM does not replace Thursday at 10 AM.",
+                       "Friday at 2 PM never replaces Thursday at 10 AM.",
+                       "Thursday at 10 AM replaces Friday at 2 PM.",
+                       "Friday at 2 PM was proposed, but the meeting remains Thursday at 10 AM.",
+                       "Use Friday at 2 PM or Thursday at 10 AM; either works."):
+            data["answer"] = answer
+            self.assertFalse(evaluation.score("correction", json.dumps(data), cases["correction"]), answer)
         data = json.loads(output())
         data["answer"] += " The Saturday claim is unsupported and rejected."
         self.assertTrue(evaluation.score("reconcile", json.dumps(data), cases["reconcile"]))

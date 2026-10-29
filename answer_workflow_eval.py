@@ -67,8 +67,14 @@ def score(case, raw, payload):
         # Explaining the obsolete time is valid; the current answer must lead
         # with the corrected time and cite the correction itself.
         lead = text.split(".", 1)[0]
+        # S530: "Friday at 2 PM; this replaces Thursday" names the obsolete
+        # time after the current one. Any negation in the lead disqualifies it.
+        superseded = (0 <= lead.find("friday at 2") < lead.find("thursday")
+                      and not re.search(r"\b(?:not|never|no)\b|n't", lead)
+                      and bool(re.search(r"friday at 2\b.*\b(?:replac(?:es|ed|ing)|supersed(?:es|ed|ing)"
+                                         r"|instead of|rather than)\b[^.]*\bthursday", lead)))
         current_time = ("friday" in lead and "2" in lead and
-                        ("thursday" not in lead or
+                        ("thursday" not in lead or superseded or
                          bool(re.search(r"(?:moved|rescheduled|changed|updated) to friday at 2", lead))))
         return (current_time
                 and any(e["source"] == "correction" for e in result["evidence"]))
