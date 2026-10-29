@@ -344,11 +344,17 @@ def daily(job,live,date,folder):
 def newsletter_evidence(evidence,folder):
     from runtime_config import load_sources
     import stock_newsletters as newsletters
+    saved=folder/'newsletter-evidence.json'
+    # A delivery retry must report the packet that produced its saved decision,
+    # not replace that provenance with newly arrived mail.
+    if (folder/'request.json').exists() and saved.exists():
+        packet=json.loads(saved.read_text())
+        return {k:v for k,v in packet.items() if k!='audit'}
     config=load_sources(ROOT/'config/sources.json').get('email',{})
     packet=newsletters.collect(ROOT/'knowledge-newsletters',datetime.now(timezone.utc),
         evidence['companies'],config.get('newsletter_allowlist',[]),config.get('newsletter_rejectlist',[]))
     # Full selection audit and exact offered passages stay private on C1.
-    atomic(folder/'newsletter-evidence.json',packet)
+    atomic(saved,packet)
     return {k:v for k,v in packet.items() if k!='audit'}
 
 

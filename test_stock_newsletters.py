@@ -114,3 +114,9 @@ class NewsletterChecks(unittest.TestCase):
         self.assertNotIn('audit', public)
         self.assertEqual(public['newsletter_coverage']['selected'], 1)
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        original = saved.read_bytes()
+        (folder/'request.json').write_text('{}')
+        with patch('stock_newsletters.collect', side_effect=AssertionError('must reuse saved evidence')):
+            retry = S.newsletter_evidence({'companies':[]}, folder)
+        self.assertEqual(retry, public)
+        self.assertEqual(saved.read_bytes(), original)
