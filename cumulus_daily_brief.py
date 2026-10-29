@@ -312,6 +312,17 @@ def compose():
         lines += [f"  {item}" for item in shadow_items]
         lines.append("")
 
+    # S539: only appears when a request ticket has sat untriaged, or the check failed.
+    try:
+        import client_watch
+        ticket_items = client_watch.ticket_brief()[0]
+    except Exception as e:
+        ticket_items = [f"⚠️ request-ticket check UNKNOWN: client_watch could not load ({type(e).__name__})"]
+    if ticket_items:
+        lines.append("**Request tickets**")
+        lines += [f"  {item}" for item in ticket_items]
+        lines.append("")
+
     lines.append("**Skywarden (CUMULUS supervisor)**")
     lines += sky
     try:

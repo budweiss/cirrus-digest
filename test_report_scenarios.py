@@ -25,7 +25,7 @@ class ReportScenarios(unittest.TestCase):
             self.stack.enter_context(patch(target,side_effect=AssertionError('external operation forbidden')))
         self.changes=self.root/'self-changes.jsonl'  # S502: the brief's Switchboard input, never the live ledger
         self.changes.write_text(json.dumps({'ts':datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'event':'user-intake'})+'\n')
-        for mod,name,value in [(client_watch,'LEDGER',self.changes),(daily,'JOBS_STATUS_PATH',self.jobs),(daily,'SKY_STATE_DIR',self.sky),(daily,'TODAY','2026-09-28'),(daily,'datetime',Clock),(daily,'CREDS_PATH',self.root/'absent-creds'),(kb,'DATA_DIR',self.root/'db'),(weekly,'datetime',Clock),(weekly,'CREDS_PATH',self.root/'absent-creds')]:
+        for mod,name,value in [(client_watch,'LEDGER',self.changes),(client_watch,'TICKETS',self.root/'ticket-queue.jsonl'),(daily,'JOBS_STATUS_PATH',self.jobs),(daily,'SKY_STATE_DIR',self.sky),(daily,'TODAY','2026-09-28'),(daily,'datetime',Clock),(daily,'CREDS_PATH',self.root/'absent-creds'),(kb,'DATA_DIR',self.root/'db'),(weekly,'datetime',Clock),(weekly,'CREDS_PATH',self.root/'absent-creds')]:
             self.stack.enter_context(patch.object(mod,name,value))
         self.stack.enter_context(patch.object(daily,'_sudo_cat',side_effect=self.read_sky))
         self.stack.enter_context(patch.object(daily,'send_telegram',side_effect=AssertionError('send forbidden')))

@@ -432,6 +432,14 @@ def compose():
         _sb_att = f"Switchboard shadow coverage UNKNOWN: client_watch could not load ({type(e).__name__})"
     if _sb_att:
         att.append(_sb_att)
+    # S539: a request ticket nobody has triaged in N days is owed work.
+    try:
+        import client_watch
+        _tk_att = client_watch.ticket_brief()[1]
+    except Exception as e:
+        _tk_att = f"request-ticket check UNKNOWN: client_watch could not load ({type(e).__name__})"
+    if _tk_att:
+        att.append(_tk_att)
 
     healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 

@@ -25,9 +25,12 @@ anywhere (see the __main__ self-test) and cheap to reason about. cirrus_daily's
 See docs/CIRRUS-Autonomous-Dev-Loop.md for the architecture.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -365,8 +368,28 @@ def ticket_create(requester: str, projects, title: str, detail: str = "",
     if meta:
         ticket["meta"] = dict(meta)
     pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
-    with open(_ticket_path(pd), "a") as f:
-        f.write(json.dumps(ticket) + "\n")
+    with _ticket_lock(pd):
+        existing = ticket_load(pd)
+        # S539: ids are per-second, and closing a ticket by id would also close
+        # a second one filed in the same second (one intake poll, two emails).
+        ids, base, n = {t.get("id") for t in existing}, ticket["id"], 1
+        while ticket["id"] in ids:
+            n += 1
+            ticket["id"] = f"{base}-{n}"
+        if origin == "skywarden-repair":
+            # S539: one open ticket per unit. The filer's own reuse window was
+            # 24h, so a unit failing daily opened a new ticket daily
+            # (alopecia-agent: seven between 10-01 and 10-25). A repeat now
+            # counts against the open ticket; the original was already notified.
+            same = [t for t in existing if t.get("origin") == origin
+                    and t.get("title") == ticket["title"]
+                    and t.get("status") in OPEN_TICKET_STATES]
+            if same:
+                return _ticket_rewrite(pd, lambda t: t.get("id") == same[-1]["id"], {
+                    "repeats": int(same[-1].get("repeats") or 0) + 1,
+                    "last_seen": ticket["created"]})[-1]
+        with open(_ticket_path(pd), "a") as f:
+            f.write(json.dumps(ticket) + "\n")
     ledger_append({"event": "ticket", "id": ticket["id"],
                    "tier_name": ticket["tier_name"],
                    "detail": f"{requester}: {title}", "result": status}, pd)
@@ -404,6 +427,106 @@ def _notify_ticket(requester, title, status, tid, pd):
     data = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
     urllib.request.urlopen(urllib.request.Request(
         f"https://api.telegram.org/bot{tok}/sendMessage", data=data), timeout=20)
+
+
+# S539: until now nothing closed a ticket, so "queued" said nothing about
+# whether a request was open (CIRRUS: 12 queued, July Bill work among them).
+OPEN_TICKET_STATES = ("queued", "session")
+CLOSED_TICKET_STATES = ("resolved", "superseded")
+
+
+@contextlib.contextmanager
+def _ticket_lock(pd):
+    """Every write to the queue holds this. A rewrite racing an append would
+    drop the appended ticket. Read-only open: the root-run Skywarden filer may
+    have created the lock file, and flock needs no write access."""
+    fd = os.open(str(_ticket_path(pd)) + ".lock", os.O_RDONLY | os.O_CREAT, 0o664)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _ticket_rewrite(pd, match, fields):
+    """Merge `fields` into every ticket `match` accepts; return those tickets.
+    Caller holds _ticket_lock. Atomic replace keeping the old owner and mode:
+    the Skywarden filer runs as root, and a root-owned 0644 queue would lock
+    buddy out of it on CUMULUS (and widen it from 0600)."""
+    tf = _ticket_path(pd)
+    st = tf.stat()
+    out, hits = [], []
+    for line in tf.read_text().splitlines():
+        try:
+            t = json.loads(line)
+        except Exception:
+            out.append(line)
+            continue
+        if match(t):
+            t.update(fields)
+            hits.append(t)
+            line = json.dumps(t)
+        out.append(line)
+    if not hits:
+        return hits
+    fd, tmp = tempfile.mkstemp(dir=str(tf.parent), prefix=tf.name + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(out) + "\n")
+        os.chmod(tmp, st.st_mode & 0o777)
+        if os.geteuid() == 0:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        os.replace(tmp, tf)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return hits
+
+
+def ticket_update(ticket_id: str, status: str, note: str, project_dir=None, by: str = ""):
+    """Close or re-route one ticket, with the reason. resolved|superseded
+    closes it; queued|session keeps it open (session = a person must act).
+    Returns the updated ticket; raises KeyError for an unknown id."""
+    if status not in OPEN_TICKET_STATES + CLOSED_TICKET_STATES:
+        raise ValueError(f"unknown ticket status: {status}")
+    if not (note or "").strip():
+        raise ValueError("a ticket change needs a note saying why")
+    pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    key = "resolution" if status in CLOSED_TICKET_STATES else "triage_note"
+    change = {"status": status, key: note.strip()[:600], "updated": now, "updated_by": by[:40]}
+    if status in CLOSED_TICKET_STATES:
+        change["resolved_at"] = now
+    with _ticket_lock(pd):
+        hits = _ticket_rewrite(pd, lambda t: t.get("id") == ticket_id, change)
+    if not hits:
+        raise KeyError(ticket_id)
+    return hits[-1]
+
+
+def ticket_resolve_request(message_ids, note: str, project_dir=None):
+    """Resolve the open tickets filed for these intake messages (meta
+    request_origin / message_id). Called once an answer reaches the requester,
+    so a fallback ticket from an earlier attempt does not stay open forever.
+    Returns the ids it closed."""
+    keys = {str(m).split("#information-recovery-", 1)[0] for m in message_ids if m}
+    if not keys:
+        return []
+    pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
+    if not _ticket_path(pd).exists():
+        return []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def match(t):
+        m = t.get("meta") or {}
+        return (t.get("status") in OPEN_TICKET_STATES
+                and bool(keys & {m.get("request_origin"), m.get("message_id")}))
+    with _ticket_lock(pd):
+        hits = _ticket_rewrite(pd, match, {"status": "resolved", "resolution": note[:600],
+                                           "resolved_at": now, "updated": now,
+                                           "updated_by": "auto"})
+    return [t["id"] for t in hits]
 
 
 def ticket_load(project_dir=None, status: str = ""):
@@ -623,10 +746,60 @@ def _selftest():
         m = {"client": "bill", "thread_subject": "Re: leads", "message_id": "<m1@x>"}
         ticket_create("bill", ["pm"], "LIST/FILE for bill", project_dir=td, meta=m)
         assert ticket_load(td)[-1]["meta"] == m
+        # S539: tickets close, with a reason, and the file keeps its mode.
+        os.chmod(_ticket_path(td), 0o600)
+        u = ticket_update(t1["id"], "resolved", "delivered in S44", project_dir=td, by="s")
+        assert u["status"] == "resolved" and u["resolution"] == "delivered in S44"
+        assert ticket_load(td, status="resolved")[0]["id"] == t1["id"]
+        assert (_ticket_path(td).stat().st_mode & 0o777) == 0o600
+        assert len(ticket_load(td)) == 3                  # rewrite lost nothing
+        for bad in (("nope", "x"), ("resolved", " ")):
+            try:
+                ticket_update(t1["id"], *bad, project_dir=td)
+                raise AssertionError(f"accepted {bad}")
+            except ValueError:
+                pass
+        try:
+            ticket_update("ticket-missing", "resolved", "x", project_dir=td)
+            raise AssertionError("unknown id accepted")
+        except KeyError:
+            pass
+        # A delivered answer closes the fallback ticket filed for its message
+        # (recovery suffix stripped), and only that one.
+        fb = ticket_create("buddy", ["snow"], "q", "q", origin="user-intake-answer-fallback",
+                           project_dir=td, meta={"request_origin": "<q1@x>"})
+        other = ticket_create("buddy", ["snow"], "q2", "q2", origin="user-intake-answer-fallback",
+                              project_dir=td, meta={"request_origin": "<q2@x>"})
+        assert ticket_resolve_request(["<q1@x>#information-recovery-1"], "answered", td) == [fb["id"]]
+        assert ticket_resolve_request(["<q1@x>"], "again", td) == []   # already closed
+        assert ticket_resolve_request(["", None], "none", td) == []
+        st = {t["id"]: t["status"] for t in ticket_load(td)}
+        assert st[fb["id"]] == "resolved" and st[other["id"]] == "queued"
+        # Skywarden: a repeat failure counts against the unit's open ticket.
+        sky = dict(origin="skywarden-repair", project_dir=td)
+        s1 = ticket_create("skywarden", ["cirrus-digest"], "u.service has a diagnosed operational failure",
+                           "Unit: u.service\n\nexit 1", **sky)
+        s2 = ticket_create("skywarden", ["cirrus-digest"], "u.service has a diagnosed operational failure",
+                           "Unit: u.service\n\nexit 1 again", **sky)
+        assert s2["id"] == s1["id"] and s2["repeats"] == 1
+        assert sum(t.get("origin") == "skywarden-repair" for t in ticket_load(td)) == 1
+        ticket_update(s1["id"], "resolved", "fixed", project_dir=td)
+        s3 = ticket_create("skywarden", ["cirrus-digest"], "u.service has a diagnosed operational failure",
+                           "Unit: u.service\n\nback", **sky)
+        assert s3.get("repeats") is None and s3["status"] in OPEN_TICKET_STATES
         print("ticket queue: OK")
 
     print("\nALL SELF-TESTS PASSED" if ok == len(cases) else "\nSOME CLASSIFIER CASES FAILED")
 
 
 if __name__ == "__main__":
-    _selftest()
+    import sys
+    if len(sys.argv) >= 5 and sys.argv[1] == "--ticket-update":
+        # dev_loop.py --ticket-update ID resolved|superseded|session|queued "why" [by]
+        # Project dir: the checkout this file runs from (both boxes).
+        _t = ticket_update(sys.argv[2], sys.argv[3], sys.argv[4],
+                           project_dir=Path(__file__).resolve().parent,
+                           by=sys.argv[5] if len(sys.argv) > 5 else "cowork")
+        print(json.dumps({k: _t.get(k) for k in ("id", "status", "requester", "updated")}))
+    else:
+        _selftest()

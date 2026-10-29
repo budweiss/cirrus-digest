@@ -242,6 +242,55 @@ def shadow_brief(path=None, hours: int = 24):
     return items + [f"⚠️ {msg}"], msg
 
 
+# ── Check 3d: is a request ticket sitting untriaged? ─────────────────────────
+
+TICKETS = APP_DIR / "logs" / "dev-loop" / "ticket-queue.jsonl"
+STALE_TICKET_DAYS = 3
+REQUEST_ORIGINS = ("user-intake", "user-intake-answer-fallback")
+
+
+def stale_tickets(path=None, days: int = STALE_TICKET_DAYS, now=None) -> list:
+    """Request tickets still `queued` after `days` days: nobody has looked.
+
+    S539. Nothing closed a ticket, so both queues read "queued" for work
+    finished in July and for Buddy's own requests nobody had picked up. A
+    triaged ticket is closed (resolved/superseded) or marked `session` with a
+    note, so only untouched ones count. Ids and requesters only, never titles:
+    a title can carry a private request. No file is an empty queue."""
+    path = Path(path) if path else TICKETS
+    if not path.exists():
+        return []
+    now = now or datetime.now()
+    out = []
+    for line in path.read_text().splitlines():
+        try:
+            t = json.loads(line)
+        except Exception:
+            continue
+        created = _parse_ts(t.get("created"))
+        if (t.get("origin") in REQUEST_ORIGINS and t.get("status") == "queued"
+                and created and now - created > timedelta(days=days)):
+            out.append({"id": t.get("id"), "requester": t.get("requester"),
+                        "age_days": (now - created).days})
+    return out
+
+
+def ticket_brief(path=None, days: int = STALE_TICKET_DAYS):
+    """(items, attention) for a daily brief; ([], None) when nothing is stale."""
+    try:
+        stale = stale_tickets(path, days)
+    except Exception as e:
+        msg = f"request-ticket check UNKNOWN: ticket queue unreadable ({type(e).__name__})"
+        return [f"⚠️ {msg}"], msg
+    if not stale:
+        return [], None
+    shown = ", ".join(f"{t['id']} ({t['requester']}, {t['age_days']}d)" for t in stale[:5])
+    more = f" +{len(stale) - 5} more" if len(stale) > 5 else ""
+    msg = (f"{len(stale)} request ticket(s) queued over {days} days with nobody on them: "
+           f"{shown}{more}. Triage: dev_loop.py --ticket-update ID resolved|superseded|session \"why\"")
+    return [f"⚠️ {msg}"], msg
+
+
 # ── Check 5: is intake actually WORKING, not merely running? ─────────────────
 
 INTAKE_LOG = APP_DIR / "logs" / "intake.log"
@@ -630,6 +679,34 @@ def selftest() -> int:
         check("a quiet day (no observed route) adds no brief line", shadow_brief(led) == ([], None))
         items, attention = shadow_brief(gone)
         check("an unreadable ledger is UNKNOWN attention, not a clean brief",
+              attention and "UNKNOWN" in attention and items)
+
+        # ---- stale_tickets / ticket_brief (S539) --------------------------
+        tq = Path(td) / "ticket-queue.jsonl"
+
+        def tk(tid, origin, status, hours_ago):
+            return {"id": tid, "origin": origin, "status": status, "requester": "buddy",
+                    "title": "PRIVATE TITLE", "created": ts(hours_ago)}
+        tq.write_text("".join(json.dumps(r) + "\n" for r in [
+            tk("t-old", "user-intake", "queued", 24 * 5),
+            tk("t-fresh", "user-intake", "queued", 24 * 2),
+            tk("t-fb", "user-intake-answer-fallback", "queued", 24 * 4),
+            tk("t-triaged", "user-intake", "session", 24 * 30),
+            tk("t-done", "user-intake", "resolved", 24 * 30),
+            tk("t-sky", "skywarden-repair", "queued", 24 * 30),
+        ]) + "not json\n")
+        check("an untriaged request ticket past N days is flagged, a fresh or triaged one is not",
+              [t["id"] for t in stale_tickets(tq)] == ["t-old", "t-fb"])
+        items, attention = ticket_brief(tq)
+        check("a stale ticket is brief attention naming id and requester, never the title",
+              attention and "t-old (buddy, 5d)" in attention and "PRIVATE" not in attention)
+        tq.write_text(json.dumps(tk("t-done", "user-intake", "resolved", 24 * 30)) + "\n")
+        check("a triaged queue adds no brief line", ticket_brief(tq) == ([], None))
+        check("no queue file is an empty queue, not an error", ticket_brief(Path(td) / "none") == ([], None))
+        tq.unlink()
+        tq.mkdir()
+        items, attention = ticket_brief(tq)
+        check("an unreadable queue is UNKNOWN attention, not a clean brief",
               attention and "UNKNOWN" in attention and items)
 
         # ---- high_value_overwrites --------------------------------------

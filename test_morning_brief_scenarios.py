@@ -64,6 +64,10 @@ class MorningBriefScenarios(unittest.TestCase):
         p = patch.object(client_watch, "LEDGER", self.changes)
         p.start()
         self.addCleanup(p.stop)
+        # S539: the request-ticket input is an absent scratch queue, never the live one.
+        p = patch.object(client_watch, "TICKETS", self.tmp / "ticket-queue.jsonl")
+        p.start()
+        self.addCleanup(p.stop)
 
     def write_changes(self, *rows):
         from datetime import datetime
@@ -77,6 +81,18 @@ class MorningBriefScenarios(unittest.TestCase):
         self.assertIn("⚠️ Needs a look", body)
         self.assertIn("- Switchboard shadow NOT recorded for 1 delivered reply(s) (error:OSError)", body)
         self.write_changes({"event": "auto-answered", "switchboard_shadow": "logged"})
+        self.assertIn("✅ CIRRUS healthy", self.body())
+
+    def test_untriaged_request_ticket_is_attention(self):
+        q = self.tmp / "ticket-queue.jsonl"
+        q.write_text(json.dumps({"id": "ticket-x", "origin": "user-intake", "status": "queued",
+                                 "requester": "buddy", "title": "PRIVATE",
+                                 "created": "2026-01-01 09:00:00"}) + "\n")
+        body = self.body()
+        self.assertIn("⚠️ Needs a look", body)
+        self.assertIn("ticket-x (buddy,", body)
+        self.assertNotIn("PRIVATE", body)
+        q.write_text(q.read_text().replace('"queued"', '"session"'))
         self.assertIn("✅ CIRRUS healthy", self.body())
 
     def body(self):
