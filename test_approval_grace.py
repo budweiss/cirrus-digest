@@ -119,6 +119,51 @@ class RenewalEntryTests(unittest.TestCase):
         self.assertEqual(self.entries([], [], hoa), {})
 
 
+class SyncAndRevokeTests(unittest.TestCase):
+    """CIRRUS adopts only CUMULUS's cloud entries, and keeps none if the copy fails;
+    a confirmed defect revokes on both boxes."""
+
+    def test_sync_adopts_cloud_entries_and_fails_closed(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import foundation_renewal as R
+        remote = {"entries": {"a" * 64: {"source": "cumulus", "provider": "kimi", "tested_at": 1},
+                              "b" * 64: {"source": "cumulus", "provider": "vllm", "tested_at": 1},
+                              "c" * 64: {"source": "answer", "provider": "openai", "tested_at": 1}},
+                  "revoked": ["d" * 64]}
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "model_capabilities.json"
+            path = registry.with_name("approval-grace.json")
+            ok = SimpleNamespace(returncode=0, stdout=json.dumps(remote))
+            with patch.object(R, "REGISTRY", registry), patch.object(R.subprocess, "run", return_value=ok):
+                self.assertEqual(R.sync_cumulus_grace(), 1)
+            data = G.load(path)
+            self.assertEqual(set(data["entries"]), {"a" * 64})
+            self.assertEqual(data["revoked"], ["d" * 64])
+            failed = SimpleNamespace(returncode=255, stdout="")
+            with patch.object(R, "REGISTRY", registry), patch.object(R.subprocess, "run", return_value=failed), \
+                 patch.object(R, "log"):
+                self.assertEqual(R.sync_cumulus_grace(), 0)
+            self.assertEqual(G.load(path)["entries"], {})
+
+    def test_confirmed_defect_revokes_on_both_boxes(self):
+        from unittest.mock import patch
+        import foundation_renewal_auto as A
+        with tempfile.TemporaryDirectory() as td:
+            registry = Path(td) / "model_capabilities.json"
+            path = registry.with_name("approval-grace.json")
+            G.replace_source("cumulus", {"e" * 64: {"tested_at": 1}, "f" * 64: {"tested_at": 1}}, path=path)
+            calls = []
+            with patch.object(A.renewal, "REGISTRY", registry):
+                self.assertEqual(A.revoke_defects([{"status": "evidence_review_pending", "record_sha256": "f" * 64}],
+                                                  run=lambda *a: calls.append(a)), [])
+                self.assertEqual(calls, [])
+                A.revoke_defects([{"status": "confirmed_defect", "record_sha256": "e" * 64}],
+                                 run=lambda *a: calls.append(a))
+            self.assertEqual(set(G.load(path)["entries"]), {"f" * 64})
+            self.assertEqual(calls[0][0][-2:], ["revoke", "e" * 64])
+
+
 class AnswerWorkflowGateTests(unittest.TestCase):
     """answer_workflow_eval.mechanical: the same four gates on the pilot's evidence."""
 
