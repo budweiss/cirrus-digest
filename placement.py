@@ -482,6 +482,11 @@ WATCH_ALIAS = {
     "businessideasdigest":     "businessideareport",  # plist and ledger disagree
     "daily-brief":             "cumulusdailybrief",   # prefix stripped by normalize()
     "entity-kb-weekly-digest": "entitykbdigest",
+    # S537: Bill's report guards; unit names group by tool, ledgers by job.
+    "billwatch-approvals":     "approvalwatch",
+    "billwatch-reportcard":    "billreportcard",
+    "snowguard-preflight":     "snowpreflight",
+    "snowguard-catchup":       "snowcatchup",
 }
 
 
