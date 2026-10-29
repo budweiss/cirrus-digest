@@ -91,6 +91,12 @@ CADENCE_H = {
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
+    # S537: SNOW guard (Sun 18:00 / Mon 11:00) and Bill watch (Mon 12:00 card,
+    # daily 12:00 approvals) on CUMULUS; registered with the timers (T44).
+    "snowpreflight":  24 * 8,
+    "snowcatchup":    24 * 8,
+    "billreportcard": 24 * 8,
+    "approvalwatch":  26,
     # S81 CORRECTION: this said `24 * 8` -- weekly + grace -- since S57, when
     # the job WAS weekly. The timer on CUMULUS is `*-*-* 03:00:00` and the unit
     # calls itself "cirrus-hoaleads daily research": it has been DAILY for
@@ -192,6 +198,7 @@ CADENCE_H = {
 # link instead of the (now-stale) local ledger — so a moved job is reported from
 # where it actually runs, not falsely flagged OVERDUE here.
 REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
+                 "snowpreflight", "snowcatchup", "billreportcard", "approvalwatch",
                  # S81 -- all of these run on CUMULUS, so when summarize()
                  # runs on CIRRUS their status must be read from CUMULUS's
                  # ledger. Omitting one here does not merely mis-attribute it:

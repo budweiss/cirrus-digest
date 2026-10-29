@@ -222,12 +222,12 @@ def main():
     import job_status
     if mode == "preflight":
         problems = preflight(send_telegram)
-        job_status.record("snowguard", not problems,
+        job_status.record("snowpreflight", not problems,
                           "monday admits" if not problems else "monday would be refused")
         return 0
     if mode == "catchup":
         out = _live_catchup(send_telegram)
-        job_status.record("snowguard", out != "failed", "catchup " + out)
+        job_status.record("snowcatchup", out != "failed", "catchup " + out)
         return 0
     print("usage: snow_guard.py preflight|catchup|selftest")
     return 2
