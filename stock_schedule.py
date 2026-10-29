@@ -296,6 +296,7 @@ def daily(job,live,date,folder):
     replies=feedback(since)
     evidence=refresh_research(job)
     public=public_followup();public['newsletter_excerpts']=secondary_newsletters(ROOT/'knowledge-newsletters',datetime.now(NY).date())
+    public['newsletter_archive']=newsletter_archive(ROOT/'knowledge-newsletters',datetime.now(NY).date())
     atomic(folder/'research-summary.json',{k:v for k,v in evidence.items() if k!='report'})
     request_path=folder/'request.json'
     if live and request_path.exists():
@@ -340,19 +341,44 @@ def daily(job,live,date,folder):
 
 
 
-def secondary_newsletters(folder,today):
-    """Read saved SA mail only on C1; never export mail contents to cloud tools."""
-    rows=[]
+SA_PRODUCT=re.compile(r'because\s+you\s+(?:[a-z]+\s+){0,3}?(?:to\s+receive|to|for)\s+(.{3,120}?)(?:\.\s|\.$|\s+If\s+you|$)',re.M)
+SA_PERSONAL=re.compile(r'your portfolio|you follow|watchlist|your holdings|portfolio digest|health check',re.I)
+
+
+def sa_mail(folder,today):
+    """Saved SA mail from the last four archive days, newest day first."""
     for day in range(4):
         for path in sorted(folder.glob((today-timedelta(days=day)).strftime('%Y%m%d')+'-*.md'),reverse=True):
             text=path.read_text();sender=re.search(r'^> From: `([^`]+)`',text,re.M)
             host=(sender[1].rsplit('@',1)[-1] if sender else '').lower()
-            if host!='seekingalpha.com' and not host.endswith('.seekingalpha.com'):continue
-            rows.append({'id':hashlib.sha256(path.name.encode()).hexdigest()[:16],
-                         'site':'seekingalpha.com','archive_date':(today-timedelta(days=day)).isoformat(),
-                         'text':text[:2500],'notice':'Saved newsletter excerpt; archive date is not an article publication date. Secondary opinion only.'})
-            if len(rows)>=3:return rows
+            if host=='seekingalpha.com' or host.endswith('.seekingalpha.com'):yield day,path,text
+
+
+def general_sa_mail(text):
+    """The paper account never sees Buddy's holdings (PROJECT.md). SA builds ticker alerts
+    and portfolio digests from his portfolios and follows, so mail passes only when its
+    subscription footer names a general product and no personal marker appears (S528)."""
+    product=SA_PRODUCT.search(text)
+    if not product or re.search(r'alerts for the|portfolio',product[1],re.I):return False
+    return not SA_PERSONAL.search(text)
+
+
+def secondary_newsletters(folder,today):
+    """Read saved SA mail only on C1; never export mail contents to cloud tools."""
+    rows=[]
+    for day,path,text in sa_mail(folder,today):
+        if not general_sa_mail(text):continue
+        rows.append({'id':hashlib.sha256(path.name.encode()).hexdigest()[:16],
+                     'site':'seekingalpha.com','archive_date':(today-timedelta(days=day)).isoformat(),
+                     'text':text[:2500],'notice':'Saved newsletter excerpt; archive date is not an article publication date. Secondary opinion only.'})
+        if len(rows)>=3:return rows
     return rows
+
+
+def newsletter_archive(folder,today):
+    """Counts for the letter, so an archive that stops filling shows up there (T168)."""
+    texts=[text for _,_,text in sa_mail(folder,today)]
+    return {'sa_mail':len(texts),'excluded':sum(not general_sa_mail(t) for t in texts)}
 
 
 def secondary_usage(refs,public,evidence):
@@ -376,7 +402,12 @@ def source_list(evidence,public):
     text+='\n\nSecondary sources:\n'
     secondary=['- '+s['url']+' — public context, not execution evidence.' for s in public.get('sources',[])]
     count=len(public.get('newsletter_excerpts',[]))
-    secondary.append('- Seeking Alpha: %d saved newsletter excerpts considered; full articles were not fetched in this pass.'%count)
+    line='- Seeking Alpha: %d saved newsletter excerpts considered; full articles were not fetched in this pass.'%count
+    archive=public.get('newsletter_archive')
+    if archive is not None:
+        line+=' %d SA emails archived in the last four days; %d personal or unidentified excluded.'%(archive['sa_mail'],archive['excluded'])
+        if not archive['sa_mail']:line+=' WARNING: no Seeking Alpha mail was archived in the last four days; check the daily newsletter fetch.'
+    secondary.append(line)
     return text+'\n'.join(secondary)+'\n'
 
 

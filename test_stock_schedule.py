@@ -74,14 +74,40 @@ class ScheduleChecks(unittest.TestCase):
     def test_secondary_newsletters_exclude_other_mail_and_preserve_date_limits(self):
         from pathlib import Path
         from datetime import date
+        footer='\nThis email was sent to you because you signed up to receive %s. If you no longer wish to receive these emails, click here.'
         with tempfile.TemporaryDirectory() as td:
             folder=Path(td)
-            (folder/'20261014-sa.md').write_text('> From: `alerts@email.seekingalpha.com`\nSynthetic secondary opinion only.')
-            (folder/'20261014-other.md').write_text('> From: `person@example.com`\nUnrelated private fixture.')
-            (folder/'20261001-old.md').write_text('> From: `alerts@seekingalpha.com`\nOld fixture.')
+            (folder/'20261014-sa.md').write_text('> From: `alerts@email.seekingalpha.com`\nSynthetic secondary opinion only.'+footer%'Wall Street Breakfast')
+            (folder/'20261014-other.md').write_text('> From: `person@example.com`\nUnrelated private fixture.'+footer%'Wall Street Breakfast')
+            (folder/'20261001-old.md').write_text('> From: `alerts@seekingalpha.com`\nOld fixture.'+footer%'Wall Street Breakfast')
             rows=S.secondary_newsletters(folder,date(2026,10,14))
+            empty=S.newsletter_archive(folder,date(2026,10,20))
         self.assertEqual(len(rows),1);self.assertEqual(rows[0]['archive_date'],'2026-10-14')
         self.assertIn('not an article publication date',rows[0]['notice'])
+        self.assertEqual(empty,{'sa_mail':0,'excluded':0})
+        self.assertIn('WARNING: no Seeking Alpha mail',S.source_list(EV,{'newsletter_archive':empty}))
+
+    def test_secondary_newsletters_keep_personal_sa_mail_out_of_the_paper_account(self):
+        from pathlib import Path
+        from datetime import date
+        footer='\nThis email was sent to you because you opted in to receive %s. If you no longer wish to receive these alerts, click here.'
+        personal={'ticker':'Synthetic alert.'+footer%'Real-Time Alerts for the EXMPL',
+                  'digest':'Synthetic digest.'+footer%'Pre-Market Portfolio Digest',
+                  'marker':'Synthetic news on the stocks you follow.'+footer%'Breaking News Alert',
+                  'unidentified':'Synthetic mail without a subscription footer.'}
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            for name,body in personal.items():
+                (folder/('20261014-%s.md'%name)).write_text('> From: `account@seekingalpha.com`\n'+body)
+            self.assertEqual(S.secondary_newsletters(folder,date(2026,10,14)),[])
+            (folder/'20261014-general.md').write_text('> From: `account@seekingalpha.com`\nSynthetic macro note.'+footer%'Macro View Daily')
+            rows=S.secondary_newsletters(folder,date(2026,10,14))
+            archive=S.newsletter_archive(folder,date(2026,10,14))
+        self.assertEqual(len(rows),1);self.assertIn('Synthetic macro note',rows[0]['text'])
+        self.assertEqual(archive,{'sa_mail':5,'excluded':4})
+        listing=S.source_list(EV,{'newsletter_excerpts':rows,'newsletter_archive':archive})
+        self.assertIn('5 SA emails archived in the last four days; 4 personal or unidentified excluded',listing)
+        self.assertNotIn('WARNING',listing)
 
     def test_secondary_contribution_requires_both_offered_sources(self):
         public={'newsletter_excerpts':[{'id':'fixture','archive_date':'2026-10-14'}]}

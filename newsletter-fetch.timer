@@ -1,0 +1,19 @@
+[Unit]
+Description=Newsletter fetch — before each Stock Pickers letter (07:45 and 14:45)
+
+# Slots from a live window-audit on 2026-10-28 (S528): C1 runs pedagogy at
+# 06:00 (one minute) and halftime-catalogue at 06:30; 06:15 is clear and leaves
+# 90 minutes before the 07:45 letter. 14:15 feeds the 14:45 letter. A daily
+# fetch is a few minutes of read-only IMAP.
+#
+# Two OnCalendar lines: retime by editing this file and reinstalling, never
+# with runner `cumulus-schedule`, which rewrites every OnCalendar line to one
+# time. Retiming this timer is NOT `systemctl restart` — see T39. Persistent=true
+# means a restart with an old stamp FIRES the job immediately.
+[Timer]
+OnCalendar=*-*-* 06:15:00
+OnCalendar=*-*-* 14:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
