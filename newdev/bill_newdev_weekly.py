@@ -155,8 +155,29 @@ def note_samples():
     ]
 
 
-def compose_quiet(swept):
-    c = _swept_counts()
+def _why_quiet(c):
+    """S537: Bill told Buddy he only ever sees "no new information". Say why
+    most weeks are quiet and what the newest thing on record is, so a quiet
+    week reads as current information rather than as nothing."""
+    parts = []
+    if c and c.get("newest_year"):
+        parts.append("Why most weeks are quiet: the state publishes development "
+                     "applications and building permits once a year (its newest data "
+                     f"is for {c['newest_year']}), so those two lists rarely move. New "
+                     "projects reach us through the state's monthly PLUS planning "
+                     "reviews, so new leads arrive about once a month.")
+    else:
+        parts.append("These come along roughly once a month, so a quiet week is normal.")
+    if c and c.get("latest_plus"):
+        pid, units, county = c["latest_plus"]
+        size = f"{units} units" if units else "50+ units"
+        parts.append(f"Most recent qualifying project on record: PLUS {pid}, {size} in {county}.")
+    parts.append("This note is so you can tell a quiet week from a broken one.")
+    return " ".join(parts)
+
+
+def compose_quiet(swept, counts=None):
+    c = counts if counts is not None else _swept_counts()
     if c:
         swept_sentence = (
             f"We checked {c['plus']} built communities, {c['dev']} development "
@@ -187,8 +208,7 @@ def compose_quiet(swept):
         "",
         swept_sentence,
         "",
-        "These come along roughly once a month, so a quiet week is normal. "
-        "This note is so you can tell a quiet week from a broken one.",
+        _why_quiet(c),
         "",
         "Your workbook from the last update still stands; nothing in it changed.",
         "",
@@ -253,11 +273,21 @@ def _swept_counts():
     """
     try:
         d = json.loads((OUT / "plus_leads.json").read_text())
-        return {"plus": len(d.get("plus_projects") or []),
-                "dev": len(d.get("dev_applications") or []),
-                "permit": len(d.get("building_permits") or [])}
+        c = {"plus": len(d.get("plus_projects") or []),
+             "dev": len(d.get("dev_applications") or []),
+             "permit": len(d.get("building_permits") or [])}
     except Exception:
         return None
+    # S537: what Bill needs to judge a quiet week -- how old the yearly state
+    # lists are, and the most recent qualifying monthly PLUS project.
+    years = [str(a.get("P_YEAR") or "") for a in (d.get("dev_applications") or []) + (d.get("building_permits") or [])]
+    c["newest_year"] = max((y for y in years if y.isdigit()), default="")
+    plus = [a for a in d.get("plus_projects") or [] if a.get("PLUS_ID")]
+    if plus:
+        a = max(plus, key=lambda a: a["PLUS_ID"])
+        c["latest_plus"] = (a["PLUS_ID"], a.get("RESIDENTIAL_UNITS"),
+                            str(a.get("COUNTY") or "").replace("_", " "))
+    return c
 
 
 def _send(body, subject=None, attach=True):

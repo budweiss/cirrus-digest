@@ -220,7 +220,43 @@ def run_refresh(chunk_size: int = DEFAULT_CHUNK_SIZE, creds: dict = None,
     return result
 
 
-def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None) -> dict:
+# S537: articles the screen REJECTS were never remembered, so the same ~53 were
+# fetched and re-screened every day and filled the 60-slot cap before later
+# queries ran -- October found no new association. Remember rejections; an
+# article screened SCREEN_LIMIT times without being kept rests SCREEN_REST_DAYS.
+SCREENED_PATH = Path(__file__).resolve().parent / "data/hoa_discovery_screened.json"
+SCREEN_LIMIT = 3
+SCREEN_REST_DAYS = 60
+GATHER_CAP = 200   # search breadth; the screen itself still gets MAX_CANDIDATES
+
+
+def _load_screened(path, today):
+    import json
+    try:
+        data = json.loads(Path(path).read_text())
+    except Exception:
+        return {}
+    keep = {}
+    for url, (count, last) in data.items():
+        try:
+            if (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(last, "%Y-%m-%d")).days < SCREEN_REST_DAYS:
+                keep[url] = [count, last]
+        except Exception:
+            continue
+    return keep
+
+
+def _save_screened(path, data):
+    import json
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=0, sort_keys=True))
+    tmp.replace(path)
+
+
+def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None,
+                  screened_path=None, today: str = None) -> dict:
     """Search for community mentions via hoa_monitor's existing gather+
     council pipeline (unchanged); anything new goes into entity_kb flagged
     first-seen, anything already known gets logged as a regular signal.
@@ -229,13 +265,30 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
     sys.path.insert(0, str(Path(__file__).parent / "hoa_leads"))
     import hoa_monitor  # lazy: transitively needs cirrus_daily/requests
 
-    cands = hoa_monitor.gather_x() + hoa_monitor.gather_web()
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    screened_path = screened_path or SCREENED_PATH
+    screen_cap = hoa_monitor.MAX_CANDIDATES
+    hoa_monitor.MAX_CANDIDATES = GATHER_CAP   # read by gather_web at call time
+    try:
+        cands = hoa_monitor.gather_x() + hoa_monitor.gather_web()
+    finally:
+        hoa_monitor.MAX_CANDIDATES = screen_cap
     seen = hoa_monitor.load_seen()
-    fresh = [c for c in cands if c["url"] not in seen]
-    leads = hoa_monitor.council_filter(fresh[:hoa_monitor.MAX_CANDIDATES], creds) if fresh else []
+    screened = _load_screened(screened_path, today)
+    fresh = [c for c in cands if c["url"] not in seen
+             and screened.get(c["url"], [0])[0] < SCREEN_LIMIT]
+    batch = fresh[:screen_cap]
+    leads = hoa_monitor.council_filter(batch, creds) if batch else []
 
     result = {"candidates": len(cands), "fresh_candidates": len(fresh),
-               "council_kept": len(leads), "new_entities": [], "updated_entities": []}
+               "council_kept": len(leads), "new_entities": [], "updated_entities": [],
+               "resting_articles": sum(1 for c in cands if screened.get(c["url"], [0])[0] >= SCREEN_LIMIT)}
+    if not dry_run and batch:
+        kept = {l.get("url") for l in leads}
+        for c in batch:
+            if c["url"] not in kept:
+                screened[c["url"]] = [screened.get(c["url"], [0])[0] + 1, today]
+        _save_screened(screened_path, screened)
 
     newly_seen = set()
     result["repeat_articles"] = 0
@@ -470,15 +523,40 @@ def selftest() -> bool:
             entity_kb.add_signal(KB_PROJECT, "hearthstone-manor", "distress", "Balcony fees",
                                  source_url=article, db_path=db_path)
             before = len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor", db_path=db_path))
-            res = run_discovery({}, db_path=db_path)
+            live_before = SCREENED_PATH.stat().st_mtime if SCREENED_PATH.exists() else None
+            tmp_screened = Path(tempfile.mkdtemp()) / "screened.json"
+            res = run_discovery({}, db_path=db_path, screened_path=tmp_screened)
             after = len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor", db_path=db_path))
             checks.append(("a known article under a new redirect link is not re-logged",
                            after == before and res["repeat_articles"] == 1))
             fake._resolve_url = lambda u: article + "-new"
-            run_discovery({}, db_path=db_path)
+            run_discovery({}, db_path=db_path, screened_path=tmp_screened)
             checks.append(("a genuinely new article for a known HOA is still logged",
                            len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor",
                                                     db_path=db_path)) == before + 1))
+            # S537: rejected articles rest; the screen never gets more than its cap.
+            batches = []
+            many = [{"url": f"https://news.example/{i}"} for i in range(70)]
+            fake.gather_web = lambda: many[:fake.MAX_CANDIDATES]
+            fake.load_seen = lambda: set()
+            fake.council_filter = lambda c, creds: batches.append(list(c)) or []
+            fake.MAX_CANDIDATES = 60
+            screened_file = Path(tempfile.mkdtemp()) / "screened.json"
+            for day in ("2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04"):
+                res = run_discovery({}, db_path=db_path, screened_path=screened_file, today=day)
+            checks.append(("search reaches past the screen cap but the screen gets at most 60",
+                           len(batches[0]) == 60 and res["candidates"] == 70))
+            checks.append(("the screen cap is restored after the search", fake.MAX_CANDIDATES == 60))
+            checks.append(("an article rejected 3 times rests, letting new ones in",
+                           [b[0]["url"] for b in batches[:4]] == ["https://news.example/0"] * 3
+                           + ["https://news.example/60"] and res["resting_articles"] == 60))
+            later = run_discovery({}, db_path=db_path, screened_path=screened_file, today="2027-01-05")
+            checks.append(("a rested article is screened again after 60 days", later["resting_articles"] == 0))
+            dry_file = Path(tempfile.mkdtemp()) / "dry.json"
+            run_discovery({}, dry_run=True, db_path=db_path, screened_path=dry_file)
+            checks.append(("a dry run records nothing", not dry_file.exists()))
+            live_after = SCREENED_PATH.stat().st_mtime if SCREENED_PATH.exists() else None
+            checks.append(("the selftest never touches the live screened file (T32)", live_before == live_after))
         finally:
             if saved is not None:
                 sys.modules["hoa_monitor"] = saved

@@ -1,5 +1,5 @@
 {
-  "_comment": "Growable watchlist for hoa_monitor.py (S58). APPEND to this over time — by the feed-discovery self-improvement loop or by hand — to keep improving DE HOA/condo lead recall with NO code change. 'communities' are searched by name each run; 'local_news_sites' are site:-scoped searched. Seeded with communities surfaced manually (Mermaid Run flagged by Buddy 2026-08-10; Le Parc from a 7/2026 Delaware Online lawsuit story).",
+  "_comment": "Growable watchlist for hoa_monitor.py (S58). APPEND to this over time \u2014 by the feed-discovery self-improvement loop or by hand \u2014 to keep improving DE HOA/condo lead recall with NO code change. 'communities' are searched by name each run; 'local_news_sites' are site:-scoped searched. Seeded with communities surfaced manually (Mermaid Run flagged by Buddy 2026-08-10; Le Parc from a 7/2026 Delaware Online lawsuit story). S537: added Kent/Sussex local outlets (Coastal Point, Bay to Bay News, Milford LIVE, Delaware Public Media, Town Square Delaware, WDEL, Delaware Business Times); the daily discovery now searches past the 60-article screen cap, so these no longer crowd out the RFP queries.",
   "communities": [
     "Mermaid Run",
     "Le Parc"
@@ -8,6 +8,13 @@
     "delawareonline.com",
     "whyy.org",
     "wboc.com",
-    "capegazette.com"
+    "capegazette.com",
+    "coastalpoint.com",
+    "baytobaynews.com",
+    "milfordlive.com",
+    "delawarepublic.org",
+    "townsquaredelaware.com",
+    "wdel.com",
+    "delawarebusinesstimes.com"
   ]
 }
