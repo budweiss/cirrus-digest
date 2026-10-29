@@ -215,8 +215,25 @@ def plan(county, owners, entities, seen):
         if old is not None and addr_key(old) != addr_key(o["mailing"]):
             out["address_changes"].append({"slug": e["slug"], "name": e["name"], "old": old,
                                            "new": o["mailing"], "city": o["city"], "state": o["state"],
-                                           "mgmt": managed(old) or managed(o["mailing"])})
+                                           "mgmt": managed(old) or managed(o["mailing"]),
+                                           "n_old": len(share.get(addr_key(old), ())),
+                                           "n_new": len(share.get(addr_key(o["mailing"]), ()))})
     return out
+
+
+def _side(address, n):
+    if co_line(address):
+        return f"\"{address}\" (a management company)"
+    if n >= 3:
+        return f"\"{address}\" (an address {n} associations use -- likely a management company)"
+    return f"\"{address}\""
+
+
+def mgmt_text(c):
+    """Bill-facing line for a management change: which side is a manager."""
+    return (f"County owner records now send this association's mail to {_side(c['new'], c.get('n_new', 0))}, "
+            f"instead of {_side(c['old'], c.get('n_old', 0))}. Its management may have changed "
+            "-- hired, switched or dropped a manager.")
 
 
 def refuse_reason(p, county_known):
@@ -250,10 +267,7 @@ def apply(p, today, db_path=None):
             "mailing_address": c["new"], "mailing_city": c["city"], "mailing_state": c["state"]},
             db_path=db_path)
         if c["mgmt"]:
-            entity_kb.add_signal(PROJECT, c["slug"], "mgmt-change",
-                                 f"County owner records now send this association's mail to \"{c['new']}\" "
-                                 f"(we had \"{c['old']}\"), and one of those is a management company's "
-                                 "address -- it may have hired, changed or dropped its manager.",
+            entity_kb.add_signal(PROJECT, c["slug"], "mgmt-change", mgmt_text(c),
                                  confidence="medium", db_path=db_path)
     return made
 
@@ -366,6 +380,11 @@ def selftest():
                "city": "", "state": "DE", "zip": ""} for i in range(4)]
     moves = plan("Sussex", pulled, crm, None)["address_changes"]
     ck("leaving a shared management office is a management change", len(moves) == 1 and moves[0]["mgmt"])
+    line = mgmt_text(moves[0])
+    ck("the Bill-facing line names which address is the manager's",
+       "PO BOX 7" in line and "an address 4 associations use" in line and line.index("PO BOX 7") < line.index("424"))
+    ck("a C/O line is named as a management company",
+       "(a management company)" in mgmt_text({"new": "% FIRST SERVICE RESIDENTIAL-EAST", "old": "PO BOX 1"}))
     joiners = [{"owner": f"J{i} HOMEOWNERS ASSOCIATION", "mailing": "9 MANAGER WAY", "city": "", "state": "DE",
                 "zip": ""} for i in range(3)]
     jcrm = [{"slug": f"j{i}", "name": f"J{i}", "state": {"legal_name": f"J{i} HOMEOWNERS ASSOCIATION",
