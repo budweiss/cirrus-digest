@@ -70,6 +70,20 @@ retaining identity, actual coverage, conflicts, failures and usefulness.
 No paywall bypass, new paid access, promotional subscriptions or outreach.
 "Company sources" means public publications, not messages to people.
 
+## Newsletter evidence coverage (S537)
+
+Read approved general financial newsletters from both archived inbox feeds,
+not only Seeking Alpha. Use the actual email date for freshness; it is not an
+article publication date. Scan saved bodies for relevant passages and select
+a bounded, publisher-diverse packet. Personal holdings/followed-ticker alerts,
+unknown senders, stale or undated issues and duplicate copies are excluded.
+Record screened, selected, excluded and deferred coverage; selected excerpts
+are not full articles. Evaluate conflicting views without treating volume as
+independent confirmation. Newsletter contributions require exact excerpt quotes
+and corroborating dated primary evidence, plus the existing independent review.
+Do not force a trade, introduce a new company without accepted research, or
+claim to have fetched linked websites merely because an email mentions them.
+
 ## Existing schedule and delivery
 
 America/New_York, with the app's normal several-minute run delay:

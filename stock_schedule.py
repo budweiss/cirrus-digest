@@ -173,9 +173,9 @@ def decision_complete(system,text,slot,companies,secondary_ids=None):
     secondary_ids=secondary_ids or []
     schema={'type':'object','additionalProperties':False,'required':['explanation','decisions','secondary_usage'],
         'properties':{'explanation':{'type':'string','minLength':30,'maxLength':1200},
-            'secondary_usage':{'type':'array','maxItems':1 if secondary_ids else 0,
-                'items':{'type':'object','additionalProperties':False,'required':['secondary_id','primary_id'],
-                    'properties':{'secondary_id':{'type':'string','enum':secondary_ids or ['none']},'primary_id':{'enum':ids}}}},
+            'secondary_usage':{'type':'array','maxItems':3 if secondary_ids else 0,
+                'items':{'type':'object','additionalProperties':False,'required':['secondary_id','primary_id','secondary_quote'],
+                    'properties':{'secondary_id':{'type':'string','enum':secondary_ids or ['none']},'primary_id':{'enum':ids},'secondary_quote':{'type':'string','minLength':30,'maxLength':300}}}},
             'decisions':{'type':'array','maxItems':2,'items':{'type':'object','additionalProperties':False,
                 'required':list(fields),'properties':fields}}}}
     result=media.request('/v1/chat/completions',{'model':MODEL,
@@ -212,9 +212,9 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
         'Current quotes may inform valuation, but the ledger fetches its own execution quote. '
         'Use valuation, counterargument and an explicit business/price exit trigger; no unsupported forecasts. '
         'You may return zero decisions when evidence is incomplete, with a candid explanation. '
-        'Seeking Alpha newsletter excerpts are secondary opinions and idea leads only. Any fact used in a decision '
+        'Newsletter excerpts from multiple publishers are secondary opinions and idea leads only. Consider corroborating and conflicting views. Any fact used in a decision '
         'must be corroborated in the offered dated primary sources. Set secondary_usage to an empty array if '
-        'none contributed; otherwise identify the supplied secondary_id and the corroborating primary_id. '
+        'none contributed; otherwise identify up to three supplied secondary_id values, an exact secondary_quote from each excerpt, and each corroborating primary_id. Email dates are not article publication dates. Source volume is not independent confirmation. '
         'Do not claim that an excerpt is a complete article or use it as execution evidence. '
         'Return JSON {"explanation":"connected explanation, gaps and next checks", "decisions":['
         '{"ticker":"...","action":"BUY|SELL|HOLD","reason":"...","valuation":"...",'
@@ -295,8 +295,8 @@ def daily(job,live,date,folder):
     since=(datetime.now(timezone.utc)-timedelta(days=4)).date().isoformat()
     replies=feedback(since)
     evidence=refresh_research(job)
-    public=public_followup();public['newsletter_excerpts']=secondary_newsletters(ROOT/'knowledge-newsletters',datetime.now(NY).date())
-    public['newsletter_archive']=newsletter_archive(ROOT/'knowledge-newsletters',datetime.now(NY).date())
+    public=public_followup()
+    public.update(newsletter_evidence(evidence,folder))
     atomic(folder/'research-summary.json',{k:v for k,v in evidence.items() if k!='report'})
     request_path=folder/'request.json'
     if live and request_path.exists():
@@ -339,6 +339,17 @@ def daily(job,live,date,folder):
             'research_status':evidence['status'],'accepted_companies':len(evidence['companies']),
             'decisions':len(request['decisions']),'filled':filled,'decision_review':decision_review,'body_sha256':hashlib.sha256(md.encode()).hexdigest()}
 
+
+
+def newsletter_evidence(evidence,folder):
+    from runtime_config import load_sources
+    import stock_newsletters as newsletters
+    config=load_sources(ROOT/'config/sources.json').get('email',{})
+    packet=newsletters.collect(ROOT/'knowledge-newsletters',datetime.now(timezone.utc),
+        evidence['companies'],config.get('newsletter_allowlist',[]),config.get('newsletter_rejectlist',[]))
+    # Full selection audit and exact offered passages stay private on C1.
+    atomic(folder/'newsletter-evidence.json',packet)
+    return {k:v for k,v in packet.items() if k!='audit'}
 
 
 SA_PRODUCT=re.compile(r'because\s+you\s+(?:[a-z]+\s+){0,3}?(?:to\s+receive|to|for)\s+(.{3,120}?)(?:\.\s|\.$|\s+If\s+you|$)',re.M)
@@ -384,15 +395,24 @@ def newsletter_archive(folder,today):
 def secondary_usage(refs,public,evidence):
     secondary={s['id']:s for s in public.get('newsletter_excerpts',[])}
     primary={d['id']:d for c in evidence['companies'] for d in c['documents'] if d.get('published')}
-    if not isinstance(refs,list) or len(refs)>1:raise ValueError('secondary_usage_schema')
-    if not refs:return 'Seeking Alpha contributed no decision evidence in this run.'
-    ref=refs[0]
-    if set(ref)!={'secondary_id','primary_id'} or ref['secondary_id'] not in secondary or ref['primary_id'] not in primary:
-        raise ValueError('secondary_claim_needs_offered_primary_source')
-    s=secondary[ref['secondary_id']];p=primary[ref['primary_id']]
-    return ('Seeking Alpha contributed an idea lead from a newsletter archived '+s['archive_date']+
-            '; the decision facts use the primary source '+p['url']+' (published '+p['published']+'). '
-            'The newsletter archive date is not a verified article date; no claim of full-article access.')
+    if not isinstance(refs,list) or len(refs)>3:raise ValueError('secondary_usage_schema')
+    if not refs:return 'Newsletters contributed no decision evidence in this run.'
+    notes=[];seen=set()
+    for ref in refs:
+        if (not isinstance(ref,dict) or set(ref)-{'secondary_id','primary_id','secondary_quote'} or
+            ref.get('secondary_id') not in secondary or ref.get('primary_id') not in primary):
+            raise ValueError('secondary_claim_needs_offered_primary_source')
+        if ref['secondary_id'] in seen:raise ValueError('duplicate_secondary_claim')
+        seen.add(ref['secondary_id']);s=secondary[ref['secondary_id']];p=primary[ref['primary_id']]
+        if 'email_date' in s:
+            quote=ref.get('secondary_quote','')
+            if not isinstance(quote,str) or not 30<=len(quote)<=300 or quote not in s['text']:
+                raise ValueError('secondary_quote_unverified')
+            date_note='email dated '+s['email_date']
+        else:date_note='newsletter archived '+s['archive_date']
+        notes.append(s.get('source','Seeking Alpha')+' contributed an idea lead from a '+date_note+
+            '; the decision facts use the primary source '+p['url']+' (published '+p['published']+').')
+    return '\n'.join(notes)+' Email/archive date is not a verified article date; no claim of full-article access.'
 
 
 def source_list(evidence,public):
@@ -401,6 +421,10 @@ def source_list(evidence,public):
     text+='\n'.join('- '+url+' — published '+str(d.get('published') or 'date unavailable') for url,d in docs.items()) or '- None accepted.'
     text+='\n\nSecondary sources:\n'
     secondary=['- '+s['url']+' — public context, not execution evidence.' for s in public.get('sources',[])]
+    if 'newsletter_coverage' in public:
+        from stock_newsletters import coverage_text
+        secondary.append(coverage_text(public['newsletter_coverage']))
+        return text+'\n'.join(secondary)+'\n'
     count=len(public.get('newsletter_excerpts',[]))
     line='- Seeking Alpha: %d saved newsletter excerpts considered; full articles were not fetched in this pass.'%count
     archive=public.get('newsletter_archive')
