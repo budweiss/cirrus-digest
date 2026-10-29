@@ -144,6 +144,7 @@ CADENCE_H = {
                                 # night, which is the worst possible failure
                                 # mode for a reporting job
     "halftimecatalogue": 26,    # daily 06:30 CUMULUS (Justin)
+    "newsletterfetch":  18,     # S528, 06:15 + 14:15 CUMULUS; longest gap 16h
     "cumulusdailybrief": 26,    # daily 20:00 CUMULUS
     "halftimerouting":  24 * 8,  # weekly Sun 22:00 CUMULUS (Justin)
     "entitykbdigest":   24 * 8,  # weekly Mon 05:00 CUMULUS -- Bill, CLIENT-FACING
@@ -203,6 +204,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
                  "alopeciaagent",                         # S177, runs on CUMULUS
                  "fleetautoreconcile",                    # S497, CUMULUS user timer
                  "fleetqualify",                          # S497, CUMULUS user timer
+                 "newsletterfetch",                       # S528, runs on CUMULUS
                  "foundationrenewalcumulus",              # S316, runs on CUMULUS
                  "immaculatetick",                         # S253, runs on CUMULUS
                  # S254: runs on CUMULUS since S169 but was never listed here,

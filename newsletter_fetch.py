@@ -496,4 +496,6 @@ if __name__ == "__main__":
     cr = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     allow = cfg.get("email", {}).get("newsletter_allowlist", [".substack.com"])
     reject = cfg.get("email", {}).get("newsletter_rejectlist", [])
-    raise SystemExit(0 if fetch(cfg, cr, allow, rejectlist=reject).get("saved", 0) >= 0 else 1)
+    # S528: this exited 0 on {"error": "no-credential"} too ("saved" is 0 there),
+    # so a scheduled run with a missing credential would have looked clean.
+    raise SystemExit(1 if fetch(cfg, cr, allow, rejectlist=reject).get("error") else 0)

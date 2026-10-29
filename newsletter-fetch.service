@@ -6,8 +6,8 @@ Wants=network-online.target
 # The Stock Pickers letters read the last four days of this archive for
 # Seeking Alpha idea leads. Until S528 nothing ran this fetch on a schedule, so
 # the archive silently stopped at 2026-10-12 and every letter from about
-# 10-16 considered zero SA items (T168). Both mailboxes run even if one fails,
-# and the unit still fails so the failure is visible.
+# 10-16 considered zero SA items (T168). The script runs both mailboxes even if
+# one fails, records job_status "newsletterfetch", and fails the unit on any failure.
 
 [Service]
 Type=oneshot
@@ -16,7 +16,7 @@ Group=buddy
 WorkingDirectory=/home/buddy/cirrus-digest
 Environment=HOME=/home/buddy
 TimeoutStartSec=30min
-ExecStart=/bin/bash -c 'rc=0; .venv/bin/python newsletter_fetch.py || rc=1; NEWSLETTER_ACCOUNT_LABEL=gmail-buddy .venv/bin/python newsletter_fetch.py || rc=1; exit $$rc'
+ExecStart=/bin/bash /home/buddy/cirrus-digest/newsletter_fetch_scheduled.sh
 
 [Install]
 WantedBy=multi-user.target
