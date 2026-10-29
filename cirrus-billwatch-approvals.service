@@ -1,0 +1,15 @@
+# S537: daily watch for client-route approvals about to lapse (bill_watch.py).
+[Unit]
+Description=cirrus-billwatch-approvals (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/bill_watch.py approvals
+TimeoutStartSec=600
