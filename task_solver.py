@@ -595,21 +595,9 @@ def _fallback_to_ticket(rec: dict):
         title = 'Private intake request requires local review' if private else rec.get('title', '')
         detail = ('Review the original request in the local intake backlog. Do not forward its contents to cloud models.'
                   if private else (rec.get('body_head') or '')[:400])
-        # S539: the message it is for, so a later delivery can close it.
-        origin = str(rec.get("message_id") or "").split("#information-recovery-", 1)[0]
         dev_loop.ticket_create(
             rec.get("requester", ""), rec.get("projects", []), title,
-            detail, origin="user-intake-answer-fallback", project_dir=PROJECT_DIR,
-            meta={"request_origin": origin} if origin else None)
-    except Exception:
-        pass
-
-
-def _resolve_fallback(rec: dict, note: str):
-    """S539: an answer reached the requester, so close any fallback ticket an
-    earlier attempt filed for this message. Runs after the send; never raises."""
-    try:
-        dev_loop.ticket_resolve_request([rec.get("message_id")], note, PROJECT_DIR)
+            detail, origin="user-intake-answer-fallback", project_dir=PROJECT_DIR)
     except Exception:
         pass
 

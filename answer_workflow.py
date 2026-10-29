@@ -347,7 +347,6 @@ def _solve_and_answer(rec, creds, to_addr, subject):
     row = intake_record(root, rec, subject, ts.intake_privacy(rec, creds))
     result = {"answered": False, "cost_usd": None, "reason": "", "request_id": row["id"]}
     if row["state"] == "delivered":
-        ts._resolve_fallback(rec, "answer already delivered (request %s)" % row["id"])
         return dict(result, answered=True, reason="Previously delivered; duplicate suppressed.")
     if row["state"] in ("sending", "delivery_unknown", "needs_review", "running"):
         if not row["meta"].get("review_ticket_attempted"):
@@ -388,7 +387,6 @@ def _solve_and_answer(rec, creds, to_addr, subject):
     ts.dev_loop.ledger_append({"event": "auto-answered", "requester": rec["requester"],
         "title": rec.get("title"), "request_id": row["id"], "switchboard_shadow": shadow,
         "thread": row["thread"], **ts._answer_fingerprint(row["answer"])}, root)
-    ts._resolve_fallback(rec, "answer delivered (request %s)" % row["id"])
     return dict(result, answered=True, reason=row["meta"].get("reason", "Verified answer."))
 
 

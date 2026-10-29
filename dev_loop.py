@@ -449,7 +449,8 @@ def _ticket_lock(pd):
 
 
 def _ticket_rewrite(pd, match, fields):
-    """Merge `fields` into every ticket `match` accepts; return those tickets.
+    """Merge `fields` (a dict, or a function of the ticket returning one) into
+    every ticket `match` accepts, in file order; return those tickets.
     Caller holds _ticket_lock. Atomic replace keeping the old owner and mode:
     the Skywarden filer runs as root, and a root-owned 0644 queue would lock
     buddy out of it on CUMULUS (and widen it from 0600)."""
@@ -463,7 +464,7 @@ def _ticket_rewrite(pd, match, fields):
             out.append(line)
             continue
         if match(t):
-            t.update(fields)
+            t.update(fields(t) if callable(fields) else fields)
             hits.append(t)
             line = json.dumps(t)
         out.append(line)
@@ -505,12 +506,38 @@ def ticket_update(ticket_id: str, status: str, note: str, project_dir=None, by: 
     return hits[-1]
 
 
+def _request_origin(message_id):
+    return str(message_id or "").split("#information-recovery-", 1)[0]
+
+
+def ticket_link_request(message_id, since: int, project_dir=None):
+    """Stamp meta.request_origin on answer-fallback tickets filed after the
+    first `since` tickets (the queue length before an answer attempt), so a
+    later delivery can close them. Intake does this rather than the answer
+    code: answer_workflow.py and task_solver.py are pinned by qualified model
+    routes, and editing them switches those routes off (T173)."""
+    origin = _request_origin(message_id)
+    pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
+    if not origin or not _ticket_path(pd).exists():
+        return []
+    seen = [0]
+
+    def match(t):
+        seen[0] += 1
+        return (seen[0] > since and t.get("origin") == "user-intake-answer-fallback"
+                and not (t.get("meta") or {}).get("request_origin"))
+    with _ticket_lock(pd):
+        hits = _ticket_rewrite(pd, match, lambda t: {
+            "meta": dict(t.get("meta") or {}, request_origin=origin)})
+    return [t["id"] for t in hits]
+
+
 def ticket_resolve_request(message_ids, note: str, project_dir=None):
     """Resolve the open tickets filed for these intake messages (meta
     request_origin / message_id). Called once an answer reaches the requester,
     so a fallback ticket from an earlier attempt does not stay open forever.
     Returns the ids it closed."""
-    keys = {str(m).split("#information-recovery-", 1)[0] for m in message_ids if m}
+    keys = {_request_origin(m) for m in message_ids if m}
     if not keys:
         return []
     pd = Path(project_dir) if project_dir else Path.home() / "projects/cirrus-digest"
@@ -775,6 +802,13 @@ def _selftest():
         assert ticket_resolve_request(["", None], "none", td) == []
         st = {t["id"]: t["status"] for t in ticket_load(td)}
         assert st[fb["id"]] == "resolved" and st[other["id"]] == "queued"
+        # ...and intake links a fallback filed during its attempt (past the mark) only.
+        mark = len(ticket_load(td))
+        new = ticket_create("buddy", ["snow"], "q3", "q3", origin="user-intake-answer-fallback",
+                            project_dir=td)
+        assert ticket_link_request("<q3@x>", mark, td) == [new["id"]]
+        assert ticket_link_request("<q4@x>", 0, td) == []      # all already linked
+        assert ticket_load(td)[-1]["meta"] == {"request_origin": "<q3@x>"}
         # Skywarden: a repeat failure counts against the unit's open ticket.
         sky = dict(origin="skywarden-repair", project_dir=td)
         s1 = ticket_create("skywarden", ["cirrus-digest"], "u.service has a diagnosed operational failure",

@@ -494,6 +494,23 @@ def ack_body(rec: dict) -> str:
             f"wrong, just reply to this email.\n\n— {node}")
 
 
+def _settle_tickets(rec: dict, delivered: bool, mark: int):
+    """S541: after an answer or resend attempt, close this message's open
+    tickets if it reached the requester, else link the fallback ticket the
+    attempt just filed (tickets past `mark`) to this message. Runs after the
+    send, never raises: bookkeeping must not touch the reply path."""
+    try:
+        if delivered:
+            closed = dev_loop.ticket_resolve_request(
+                [rec.get("message_id")], "delivered to the requester by intake", PROJECT_DIR)
+            if closed:
+                log(f"  → ticket(s) resolved: {', '.join(closed)}")
+        elif mark is not None:
+            dev_loop.ticket_link_request(rec.get("message_id"), mark, PROJECT_DIR)
+    except Exception as e:
+        log(f"  ⚠️ ticket bookkeeping failed ({type(e).__name__}); the reply path is unaffected")
+
+
 def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
     """SMTP ack from the research inbox. NOTE: creds keys outlook_* are
     legacy-misnamed — they hold the cirrustask@gmail.com sender (see
@@ -1079,6 +1096,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         except Exception as e:
                             log(f"  ticket enqueue failed (backlog still recorded): {e}")
             rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
+            try:
+                mark = len(dev_loop.ticket_load(PROJECT_DIR))   # S541: see _settle_tickets
+            except Exception:
+                mark = None
             if rec["kind"] == "answer" and rec["status"] != "refused":
                 try:
                     if rec.get('information_capability') == 'stock-source-inventory':
@@ -1092,6 +1113,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 rec["solved"] = solved
                 log(f"  → answer {'sent' if solved['answered'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
+                _settle_tickets(rec, bool(solved.get("answered")), mark)
             if rec["kind"] == "resend" and rec["status"] != "refused":
                 try:
                     solved = task_solver.try_auto_resend(rec, creds, from_addr, subject)
@@ -1100,6 +1122,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 rec["solved"] = solved
                 log(f"  → resend {'sent (' + str(solved['count']) + ')' if solved['resent'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
+                _settle_tickets(rec, bool(solved.get("resent")), mark)
         processed.append(rec)
 
     if not dry_run:

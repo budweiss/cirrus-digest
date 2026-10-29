@@ -96,7 +96,6 @@ def solve_and_answer(rec, creds, to_addr, subject, *, inventory=None, sender=Non
     memory = Memory(ts.PROJECT_DIR)
     row = aw.intake_record(ts.PROJECT_DIR, rec, subject, 'LOCAL_ONLY')
     if row['state'] == 'delivered':
-        ts._resolve_fallback(rec, 'source inventory already delivered (request %s)' % row['id'])
         return {'answered': True, 'request_id': row['id'], 'reason': 'Previously delivered; duplicate suppressed.'}
     if row['state'] != 'observed' or not memory.transition(row['id'], 'observed', 'running'):
         return {'answered': False, 'request_id': row['id'], 'reason': 'Existing attempt needs review; no duplicate send.'}
@@ -116,7 +115,6 @@ def solve_and_answer(rec, creds, to_addr, subject, *, inventory=None, sender=Non
                     **ts._answer_fingerprint(answer)}, ts.PROJECT_DIR)
             except Exception:
                 memory.update(row['id'], meta={'ledger_needs_repair': True})
-            ts._resolve_fallback(rec, 'source inventory delivered (request %s)' % row['id'])
         else:
             memory.review_packet(memory.get(row['id']))
         return {'answered': bool(ok), 'request_id': row['id'],

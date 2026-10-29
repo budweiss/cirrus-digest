@@ -1,11 +1,15 @@
-"""S539: a handled request closes its ticket. Temp dirs only (T32)."""
+"""S541: a handled request closes its ticket. Temp dirs only (T32).
+
+The answer code (answer_workflow.py, task_solver.py) is pinned by qualified
+model routes, so intake links and closes the fallback ticket instead (T173)."""
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
-import answer_workflow as aw
 import dev_loop
+import intake
 import task_solver as ts
 
 
@@ -14,42 +18,53 @@ class FallbackTicketTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        p = patch.object(ts, "PROJECT_DIR", self.root)
-        p.start()
-        self.addCleanup(p.stop)
-        p = patch.object(dev_loop, "_notify_ticket")      # no Telegram from a test
-        p.start()
-        self.addCleanup(p.stop)
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        for mod in (ts, intake):
+            self.stack.enter_context(patch.object(mod, "PROJECT_DIR", self.root))
+        self.stack.enter_context(patch.object(intake, "LOG_PATH", self.root / "intake.log"))
+        self.stack.enter_context(patch.object(dev_loop, "_notify_ticket"))   # no Telegram
 
-    def rec(self, mid, privacy="LOCAL_ONLY"):
+    def rec(self, mid):
         return {"requester": "buddy", "projects": ["stock-pickers"], "title": "PRIVATE",
-                "body_head": "PRIVATE BODY", "message_id": mid, "privacy": privacy}
+                "body_head": "PRIVATE BODY", "message_id": mid, "privacy": "LOCAL_ONLY"}
 
-    def test_delivery_closes_the_fallback_ticket_for_that_message_only(self):
-        ts._fallback_to_ticket(self.rec("<a@x>"))
-        ts._fallback_to_ticket(self.rec("<b@x>"))
-        a, b = dev_loop.ticket_load(self.root)
-        self.assertEqual(a["meta"], {"request_origin": "<a@x>"})
-        self.assertNotIn("PRIVATE", a["title"] + a["detail"])
-        ts._resolve_fallback(self.rec("<a@x>#information-recovery-2"), "answer delivered")
-        st = {t["meta"]["request_origin"]: t["status"] for t in dev_loop.ticket_load(self.root)}
-        self.assertEqual(st, {"<a@x>": "resolved", "<b@x>": "queued"})
+    def attempt(self, rec, delivered):
+        """What intake does around one answer attempt that falls back or not."""
+        mark = len(dev_loop.ticket_load(self.root))
+        if not delivered:
+            ts._fallback_to_ticket(rec)
+        intake._settle_tickets(rec, delivered, mark)
 
-    def test_a_message_without_an_id_files_a_ticket_and_resolves_nothing(self):
-        ts._fallback_to_ticket(self.rec(""))
-        (t,) = dev_loop.ticket_load(self.root)
-        self.assertNotIn("meta", t)
-        ts._resolve_fallback(self.rec(""), "answer delivered")
-        self.assertEqual(dev_loop.ticket_load(self.root)[0]["status"], "queued")
+    def status(self):
+        return [(t["status"], (t.get("meta") or {}).get("request_origin"))
+                for t in dev_loop.ticket_load(self.root)]
 
-    def test_answer_workflow_resolves_when_the_answer_was_already_delivered(self):
-        row = {"id": "r1", "state": "delivered", "privacy": "LOCAL_ONLY", "meta": {}}
-        with patch.object(aw, "intake_record", return_value=row), \
-             patch.object(ts, "_resolve_fallback") as resolve:
-            out = aw._solve_and_answer(self.rec("<a@x>"), {}, "to@x", "Re: q")
-        self.assertTrue(out["answered"])
-        resolve.assert_called_once()
-        self.assertEqual(resolve.call_args[0][0]["message_id"], "<a@x>")
+    def test_a_later_delivery_closes_the_fallback_ticket_for_that_message_only(self):
+        ts._fallback_to_ticket(self.rec("<old@x>"))          # filed before S541: no link
+        self.attempt(self.rec("<a@x>"), delivered=False)
+        self.attempt(self.rec("<b@x>"), delivered=False)
+        self.assertEqual(self.status(), [("queued", None), ("queued", "<a@x>"), ("queued", "<b@x>")])
+        for t in dev_loop.ticket_load(self.root):
+            self.assertNotIn("PRIVATE", t["title"] + t["detail"])
+        self.attempt(self.rec("<a@x>#information-recovery-2"), delivered=True)
+        self.assertEqual(self.status(), [("queued", None), ("resolved", "<a@x>"), ("queued", "<b@x>")])
+
+    def test_a_message_without_an_id_files_a_ticket_and_links_nothing(self):
+        self.attempt(self.rec(""), delivered=False)
+        self.attempt(self.rec(""), delivered=True)
+        self.assertEqual(self.status(), [("queued", None)])
+
+    def test_an_unreadable_queue_never_reaches_the_reply_path(self):
+        with patch.object(dev_loop, "ticket_resolve_request", side_effect=OSError("disk")):
+            intake._settle_tickets(self.rec("<a@x>"), True, 0)      # must not raise
+        intake._settle_tickets(self.rec("<a@x>"), False, None)      # no mark: no link
+        self.assertIn("ticket bookkeeping failed", (self.root / "intake.log").read_text())
+
+    def test_intake_settles_after_both_the_answer_and_the_resend_attempt(self):
+        src = Path(intake.__file__).read_text()
+        self.assertIn('_settle_tickets(rec, bool(solved.get("answered")), mark)', src)
+        self.assertIn('_settle_tickets(rec, bool(solved.get("resent")), mark)', src)
 
 
 if __name__ == "__main__":
