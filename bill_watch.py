@@ -11,7 +11,8 @@ asked to read. Buddy: "Yes, start part 1".
               estimate and since when). A failed leads or HOA email is rerun once
               automatically (SNOW was already retried at 11:00 by snow_guard).
               Buddy hears only about what is STILL failing after that (Buddy,
-              10-29: "only reach out to me if there is a major stopping point").
+              10-29: "only reach out to me if there is a major stopping point"),
+              or about the county HOA directory not fetching for over 7 days.
   approvals   daily 12:00 -- Telegram Buddy when a route's approvals all lapse
               within 24 h (after the 04:40 tests and 10:00 auto-review have had
               their chance) or have already lapsed. Advisory-date tasks
@@ -67,6 +68,19 @@ def estimate_history(texts):
     return latest, since
 
 
+DIRECTORY_OK_RX = re.compile(r"^(\d{4}-\d{2}-\d{2})\S*.*'directory': \{'ok': True", re.M)
+
+
+def directory_stale_days(journal, today):
+    """Days since the daily HOA job last fetched the county directory, or None
+    if it never did in the journal window. The job still reports ok overall
+    when only the directory fails, which hid a 10-day block in October."""
+    days = DIRECTORY_OK_RX.findall(journal)
+    if not days:
+        return None
+    return (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(max(days), "%Y-%m-%d")).days
+
+
 def lapsing(projects, now, advisory, window=24 * 3600):
     """[(route, when, expired?)] for enabled routes whose approved records all
     end within `window` (or already ended). Advisory-date tasks are skipped."""
@@ -93,7 +107,7 @@ RERUN = {"billnewdev": ["newdev/bill_newdev_weekly.py"],
          "entitykbdigest": ["entity_kb_weekly_digest.py", "--client", "bill"]}
 
 
-def card(evaluate, rerun, notify, today, monday=True):
+def card(evaluate, rerun, notify, today, monday=True, extra_problems=()):
     """evaluate(name) -> (ok, line); rerun(name) -> exit code. Each failed job
     with a rerun is retried once (Mondays only: a hand-run on another day must
     not email Bill), then re-read. Notifies only about jobs still failing."""
@@ -107,6 +121,8 @@ def card(evaluate, rerun, notify, today, monday=True):
         lines.append(line)
         if not ok:
             bad.append(line)
+    lines.extend(extra_problems)
+    bad.extend(extra_problems)
     if bad:
         notify(f"Bill's Monday emails need a look ({today}); automatic retry did not fix:\n"
                + "\n".join(bad))
@@ -143,7 +159,15 @@ def reportcard(notify, today=None):
     def rerun(name):
         return subprocess.run([sys.executable, *RERUN[name]], cwd=str(ROOT), timeout=1700).returncode
 
-    good, lines = card(evaluate, rerun, notify, today, monday=datetime.now().weekday() == 0)
+    journal = subprocess.run(["journalctl", "-u", "cirrus-hoaleads", "--since", "-21 days",
+                              "--no-pager", "-o", "short-iso"], capture_output=True, text=True).stdout
+    stale = directory_stale_days(journal, today)
+    problems = [] if stale is not None and stale <= 7 else [
+        "!! New Castle county directory: no successful fetch in "
+        + ("21+ days" if stale is None else f"{stale} days")
+        + " -- the county has likely changed its bot filter (nccde_directory.fetch)"]
+    good, lines = card(evaluate, rerun, notify, today, monday=datetime.now().weekday() == 0,
+                       extra_problems=problems)
     print("\n".join(lines))
     return good
 
@@ -217,6 +241,15 @@ def selftest():
     reruns.clear(); sent.clear()
     card(ev, lambda n: reruns.append(n) or 0, sent.append, t, monday=False)
     ck("off-Monday hand-run never reruns a Bill email", reruns == [] and len(sent) == 1)
+
+    j = ("2026-10-05T03:02:27-0400 cumulus1 python[1]: {'ok': True, 'directory': {'ok': True, 'rows': 224}}\n"
+         "2026-10-12T03:02:27-0400 cumulus1 python[1]: {'ok': True, 'directory': {'ok': False, 'reason': '403'}}\n")
+    ck("directory staleness counts from the last successful fetch", directory_stale_days(j, "2026-10-14") == 9)
+    ck("no successful fetch in the window -> None", directory_stale_days(j.splitlines()[1], "2026-10-14") is None)
+    sent.clear()
+    card(lambda n: (True, n), lambda n: 0, sent.append, t, extra_problems=["!! county directory stale"])
+    ck("a stale county directory is reported even when all emails went out",
+       len(sent) == 1 and "county directory" in sent[0])
 
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
