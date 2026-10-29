@@ -316,6 +316,13 @@ def fetch(config, creds, allowlist, out_dir=OUT_DIR, state_path=STATE_PATH,
     return stats
 
 
+def exit_status(result):
+    """S528: a returned error fails the run. This used to exit 0 on
+    {"error": "no-credential"} ("saved" is 0 there), so a scheduled run with a
+    missing credential looked clean."""
+    return 1 if result.get("error") else 0
+
+
 def selftest():
     """Offline. No network, no real mailbox, no real files (T32)."""
     import tempfile
@@ -477,6 +484,19 @@ def selftest():
     ok("its hint never points at tools/set_cred.py (reverted write)",
        "set_cred.py" not in hint)
 
+    # --- a returned error is a FAILED run (S528) ----------------------------
+    # The scheduled unit and job_status read the exit code; this exited 0 on
+    # no-credential while its test was `saved >= 0`.
+    ok("no-credential exits non-zero", exit_status(r) == 1)
+    ok("a clean result exits zero", exit_status({"saved": 0, "errors": 0}) == 0)
+    mains = [n for n in tree.body if isinstance(n, ast.If)
+             and isinstance(n.test, ast.Compare)
+             and getattr(n.test.left, "id", "") == "__name__"]
+    ok("__main__ exits through exit_status",
+       bool(mains) and any(isinstance(c, ast.Call)
+                           and getattr(c.func, "id", "") == "exit_status"
+                           for c in ast.walk(mains[0])))
+
     failed = [n for n, g in checks if not g]
     for n, g in checks:
         print("  %s %s" % ("PASS" if g else "FAIL", n))
@@ -496,6 +516,4 @@ if __name__ == "__main__":
     cr = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
     allow = cfg.get("email", {}).get("newsletter_allowlist", [".substack.com"])
     reject = cfg.get("email", {}).get("newsletter_rejectlist", [])
-    # S528: this exited 0 on {"error": "no-credential"} too ("saved" is 0 there),
-    # so a scheduled run with a missing credential would have looked clean.
-    raise SystemExit(1 if fetch(cfg, cr, allow, rejectlist=reject).get("error") else 0)
+    raise SystemExit(exit_status(fetch(cfg, cr, allow, rejectlist=reject)))
