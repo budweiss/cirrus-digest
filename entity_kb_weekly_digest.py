@@ -73,6 +73,9 @@ OPPORTUNITY_KINDS = {
     "special-assessment", "rfp", "bid-request",
     "mgmt-change", "management-change", "management-company-change",
     "out-of-state-mgmt",
+    # S537: an association newly recorded in county owner records (monthly
+    # hoa_county_refresh) or first found by the daily web discovery.
+    "new-association", "new-discovery",
 }
 
 # Real findings that are NOT opportunities -- identity confirmations, dues
@@ -505,6 +508,13 @@ def selftest() -> bool:
         checks.append(("a new article re-found in the same week is shown once",
                        "Fresh story" in body_rep and "re-found" not in body_rep))
         checks.append(("a signal with no source URL is still shown", "Pool closed" in body_rep))
+        entity_kb.upsert_entity("hoa_leads_bill", "new-meadow", "New Meadow HOA",
+                                fields={"county": "Kent"}, db_path=db_path)
+        entity_kb.add_signal("hoa_leads_bill", "new-meadow", "new-association",
+                             "Newly recorded in Kent County parcel owner records", occurred_at=now, db_path=db_path)
+        body_new = compose_digest(["hoa_leads_bill"], since_week, db_path=db_path, opportunities_only=True)
+        checks.append(("a newly recorded association reaches Bill's opportunities digest",
+                       "Newly recorded in Kent County" in body_new))
 
         empty_body = compose_digest(["nonexistent_project"], since_week, db_path=db_path)
         checks.append(("no events in window -> empty digest, not a garbage send",

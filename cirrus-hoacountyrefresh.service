@@ -1,0 +1,15 @@
+# S537: monthly Kent + Sussex association re-pull into Bill's HOA CRM (hoa_county_refresh.py).
+[Unit]
+Description=cirrus-hoacountyrefresh (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/hoa_county_refresh.py --apply
+TimeoutStartSec=1800

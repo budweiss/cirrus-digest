@@ -97,6 +97,7 @@ CADENCE_H = {
     "snowcatchup":    24 * 8,
     "billreportcard": 24 * 8,
     "approvalwatch":  26,
+    "hoacountyrefresh": 24 * 33,  # S537: monthly, 2nd at 02:15
     # S81 CORRECTION: this said `24 * 8` -- weekly + grace -- since S57, when
     # the job WAS weekly. The timer on CUMULUS is `*-*-* 03:00:00` and the unit
     # calls itself "cirrus-hoaleads daily research": it has been DAILY for
@@ -198,7 +199,7 @@ CADENCE_H = {
 # link instead of the (now-stale) local ledger — so a moved job is reported from
 # where it actually runs, not falsely flagged OVERDUE here.
 REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
-                 "snowpreflight", "snowcatchup", "billreportcard", "approvalwatch",
+                 "snowpreflight", "snowcatchup", "billreportcard", "approvalwatch", "hoacountyrefresh",
                  # S81 -- all of these run on CUMULUS, so when summarize()
                  # runs on CIRRUS their status must be read from CUMULUS's
                  # ledger. Omitting one here does not merely mis-attribute it:
@@ -970,7 +971,7 @@ def selftest():
     # No entry may be looser than a month unless it is genuinely monthly --
     # a large number here is how a blind spot hides in plain sight.
     loose = sorted(k for k, v in CADENCE_H.items()
-                   if v > 24 * 16 and k != "stratusreview")
+                   if v > 24 * 16 and k not in ("stratusreview", "hoacountyrefresh"))  # both monthly
     ck(f"no job is watched at a tolerance over ~16d (loose: {loose})", not loose)
 
     # ---- S81: does every watched job have a WRITER? ----------------------
