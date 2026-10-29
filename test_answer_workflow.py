@@ -274,6 +274,30 @@ class WorkflowTests(MemoryTests):
         result = aw.compose(self.m, self.add(privacy="LOCAL_ONLY"), model, SOURCE)
         self.assertEqual(result["state"], "needs_review")
         self.assertNotIn("private transport details", json.dumps(result))
+        self.assertEqual(result["meta"]["stages"]["local"]["error_detail"], "")
+
+    def test_gate_refusal_reason_is_kept_without_free_text(self):
+        import capability_selection
+        import llm_providers as lp
+        def refused(cause):
+            try:
+                raise lp.ProviderError('capability selection unavailable or requirements unmet') from cause
+            except lp.ProviderError as exc:
+                return exc
+        model = FakeModels([("ollama", output()),
+                            ("ollama", refused(capability_selection.NoEligibleModel(
+                                'no validated model meets requirements'))),
+                            ("ollama", refused(ValueError("private gate text")))])
+        result = aw.compose(self.m, self.add(privacy="LOCAL_ONLY"), model, SOURCE)
+        self.assertEqual(result["state"], "needs_review")
+        review = result["meta"]["stages"]["local_review"]
+        self.assertEqual((review["error_type"], review["error_detail"], review["error_cause"],
+                          review["error_cause_detail"]),
+                         ("ProviderError", "capability selection unavailable or requirements unmet",
+                          "NoEligibleModel", "no validated model meets requirements"))
+        repair = result["meta"]["stages"]["local_repair"]
+        self.assertEqual((repair["error_cause"], repair["error_cause_detail"]), ("ValueError", ""))
+        self.assertNotIn("private gate text", json.dumps(result))
 
 
 class BotTests(MemoryTests):
