@@ -1,0 +1,15 @@
+# S537: Sunday check that Monday's SNOW report will be admitted (snowbrief/snow_guard.py).
+[Unit]
+Description=cirrus-snowguard-preflight (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/snowbrief/snow_guard.py preflight
+TimeoutStartSec=1800

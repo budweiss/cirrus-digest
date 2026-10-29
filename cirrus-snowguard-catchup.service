@@ -1,0 +1,15 @@
+# S537: Monday 11:00 catch-up if the 04:00 SNOW report failed (snowbrief/snow_guard.py).
+[Unit]
+Description=cirrus-snowguard-catchup (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/snowbrief/snow_guard.py catchup
+TimeoutStartSec=1800
