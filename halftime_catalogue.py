@@ -1887,5 +1887,5 @@ if __name__ == "__main__":
     except Exception as exc:
         if not any(arg in sys.argv for arg in ("selftest", "--selftest", "--dry-run")):
             import job_status
-            job_status.record("halftimecatalogue", False, "failed: " + type(exc).__name__)
+            job_status.record("halftimecatalogue", False, job_status.failure_note(exc))
         raise

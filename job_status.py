@@ -304,6 +304,23 @@ def _write_status_atomic(data):
         return False
 
 
+_PHRASE_RX = re.compile(r"[a-z][a-z0-9 _.:-]{2,59}")
+
+
+def failure_note(exc):
+    """'failed: <Type>', plus the message when it is a short lowercase phrase.
+
+    S536: Halftime's ledger said only "failed: RuntimeError" while the job had
+    raised "no cloud provider" or "vllm down". Developer phrases of that shape
+    are kept; anything else (capitals, quotes, slashes, URLs, long text) is
+    dropped, so a payload or private line never reaches the ledger. For
+    non-private jobs; private jobs keep their own stricter label rules. It
+    lives here, not in each job, because those job files are contract-pinned.
+    """
+    text = str(exc)
+    return "failed: " + type(exc).__name__ + (": " + text if _PHRASE_RX.fullmatch(text) else "")
+
+
 def record(name, ok, note=""):
     """Append/update this job's last-run status. Best-effort; never raises."""
     lock = None
@@ -1140,6 +1157,16 @@ def selftest():
 
     _selftest_record(ck)
     _selftest_sources(ck)
+    # S536: failure_note keeps a short developer phrase and drops anything else.
+    for exc, want in [(RuntimeError("no cloud provider"), "failed: RuntimeError: no cloud provider"),
+                      (RuntimeError("vllm down"), "failed: RuntimeError: vllm down"),
+                      (ValueError("invalid capability rollout file"), "failed: ValueError: invalid capability rollout file"),
+                      (RuntimeError(""), "failed: RuntimeError"),
+                      (ValueError("Expecting value: line 1 column 1 (char 0)"), "failed: ValueError"),
+                      (RuntimeError("GET https://api.example.test/v1?key=x failed"), "failed: RuntimeError"),
+                      (KeyError("price"), "failed: KeyError"),
+                      (RuntimeError("x" * 61), "failed: RuntimeError")]:
+        ck("failure_note(%r) -> %r" % (str(exc)[:30], want), failure_note(exc) == want)
     # S348 (T118): an unknown argument must be refused, never run the suite or
     # exit 0 silently. The child is marked so a mutant that runs the suite for
     # every argument cannot recurse into this check again.
