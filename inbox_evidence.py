@@ -140,3 +140,142 @@ def thread_reply_sender(record, messages, allowlist):
         if record.get(key) and parseaddr(record[key])[1].lower() != address:
             raise ValueError('Cached sender conflicts with original header')
     return address
+
+
+def selftest():
+    # decoded_subject
+    assert decoded_subject('Hello world') == 'Hello world'
+    assert decoded_subject('=?utf-8?b?SGVsbG8=?= there') == 'Hello there'
+    try:
+        decoded_subject('=?bogus-charset?b?AAAA?=')
+        raise AssertionError('decoded_subject accepted invalid charset')
+    except ValueError:
+        pass
+
+    # evidence_spans
+    text = 'First paragraph here.\n\nSecond paragraph is longer. It has two sentences.'
+    spans = evidence_spans('src1', text, 'correspondence')
+    assert len(spans) == 2, spans
+    assert spans[0]['text'] == 'First paragraph here.'
+    assert spans[0]['start'] == 0 and spans[0]['end'] == len('First paragraph here.')
+    assert spans[1]['provenance'] == 'correspondence'
+    digest = hashlib.sha256(('src1' + '\0' + text).encode()).hexdigest()
+    assert all(s['source_sha256'] == digest for s in spans)
+    try:
+        evidence_spans('src1', text, 'bogus')
+        raise AssertionError('evidence_spans accepted bad provenance')
+    except ValueError:
+        pass
+    assert evidence_spans('src1', '', 'reference') == []
+    long_text = 'Sentence one starts here. Second sentence follows on. Third one ends it.'
+    chopped = evidence_spans('src1', long_text, 'request', max_chars=30)
+    assert len(chopped) > 1
+    assert ''.join(s['text'] + ' ' for s in chopped).strip() == long_text
+
+    # verify_span
+    span = spans[0]
+    assert verify_span(span, text) is True
+    bad = dict(span, start=1)
+    assert verify_span(bad, text) is False
+    bad = dict(span, provenance='bogus')
+    assert verify_span(bad, text) is False
+
+    # exact_quote
+    assert exact_quote('the quick brown fox', 'quick brown') is True
+    assert exact_quote('the quick brown fox', 'quick  brown') is False
+    assert exact_quote('abc', 'abc') is False  # under min length
+    assert exact_quote('abc', 12) is False
+
+    # delivered_context
+    rows = [{'state': 'delivered', 'meta': {'delivery_confirmed': True}},
+            {'state': 'delivered', 'meta': {'delivery_confirmed': False}},
+            {'state': 'queued', 'meta': {'delivery_confirmed': True}},
+            {'state': 'delivered', 'meta': {}}]
+    assert delivered_context(rows) == [rows[0]]
+
+    # select_budget
+    picked = select_budget(spans, [spans[0]['id'], spans[0]['id'], spans[1]['id']])
+    assert list(picked.keys()) == [spans[0]['id'], spans[1]['id']]
+    try:
+        select_budget(spans, ['unknown-id'])
+        raise AssertionError('select_budget accepted unknown ID')
+    except ValueError:
+        pass
+    try:
+        select_budget(spans, [s['id'] for s in spans], budget=10)
+        raise AssertionError('select_budget ignored budget')
+    except ValueError:
+        pass
+
+    # canonical_view / trace_canonical_quote
+    raw = 'Alpha  one\ttwo.\n\nBeta   three four.'
+    assert canonical_view(raw) == 'Alpha one two.\n\nBeta three four.'
+    start, end, matched = trace_canonical_quote(raw, 'Beta three four.')
+    assert raw[start:end] == matched
+    assert canonical_view(matched) == 'Beta three four.'
+    try:
+        trace_canonical_quote(raw, 'not in source')
+        raise AssertionError('trace_canonical_quote accepted absent quote')
+    except ValueError:
+        pass
+    dup = 'Same words here.\n\nSame words here.'
+    try:
+        trace_canonical_quote(dup, 'Same words here.')
+        raise AssertionError('trace_canonical_quote accepted ambiguous quote')
+    except ValueError:
+        pass
+
+    # thread_attachments
+    messages = [{'message_id': '<m1\n@x>', 'date': 'd1',
+                 'attachments': [{'name': 'a.txt', 'text': 'body'},
+                                 {'name': 'b.txt', 'text': ''}]},
+                {'message_id': '<m2@x>', 'date': 'd2',
+                 'attachments': [{'name': 'c.txt', 'text': 'other'}]}]
+    docs = thread_attachments(messages, ['<m1@x>'])
+    assert len(docs) == 1 and docs[0]['text'] == 'body' and docs[0]['name'] == 'a.txt'
+    assert docs[0]['source_id'].startswith('thread-attachment-')
+    assert thread_attachments(messages, ['<none@x>']) == []
+
+    # thread_request_timestamp
+    msgs = [{'message_id': '<r@x>', 'date': 'Mon, 27 Oct 2026 12:00:00 +0000'}]
+    ts = thread_request_timestamp(msgs, '<r@x>')
+    assert isinstance(ts, float)
+    try:
+        thread_request_timestamp(msgs, '<r@x>' if len(msgs) == 0 else '<missing@x>')
+        raise AssertionError('thread_request_timestamp accepted missing id')
+    except ValueError:
+        pass
+    naive = [{'message_id': '<n@x>', 'date': 'Mon, 27 Oct 2026 12:00:00 -0000'}]
+    try:
+        thread_request_timestamp(naive, '<n@x>')
+        raise AssertionError('thread_request_timestamp accepted naive date')
+    except ValueError:
+        pass
+
+    # thread_reply_sender
+    allow = {'alice@example.com': {'name': 'Alice'}}
+    thread = [{'message_id': '<t@x>', 'sender': 'Alice <alice@example.com>'}]
+    record = {'message_id': '<t@x>', 'requester': 'alice',
+              'from': 'Alice <alice@example.com>'}
+    assert thread_reply_sender(record, thread, allow) == 'alice@example.com'
+    try:
+        thread_reply_sender({'message_id': '<t@x>', 'requester': 'Mallory'}, thread, allow)
+        raise AssertionError('thread_reply_sender accepted wrong requester')
+    except ValueError:
+        pass
+    try:
+        thread_reply_sender({'message_id': '<t@x>', 'requester': 'Alice',
+                             'from_email': 'bob@example.com'}, thread, allow)
+        raise AssertionError('thread_reply_sender accepted conflicting cache')
+    except ValueError:
+        pass
+    print('inbox_evidence selftest: OK')
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) == 2 and sys.argv[1] == '--selftest':
+        selftest()
+    else:
+        sys.stderr.write('usage: inbox_evidence.py --selftest\n')
+        sys.exit(2)
