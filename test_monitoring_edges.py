@@ -45,7 +45,8 @@ class MonitoringEdges(unittest.TestCase):
             with patch.object(renewal,'CREDS',creds),patch.object(renewal,'REGISTRY',registry), \
                  patch.object(renewal,'STATE',root/'state'),patch.object(renewal,'providers_here',return_value=[]), \
                  patch.object(renewal,'served_models',return_value={}),patch.object(renewal,'log'), \
-                 patch.object(renewal.time,'time',return_value=100):
+                 patch.object(renewal.time,'time',return_value=100), \
+                 patch('answer_workflow_eval.renewal_check',return_value=(True,'answer ok')):  # T171: never the live check
                 cases=[('none',None,0,0,[],None,True),('wait',200,0,0,[],None,True),
                        ('remind',200,0,0,[],'sent',True),('remind',99,0,0,[],'sent',False),
                        ('remind',200,0,0,[],None,False),('run',200,3,0,[],'sent',True),
