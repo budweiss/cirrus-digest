@@ -238,6 +238,7 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
                "council_kept": len(leads), "new_entities": [], "updated_entities": []}
 
     newly_seen = set()
+    result["repeat_articles"] = 0
     for lead in leads:
         name = (lead.get("community") or "").strip()
         if not name:
@@ -245,6 +246,19 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
         matches = entity_kb.search_entities(KB_PROJECT, name, db_path=db_path, limit=1)
         is_new = len(matches) == 0
         slug = matches[0]["slug"] if matches else entity_kb.slugify(name)
+
+        # S537: `seen` holds the search's redirect link, which is new on every
+        # run, so one August WBOC article was re-logged as a finding almost
+        # daily and filled Bill's Monday digest for weeks. Compare the REAL
+        # article URL against what this community already has on record.
+        if not is_new:
+            resolved_url = hoa_monitor._resolve_url(lead.get("url"))
+            known = {e.get("source_url") for e in
+                     entity_kb.get_events(KB_PROJECT, slug, db_path=db_path)}
+            if resolved_url in known:
+                result["repeat_articles"] += 1
+                newly_seen.add(lead["url"])
+                continue
 
         if is_new:
             result["new_entities"].append(name)
@@ -438,6 +452,38 @@ def selftest() -> bool:
         checks.append(("first out-of-state flag on an entity adds a signal", first is True))
         checks.append(("re-flagging the same entity is a no-op, not a duplicate signal",
                        second is False))
+
+        # S537: a known article behind a NEW redirect link is not a new finding.
+        import types
+        article = "https://www.wboc.com/news/milford-repair-fees"
+        fake = types.SimpleNamespace(
+            MAX_CANDIDATES=20, gather_x=lambda: [],
+            gather_web=lambda: [{"url": "https://redirect.example/token-2"}],
+            load_seen=lambda: {"https://redirect.example/token-1"},
+            council_filter=lambda c, creds: [{"url": c[0]["url"], "community": "Hearthstone Manor",
+                                              "type": "distress", "why": "Balcony fees"}],
+            _resolve_url=lambda u: article, save_seen=lambda s: None)
+        saved = sys.modules.get("hoa_monitor")
+        sys.modules["hoa_monitor"] = fake
+        try:
+            entity_kb.upsert_entity(KB_PROJECT, "hearthstone-manor", "Hearthstone Manor", db_path=db_path)
+            entity_kb.add_signal(KB_PROJECT, "hearthstone-manor", "distress", "Balcony fees",
+                                 source_url=article, db_path=db_path)
+            before = len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor", db_path=db_path))
+            res = run_discovery({}, db_path=db_path)
+            after = len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor", db_path=db_path))
+            checks.append(("a known article under a new redirect link is not re-logged",
+                           after == before and res["repeat_articles"] == 1))
+            fake._resolve_url = lambda u: article + "-new"
+            run_discovery({}, db_path=db_path)
+            checks.append(("a genuinely new article for a known HOA is still logged",
+                           len(entity_kb.get_events(KB_PROJECT, "hearthstone-manor",
+                                                    db_path=db_path)) == before + 1))
+        finally:
+            if saved is not None:
+                sys.modules["hoa_monitor"] = saved
+            else:
+                sys.modules.pop("hoa_monitor", None)
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)

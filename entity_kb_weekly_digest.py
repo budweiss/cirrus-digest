@@ -262,6 +262,19 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
             by_entity.setdefault(ev["slug"], {"name": ev["name"], "events": []})
             by_entity[ev["slug"]]["events"].append(ev)
 
+        # S537: report an article once, in the week it was first recorded. A
+        # signal whose source URL this entity already had before (or earlier
+        # in) the window is a repeat, not this week's news.
+        for slug, group in by_entity.items():
+            first = {}
+            for e in sorted(entity_kb.get_events(kb_project, slug, db_path=db_path),
+                            key=lambda e: (e["occurred_at"], e["id"])):
+                if e.get("event_type") == "signal" and e.get("source_url"):
+                    first.setdefault(e["source_url"], e["id"])
+            group["events"] = [e for e in group["events"]
+                               if not (e.get("event_type") == "signal" and e.get("source_url"))
+                               or first.get(e["source_url"]) == e["id"]]
+
         for slug, group in sorted(by_entity.items(), key=lambda kv: kv[1]["name"]):
             evs = group["events"]
 
@@ -476,6 +489,22 @@ def selftest() -> bool:
         body_wide = compose_digest(["hoa_leads_bill"], since_far_past, db_path=db_path)
         checks.append(("a wider window includes the older field change too",
                        "county updated" in body_wide and "Pool closed" in body_wide))
+
+        # S537: the same article re-logged daily must not come back as news.
+        wboc = "https://www.wboc.com/news/milford-repair-fees"
+        entity_kb.upsert_entity("hoa_leads_bill", "repeat-hoa", "Repeat HOA", db_path=db_path)
+        for when, text in ((old, "Balcony fees, first report"), (now, "Balcony fees again")):
+            entity_kb.add_signal("hoa_leads_bill", "repeat-hoa", "distress", text,
+                                 source_url=wboc, occurred_at=when, db_path=db_path)
+        for text in ("Fresh story", "Fresh story re-found"):
+            entity_kb.add_signal("hoa_leads_bill", "repeat-hoa", "distress", text,
+                                 source_url=wboc + "-new", occurred_at=now, db_path=db_path)
+        body_rep = compose_digest(["hoa_leads_bill"], since_week, db_path=db_path)
+        checks.append(("an article first recorded before the window is not this week's news",
+                       "Balcony fees" not in body_rep))
+        checks.append(("a new article re-found in the same week is shown once",
+                       "Fresh story" in body_rep and "re-found" not in body_rep))
+        checks.append(("a signal with no source URL is still shown", "Pool closed" in body_rep))
 
         empty_body = compose_digest(["nonexistent_project"], since_week, db_path=db_path)
         checks.append(("no events in window -> empty digest, not a garbage send",
