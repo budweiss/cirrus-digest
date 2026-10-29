@@ -147,11 +147,15 @@ class Models:
         # Ollama's ordinary idle unloading is not a failed model. Warm only the
         # configured, currently qualified model; no question or client data is
         # included in the load request. Re-observe before normal admission.
+        import approval_grace
+        now = time.time()
+        grace = approval_grace.load(self.root / "config/approval-grace.json")
         for state in observed:
             matching = [r for r in evaluations if r["id"] == "ollama"
                         and r.get("model") == self.creds.get("ollama_model")
                         and r.get("approved") is True
-                        and r.get("evaluated_at", float("inf")) <= time.time() < r.get("expires_at", 0)]
+                        and r.get("evaluated_at", float("inf")) <= now
+                        and (now < r.get("expires_at", 0) or approval_grace.active(r, now, grace))]
             if state.get("id") == "ollama" and state.get("status") == "not_resident" and len(matching) == 1:
                 request = urllib.request.Request(self.creds["ollama_url"].rstrip("/") + "/api/generate",
                     data=json.dumps({"model": self.creds["ollama_model"], "stream": False,
@@ -161,7 +165,7 @@ class Models:
                     response.read(1024)
                 state.update(health.observe(self.creds, "ollama"))
         records = admission.candidates(evaluations, observed, task=TASK, capability=CAPABILITY,
-                                       system=SYSTEM, contract_sha256=contract)
+                                       system=SYSTEM, contract_sha256=contract, grace=grace)
         user = json.dumps(payload, ensure_ascii=False)
         if len(user.encode()) > record["max_user_bytes"]:
             raise ValueError("request exceeds qualified input size")

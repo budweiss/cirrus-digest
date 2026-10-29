@@ -314,6 +314,55 @@ def gates(rows):
     return latest, bad
 
 
+def grace_entries(out_dir, manifest):
+    """P3 grace: records whose every manifest fixture passed all four mechanical
+    gates in this run, plus HOA records whose every decision matched."""
+    rows = [r for f in Path(out_dir).glob("run-*.json") for r in load(f, [])]
+    latest, bad = gates(rows)
+    failed = {(r["route"], r["field"], r["index"]) for r in bad}
+    out = {}
+    for case in manifest:
+        key = (case["route"], case["field"], case["index"])
+        row = latest.get(key + (case["fixture_id"],))
+        if row is None:
+            failed.add(key)
+        if key in failed:
+            out.pop(case["old_record_sha256"], None)
+            continue
+        entry = out.setdefault(case["old_record_sha256"], {
+            "label": "%s/%s[%d]/%s" % (key + (case["provider"],)), "provider": case["provider"],
+            "packet": Path(out_dir).name, "tested_at": row["started_at"]})
+        entry["tested_at"] = min(entry["tested_at"], row["started_at"])
+    hoa = load(Path(out_dir) / "hoa-retention.json", [])
+    for i in sorted({r["index"] for r in hoa}):
+        group = [r for r in hoa if r["index"] == i]
+        if all(r.get("passed") is True for r in group) and len({r["old_record_sha256"] for r in group}) == 1:
+            out[group[0]["old_record_sha256"]] = {
+                "label": "hoa_screening/evaluations[%d]/vllm" % i, "provider": "vllm",
+                "packet": Path(out_dir).name, "tested_at": min(r["started_at"] for r in group)}
+    return out
+
+
+def sync_cumulus_grace():
+    """CIRRUS: cloud records are tested only on CUMULUS (identical records on
+    both boxes), so adopt CUMULUS's cloud grace entries. Fails closed: if the
+    copy cannot be read, CIRRUS keeps no cloud grace."""
+    import approval_grace
+    entries, revoked = {}, []
+    try:
+        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "cumulus1", "cat",
+                               "/home/buddy/cirrus-digest/config/approval-grace.json"],
+                              capture_output=True, text=True, timeout=90)
+        data = json.loads(proc.stdout) if proc.returncode == 0 else {}
+        entries = {k: v for k, v in data.get("entries", {}).items()
+                   if isinstance(v, dict) and v.get("source") == "cumulus" and v.get("provider") in CLOUD}
+        revoked = [s for s in data.get("revoked", []) if isinstance(s, str)]
+    except Exception as ex:
+        log("grace sync from CUMULUS failed: %s" % type(ex).__name__)
+    approval_grace.replace_source("cumulus", entries, revoked, path=REGISTRY.with_name("approval-grace.json"))
+    return len(entries)
+
+
 def write_packet(out_dir, host, projects, index):
     """PACKET.txt: every fresh answer beside the answer in the record's CURRENTLY
     APPROVED evidence; decisions.json with every record approved=null for the
@@ -382,8 +431,13 @@ def run_all(creds, providers, served, projects):
         pr.wait()
     if on_cumulus():
         hoa_check(out_dir, served)
-    fixtures, bad = write_packet(out_dir, "cumulus" if on_cumulus() else "cirrus", projects, index)
-    return out_dir, fixtures, bad, missing
+    host = "cumulus" if on_cumulus() else "cirrus"
+    fixtures, bad = write_packet(out_dir, host, projects, index)
+    import approval_grace
+    grace = grace_entries(out_dir, manifest)
+    approval_grace.replace_source(host, grace, path=REGISTRY.with_name("approval-grace.json"))
+    log("grace: %d record(s) passed every mechanical gate" % len(grace))
+    return out_dir, fixtures, bad, missing, len(grace)
 
 
 def plan():
@@ -446,7 +500,7 @@ def main(force=False):
         ok = hours > 0 and delivery == "sent"
         note = ("EXPIRED; " if hours <= 0 else "") + "reminded: " + str(delivery)
     else:
-        out_dir, fixtures, bad, missing = run_all(creds, providers, served, projects)
+        out_dir, fixtures, bad, missing, graced = run_all(creds, providers, served, projects)
         state.update(last_run_at=now, last_run_for=earliest, last_dir=str(out_dir))
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps(state, indent=2))
@@ -460,7 +514,8 @@ def main(force=False):
         from capability_admission import ADVISORY_NOTE
         delivery = notify(msg + " " + ADVISORY_NOTE)
         ok = ok and delivery == "sent"
-        note = ("EXPIRED; " if expired else "") + "ran %d fixtures, %d gate failures; packet %s; telegram %s" % (fixtures, bad, out_dir.name, delivery)
+        note = ("EXPIRED; " if expired else "") + "ran %d fixtures, %d gate failures; %d record(s) grace-eligible; packet %s; telegram %s" % (
+            fixtures, bad, graced, out_dir.name, delivery)
     note = answer_note + "; " + note
     log(note)
     return ok and answer_ok, note

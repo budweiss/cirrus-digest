@@ -446,6 +446,18 @@ def review_packet(path, registry, due_before, reviewer=model_review):
     return approved, hoa, held, details
 
 
+def revoke_defects(details, run=None):
+    """P3: a confirmed defect ends the review, so it ends the grace on both boxes."""
+    import approval_grace
+    shas = sorted({d["record_sha256"] for d in details if d.get("status") == "confirmed_defect"})
+    if not shas:
+        return []
+    approval_grace.revoke(shas, path=renewal.REGISTRY.with_name("approval-grace.json"))
+    (run or command)(["ssh", "-o", "BatchMode=yes", "cumulus1", "/home/buddy/cirrus-digest/.venv/bin/python",
+                      "/home/buddy/cirrus-digest/approval_grace.py", "revoke"] + shas, "revoke CUMULUS grace")
+    return shas
+
+
 def write_target(source, records, hoa):
     target = source.with_name(source.name + "-auto-" + datetime.now().strftime("%Y%m%d%H%M%S"))
     if target.exists():
@@ -503,6 +515,8 @@ def run_once(reviewer=model_review, apply=True):
         # A broken reviewer cannot prevent independent evidence adjudication.
         reviewer = lambda *_: {"verdict": "unsure", "issue_type": "other",
                                "reason": "reviewer control unavailable or failed"}
+    if apply:
+        renewal.sync_cumulus_grace()
     name = remote_packet_name()
     packets = []
     if name:
@@ -539,6 +553,8 @@ def run_once(reviewer=model_review, apply=True):
         audit.write_text(json.dumps({"host": host, "details": details,
                                      "approved": len(records), "held": held}, indent=2))
         audit.chmod(0o600)
+        if apply:
+            revoke_defects(details)
         if not records and not hoa:
             continue
         if not apply:

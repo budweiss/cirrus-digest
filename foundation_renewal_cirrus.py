@@ -24,6 +24,8 @@ if __name__ == "__main__":
     if a == ["--plan"]:
         R.plan(); sys.exit(0)
     ok, note = R.main(force=a == ["--force"])
+    # P3 (S530): adopt CUMULUS's cloud grace entries; CIRRUS never tests cloud.
+    note += "; %d cloud grace entr(ies) from CUMULUS" % R.sync_cumulus_grace()
     try:
         import job_status
         job_status.record("foundationrenewal", ok, note[:300])

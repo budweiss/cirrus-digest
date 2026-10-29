@@ -138,6 +138,8 @@ class WorkflowTests(MemoryTests):
             run.assert_called_once_with("ollama")
             install.assert_not_called()
         self.assertEqual(json.loads(path.read_text())["evaluations"][0], record)
+        # S530 (T80): the P3 grace write follows ROOT, never the live config.
+        self.assertTrue((config / "approval-grace.json").exists())
 
     def test_local_first_and_independent_review(self):
         model = FakeModels([("ollama", output()), ("ollama", output())])

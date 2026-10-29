@@ -24,11 +24,13 @@ def prompt_digest(system):
     return hashlib.sha256(system.encode('utf-8')).hexdigest()
 
 
-def candidates(evaluations, health, *, task, capability, system, contract_sha256, now=None):
+def candidates(evaluations, health, *, task, capability, system, contract_sha256, now=None, grace=None):
     """Return eligible records; absent or malformed evidence fails closed.
 
     Review windows span at most 30 days. Business ideation and SNOW treat
-    expiry as advisory; explicit revocation and every other gate remain. Health must
+    expiry as advisory; explicit revocation and every other gate remain. Any
+    other expired record runs only inside its P3 grace (approval_grace.py:
+    72 h, fresh mechanically passing renewal fixtures). Health must
     identify the same model and be at most five minutes old. Context capacity
     is the lower of the evaluated and observed usable capacities. The caller
     hashes its versioned parser/schema/scoring contract; any change requires
@@ -74,8 +76,14 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
         if not (number(evaluated) and number(expires) and 0 <= evaluated <= now and evaluated < expires <= evaluated + 30*86400):
             continue
         overdue = now >= expires
+        on_grace = False
         if overdue and not expiry_is_advisory(task):
-            continue
+            import approval_grace
+            if grace is None:
+                grace = approval_grace.load()
+            if not approval_grace.active(row, now, grace):
+                continue
+            on_grace = True
         quality, capacity = row.get('quality'), row.get('usable_input_tokens')
         if not number(quality) or not 0 <= quality <= 1 or type(capacity) is not int or capacity <= 0:
             continue
@@ -86,7 +94,11 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
             or state.get('location') != location or not number(checked) or not 0 <= now-checked <= 300
             or type(observed_capacity) is not int or observed_capacity <= 0):
             continue
-        if overdue:
+        if on_grace:
+            logging.getLogger(__name__).warning(
+                '%s approval for %s/%s expired; running on its 72-hour grace while the renewal '
+                'review is pending (fresh fixtures passed every mechanical gate).', task, provider, model)
+        elif overdue:
             warning = ('Business ideation quality review is overdue: continuing internal brainstorming; '
                        'review flagged concerns before acting on ideas. No quality approval was renewed.'
                        if task == 'business-idea-ideate' else

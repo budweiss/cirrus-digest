@@ -125,6 +125,42 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(admission.candidates(self.e, self.h, task=task,
                     capability='extract', system='system', contract_sha256='a'*64, now=1000), [])
 
+    def grace_for(self, row, tested_at=995):
+        import approval_grace
+        return {'entries': {approval_grace.record_sha(row): {'tested_at': tested_at}}, 'revoked': []}
+
+    def test_p3_grace_admits_an_expired_record_with_fresh_passing_fixtures(self):
+        self.e[0]['expires_at'] = 1000
+        grace = self.grace_for(self.e[0])
+        with self.assertLogs('capability_admission', level='WARNING') as log:
+            admitted = admission.candidates(self.e, self.h, task='t', capability='extract', system='system',
+                                            contract_sha256='a'*64, now=1000, grace=grace)
+        self.assertEqual(len(admitted), 1)
+        self.assertIn('72-hour grace', log.output[0])
+        self.assertEqual(self.e[0]['expires_at'], 1000)
+        self.assertEqual(admission.candidates(self.e, self.h, task='t', capability='extract', system='system',
+                                              contract_sha256='a'*64, now=1000, grace={'entries': {}, 'revoked': []}), [])
+
+    def test_p3_grace_ends_at_72_hours_and_keeps_every_other_gate(self):
+        self.e[0]['expires_at'] = 1000
+        baseline = copy.deepcopy(self.e)
+        grace = self.grace_for(self.e[0])
+        late = 1000 + 72 * 3600
+        self.h[0]['checked_at'] = late
+        self.assertEqual(admission.candidates(self.e, self.h, task='t', capability='extract', system='system',
+                                              contract_sha256='a'*64, now=late, grace=grace), [])
+        self.h[0]['checked_at'] = 999
+        for field, value in [('approved', False), ('contract_sha256', 'b'*64), ('prompt_sha256', 'b'*64),
+                             ('evidence_id', ''), ('model', 'other')]:
+            with self.subTest(field=field):
+                self.e = copy.deepcopy(baseline); self.e[0][field] = value
+                self.assertEqual(admission.candidates(self.e, self.h, task='t', capability='extract',
+                    system='system', contract_sha256='a'*64, now=1000, grace=self.grace_for(self.e[0])), [])
+        self.e = baseline
+        self.h[0]['healthy'] = False
+        self.assertEqual(admission.candidates(self.e, self.h, task='t', capability='extract', system='system',
+                                              contract_sha256='a'*64, now=1000, grace=grace), [])
+
     def test_business_dispatch_preserves_privacy_and_budget_arguments(self):
         self.e[0].update(task='business-idea-ideate', expires_at=1000)
         with self.assertLogs('capability_admission', level='WARNING'):

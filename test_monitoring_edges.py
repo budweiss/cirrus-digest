@@ -56,7 +56,7 @@ class MonitoringEdges(unittest.TestCase):
                     with self.subTest(action=action,expiry=expiry,count=count,delivery=delivery,bad=bad,missing=missing), \
                          patch.object(renewal,'decide',return_value=action),patch.object(renewal,'earliest_expiry',return_value=expiry), \
                          patch.object(renewal,'notify',return_value=delivery) as notify, \
-                         patch.object(renewal,'run_all',return_value=(root,count,bad,missing)) as run:
+                         patch.object(renewal,'run_all',return_value=(root,count,bad,missing,0)) as run:
                         self.assertEqual(renewal.main()[0],expected)
                         if action in ('none','wait'):notify.assert_not_called();run.assert_not_called()
 

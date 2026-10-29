@@ -18,7 +18,8 @@ import llm_providers as lp
 ROOT = Path(__file__).resolve().parent
 CONTRACT = ("answer_workflow.py", "conversation_memory.py", "bot_workflow.py",
             "capability_dispatch.py", "capability_admission.py", "answer_workflow_eval.py",
-            "inbox_evidence.py", "answer_attempts.py", "llm_providers.py", "answer_workflow_cli.py", "workflow_mail_sources.py")
+            "inbox_evidence.py", "answer_attempts.py", "llm_providers.py", "answer_workflow_cli.py", "workflow_mail_sources.py",
+            "approval_grace.py")
 MAX_TOKENS = 1800
 
 
@@ -167,6 +168,20 @@ def install(providers):
     return True
 
 
+def mechanical(record, evidence):
+    """P3 grace gates on the newest public evidence: complete, same model and
+    approved code, and every row parsed, identified and finished without error."""
+    cases = dict(fixtures())
+    rows = evidence.get("rows", [])
+    return (evidence.get("model") == record.get("model") and type(evidence.get("started")) in (int, float)
+            and evidence.get("contract_sha256") == record.get("contract_sha256")
+            and sorted(r.get("case") for r in rows) == sorted(cases)
+            and all(not r.get("error_type") and r.get("actual_model") == record.get("model")
+                    and r.get("finish_reason") not in ("length", "max_tokens")
+                    and aw.parse(r.get("raw", ""), cases[r["case"]]["sources"]) is not None
+                    for r in rows))
+
+
 def renewal_check():
     """Due check inside the existing daily renewal job. Never self-approve."""
     path = ROOT / "config/answer-workflow-capabilities.json"
@@ -189,6 +204,15 @@ def renewal_check():
             fresh = run(record["id"]) and fresh
         else:
             fresh = all(row.get("passed") for row in evidence.get("rows", [])) and fresh
+    import approval_grace
+    entries = {}
+    for record in records:
+        receipt = evidence_path(record["id"])
+        evidence = json.loads(receipt.read_text()) if receipt.exists() else {}
+        if record.get("approved") is True and mechanical(record, evidence):
+            entries[approval_grace.record_sha(record)] = {"label": "answer-workflow/" + record["id"],
+                "provider": record["id"], "tested_at": evidence["started"]}
+    approval_grace.replace_source("answer", entries, path=ROOT / "config/approval-grace.json")
     # Approval remains a reviewing session's explicit install step. The existing
     # job ledger/alert reports this condition before the route expires.
     return False, ("answer workflow renewal needs review; public fixtures " +
@@ -236,6 +260,10 @@ def check():
     now = time.time()
     fresh = [r for r in data["evaluations"] if r["approved"] and now < r["expires_at"]]
     print("Fresh qualified routes:", ",".join(r["id"] for r in fresh))
+    import approval_grace
+    store = approval_grace.load(ROOT / "config/approval-grace.json")
+    grace = [r["id"] for r in data["evaluations"] if r["approved"] and approval_grace.active(r, now, store)]
+    print("On 72-hour grace:", ",".join(grace) or "none")
     print("Phone enabled:", (ROOT / "config/answer-workflow-phone.enabled").exists())
     print("Intake enabled:", (ROOT / "config/answer-workflow-intake.enabled").exists())
     return any(r["location"] == "local" for r in fresh)
