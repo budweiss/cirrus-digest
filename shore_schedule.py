@@ -421,10 +421,13 @@ def main():
     try:result=worker(a.worker) if a.worker else run(a.live)
     except Exception as exc:
         result={'status':'failed','error_type':type(exc).__name__}
+        # S533: name the gate that stopped it (an identifier label from this file,
+        # e.g. shore_header); free text never reaches the ledger.
+        if re.fullmatch(r'[a-z][a-z0-9_]{2,59}',str(exc)):result['error_code']=str(exc)
         if a.live and not a.worker:
             from vendor_mail_watch import telegram
             import job_status
-            job_status.record('shoredigest',False,result['error_type'])
+            job_status.record('shoredigest',False,result['error_type']+(': '+result['error_code'] if 'error_code' in result else ''))
             result['telegram_confirmed']=telegram('Jersey Shore review needs attention. Check its saved sources and email receipt before any retry.')
     print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False else 0
 

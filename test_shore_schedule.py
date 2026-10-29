@@ -93,4 +93,15 @@ class ShoreChecks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'shore_delivery_outcome_uncertain'):S.worker('live-send')
             send.assert_not_called()
 
+    def test_failure_note_names_the_gate_but_never_free_text(self):
+        # S533: the 10-27 run recorded only "ValueError".
+        for error,note in [(ValueError('shore_header'),'ValueError: shore_header'),
+                           (ValueError('county_pdf_amount_alignment'),'ValueError: county_pdf_amount_alignment'),
+                           (ValueError('Expecting value: line 1 column 1 (char 0)'),'ValueError'),
+                           (KeyError('price'),'KeyError'),(RuntimeError('Private Street 12 sold'),'RuntimeError')]:
+            with self.subTest(note=note),patch.object(S,'run',side_effect=error),patch.object(S.sys,'argv',['shore_schedule.py','--live']), \
+                 patch('job_status.record') as record,patch('vendor_mail_watch.telegram',return_value=True),patch('builtins.print'):
+                self.assertEqual(S.main(),1)
+                record.assert_called_once_with('shoredigest',False,note)
+
 if __name__=='__main__':unittest.main()
