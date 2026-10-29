@@ -9,10 +9,11 @@ import logging
 import time
 
 
-# Buddy, S441/S524: these two task-specific review dates warn without stopping
+# Buddy, S441/S524: these task-specific review dates warn without stopping
 # the job. This is application policy, never a model-provided caller option.
-ADVISORY_TASKS = ('business-idea-ideate', 'billsnow')
-ADVISORY_NOTE = ('Business ideation and SNOW quality review dates are advisory; '
+# S537 (Buddy: Bill's process "should run on its own"): Bill's HOA research too.
+ADVISORY_TASKS = ('business-idea-ideate', 'billsnow', 'hoa-leads')
+ADVISORY_NOTE = ('Business ideation, SNOW and Bill HOA quality review dates are advisory; '
                  'other client-facing approval expiry checks remain strict.')
 
 
@@ -102,8 +103,9 @@ def candidates(evaluations, health, *, task, capability, system, contract_sha256
             warning = ('Business ideation quality review is overdue: continuing internal brainstorming; '
                        'review flagged concerns before acting on ideas. No quality approval was renewed.'
                        if task == 'business-idea-ideate' else
-                       'SNOW quality review is overdue: continuing with the previously approved model; '
-                       'review flagged concerns before delivery. No quality approval was renewed.')
+                       '%s quality review is overdue: continuing with the previously approved model; '
+                       'review flagged concerns before delivery. No quality approval was renewed.'
+                       % ('SNOW' if task == 'billsnow' else 'Bill HOA research'))
             logging.getLogger(__name__).warning(warning)
         seen.add(key)
         admitted.append({'id':provider, 'model':model, 'enabled':True, 'healthy':True,

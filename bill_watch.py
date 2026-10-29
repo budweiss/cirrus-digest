@@ -6,9 +6,12 @@ SNOW outlook frozen since July, two Mondays refused by expired approvals, and
 an HOA digest repeating August articles -- each visible in a ledger nobody was
 asked to read. Buddy: "Yes, start part 1".
 
-  reportcard  Mon 12:00 -- one Telegram to Buddy: for each of Bill's three
-              Monday emails, SENT / QUIET / FAILED / NOT RUN, plus whether the
-              content moved (SNOW's snowfall estimate and since when).
+  reportcard  Mon 12:00 -- for each of Bill's three Monday emails, SENT / QUIET /
+              FAILED / NOT RUN, plus whether the content moved (SNOW's snowfall
+              estimate and since when). A failed leads or HOA email is rerun once
+              automatically (SNOW was already retried at 11:00 by snow_guard).
+              Buddy hears only about what is STILL failing after that (Buddy,
+              10-29: "only reach out to me if there is a major stopping point").
   approvals   daily 12:00 -- Telegram Buddy when a route's approvals all lapse
               within 24 h (after the 04:40 tests and 10:00 auto-review have had
               their chance) or have already lapsed. Advisory-date tasks
@@ -86,21 +89,45 @@ def lapsing(projects, now, advisory, window=24 * 3600):
     return out
 
 
+RERUN = {"billnewdev": ["newdev/bill_newdev_weekly.py"],
+         "entitykbdigest": ["entity_kb_weekly_digest.py", "--client", "bill"]}
+
+
+def card(evaluate, rerun, notify, today, monday=True):
+    """evaluate(name) -> (ok, line); rerun(name) -> exit code. Each failed job
+    with a rerun is retried once (Mondays only: a hand-run on another day must
+    not email Bill), then re-read. Notifies only about jobs still failing."""
+    lines, bad = [], []
+    for name, _label, _stamp in BILL_JOBS:
+        ok, line = evaluate(name)
+        if not ok and monday and name in RERUN:
+            rc = rerun(name)
+            ok, line = evaluate(name)
+            line += f" [auto-rerun exit {rc}]"
+        lines.append(line)
+        if not ok:
+            bad.append(line)
+    if bad:
+        notify(f"Bill's Monday emails need a look ({today}); automatic retry did not fix:\n"
+               + "\n".join(bad))
+    return not bad, lines
+
+
 def reportcard(notify, today=None):
     import job_status
     import send_guard
     today = today or datetime.now().strftime("%Y-%m-%d")
-    try:
-        ledger = json.loads(job_status.STATUS_PATH.read_text())
-    except Exception:
-        ledger = {}
-    lines, all_ok = [], True
-    for name, label, has_stamp in BILL_JOBS:
+    labels = {n: (lab, st) for n, lab, st in BILL_JOBS}
+
+    def evaluate(name):
+        try:
+            ledger = json.loads(job_status.STATUS_PATH.read_text())
+        except Exception:
+            ledger = {}
         extra = ""
         if name == "billsnow":
-            out = ROOT / "snowbrief/out"
             texts = [(p.stem[-10:], p.read_text(errors="replace"))
-                     for p in sorted(out.glob("SNOW-2026-27-Outlook-Refresh-*.md"))]
+                     for p in sorted((ROOT / "snowbrief/out").glob("SNOW-2026-27-Outlook-Refresh-*.md"))]
             est, since = estimate_history(texts)
             if est:
                 extra = f"; snowfall estimate ~{est}\" (unchanged since {since})"
@@ -108,15 +135,17 @@ def reportcard(notify, today=None):
             log = subprocess.run(["journalctl", "-u", "entity-kb-weekly-digest", "--since", today,
                                   "--no-pager", "-o", "cat"], capture_output=True, text=True).stdout
             if "'attached': False" in log:
-                extra = "; WORKBOOK MISSING from the email"
-                all_ok = False
-        ok, line = job_line(label, ledger.get(name), has_stamp and send_guard.already_sent_today(name),
-                            today, extra)
-        all_ok = all_ok and ok
-        lines.append(line)
-    notify(f"Bill's Monday report card {today}:\n" + "\n".join(lines))
+                extra = "; workbook missing from the email"
+        label, has_stamp = labels[name]
+        return job_line(label, ledger.get(name), has_stamp and send_guard.already_sent_today(name),
+                        today, extra)
+
+    def rerun(name):
+        return subprocess.run([sys.executable, *RERUN[name]], cwd=str(ROOT), timeout=1700).returncode
+
+    good, lines = card(evaluate, rerun, notify, today, monday=datetime.now().weekday() == 0)
     print("\n".join(lines))
-    return all_ok
+    return good
 
 
 def approvals(notify, now=None):
@@ -169,6 +198,26 @@ def selftest():
     ck("advisory billsnow and disabled routes are skipped", "foundation:billsnow" not in hits and "foundation:old" not in hits)
     ck("a healthy route is silent", "foundation:pedagogy-topic" not in hits)
 
+    # S537: retry first, tell Buddy only what is still broken.
+    states = {"billsnow": [True], "billnewdev": [False, True], "entitykbdigest": [False, False]}
+    reruns, sent = [], []
+
+    def ev(name):
+        seq = states[name]
+        return (seq.pop(0) if len(seq) > 1 else seq[0]), name
+
+    good, lines = card(ev, lambda n: reruns.append(n) or 0, sent.append, t)
+    ck("a failed job is rerun once; SNOW is not rerun here", reruns == ["billnewdev", "entitykbdigest"])
+    ck("a rerun that fixes it is not reported to Buddy", len(sent) == 1 and "billnewdev" not in sent[0])
+    ck("a job still failing after its rerun is reported", "entitykbdigest" in sent[0] and good is False)
+    reruns.clear(); sent.clear()
+    good, _ = card(lambda n: (True, n), lambda n: reruns.append(n) or 0, sent.append, t)
+    ck("all delivered -> silent, nothing rerun", good and not sent and not reruns)
+    states = {"billsnow": [True], "billnewdev": [False], "entitykbdigest": [True]}
+    reruns.clear(); sent.clear()
+    card(ev, lambda n: reruns.append(n) or 0, sent.append, t, monday=False)
+    ck("off-Monday hand-run never reruns a Bill email", reruns == [] and len(sent) == 1)
+
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 
@@ -181,7 +230,7 @@ def main():
     import job_status
     if mode == "reportcard":
         good = reportcard(send_telegram)
-        job_status.record("billreportcard", True, "all delivered" if good else "needs a look")
+        job_status.record("billreportcard", True, "all delivered" if good else "still failing after retry")
         return 0
     if mode == "approvals":
         hits = approvals(send_telegram)

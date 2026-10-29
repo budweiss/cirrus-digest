@@ -115,8 +115,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(admission.candidates(self.e,self.h,task='billsnow',
             capability='extract',system='system',contract_sha256='a'*64,now=1000),[])
 
+    def test_bill_hoa_date_is_advisory_but_not_its_local_screen(self):
+        # S537: Bill's HOA research keeps running past a lapsed review date.
+        self.e[0].update(task='hoa-leads', expires_at=1000)
+        with self.assertLogs('capability_admission', level='WARNING') as log:
+            admitted = admission.candidates(self.e, self.h, task='hoa-leads',
+                capability='extract', system='system', contract_sha256='a'*64, now=1000)
+        self.assertEqual([r['id'] for r in admitted], ['ollama'])
+        self.assertTrue(any('Bill HOA research quality review is overdue' in s for s in log.output))
+        self.e[0]['approved'] = False
+        self.assertEqual(admission.candidates(self.e, self.h, task='hoa-leads',
+            capability='extract', system='system', contract_sha256='a'*64, now=1000), [])
+
     def test_other_tasks_cannot_use_advisory_expiry(self):
-        for task in ('halftime:events', 'halftime:catalogue:variety', 'snow',
+        for task in ('halftime:events', 'halftime:catalogue:variety', 'snow', 'hoa-leads:screen-local',
                      'billnewdev', 'alopecia-brief', 'billsnow:other',
                      'business-idea-feed-discovery', 'business-idea-ideate:client', 't'):
             with self.subTest(task=task):
