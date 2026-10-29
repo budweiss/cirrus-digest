@@ -72,6 +72,12 @@ LOG_PATH     = PROJECT_DIR / "logs/intake.log"
 FAST_POLL_STATE_PATH = PROJECT_DIR / "config/intake_fast_poll_until.txt"
 FAST_POLL_WINDOW_SEC = 15 * 60
 
+# S539: Telegram notices that could not be delivered, oldest first. The
+# summary notice is how Buddy learns an answer was sent or HELD; its result
+# used to be ignored, so a failed send left one log line and a green run.
+NOTICE_OUTBOX_PATH = INTAKE_DIR / "undelivered-notices.json"
+NOTICE_OUTBOX_MAX = 50
+
 # S63: env-var override so a second intake instance (CUMULUS, watching
 # cumulus@cumulustask.com) can run the same script against a different
 # sources.json account label. Default unchanged so CIRRUS's existing
@@ -535,6 +541,54 @@ def telegram(text: str, creds: dict) -> bool:
         except Exception as e2:
             log(f"telegram send failed: {e2}")
             return False
+
+
+def _notify(text, creds: dict) -> int:
+    """Send `text` (None = only retry), oldest undelivered notice first.
+
+    A notice that fails stays in NOTICE_OUTBOX_PATH and is retried on every
+    pass, quiet ones included. After the first failure the rest are kept
+    without trying, so a Telegram outage costs one timeout per pass. Returns
+    how many notices are still undelivered; run() reports that in job_status.
+    """
+    pending = []
+    try:
+        if NOTICE_OUTBOX_PATH.exists():
+            pending = json.loads(NOTICE_OUTBOX_PATH.read_text())
+        if not isinstance(pending, list):
+            raise ValueError("outbox is not a list")
+    except (OSError, ValueError) as e:
+        log(f"⚠️ undelivered-notice outbox unreadable ({e}); set aside, starting fresh")
+        try:
+            NOTICE_OUTBOX_PATH.rename(NOTICE_OUTBOX_PATH.with_suffix(".unreadable"))
+        except OSError:
+            pass
+        pending = []
+    if text:
+        pending.append({"queued": datetime.now().strftime("%Y-%m-%d %H:%M"), "text": text})
+    if not pending:
+        return 0
+    kept = []
+    for i, item in enumerate(pending):
+        body = item["text"] if i == len(pending) - 1 and text else (
+            f"(delayed notice from {item['queued']})\n" + item["text"])
+        if kept or not telegram(body, creds):
+            kept.append(item)
+    dropped = max(0, len(kept) - NOTICE_OUTBOX_MAX)
+    kept = kept[dropped:]
+    try:
+        NOTICE_OUTBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = NOTICE_OUTBOX_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(kept, ensure_ascii=False))
+        tmp.replace(NOTICE_OUTBOX_PATH)
+    except OSError as e:
+        log(f"⚠️ could not save the undelivered-notice outbox: {e}")
+    if kept:
+        log(f"⚠️ {len(kept)} Telegram notice(s) undelivered; retrying next pass"
+            + (f" ({dropped} oldest dropped at the cap)" if dropped else ""))
+    elif len(pending) > (1 if text else 0):
+        log(f"delivered {len(pending) - (1 if text else 0)} delayed Telegram notice(s)")
+    return len(kept)
 
 
 # ── IMAP scan ─────────────────────────────────────────────────────────────────
@@ -1065,7 +1119,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if dry_run:
             log("DRY RUN — would telegram:\n" + "\n".join(blines))
         else:
-            telegram("\n".join(blines), creds)
+            _notify("\n".join(blines), creds)
 
     # Prefix-gate alert (2026-08-14): require_prefix exists so a sender whose
     # mail ALSO feeds elsewhere (e.g. Buddy's own research forwards) doesn't
@@ -1081,7 +1135,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if dry_run:
             log("DRY RUN — would telegram:\n" + "\n".join(plines))
         else:
-            telegram("\n".join(plines), creds)
+            _notify("\n".join(plines), creds)
 
     # S65: a real request came in -- tell the loop wrapper to poll fast for a
     # while, so a client corresponding back-and-forth doesn't wait a full
@@ -1095,6 +1149,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         except Exception as e:
             log(f"  fast-poll state write failed (non-fatal): {e}")
 
+    undelivered = 0
     if processed or limited:
         lines = [f"📥 *Intake*: {len(processed)} new request(s)"]
         for r in processed:
@@ -1128,11 +1183,16 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if dry_run:
             log("DRY RUN — would telegram:\n" + "\n".join(lines))
         else:
-            telegram("\n".join(lines), creds)
+            undelivered = _notify("\n".join(lines), creds)
     else:
         log("no new intake requests")
-    _record_status(True, f"{len(processed)} processed, {len(limited)} rate-limited, "
-                         f"{len(prefix_skipped)} prefix-skipped")
+        if not dry_run:
+            undelivered = _notify(None, creds)
+    note = (f"{len(processed)} processed, {len(limited)} rate-limited, "
+            f"{len(prefix_skipped)} prefix-skipped")
+    if undelivered:
+        note += f"; {undelivered} Telegram notice(s) undelivered, retrying each pass"
+    _record_status(not undelivered, note)
     return 0
 
 
