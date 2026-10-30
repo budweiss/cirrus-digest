@@ -61,6 +61,38 @@ class ScheduleChecks(unittest.TestCase):
         self.assertEqual(result['decision_review'],'failed_media_worker_busy')
         record.assert_called_once_with('am',False,'status=sent decision_review=failed_media_worker_busy')
 
+    def _dispatch_pm(self,td,value,prior=None):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        with patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout=json.dumps(value))), \
+             patch.object(S,'record_status') as record,patch('vendor_mail_watch.telegram',return_value=True) as notice:
+            if prior:
+                root=Path(td)/'private/stock-schedule';root.mkdir(parents=True);(root/'pm-live.json').write_text(json.dumps(prior))
+            result=S.dispatch('pm',live=True)
+        return result,record,notice
+
+    def test_one_review_hold_on_a_delivered_report_is_not_an_alert(self):
+        value={'status':'sent','decision_review':'failed_paper_decision_review_failed','job':'pm','date':'2026-10-29'}
+        with tempfile.TemporaryDirectory() as td:
+            result,record,notice=self._dispatch_pm(td,value,{'date':'2026-10-28','decision_review':'passed'})
+        self.assertTrue(result['held_once'])
+        record.assert_called_once_with('pm',True,'status=sent decision_review=failed_paper_decision_review_failed')
+        self.assertIn('held',notice.call_args[0][0])
+
+    def test_a_second_review_hold_in_a_row_alerts(self):
+        value={'status':'sent','decision_review':'failed_paper_decision_review_failed','job':'pm','date':'2026-10-29'}
+        with tempfile.TemporaryDirectory() as td:
+            result,record,notice=self._dispatch_pm(td,value,{'date':'2026-10-28','decision_review':'failed_paper_decision_review_failed'})
+        self.assertNotIn('held_once',result)
+        record.assert_called_once_with('pm',False,'status=sent decision_review=failed_paper_decision_review_failed')
+
+    def test_failed_run_records_its_error_not_a_review_placeholder(self):
+        with tempfile.TemporaryDirectory() as td:
+            _,record,_=self._dispatch_pm(td,{'status':'failed','job':'pm','error_type':'source_adoption_review_failed'})
+        record.assert_called_once_with('pm',False,'status=failed error=source_adoption_review_failed')
+
     def test_every_scheduled_job_records_its_own_monitor_key(self):
         with patch('job_status.record') as record:
             for job in S.JOBS:

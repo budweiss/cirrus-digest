@@ -748,12 +748,23 @@ def dispatch(job,live=False):
         review_failed=result.get('decision_review','').startswith('failed')
         if proc.returncode and not (result.get('status') in ('sent','already_sent') and review_failed):
             result['status']='failed'
-        ok=result.get('status') in ('sent','already_sent','holiday','preview','complete') and not result.get('decision_review','').startswith('failed')
+        # S542: a delivered report whose review held that day's paper decisions is the
+        # gate working. It alerts when the next run of this job is held too.
+        prior={}
+        if live:
+            try:prior=json.loads((root/(job+'-live.json')).read_text())
+            except (OSError,ValueError):pass
+        repeated=review_failed and prior.get('date')!=result.get('date') and str(prior.get('decision_review','')).startswith('failed')
+        # Only the reviewers' verdict counts; a worker or receipt failure always alerts.
+        held_once=result.get('decision_review')=='failed_paper_decision_review_failed' and live and result.get('status') in ('sent','already_sent') and not repeated
+        if held_once:result['held_once']=True
+        ok=result.get('status') in ('sent','already_sent','holiday','preview','complete') and (not review_failed or held_once)
         if live:
             record_status(job,ok,'status='+result.get('status','unknown')+
-                          ' decision_review='+result.get('decision_review','not_reported'))
+                          (' error='+result['error_type'] if result.get('error_type') else
+                           ' decision_review='+result.get('decision_review','not_reported')))
             if result.get('status') not in ('already_sent','holiday'):
-                result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))
+                result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.')+(" Review held today's paper decisions." if held_once else '') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))
         atomic(root/(job+('-live' if live else '-preview')+'.json'),result)
         return result
 
@@ -769,6 +780,6 @@ def main():
             import job_status
             record_status(a.job,False,result['error_type'])
             result['telegram_confirmed']=telegram('Stock Pickers '+a.job+' could not complete its server run. Check the saved receipt before retrying; no blind resend.')
-    print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False or result.get('decision_review','').startswith('failed') else 0
+    print(json.dumps(result));return 1 if result.get('status')=='failed' or result.get('telegram_confirmed') is False or (result.get('decision_review','').startswith('failed') and not result.get('held_once')) else 0
 
 if __name__=='__main__':raise SystemExit(main())

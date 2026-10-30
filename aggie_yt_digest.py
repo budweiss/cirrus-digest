@@ -15,7 +15,7 @@ import re
 import sys
 import time
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,9 @@ AGGIE_TO = "weiss.aggie@gmail.com"
 
 NY = ZoneInfo("America/New_York")
 INTRO_SENT_KEY = "intro_sent"
+# S542: collection runs at 00:30, so a video published since then cannot have a
+# summary at 07:10. Only a video still waiting after the next collection is late.
+WAIT_DAYS = 1
 
 
 def log(msg):
@@ -348,9 +351,22 @@ def catchup_sections(channels, by_url, state, cap=6):
     return sections
 
 
+def waiting_normally(published, today=None):
+    """True while the next nightly collection can still reach this video."""
+    try:
+        age = ((today or datetime.now(NY).date()) - date.fromisoformat(published[:10])).days
+    except (TypeError, ValueError):
+        return False
+    return age <= WAIT_DAYS
+
+
 def pick_sections(channels, by_url, state):
-    """Which of Aggie's newest videos have findings and haven't been sent."""
-    sections, pending = [], []
+    """Which of Aggie's newest videos have findings and haven't been sent.
+
+    Returns (sections, pending, late): late names the pending channels that are
+    a real problem, as opposed to a video the next collection will reach.
+    """
+    sections, pending, late = [], [], []
     sent = state.get("sent", {}) or {}
     for ch in channels:
         name = ch.get("name", "?")
@@ -358,9 +374,11 @@ def pick_sections(channels, by_url, state):
             new = newest_video(ch["channel_id"])
         except Exception as exc:
             pending.append(name + ' (feed check failed: ' + type(exc).__name__ + ')')
+            late.append(name)
             continue
         if not new:
             pending.append(name + ' (feed empty)')
+            late.append(name)
             continue
         if (sent.get(name) or {}).get("video_id") == new["video_id"]:
             continue
@@ -371,7 +389,9 @@ def pick_sections(channels, by_url, state):
             reason = "extraction needs retry" if sec and sec.get("extract_error") else "no findings yet"
             pending.append("%s (%s pub %s — %s)"
                            % (name, (new["title"] or "")[:50], new["published"], reason))
-    return sections, pending
+            if not waiting_normally(new["published"]):
+                late.append(name)
+    return sections, pending, late
 
 
 def main(argv=None):
@@ -403,9 +423,9 @@ def work(dry_run, backfill=False):
     by_url = reviewed_summaries()
     if backfill:
         sections = catchup_sections(channels, by_url, state)
-        pending = []
+        pending, late = [], []
     else:
-        sections, pending = pick_sections(channels, by_url, state)
+        sections, pending, late = pick_sections(channels, by_url, state)
     for p in pending:
         log("  waiting for findings: %s" % p)
     now = datetime.now(NY)
@@ -414,9 +434,9 @@ def work(dry_run, backfill=False):
     if not sections:
         log("no reviewed new summaries — no email")
         if not dry_run:
-            job_status.record("aggieyt", not pending,
-                              "no new summaries (%d pending)" % len(pending))
-        return 1 if pending else 0
+            job_status.record("aggieyt", not late,
+                              "no new summaries (%d pending, %d late)" % (len(pending), len(late)))
+        return 1 if late else 0
     body = compose_email(sections, day_label)
     subject = "Your daily YouTube brief — " + day_label
     introductory = not state.get(INTRO_SENT_KEY)
@@ -477,7 +497,7 @@ def work(dry_run, backfill=False):
             newest_vid = max(items)[1]
             sent[name2] = {"video_id": newest_vid, "date": now.strftime("%Y-%m-%d")}
     atomic_json(STATE_PATH, state)
-    job_status.record("aggieyt", not pending, "sent %d section(s); %d pending" % (len(sections), len(pending)))
+    job_status.record("aggieyt", not late, "sent %d section(s); %d pending, %d late" % (len(sections), len(pending), len(late)))
     return 0
 
 
@@ -568,21 +588,36 @@ def selftest() -> int:
             aggie_yt.newest_video = lambda cid: {
                 "video_id": "7jxq5gCd2aY", "title": "t", "published": "2026-10-06",
                 "url": "https://www.youtube.com/watch?v=7jxq5gCd2aY"}
-            secs, pend = aggie_yt.pick_sections(chans, by_url, state)
-            ck("already-sent video is skipped", secs == [] and pend == [])
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
+            ck("already-sent video is skipped", secs == [] and pend == [] and late == [])
             # unseen newest present in findings -> a section
             state = {}
-            secs, pend = aggie_yt.pick_sections(chans, by_url, state)
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
             ck("new video with findings becomes a section",
                len(secs) == 1 and secs[0]["channel"] == "Money On The Move")
             # newest unseen WITHOUT findings -> pending, not silently sent
             aggie_yt.newest_video = lambda cid: {
                 "video_id": "newnew11111", "title": "Brand New", "published": "2026-10-12",
                 "url": "https://www.youtube.com/watch?v=newnew11111"}
-            secs, pend = aggie_yt.pick_sections(chans, by_url, state)
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
             ck("video without findings waits (never fabricated)", secs == [] and len(pend) == 1)
+            ck("an old video still without findings is late", late == ["Money On The Move"])
+            aggie_yt.newest_video = lambda cid: {
+                "video_id": "newnew11111", "title": "Brand New",
+                "published": datetime.now(NY).date().isoformat(),
+                "url": "https://www.youtube.com/watch?v=newnew11111"}
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
+            ck("a video published today is a normal wait, not late", len(pend) == 1 and late == [])
+            def down(cid):
+                raise OSError("feed")
+            aggie_yt.newest_video = down
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
+            ck("a failed feed check is late", len(pend) == 1 and late == ["Money On The Move"])
         finally:
             aggie_yt.newest_video = orig_new
+        ck("two days old is past the wait", not aggie_yt.waiting_normally("2026-10-28", date(2026, 10, 30)))
+        ck("one day old is still the wait", aggie_yt.waiting_normally("2026-10-29", date(2026, 10, 30)))
+        ck("an unreadable date is not a wait", not aggie_yt.waiting_normally("", date(2026, 10, 30)))
         # state round-trip must be atomic-safe (identical json)
         sp = Path(tmp) / "state.json"
         aggie_yt.atomic_json(sp, {"sent": {"a": {}}})

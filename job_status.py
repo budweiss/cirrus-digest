@@ -380,6 +380,26 @@ def record(name, ok, note=""):
                 pass
 
 
+def acknowledge(name, why):
+    """Mark a failed row as handled, for a failure whose evidence has been read.
+
+    S542: a weekly job's failure otherwise re-alerts daily for up to a week after
+    it was dealt with. record() rebuilds the row, so the next run's real result
+    replaces this, and an overdue job still alerts. Returns True if a row was marked.
+    """
+    import fcntl
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(STATUS_PATH) + _LOCK_SUFFIX, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data, _problem = _read_status()
+        row = (data or {}).get(name)
+        if not row or row.get("ok"):
+            return False
+        row["handled"] = why[:160]
+        _write_status_atomic(data)
+    return True
+
+
 def _here():
     """Display name of the node this is running on (CIRRUS/CUMULUS/STRATUS)."""
     try:
@@ -447,6 +467,8 @@ def _row(name, cad_h, rec, now, tag="", declared_since=None):
     age_h = (now - rec.get("epoch", 0)) / 3600.0
     overdue = age_h > cad_h
     good = bool(rec.get("ok")) and not overdue
+    if rec.get("handled") and not rec.get("ok") and not overdue:
+        return f"☑️ {name}{tag}: {rec.get('last_run', '?')[:16]} failed, handled — {rec['handled']}", True
     mark = "✅" if good else "⚠️"
     state = " OVERDUE" if overdue else (" FAILED" if not rec.get("ok") else "")
     # S83: the note used to render ONLY when the row was already bad, so a run
@@ -881,6 +903,26 @@ def selftest():
         print(f"  [{'OK ' if cond else 'FAIL'}] {label}")
         fails += 0 if cond else 1
 
+    # S542: a handled failure stops alerting, but never hides a missed run.
+    _h = {"epoch": now - hr, "ok": False, "handled": "read the receipt", "last_run": "x"}
+    ck("handled failure is not an alert", _row("j", 26, _h, now)[1] is True)
+    ck("handled failure still says it failed", "failed, handled" in _row("j", 26, _h, now)[0])
+    ck("handled but overdue still alerts", _row("j", 26, dict(_h, epoch=now - 27 * hr), now)[1] is False)
+    import tempfile
+    with tempfile.TemporaryDirectory() as _t:
+        _real = globals()["STATUS_PATH"]
+        globals()["STATUS_PATH"] = Path(_t) / "s.json"
+        try:
+            record("j", False, "x")
+            ck("a failed row can be marked handled", acknowledge("j", "why") is True)
+            ck("the mark is stored", _load_local()["j"]["handled"] == "why")
+            record("j", False, "again")
+            ck("the next run replaces the mark", "handled" not in _load_local()["j"])
+            record("j", True, "fine")
+            ck("a healthy row refuses the mark", acknowledge("j", "why") is False)
+            ck("an unknown job refuses the mark", acknowledge("nope", "why") is False)
+        finally:
+            globals()["STATUS_PATH"] = _real
     # S102. Two placement assertions, in both directions. A name in CADENCE_H
     # that runs on CUMULUS but is missing from REMOTE_JOBS reads as "never ran"
     # on CIRRUS forever; a name that runs on BOTH boxes must NOT be in it, or
@@ -1196,4 +1238,6 @@ if __name__ == "__main__":
     # unknown argument exited 0 in silence -- the trap check_can_fail met here.
     if sys.argv[1:] in (["selftest"], ["--selftest"]):
         sys.exit(selftest())
-    sys.exit("usage: job_status.py selftest|--selftest  (a library module; no other CLI)")
+    if len(sys.argv) == 4 and sys.argv[1] == "--handled" and sys.argv[3].strip():
+        sys.exit(0 if acknowledge(sys.argv[2], sys.argv[3].strip()) else "no failed row: " + sys.argv[2])
+    sys.exit('usage: job_status.py selftest|--selftest | --handled JOB "why"')

@@ -101,6 +101,15 @@ def earliest_expiry(projects, providers, served):
     return min(ex) if ex else None
 
 
+def strict_expiry(projects, providers, served):
+    """Earliest expiry that actually refuses a route. Advisory dates (S524) only
+    warn, so a record held on purpose must not report EXPIRED every day (S542)."""
+    from capability_admission import expiry_is_advisory
+    ex = [e.get("expires_at", 0) for key, *_, e in live_records(projects, providers, served)
+          if not expiry_is_advisory(key.split(":", 1)[-1])]
+    return min(ex) if ex else None
+
+
 def decide(now, earliest, state):
     """wait / remind / run / none. Pure, so the selftest can pin it."""
     if earliest is None:
@@ -485,8 +494,10 @@ def main(force=False):
     now = time.time()
     action = "run" if force else decide(now, earliest, state)
     host = "CUMULUS" if on_cumulus() else "CIRRUS"
-    when = datetime.fromtimestamp(earliest).strftime("%a %b %d %H:%M") if earliest else "-"
-    hours = (earliest - now) / 3600 if earliest else 0
+    # decide() keeps using every record, so advisory ones still get fresh evidence.
+    strict = strict_expiry(projects, providers, served) or earliest
+    when = datetime.fromtimestamp(strict).strftime("%a %b %d %H:%M") if strict else "-"
+    hours = (strict - now) / 3600 if strict else 0
     ok, note = True, ""
     if action == "none":
         note = "no live approvals for this box"
@@ -694,6 +705,12 @@ def selftest():
     ck("live: CIRRUS (ollama only) owns no cloud record", not list(live_records(projects, ("ollama",), {})))
     ck("expiry: earliest live one (30 h), not the lapsing qwen (2 h)",
        earliest_expiry(projects, ("anthropic", "kimi", "vllm"), served) == now + 30 * 3600)
+    mixed = {"foundation:business-idea-ideate": {"enabled": True, "evaluations": [
+                 {"id": "kimi", "approved": True, "expires_at": now - 99}]},
+             "foundation:pedagogy-topic": {"enabled": True, "evaluations": [
+                 {"id": "kimi", "approved": True, "expires_at": now + 99}]}}
+    ck("strict expiry ignores an advisory record, earliest does not",
+       strict_expiry(mixed, ("kimi",), {}) == now + 99 and earliest_expiry(mixed, ("kimi",), {}) == now - 99)
     ck("decide: nothing live -> none", decide(now, None, {}) == "none")
     ck("decide: > 72 h away -> wait", decide(now, now + 73 * 3600, {}) == "wait")
     ck("decide: within 72 h, no packet -> run", decide(now, now + 70 * 3600, {}) == "run")

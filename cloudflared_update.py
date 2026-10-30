@@ -221,6 +221,9 @@ def run(ops, state, check=False, force=False, wait=90):
 
     prev = ops.work / "cloudflared.prev"
     real = os.path.realpath(ops.box["binary"])
+    # S542: brew's binary is read-only and copy2 keeps the mode, so the copy
+    # kept by the last upgrade refused this overwrite and blocked every upgrade.
+    prev.unlink(missing_ok=True)
     shutil.copy2(real, prev)
     rec["from"], rec["to"] = binary, target
     restarted = False
@@ -303,7 +306,9 @@ def main(argv):
         import job_status
         job_status.record("cloudflaredupdate", ok=(code == 0 and rec.get("result") in
                           {"current", "upgraded", "reinstalled"}),
-                          note=rec.get("result", "unknown"))
+                          note=rec.get("result", "unknown") + (
+                              ": " + rec.get("detail", "").split(":")[0]
+                              if rec.get("result") == "error" else ""))
     return code
 
 
@@ -350,6 +355,13 @@ class Fake:
 def selftest():
     # wait=0 everywhere: a fake that never comes up fails at once, not after 90s.
     cases = []
+    with tempfile.TemporaryDirectory() as t:
+        f = Fake(t)
+        (f.work / "cloudflared.prev").write_text("old")
+        os.chmod(f.work / "cloudflared.prev", 0o555)
+        code, r = run(f, {}, wait=0)
+        cases.append(("read-only kept copy does not block the next upgrade",
+                      code == 0 and r["result"] == "upgraded"))
     with tempfile.TemporaryDirectory() as t:
         f = Fake(t, running="1.0.2")
         code, r = run(f, {}, wait=0)

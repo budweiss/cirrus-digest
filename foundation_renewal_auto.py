@@ -548,7 +548,11 @@ def run_once(reviewer=model_review, apply=True):
         summary["packets"] += 1
         summary["reviewed"] += len(details)
         summary["held"] += held
-        summary["pending"] += sum(x.get("status") == "evidence_review_pending" for x in details)
+        # S542: an advisory record's date refuses nothing, so it is not an alert.
+        from capability_admission import expiry_is_advisory
+        summary["pending"] += sum(x.get("status") == "evidence_review_pending"
+                                  and not expiry_is_advisory(x["record"][0].split(":", 1)[-1])
+                                  for x in details)
         audit = packet / ("auto-review-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".json")
         audit.write_text(json.dumps({"host": host, "details": details,
                                      "approved": len(records), "held": held}, indent=2))
@@ -593,7 +597,7 @@ def selftest():
     assert PACKET_RE.fullmatch("renewal-20261016-0440-cumulus")
     assert not PACKET_RE.fullmatch("renewal-20261016-0440-cumulus-auto")
     assert not review_controls(lambda _rule, _case: {"verdict": "fail"})
-    assert review_controls(lambda _rule, case: {"verdict": "fail" if case == CONTROL else "pass"})
+    assert review_controls(lambda _rule, case: {"verdict": "fail" if case in (CONTROL, NEW_DEFECT_CONTROL) else "pass"})
     assert not review_controls(lambda _rule, _case: {"verdict": "pass"})
     assert record_sha({"a": 1, "b": 2}) == record_sha({"b": 2, "a": 1})
     example = "print('one; two')"

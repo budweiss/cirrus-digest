@@ -437,6 +437,21 @@ class RenewalAutoTest(unittest.TestCase):
             install.assert_not_called()
             self.assertEqual(before, registry.read_bytes())
 
+    def test_pending_advisory_record_is_not_counted_as_an_alert(self):
+        for advisory, expected in ((False, 1), (True, 0)):
+            with tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                auto.shutil.copytree(self.path, root / "renewal-20261017-0440-cirrus")
+                registry = root / "registry.json"
+                registry.write_text(json.dumps(self.registry))
+                with patch.object(auto, "EVROOT", root), patch.object(auto.renewal, "REGISTRY", registry), \
+                     patch.object(auto, "remote_packet_name", return_value=None), \
+                     patch.object(auto, "packet_age_hours", return_value=0), \
+                     patch.object(auto, "has_due_records", return_value=False), \
+                     patch("capability_admission.expiry_is_advisory", return_value=advisory):
+                    result = auto.run_once(self.negative_review, apply=False)
+                self.assertEqual(result["pending"], expected)
+
     def test_stale_unbound_or_reviewer_authored_clearance_cannot_renew(self):
         for key, value in [("record_sha256", "wrong"), ("case_sha256", ["wrong"]),
                            ("reviewer", auto.SECOND_MODEL), ("authority", "model-vote"),
