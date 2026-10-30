@@ -477,10 +477,11 @@ def work(dry_run, backfill=False):
         state[INTRO_SENT_KEY] = now.strftime("%Y-%m-%d")
     for sec in sections:
         vid = sec["url"].split("v=")[-1]
-        if backfill:
-            extra = state.setdefault("sent_extra", {}).setdefault(sec["channel"], {})
-            extra[vid] = now.strftime("%Y-%m-%d")
-        else:
+        # S542: daily sends join the history too. The cursor keeps only the newest,
+        # so catch-up would have re-sent every earlier daily summary.
+        extra = state.setdefault("sent_extra", {}).setdefault(sec["channel"], {})
+        extra[vid] = now.strftime("%Y-%m-%d")
+        if not backfill:
             sent[sec["channel"]] = {"video_id": vid, "date": now.strftime("%Y-%m-%d")}
         log("sent%s: %s — %s" % (" (catch-up)" if backfill else "", sec["channel"], vid))
     if backfill:

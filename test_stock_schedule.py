@@ -190,8 +190,7 @@ class ScheduleChecks(unittest.TestCase):
              patch.object(S.media,'complete',return_value=json.dumps({'decisions':[decision]})), \
              patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["Reason overstates coverage."]}'):
             folder=Path(td)/'run';folder.mkdir()
-            with self.assertRaisesRegex(ValueError,'^source_adoption_review_failed$'):
-                S.adopt_sources(trials,['need'],folder)
+            S.adopt_sources(trials,['need'],folder)
             saved=json.loads((folder/'adoption-rejected.json').read_text())
             self.assertEqual(saved['decisions'],[decision])
             self.assertEqual(saved['review'],{'passed':False,'issues':['Reason overstates coverage.']})
@@ -200,8 +199,21 @@ class ScheduleChecks(unittest.TestCase):
     def test_http_success_without_dated_original_content_cannot_be_adopted(self):
         trials=[{'status':'fetched','text':QUOTE,'published':None}]
         choice={'trial':0,'decision':'ADOPT','reason':'Synthetic useful original article for a research question.','quote':QUOTE}
-        with self.assertRaisesRegex(ValueError,'adoption_requires_original_dated_content'):
-            S.validate_adoptions({'decisions':[choice]},trials)
+        row=S.validate_adoptions({'decisions':[choice]},trials)[0]
+        self.assertEqual((row['decision'],row['quote']),('KEEP TRIALING',''))
+        self.assertIn('Not adopted',row['reason'])
+
+    def test_rejected_review_adopts_nothing_and_the_report_continues(self):
+        import json
+        from pathlib import Path
+        trials=[{'status':'fetched','published':'2026-10-20','text':QUOTE}]
+        decision={'trial':0,'decision':'ADOPT','reason':'Synthetic useful original article for a research question.','quote':QUOTE}
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.media,'complete',return_value=json.dumps({'decisions':[decision]})), \
+             patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["Overstates coverage."]}'):
+            folder=Path(td)/'run';folder.mkdir()
+            choices=S.adopt_sources(trials,['need'],folder)
+        self.assertEqual([x['decision'] for x in choices],['KEEP TRIALING'])
 
     def test_adopted_source_is_read_by_daily_followup(self):
         from pathlib import Path

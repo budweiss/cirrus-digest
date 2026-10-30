@@ -602,7 +602,8 @@ def validate_adoptions(data,trials):
         if row['decision']=='ADOPT':
             t=trials[i];q=row.get('quote','')
             if t.get('status')!='fetched' or not t.get('published') or not isinstance(q,str) or not 30<=len(q)<=700 or q not in t.get('text',''):
-                raise ValueError('adoption_requires_original_dated_content')
+                # S542: an unproven ADOPT stays on trial; it must not sink the weekly report.
+                row.update(decision='KEEP TRIALING',quote='',reason='Not adopted: no exact quote from original dated content. '+row['reason'])
     return choices
 
 
@@ -632,7 +633,10 @@ def adopt_sources(trials,questions,folder):
             import failure_summary
             failure_summary.write(folder/'failure-summary.json',failure_summary.build(
                 'stockdiscovery','source_adoption_review_failed',issues=checked.get('issues',[]),attempts=1))
-            raise ValueError('source_adoption_review_failed')
+            # S542: nothing the reviewer rejected is adopted, and the report still runs.
+            for row in choices:
+                if row['decision']=='ADOPT':
+                    row.update(decision='KEEP TRIALING',quote='',reason='Not adopted: independent review did not pass. '+row['reason'])
     return choices
 
 
@@ -762,6 +766,7 @@ def dispatch(job,live=False):
         if live:
             record_status(job,ok,'status='+result.get('status','unknown')+
                           (' error='+result['error_type'] if result.get('error_type') else
+                           ' adopted='+str(result['adopted']) if 'adopted' in result else
                            ' decision_review='+result.get('decision_review','not_reported')))
             if result.get('status') not in ('already_sent','holiday'):
                 result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.')+(" Review held today's paper decisions." if held_once else '') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))

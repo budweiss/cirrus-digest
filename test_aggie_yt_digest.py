@@ -139,6 +139,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.state.read_bytes(), before)
         self.status.record.assert_called_once_with('aggieyt', False, 'digest send raised; cursor preserved')
 
+    def test_daily_send_joins_the_history_catch_up_reads(self):
+        self.assertEqual(digest.work(False), 0)
+        state = json.loads(self.state.read_text())
+        self.assertIn("fixture0001", state["sent_extra"]["Fixture"])
+        state["sent"]["Fixture"]["video_id"] = "newer000001"
+        self.assertEqual(digest.catchup_sections([{"name": "Fixture"}], {self.sec["url"]: self.sec}, state), [])
+
     def test_confirmed_send_advances_cursor_and_prevents_repeat(self):
         self.assertEqual(digest.work(False), 0)
         self.assertEqual(json.loads(self.state.read_text())["sent"]["Fixture"]["video_id"], "fixture0001")
