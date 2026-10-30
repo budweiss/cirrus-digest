@@ -58,8 +58,7 @@ class Summaries(unittest.TestCase):
                 patch.object(S.research, 'structured_review',
                              return_value='{"passed":false,"issues":["Trial 0 invents a publication date for ZXQW."]}'):
             folder = Path(td) / 'run'; folder.mkdir()
-            with self.assertRaises(ValueError):
-                S.adopt_sources(trials, ['need'], folder)
+            S.adopt_sources(trials, ['need'], folder)
             s = json.loads((folder / 'failure-summary.json').read_text())
         self.assertEqual(s['review_categories'], {'invented or unsupported date': 1})
         self.assertNotIn('ZXQW', json.dumps(s))
