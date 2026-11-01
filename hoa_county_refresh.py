@@ -312,7 +312,10 @@ def run(do_apply, notify=print, get=_get, seen_path=SEEN_PATH, db_path=None, tod
         tmp.write_text(json.dumps(seen_all, indent=1))
         tmp.replace(seen_path)
     if problems:
-        notify("Bill HOA county refresh did not apply: " + "; ".join(problems))
+        sent = notify("Bill HOA county refresh did not apply: " + "; ".join(problems))
+        # T113: the notifier reports failure by returning it. First, so job_status's 200-char cut keeps it.
+        if str(sent).startswith("FAILED"):
+            problems.insert(0, f"Telegram alert {sent}")
     return summary, problems
 
 
@@ -430,6 +433,13 @@ def selftest():
         ck("a management change is signalled for Bill", cape and cape[0]["signal_kind"] == "mgmt-change")
         ck("nothing refused on a healthy source", not msgs)
         ck("live CRM file untouched by the selftest", str(SEEN_PATH) != str(seen_file))
+
+        def down_get(url, params):
+            raise OSError("county down")
+        _, probs = run(False, lambda m: "FAILED: URLError", down_get, seen_file, db, "2026-11-02")
+        ck("a failed alert leads the problems job_status records", probs[0] == "Telegram alert FAILED: URLError")
+        _, probs = run(False, lambda m: "sent", down_get, seen_file, db, "2026-11-02")
+        ck("a delivered alert adds no problem", len(probs) == len(SOURCES) and "alert" not in " ".join(probs))
     finally:
         if os.path.exists(db):
             os.unlink(db)
