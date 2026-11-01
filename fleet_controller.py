@@ -66,6 +66,18 @@ def observe_worker(worker):
             'scope':'pilot windows only; legacy C1 requests are not globally admitted'}
 
 
+# S543: fleet_media's quarantine has released its worker and kept the failed record.
+# That item is finished, so it must not stop admission for every later article
+# (10-31 and 11-01: one bad answer refused every later article). A failed completion
+# validator is a different failure and still holds the lane; both still count
+# against the qualification rate in fleet_qualify.
+QUARANTINED='claim format failed after one retry'
+
+
+def quarantined(r):
+    return r['state']=='failed' and r.get('stage')=='validated' and (r.get('reason') or '').startswith(QUARANTINED)
+
+
 def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
     workers=[];errors=[]
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
@@ -85,7 +97,7 @@ def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
         jobs={name:{k:row[k] for k in ('epoch','ok') if k in row} for name,row in ledger.items() if isinstance(row,dict)}
     except Exception as e:jobs={};errors.append({'job_ledger':type(e).__name__})
     state=q.status()
-    unsettled=[{'id':r['id'],'state':r['state']} for r in state['jobs'] if r['state'] in ('unknown','suspected_stall','cancelling','blocked','failed')]
+    unsettled=[{'id':r['id'],'state':r['state']} for r in state['jobs'] if r['state'] in ('unknown','suspected_stall','cancelling','blocked','failed') and not quarantined(r)]
     now=time.time()
     unsettled += [{'id':r['id'],'state':r['state'],'reason':'caller has not claimed queued work for over 30 minutes'}
                   for r in state['jobs'] if r['state']=='queued' and now-r['created']>1800]

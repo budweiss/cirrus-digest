@@ -297,6 +297,36 @@ class ScheduleChecks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'prior_delivery_requires_reconciliation'):S.daily('pm',True,'2026-10-14',home)
             snap.assert_not_called()
 
+    def test_failed_prose_review_keeps_every_attempt_and_a_sanitized_summary(self):
+        import json
+        from pathlib import Path
+        from contextlib import nullcontext
+        verdicts=iter(['Draft states a PRIVATEWORD date.','The evidence does not show PRIVATEWORD.','The evidence does not show it.'])
+        def review(*a):return json.dumps({'passed':False,'issues':[next(verdicts)]})
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            with patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S.media,'complete',return_value='draft'), \
+                    patch.object(S.research,'structured_review',side_effect=review):
+                with self.assertRaisesRegex(ValueError,'weekly_review_failed'):
+                    S.checked_prose('system',{},'task',audit=S.prose_audit(folder,'checks.json','stockscorecard'))
+            checks=json.loads((folder/'checks.json').read_text())
+            self.assertEqual((checks['attempt'],len(checks['earlier'])),(2,2))
+            raw=(folder/'prose-failure-summary.json').read_text();summary=json.loads(raw)
+            self.assertEqual((summary['code'],summary['attempts']),('weekly_review_failed',3))
+            self.assertEqual(summary['review_categories'],{'invented or unsupported date':1,'claim not supported by the evidence':2})
+            self.assertNotIn('PRIVATEWORD',raw)
+
+    def test_passed_prose_review_leaves_no_failure_summary(self):
+        import json
+        from pathlib import Path
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)
+            with patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S.media,'complete',return_value='draft'), \
+                    patch.object(S.research,'structured_review',return_value=json.dumps({'passed':True,'issues':[]})):
+                self.assertEqual(S.checked_prose('system',{},'task',audit=S.prose_audit(folder,'checks.json','stockscorecard')),'draft')
+            self.assertFalse((folder/'prose-failure-summary.json').exists())
+
     def test_scorecard_preview_has_no_mail_trade_or_live_review_write(self):
         from pathlib import Path
         from contextlib import nullcontext

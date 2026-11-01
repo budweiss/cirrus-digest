@@ -237,6 +237,13 @@ def browser_url(post):
     return url
 
 
+def cloudflare_refused(title):
+    """Cloudflare's challenge or its hard block. S543, measured on CIRRUS with a valid
+    session: of 4 Medium pages, 1 opened, 1 challenged, 2 "you have been blocked". The
+    block's title was not recognised, so it read as an ordinary unreadable post."""
+    return title.startswith("Just a moment") or (title.startswith("Attention Required") and "Cloudflare" in title)
+
+
 class Browser:
     """Member-only posts, read through a real headless Chromium carrying Buddy's
     own synced session (config/cookies.json; values are never printed).
@@ -278,8 +285,8 @@ class Browser:
         try:
             page.goto(url, timeout=45000, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
-            if page.title().startswith("Just a moment"):
-                self.challenged += 1        # the session needs refreshing on the Mac
+            if cloudflare_refused(page.title()):
+                self.challenged += 1
                 return ""
             node = page.locator("article")
             return plain(node.first.inner_text()) if node.count() else ""
@@ -455,8 +462,8 @@ def run(dry_run=False, limit=LIMIT, feeds=None, parse=None, analyze=None,
     finally:
         browser.close()
     if browser.challenged:
-        errors.append("browser: %d member page(s) answered with a Cloudflare challenge -- "
-                      "the synced session may need refreshing on the Mac" % browser.challenged)
+        errors.append("browser: %d member page(s) answered with a Cloudflare challenge or block -- "
+                      "kept for retry; refreshing the session may not help" % browser.challenged)
     day = now.strftime("%Y-%m-%d")
     body = render(results, day)
     stats_window = (now - since).total_seconds() / 3600
@@ -910,6 +917,9 @@ def _selftest(g):
                  out_dir=Path(td) / "out7", now=now, pause=0, claims_log=Path(td) / "c7.jsonl")
         ck("browser: a Cloudflare challenge is reported, not silent",
            any("Cloudflare challenge" in e for e in s7["errors"]))
+        ck("browser: Cloudflare's challenge and hard block both count; an article does not",
+           cloudflare_refused("Just a moment...") and cloudflare_refused("Attention Required! | Cloudflare")
+           and not cloudflare_refused("Attention Required: running local LLMs"))
         ck("dry run: nothing written", not (Path(td) / "seen3.json").exists()
            and not (Path(td) / "out3").exists() and s4["processed"] == 2)
     print("selftest:", "PASS" if ok else "FAIL")

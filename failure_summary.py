@@ -36,8 +36,12 @@ RULES = (
     ('useful technique rated SKIP', r'\bskip\b|technique|practice'),
     ('claim beyond the supplied metadata', r'pric|capabilit|compatib|invent|not in the metadata|unsupported claim'),
     ('relevance not supported', r'relevan|research need|unrelated|does not answer'),
-    ('missing or inexact evidence quote', r'quote|verbatim|exact evidence|evidence'),
+    ('financial outcome, cause or certainty beyond the evidence', r'causal|\bcause|outcome|small sample|certainty'),
+    ('missing or inexact evidence quote', r'quote|verbatim|exact evidence'),
     ('opinion, prediction or allegation stated as fact', r'as fact|verified fact|prediction|alleg|opinion'),
+    # S543: bare "evidence" sat in the quote rule, so reviewers' ordinary wording
+    # labelled any finding a quote problem (the S542 "quote category").
+    ('claim not supported by the evidence', r'evidence|not supported|unsupported'),
 )
 LABELS = {label for label, _ in RULES} | {'other'}
 CODE = re.compile(r'[a-z][a-z0-9_]{2,59}')
@@ -96,7 +100,7 @@ def write(path, summary):
 
 def newest(root=None, n=6):
     root = ROOT if root is None else root
-    paths = list((root / 'private/stock-paper/scheduled').glob('*/failure-summary.json')) + \
+    paths = list((root / 'private/stock-paper/scheduled').glob('*/*failure-summary.json')) + \
             list((root / 'private/opinionai').glob('*failure-summary.json'))
     paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     out = []

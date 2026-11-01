@@ -73,6 +73,28 @@ class MediaAdmissionTests(unittest.TestCase):
   with self.assertRaises(Refused):self.run_media()
   self.assertEqual(self.run_media(payload=dict(self.payload,text=self.text+' A second article.')),[])
   self.assertEqual([r['state'] for r in q.status()['jobs']],['failed','succeeded'])
+ def controller_view(self):
+  # This class's status.json fixture always reads ok, which hid that the real controller
+  # stopped admission for a quarantined item. Ask the real controller.
+  import fleet_controller as c
+  (self.root/'logs').mkdir(exist_ok=True);(self.root/'logs/jobs-status.json').write_text('{}')
+  def seen(w):return {'worker':w,'model':c.WORKERS[w]['model'],'context':65536,'available_mib':60000,'busy':False,'observed':time.time()}
+  q=Queue(self.state/'queue.db',policy())
+  with patch.object(c,'observe_worker',side_effect=seen),patch.object(c,'units',return_value=[]):return c.snapshot(q,self.root),q
+ def test_quarantined_item_does_not_stop_the_controller_admitting(self):
+  from fleet_queue import ResearchQuarantined
+  def bad(*args,**kwargs):
+   return m.analyze(*args,**kwargs,caller=lambda *a:'{"claims":[{}]}',counter=len)
+  with self.assertRaises(ResearchQuarantined):self.run_media(bad)
+  view,q=self.controller_view()
+  self.assertEqual(view['unsettled'],[]);self.assertTrue(view['ok'])
+  self.assertEqual(q.status()['jobs'][0]['state'],'failed')       # the record stays visible
+ def test_failed_completion_validator_still_stops_admission(self):
+  self.run_media()
+  q=Queue(self.state/'queue.db',policy())
+  with q.db() as c:c.execute("UPDATE jobs SET state='failed',stage='validated',reason='completion validator failed'")
+  view,_=self.controller_view()
+  self.assertFalse(view['ok']);self.assertEqual([r['state'] for r in view['unsettled']],['failed'])
  def test_retry_timeout_keeps_slot_for_reconciliation(self):
   calls=[]
   def uncertain(*args,**kwargs):

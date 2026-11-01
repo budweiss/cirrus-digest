@@ -30,6 +30,13 @@ class Summaries(unittest.TestCase):
         self.assertEqual(fs.category('SKIP ignores a useful technique for model routing.'),
                          'useful technique rated SKIP')
 
+    def test_the_word_evidence_alone_is_not_a_quote_finding(self):
+        self.assertEqual(fs.category('The draft states something the evidence does not show.'),
+                         'claim not supported by the evidence')
+        self.assertEqual(fs.category('The draft attributes the gain to skill; that outcome is not shown.'),
+                         'financial outcome, cause or certainty beyond the evidence')
+        self.assertEqual(fs.category('The quote is not in the source.'), 'missing or inexact evidence quote')
+
     def test_no_private_text_survives(self):
         s = fs.build('stockdiscovery', 'source_adoption_review_failed', issues=ISSUES,
                      errors=['ValueError: Jane Doe ZXQW broke', 'source_decision_reason'])
