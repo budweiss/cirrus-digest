@@ -146,6 +146,28 @@ class DeliveryTests(unittest.TestCase):
         state["sent"]["Fixture"]["video_id"] = "newer000001"
         self.assertEqual(digest.catchup_sections([{"name": "Fixture"}], {self.sec["url"]: self.sec}, state), [])
 
+    def test_ready_summary_goes_out_while_a_newer_video_waits_and_only_once(self):
+        new = {"video_id": "newer000001", "title": "New", "published": "2026-10-02",
+               "url": "https://www.youtube.com/watch?v=newer000001"}
+        with patch.object(digest, "newest_video", return_value=new):
+            self.assertEqual(digest.work(False), 0)
+            self.mail.send.assert_called_once()
+            self.assertIn("fixture0001", self.mail.send.call_args[0][4])
+            self.mail.send.reset_mock()
+            digest.work(False)
+            self.mail.send.assert_not_called()
+
+    def test_an_older_ready_summary_never_resends_the_newest(self):
+        older = dict(self.sec, url="https://www.youtube.com/watch?v=older000001", published="2026-09-20")
+        by_url = {self.sec["url"]: self.sec, older["url"]: older}
+        with patch.object(digest, "reviewed_summaries", return_value=by_url):
+            self.assertEqual(digest.work(False), 0)
+            self.assertEqual(self.mail.send.call_count, 1)
+            self.assertEqual(digest.work(False), 0)
+            self.assertEqual(self.mail.send.call_count, 1)
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["sent"]["Fixture"]["video_id"], "fixture0001")
+
     def test_confirmed_send_advances_cursor_and_prevents_repeat(self):
         self.assertEqual(digest.work(False), 0)
         self.assertEqual(json.loads(self.state.read_text())["sent"]["Fixture"]["video_id"], "fixture0001")

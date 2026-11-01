@@ -5,6 +5,7 @@ Dedicated collection runs separately from the shared video backlog. Only a
 source-grounded, locally reviewed summary is eligible. The first confirmed
 email includes both the setup update and available summaries. Newest videos
 without usable results remain pending, and old episodes are labeled as old.
+A reviewed summary is still sent when a newer video has since appeared (S543).
 Buddy authorized daily delivery to Aggie only, with no cc, October 12/14.
 The send cursor advances only after confirmed SMTP success. A lock prevents
 concurrent runs; source, review and delivery evidence are retained separately.
@@ -360,16 +361,36 @@ def waiting_normally(published, today=None):
     return age <= WAIT_DAYS
 
 
+def sent_ids(name, state):
+    """Every video this channel has already delivered: the cursor plus the history."""
+    latest = ((state.get("sent") or {}).get(name) or {}).get("video_id")
+    return {latest} | set((state.get("sent_extra") or {}).get(name) or {})
+
+
+def ready_unsent(name, by_url, state):
+    """S543: reviewed, non-stale summaries never sent for this channel, oldest first.
+
+    Looking only at the newest video dropped a ready summary whenever a newer
+    video appeared before 07:10 (10-23 and 10-29 were lost that way).
+    """
+    done = sent_ids(name, state)
+    rows = [dict(sec, url=url) for url, sec in by_url.items()
+            if sec.get("channel") == name and not sec.get("stale")
+            and not sec.get("extract_error") and url.split("v=")[-1] not in done]
+    return sorted(rows, key=lambda s: s.get("published", ""))
+
+
 def pick_sections(channels, by_url, state):
-    """Which of Aggie's newest videos have findings and haven't been sent.
+    """Which of Aggie's reviewed summaries haven't been sent, and what is still waiting.
 
     Returns (sections, pending, late): late names the pending channels that are
     a real problem, as opposed to a video the next collection will reach.
     """
     sections, pending, late = [], [], []
-    sent = state.get("sent", {}) or {}
     for ch in channels:
         name = ch.get("name", "?")
+        ready = ready_unsent(name, by_url, state)
+        sections.extend(ready)
         try:
             new = newest_video(ch["channel_id"])
         except Exception as exc:
@@ -380,11 +401,13 @@ def pick_sections(channels, by_url, state):
             pending.append(name + ' (feed empty)')
             late.append(name)
             continue
-        if (sent.get(name) or {}).get("video_id") == new["video_id"]:
+        if new["video_id"] in sent_ids(name, state):
             continue
         sec = by_url.get(new["url"])
         if sec and sec.get("channel") == name and not sec.get("extract_error"):
-            sections.append(sec)
+            # A newest video labeled old is not in ready, but it is still sent.
+            if not any(s["url"] == new["url"] for s in ready):
+                sections.append(sec)
         else:
             reason = "extraction needs retry" if sec and sec.get("extract_error") else "no findings yet"
             pending.append("%s (%s pub %s — %s)"
@@ -600,6 +623,11 @@ def selftest() -> int:
             aggie_yt.newest_video = lambda cid: {
                 "video_id": "newnew11111", "title": "Brand New", "published": "2026-10-12",
                 "url": "https://www.youtube.com/watch?v=newnew11111"}
+            # S543: an earlier ready summary still goes out while the newest waits
+            secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
+            ck("a ready summary is not dropped when a newer video appears",
+               [s["url"].split("v=")[-1] for s in secs] == ["7jxq5gCd2aY"] and len(pend) == 1)
+            state = {"sent_extra": {"Money On The Move": {"7jxq5gCd2aY": "2026-10-07"}}}
             secs, pend, late = aggie_yt.pick_sections(chans, by_url, state)
             ck("video without findings waits (never fabricated)", secs == [] and len(pend) == 1)
             ck("an old video still without findings is late", late == ["Money On The Move"])
