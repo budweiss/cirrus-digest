@@ -6,6 +6,26 @@ from unittest.mock import patch
 import workflow_mail_sources as sources
 
 class SourceTests(unittest.TestCase):
+ def signature_message(self, html='<div id="Signature"><img src="cid:logo"></div>', disposition='inline', filename='logo.png'):
+  msg=EmailMessage();msg.set_content('Find current snow removal opportunities.')
+  msg.add_alternative('<html><body><p>Find current snow removal opportunities.</p>'+html+'</body></html>',subtype='html')
+  msg.get_payload()[-1].add_related(b'synthetic image',maintype='image',subtype='png',cid='<logo>',disposition=disposition,filename=filename)
+  return msg
+ def test_only_explicit_exclusively_referenced_signature_images_are_skipped(self):
+  for html in ('<div id="Signature"><span><img src="cid:logo"></span></div>', '<div class="gmail_signature"><img src="cid:logo"></div>'):
+   msg=self.signature_message(html);cids=sources.signature_image_ids(msg,'Find snow removal bids.')
+   self.assertEqual(cids,{'logo'})
+   self.assertTrue(sources.is_signature_image(list(msg.walk())[-1],cids))
+  for html in ('<p><img src="cid:logo"></p>', '<div id="Signature"><img src="cid:logo"></div><img src="cid:logo">', '<div id="Signature"><img src="cid:logo">'):
+   self.assertFalse(sources.signature_image_ids(self.signature_message(html),'Find bids.'))
+ def test_image_questions_and_real_attachments_remain_held(self):
+  msg=self.signature_message()
+  for question in ('Read the attached image.', 'Use this screenshot.', 'What is in this logo?'):
+   self.assertFalse(sources.signature_image_ids(msg,question))
+  msg=self.signature_message(disposition='attachment')
+  self.assertFalse(sources.is_signature_image(list(msg.walk())[-1],{'logo'}))
+  with patch.object(sources,'MAX_MESSAGE_BYTES',1):
+   self.assertFalse(sources.is_signature_image(list(self.signature_message().walk())[-1],{'logo'}))
  def test_docx_paragraphs_and_end_of_file_are_retained(self):
   stream=io.BytesIO()
   with zipfile.ZipFile(stream,'w') as z:
@@ -46,6 +66,20 @@ class SourceTests(unittest.TestCase):
    result=sources.collect(Path('.'),rec,{'test':'synthetic'})
    self.assertTrue(result);self.assertTrue(all('2026-01-01' in key for key in result))
    mail.select.assert_called_once_with('"[Gmail]/All Mail"',readonly=True)
+   # Real collection path: an Outlook signature must not block the request.
+   signed=self.signature_message()
+   for key in ('From','Message-ID','Date'):signed[key]=msg[key]
+   raw=signed.as_bytes()
+   result=sources.collect(Path('.'),rec,{'test':'synthetic'})
+   self.assertTrue(any('snow removal opportunities' in value for value in result.values()))
+   self.assertTrue(any('signature image(s) omitted' in value for value in result.values()))
+   # An unnamed non-signature image must not disappear silently either.
+   diagram=self.signature_message('<p><img src="cid:logo"></p>')
+   for key in ('From','Message-ID','Date'):diagram[key]=msg[key]
+   del list(diagram.walk())[-1]['Content-Disposition']
+   raw=diagram.as_bytes()
+   with self.assertRaisesRegex(ValueError,'supported local extractor'):
+    sources.collect(Path('.'),rec,{'test':'synthetic'})
    msg.replace_header('From','stranger@example.test');raw=msg.as_bytes()
    with self.assertRaises(AssertionError):sources.collect(Path('.'),rec,{'test':'synthetic'})
  def test_large_document_is_explicit_failure(self):

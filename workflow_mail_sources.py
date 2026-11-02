@@ -5,12 +5,67 @@ import imaplib
 import io
 import re
 import zipfile
+from html.parser import HTMLParser
 from email.utils import parseaddr
 from xml.etree import ElementTree
 from inbox_evidence import evidence_spans, verify_span
 
 MAX_MESSAGE_BYTES=2_000_000
 MAX_THREAD_MESSAGES=12
+
+
+class _SignatureImages(HTMLParser):
+    """Only explicit mail-client signature containers; never filename guesses."""
+    VOID = {'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack=[]; self.inside=set(); self.outside=set(); self.valid=True
+
+    def handle_starttag(self, tag, attrs):
+        attrs=dict(attrs)
+        signature=(attrs.get('id','').lower()=='signature'
+                   or 'gmail_signature' in attrs.get('class','').lower().split())
+        active=signature or any(flag for _,flag in self.stack)
+        if tag=='img' and attrs.get('src','').lower().startswith('cid:'):
+            cid=attrs['src'][4:].strip().strip('<>')
+            (self.inside if active else self.outside).add(cid)
+        if tag not in self.VOID:self.stack.append((tag,active))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag,attrs)
+        if tag not in self.VOID:self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if tag in self.VOID:return
+        if not self.stack or self.stack[-1][0]!=tag:
+            self.valid=False
+        else:self.stack.pop()
+
+
+def signature_image_ids(msg, question):
+    # An image-directed request must not lose evidence, even in a signature.
+    if re.search(r'(?i)\b(image|picture|photo|screenshot|diagram|attachment|attached|enclosed|logo|graphic)s?\b',question):
+        return set()
+    inside=set();outside=set()
+    for part in msg.walk():
+        if part.get_content_type()!='text/html':continue
+        parser=_SignatureImages()
+        try:
+            parser.feed((part.get_payload(decode=True) or b'').decode(part.get_content_charset() or 'utf-8'))
+            parser.close()
+        except (UnicodeError,LookupError):return set()
+        if not parser.valid or parser.stack:return set()
+        inside.update(parser.inside);outside.update(parser.outside)
+    return inside-outside
+
+
+def is_signature_image(part, cids):
+    return (part.get_content_type() in ('image/png','image/jpeg','image/gif','image/webp')
+            and part.get_content_disposition()=='inline'
+            and bool(part.get('Content-ID'))
+            and part['Content-ID'].strip().strip('<>') in cids
+            and len(part.get_payload(decode=True) or b'')<=MAX_MESSAGE_BYTES)
 
 
 def attachment_text(part):
@@ -102,10 +157,19 @@ def collect(root, rec, creds):
             docid=hashlib.sha256((key+date).encode()).hexdigest()[:20]
             body=task_solver.strip_quoted_reply(intake.body_text(msg))
             if body.strip():documents['historical-correspondence-'+stamp.isoformat()+'-mail-'+docid]=body
+            signature_ids=signature_image_ids(msg,rec.get('conversation_body') or rec.get('body_head',''))
+            skipped_signatures=0
             for n,part in enumerate(msg.walk()):
-                if part.get_filename():
+                if is_signature_image(part,signature_ids):
+                    skipped_signatures+=1
+                    continue
+                if part.get_filename() or part.get_content_maintype()=='image':
                     text=attachment_text(part)
                     if not text.strip():raise ValueError('Attachment yielded no text')
                     documents['historical-correspondence-'+stamp.isoformat()+'-attachment-'+docid+'-'+str(n)]=text
+            if skipped_signatures:
+                documents['mail-processing-'+docid]=(f'{skipped_signatures} inline signature image(s) omitted. '
+                    'Only images referenced exclusively inside explicit mail-client signature containers were omitted; '
+                    'their visual contents were not interpreted.')
         assert original_seen
     return select_sources(documents,rec.get('conversation_body') or rec.get('body_head',''))
