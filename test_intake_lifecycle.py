@@ -71,7 +71,10 @@ class LifecycleTests(unittest.TestCase):
             def status(self,*a):return 'OK',[b'INBOX (UIDVALIDITY 7)']
             def logout(self):pass
             def uid(self,op,*args):
-                if op=='search':return 'OK',[b'11' if one else b'11 12']
+                if op=='search':
+                    assert 'FROM "client@example.test"' in args[-1]
+                    assert 'FROM "mailer-daemon"' in args[-1]
+                    return 'OK',[b'11' if one else b'11 12']
                 if args[1]=='(RFC822.SIZE)':return 'OK',[('RFC822.SIZE '+str(len(raw))).encode()]
                 if fail and args[0]=='11':return 'NO',[]
                 return 'OK',[(b'BODY',raw)]

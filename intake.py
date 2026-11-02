@@ -657,7 +657,15 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
         last_uid = 0
 
     since = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%d-%b-%Y")
-    typ, msg_ids = mail.uid("search", None, f"UID {last_uid + 1}:*" if last_uid else f"SINCE {since}")
+    criteria = f"UID {last_uid + 1}:*" if last_uid else f"SINCE {since}"
+    if capture_root is not None:
+        # Filter on the server before fetching All Mail; unrelated newsletter
+        # volume must not delay a client request. Exact sender check still follows.
+        from client_mail_review import quoted
+        filters = ['FROM ' + quoted(address) for address in sorted(allowlist)]
+        filters += ['FROM "mailer-daemon"', 'FROM "postmaster"']
+        criteria += ' (' + 'OR ' * (len(filters) - 1) + ' '.join(filters) + ')'
+    typ, msg_ids = mail.uid("search", None, criteria)
     if typ != "OK":
         raise OSError("IMAP search failed")
     uids = sorted(int(u) for u in msg_ids[0].split())
