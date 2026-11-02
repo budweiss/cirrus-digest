@@ -56,7 +56,7 @@ class SourceTests(unittest.TestCase):
   def uid(command,*args):
    if command=='search':return 'OK',[b'1']
    if args[-1]=='(X-GM-THRID RFC822.SIZE)':return 'OK',[b'1 (X-GM-THRID 123 RFC822.SIZE 500)']
-   if args[-1]=='(RFC822.SIZE)':return 'OK',[b'1 (RFC822.SIZE 500)']
+   if args[-1]=='(RFC822.SIZE)':return 'OK',[('1 (RFC822.SIZE %d)' % len(raw)).encode()]
    if args[-1]=='(BODY.PEEK[])':return 'OK',[(b'meta',raw)]
    raise AssertionError('unexpected mail operation')
   mail.uid.side_effect=uid
@@ -66,6 +66,11 @@ class SourceTests(unittest.TestCase):
    result=sources.collect(Path('.'),rec,{'test':'synthetic'})
    self.assertTrue(result);self.assertTrue(all('2026-01-01' in key for key in result))
    mail.select.assert_called_once_with('"[Gmail]/All Mail"',readonly=True)
+   # Regression: complete inline deliverable, beyond the former 2000-char preview.
+   msg.set_content('Introduction.\n' + 'Question and answer.\n' * 300 + 'FINAL-QUESTION-124')
+   raw=msg.as_bytes()
+   result=sources.collect(Path('.'),rec,{'test':'synthetic'})
+   self.assertTrue(any('FINAL-QUESTION-124' in value for value in result.values()))
    # Real collection path: an Outlook signature must not block the request.
    signed=self.signature_message()
    for key in ('From','Message-ID','Date'):signed[key]=msg[key]

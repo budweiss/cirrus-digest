@@ -321,7 +321,7 @@ def check_duplicate_client_answers(hours: int = 168) -> str:
 
 
 def check_thread_stalls(hours: int = 48) -> str:
-    """Has a client written and had nothing substantive back? Read-only.
+    """Find ledger gaps needing full-mail review. Read-only; no debt conclusion.
 
     An ack does not count, which is the whole point: Bill's go-ahead was
     acknowledged within seconds and the work it authorised was never done.
@@ -332,20 +332,23 @@ def check_thread_stalls(hours: int = 48) -> str:
     """
     stalls, notes = _both_boxes(hours, "stalled_threads")
     if not stalls:
-        out = (f"OK — no client message older than {hours}h is still "
-               f"unanswered, on either box.")
+        out = (f"No ledger reply gaps older than {hours}h on either box. "
+               "Full messages and attachments have not been reviewed; fulfillment is unverified.")
     else:
         waiting = [x for x in stalls if x["expected_reply"]]
-        lines = [f"{len(stalls)} client thread(s) with no substantive reply "
+        lines = [f"{len(stalls)} client thread(s) needing full-mail review "
                  f"({len(waiting)} where a reply was expected):"]
         for x in stalls:
-            flag = "REPLY EXPECTED" if x["expected_reply"] else f"queued as {x['kind']}"
+            flag = "UNVERIFIED LEDGER GAP" if x["expected_reply"] else f"queued as {x['kind']}"
             lines.append(
                 f"  • [{x.get('_box')}] {x['requester']} — "
                 f"\"{str(x.get('title') or x['thread'])[:70]}\" "
                 f"[{x['age_hours']}h, {flag}]")
-        lines.append("You cannot answer a client. Report it; use "
-                     "request_guidance if you cannot tell what is blocking.")
+        lines.append("Ledger gaps do not establish work owed. Before any missing-delivery "
+                     "claim, review complete incoming and Sent Mail on both hosts, all "
+                     "subjects and attachments using client_mail_review.py. Unsupported "
+                     "or partial evidence means unknown. No automatic resend. "
+                     "You cannot answer a client; request guidance if needed.")
         out = "\n".join(lines)
     out = _verdict(out, stalls, notes, out)
 

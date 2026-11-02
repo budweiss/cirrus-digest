@@ -14,6 +14,27 @@ MAX_MESSAGE_BYTES=2_000_000
 MAX_THREAD_MESSAGES=12
 
 
+def full_body_documents(msg):
+    """All body alternatives, without preview clipping or quote removal.
+
+    HTML is preserved: visible text, links and alternative-only content must
+    not disappear merely because a plain-text alternative also exists.
+    Text attachments are not mistaken for the message body.
+    """
+    result = {}
+    for n, part in enumerate(msg.walk()):
+        if (not part.is_multipart() and not part.get_filename()
+                and part.get_content_disposition() != 'attachment'
+                and part.get_content_type() in ('text/plain', 'text/html')):
+            raw = part.get_payload(decode=True)
+            if raw is None:
+                raise ValueError('Body could not be decoded')
+            result[str(n)] = raw.decode(part.get_content_charset() or 'utf-8')
+    if any(part.defects for part in msg.walk()):
+        raise ValueError('Malformed MIME evidence')
+    return result
+
+
 class _SignatureImages(HTMLParser):
     """Only explicit mail-client signature containers; never filename guesses."""
     VOID = {'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'}
@@ -72,7 +93,7 @@ def attachment_text(part):
     raw=part.get_payload(decode=True) or b''
     if len(raw)>MAX_MESSAGE_BYTES:raise ValueError('Attachment exceeds evidence limit')
     name=(part.get_filename() or '').lower()
-    if name.endswith('.txt'):return raw.decode(part.get_content_charset() or 'utf-8')
+    if name.endswith(('.txt', '.md', '.csv')):return raw.decode(part.get_content_charset() or 'utf-8')
     if name.endswith('.docx'):
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             info=archive.getinfo('word/document.xml')
@@ -113,7 +134,6 @@ def select_sources(documents, question, budget=5000):
 
 def collect(root, rec, creds):
     import intake
-    import task_solver
     from runtime_config import load_sources
     account=intake.find_account(load_sources(intake.CONFIG_PATH))
     password=creds.get(account['credential_key'])
@@ -145,6 +165,8 @@ def collect(root, rec, creds):
             if int(size.group(1))>MAX_MESSAGE_BYTES:raise ValueError('Message exceeds evidence limit')
             status,parts=mail.uid('fetch',uid,'(BODY.PEEK[])');assert status=='OK'
             raw=b''.join(p[1] for p in parts if isinstance(p,tuple));assert len(raw)<=MAX_MESSAGE_BYTES
+            if len(raw) != int(size.group(1)):
+                raise ValueError('Incomplete message fetch')
             msg=email.message_from_bytes(raw)
             author=parseaddr(msg.get('From',''))[1].lower()
             if author not in (sender,account['address'].lower()):continue
@@ -155,15 +177,16 @@ def collect(root, rec, creds):
             # Evidence is dated correspondence, never proof of current runtime.
             date=msg.get('Date','');stamp=email.utils.parsedate_to_datetime(date);assert stamp.tzinfo
             docid=hashlib.sha256((key+date).encode()).hexdigest()[:20]
-            body=task_solver.strip_quoted_reply(intake.body_text(msg))
-            if body.strip():documents['historical-correspondence-'+stamp.isoformat()+'-mail-'+docid]=body
+            for part_id, body in full_body_documents(msg).items():
+                if body.strip():documents['historical-correspondence-'+stamp.isoformat()+'-mail-'+docid+'-'+part_id]=body
             signature_ids=signature_image_ids(msg,rec.get('conversation_body') or rec.get('body_head',''))
             skipped_signatures=0
             for n,part in enumerate(msg.walk()):
                 if is_signature_image(part,signature_ids):
                     skipped_signatures+=1
                     continue
-                if part.get_filename() or part.get_content_maintype()=='image':
+                if (part.get_filename() or part.get_content_disposition()=='attachment'
+                        or (not part.is_multipart() and part.get_content_type() not in ('text/plain','text/html'))):
                     text=attachment_text(part)
                     if not text.strip():raise ValueError('Attachment yielded no text')
                     documents['historical-correspondence-'+stamp.isoformat()+'-attachment-'+docid+'-'+str(n)]=text
@@ -172,4 +195,8 @@ def collect(root, rec, creds):
                     'Only images referenced exclusively inside explicit mail-client signature containers were omitted; '
                     'their visual contents were not interpreted.')
         assert original_seen
-    return select_sources(documents,rec.get('conversation_body') or rec.get('body_head',''))
+    # A ranked excerpt cannot establish that a deliverable is absent. Keep the
+    # complete thread; the normal model admission budget holds oversized input.
+    if sum(map(len, documents.values())) > 120000:
+        raise ValueError('Full correspondence exceeds evidence limit; review required')
+    return documents

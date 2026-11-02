@@ -412,7 +412,7 @@ def _switchboard_shadow(root, client, subject, answer):
 def selftest():
     import unittest
     suite = unittest.defaultTestLoader.loadTestsFromNames(
-        ['test_answer_workflow', 'test_answer_attempts', 'test_workflow_mail_sources'])
+        ['test_answer_workflow', 'test_answer_attempts', 'test_workflow_mail_sources', 'test_client_mail_review'])
     return unittest.TextTestRunner().run(suite).wasSuccessful()
 
 

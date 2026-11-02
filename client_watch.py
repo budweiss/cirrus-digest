@@ -149,7 +149,7 @@ EXPECTS_REPLY = ("answer", "confirmation", "resend", "deliverable")
 
 
 def stalled_threads(path=None, hours: int = 48) -> list:
-    """Inbound client messages with no substantive outbound reply since.
+    """Ledger gaps requiring full-mail review, never proof of work owed.
 
     "Substantive" means an auto-answered row on the same thread. An ack does
     not count and is not recorded here — that is the point. Bill's go-ahead was
@@ -166,6 +166,7 @@ def stalled_threads(path=None, hours: int = 48) -> list:
         thread = r.get("thread")
         if not thread:
             continue
+        thread = (r.get("requester"), thread)
         if r.get("event") == "user-intake":
             cur = inbound.get(thread)
             if not cur or r["_ts"] > cur["_ts"]:
@@ -185,7 +186,10 @@ def stalled_threads(path=None, hours: int = 48) -> list:
             continue
         stalls.append({
             "requester": r.get("requester"),
-            "thread": thread,
+            "thread": thread[1],
+            "evidence_status": "ledger_only_full_mail_review_required",
+            "work_owed": None,
+            "automatic_resend_allowed": False,
             "title": r.get("title"),
             "kind": r.get("kind"),
             "received": r["_ts"].strftime(TS_FMT),
@@ -540,6 +544,16 @@ def selftest() -> int:
         check("an inbound with no reply at all is a stall", len(st) == 1)
         check("a stall on an answer-kind expects a reply",
               st and st[0]["expected_reply"] is True)
+        check("ledger gaps cannot declare debt or authorize duplicates",
+              st[0]["work_owed"] is None and not st[0]["automatic_resend_allowed"]
+              and st[0]["evidence_status"] == "ledger_only_full_mail_review_required")
+        write([{"ts": ts(72), "event": "user-intake", "requester": "bill",
+                "thread": "shared subject", "kind": "answer"},
+               {"ts": ts(71), "event": "client-mail-sent", "requester": "alyssa",
+                "thread": "shared subject"}])
+        check("another client's same subject cannot clear a gap",
+              len(stalled_threads(led, hours=48)) == 1)
+
 
         write([{"ts": ts(72), "event": "user-intake", "requester": "bill",
                 "thread": "back creek", "kind": "answer"},
