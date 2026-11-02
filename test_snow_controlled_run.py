@@ -23,7 +23,10 @@ class ControlledSnow(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        for name, value in [('OUT', self.root / 'out'), ('DIGEST_DIR', self.root),
+        (self.root / 'ref').mkdir()
+        self.baseline = self.root / 'ref' / 'baseline-outlook.md'
+        self.baseline.write_text('old baseline')
+        for name, value in [('OUT', self.root / 'out'), ('DIGEST_DIR', self.root), ('REF', self.root / 'ref'),
                             ('TO', 'recipient@example.invalid'), ('CC', 'copy@example.invalid')]:
             self.stack.enter_context(patch.object(snow, name, value))
         self.stack.enter_context(patch.object(send_guard, 'STAMP_DIR', self.root / 'receipts'))
@@ -36,8 +39,9 @@ class ControlledSnow(unittest.TestCase):
         self.sender.return_value = types.SimpleNamespace(returncode=0, stdout='', stderr='')
         self.record = self.stack.enter_context(patch.object(snow, '_rec'))
         self.decision = dict(material_change=True, reason='synthetic changed outlook',
-                             refresh_md='synthetic outlook', email_subject='synthetic update',
-                             email_body='synthetic body')
+                             refresh_md=f'# Refresh\n{snow.CHANGE_HEADING}\nSnowfall estimate unchanged [1]; published 11-01.',
+                             email_subject='synthetic update',
+                             email_body=f'synthetic body\n{snow.CHANGE_HEADING}\nSnowfall estimate unchanged; published 11-01.')
         self.decide = self.stack.enter_context(patch.object(snow, 'decide',
             return_value=(self.decision, ['https://example.invalid/evidence'])))
         self.stack.enter_context(patch.dict(snow._draft_state, {'by':'fixture', 'error':''}))
@@ -69,7 +73,7 @@ class ControlledSnow(unittest.TestCase):
         self.assertEqual(len(argv), 5)
         body_path = Path(argv[4])
         self.assertEqual(body_path.parent, self.root)
-        self.assertEqual(body_path.read_text(), 'synthetic body')
+        self.assertEqual(body_path.read_text(), self.decision['email_body'])
         self.assertEqual(kwargs['cwd'], str(self.root))
         self.assertEqual(kwargs['env']['CC_EMAIL'], 'copy@example.invalid')
         self.assertEqual(self.decide.call_count, 1)
@@ -88,6 +92,40 @@ class ControlledSnow(unittest.TestCase):
         self.assertEqual(self.sender.call_count, 2)
         self.assertEqual(self.decide.call_count, 2)
         self.assertIsNotNone(send_guard.already_sent_today('billsnow'))
+
+    def test_successful_send_makes_the_refresh_the_baseline(self):
+        self.run_job()
+        text = self.baseline.read_text()
+        self.assertIn('Snowfall estimate unchanged; published 11-01.', text)
+        self.assertNotIn('[1]', text)
+        self.assertIn('Baseline note', text)
+        self.assertIs(self.record.call_args.args[1], True)
+        self.assertEqual(self.record.call_args.args[2].split(';')[0], 'sent material update')
+
+    def test_baseline_stays_when_nothing_reached_bill(self):
+        self.run_job(dry=True)
+        self.assertEqual(self.baseline.read_text(), 'old baseline')
+        self.sender.return_value.returncode = 1
+        self.run_job()
+        self.assertEqual(self.baseline.read_text(), 'old baseline')
+        self.sender.return_value.returncode = 0
+        self.decide.return_value = (dict(material_change=False, reason='unchanged evidence',
+            refresh_md='',email_subject='',email_body=''), [])
+        self.run_job()
+        self.assertEqual(self.baseline.read_text(), 'old baseline')
+
+    def test_failed_baseline_update_fails_the_row_without_blocking_the_stamp(self):
+        with patch.object(snow, 'promote_baseline', return_value=False):
+            self.run_job()
+        self.assertIsNotNone(send_guard.already_sent_today('billsnow'))
+        self.assertIs(self.record.call_args.args[1], False)
+        self.assertIn('BASELINE NOT UPDATED', self.record.call_args.args[2])
+
+    def test_failed_baseline_without_a_stamp_cannot_trigger_a_catch_up_resend(self):
+        with patch.object(snow, 'promote_baseline', return_value=False), patch.object(send_guard, 'mark_sent', return_value=False):
+            self.run_job()
+        self.assertIs(self.record.call_args.args[1], True)
+        self.assertIn('BASELINE NOT UPDATED', self.record.call_args.args[2])
 
     def test_failed_evidence_is_not_healthy_quiet(self):
         self.decide.return_value = ({'material_change':False, 'error':True,

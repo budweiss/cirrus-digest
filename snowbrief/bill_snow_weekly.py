@@ -13,7 +13,8 @@ It runs entirely on CIRRUS and reuses CIRRUS's own capabilities:
 
 Flow (mirrors the retired task, made fail-safe):
   1. Load the current outlook baseline + climatology + drivers + rates (ref/).
-  2. Web-search the CURRENT ENSO / CPC state; fetch a few readable sources.
+  2. Web-search the CURRENT ENSO / CPC state and published seasonal snowfall
+     forecasts for the corridor; fetch a few readable sources.
   3. Ask Claude to decide MATERIAL CHANGE vs not and — only if material — draft a
      dated outlook refresh + the Bill email, in the established honest/probabilistic
      voice, signed as CIRRUS. Structured JSON reply so parsing is deterministic.
@@ -21,6 +22,8 @@ Flow (mirrors the retired task, made fail-safe):
      decision isn't unambiguously material -> treat as NO material change and send
      NOTHING. A client email only ever goes out on a clear, grounded material change.
   5. Live mode sends to Bill (cc Buddy) via send_bid_email; dry-run prints only.
+  6. After a successful send the refresh becomes ref/baseline-outlook.md, so next
+     week measures change against what Bill last saw (S553).
 
 Guardrails (unchanged from the task): never fabricate numbers; keep the
 directional-estimate + placeholder-rate caveats; blocking (not ENSO) drives our
@@ -87,6 +90,47 @@ def _read(name):
         return ""
 
 
+# S553: the ENSO/CPC queries used to fill all six fetch slots by themselves (the
+# third never ran on 11-02), so nothing could ever move the snowfall number. Each
+# query now takes one slot per pass, in this order; the last is the fallback.
+QUERIES = [
+    "NOAA CPC ENSO advisory ONI Nino 3.4 latest",
+    "CPC winter outlook 2026-2027 Mid-Atlantic Northeast temperature precipitation",
+    "NOAA Climate Prediction Center seasonal outlook discussion winter 2026-27 snowfall",
+    "NWS Mount Holly winter outlook 2026-2027 snowfall Philadelphia South Jersey Delaware",
+    "NWS Sterling Baltimore Washington winter outlook 2026-2027 snowfall",
+    "2026-27 winter seasonal snowfall forecast inches Philadelphia Baltimore Delaware",
+    "La Nina El Nino winter 2026 2027 forecast Northeast snow",
+]
+
+
+def select_sources(queries, search, fetch, limit=6):
+    """[(url, content)], at most `limit`, taking turns across the queries so no
+    one query can use up the slots. A source needs more than 300 readable chars."""
+    pending = []
+    for q in queries:
+        try:
+            pending.append(iter(search(q, max_results=6) or []))
+        except Exception as e:
+            print(f"search_web error for '{q}':", e)
+    seen, fetched = set(), []
+    while pending and len(fetched) < limit:
+        for urls in list(pending):
+            if len(fetched) >= limit:
+                break
+            for u in urls:
+                if u in seen:
+                    continue
+                seen.add(u)
+                content = fetch(u)
+                if content and len(content) > 300:
+                    fetched.append((u, content[:3500]))
+                    break
+            else:
+                pending.remove(urls)
+    return fetched
+
+
 def gather_web():
     """Return (sources_block, url_list). Empty on any failure (=> fail-safe)."""
     try:
@@ -94,34 +138,14 @@ def gather_web():
     except Exception as e:
         print("web tools import failed:", e)
         return "", []
-    queries = [
-        "NOAA CPC ENSO advisory ONI Nino 3.4 latest",
-        "CPC winter outlook 2026-2027 Mid-Atlantic Northeast temperature precipitation",
-        "La Nina El Nino winter 2026 2027 forecast Northeast snow",
-    ]
-    seen, fetched = set(), []
-    for q in queries:
+
+    def fetch(u):
         try:
-            urls = search_web(q, max_results=6) or []
-        except Exception as e:
-            print(f"search_web error for '{q}':", e)
-            urls = []
-        for u in urls:
-            if u in seen:
-                continue
-            seen.add(u)
-            try:
-                if not is_article_url(u):
-                    continue
-                content, _paywalled = fetch_article_content(u)
-            except Exception:
-                continue
-            if content and len(content) > 300:
-                fetched.append((u, content[:3500]))
-            if len(fetched) >= 6:
-                break
-        if len(fetched) >= 6:
-            break
+            return fetch_article_content(u)[0] if is_article_url(u) else ""
+        except Exception:
+            return ""
+
+    fetched = select_sources(QUERIES, search_web, fetch)
     block = "\n\n".join(f"--- SOURCE {i}: {u} ---\n{c}"
                         for i, (u, c) in enumerate(fetched, 1))
     return block, [u for u, _ in fetched]
@@ -146,12 +170,21 @@ SYSTEM = (
         "the outlook a directional estimate and the monetary rates placeholders pending Bill's expert "
         'confirmation.\n4. Attribute the blocking-versus-ENSO point to the supplied drivers analysis. Do not '
         'turn it into an unsupported weather prediction.\n5. Keep the email to a greeting, two short factual '
-        "paragraphs, one request for Bill's expert review/correction, and the task's exact node signature. "
+        "paragraphs, the change section from rule 7, one request for Bill's expert review/correction, and "
+        "the task's exact node signature. "
         'End after that signature and any supplied source citation. Do not add commitments about what we '
-        'will do next.\n6. For council synthesis, the original source evidence outranks member claims. Name '
+        'will do next, including what happens when Bill replies.\n6. For council synthesis, the original source evidence outranks member claims. Name '
         'actual material disagreements concisely in reason, without inventing member counts or embellishing '
         'the rejected claim. A criticism must be grounded in what the member actually wrote. Keep the same '
-        'required schema and format.\n\nFinal evidence audit: check each factual clause and commitment against '
+        'required schema and format.\n7. If material, both refresh_md and email_body include a short section '
+        "headed exactly 'What changed since last week / What did not'. In each text, it has a line starting "
+        "'Snowfall estimate:' that gives the estimate and says plainly whether it changed from the baseline, "
+        "with the reason; then what changed and what did not; then a last line starting 'Sources:' giving each "
+        "web source used and 'published <date>' as that source shows it, or 'publish date not shown' when the "
+        "source shows none; never guess a date. Report a published forecast's own figures beside our "
+        "estimate; never blend sources into a new range of your own. Anything already in the "
+        "baseline goes under what did not change: never present last week's facts as new.\n\nFinal evidence "
+        'audit: check each factual clause and commitment against '
         'the original supplied task. Delete anything supported only by a member draft or by your background '
         'knowledge. In a disagreement, describe the unsupported proposition itself, without adding an '
         'allegation about numbers, rates, motives, or claims the member did not make. A false prediction and '
@@ -173,8 +206,12 @@ def build_prompt(web_block, urls):
 the current baseline, and if so, draft the update for Bill.
 
 MATERIAL = an ENSO category shift (e.g. strengthening/weakening/label change), a new
-CPC seasonal outlook, a meaningfully changed snowfall probability, or an imminent
-significant corridor storm. Essentially-the-same numbers = NOT material.
+CPC seasonal outlook, a newly published corridor seasonal snowfall forecast that
+meaningfully differs from the baseline estimate, a meaningfully changed snowfall
+probability, or an imminent significant corridor storm. Essentially-the-same numbers
+= NOT material. A source published before the baseline's date is not new evidence, unless
+it is a published corridor seasonal snowfall forecast whose figures the baseline does not
+already report; then give its date and do not call it new this week.
 
 === CURRENT BASELINE OUTLOOK (what Bill last saw) ===
 {baseline}
@@ -205,16 +242,43 @@ Return ONLY a JSON object, no prose around it, with EXACTLY these keys:
   "reason": "<one or two sentences on what changed or why nothing did>",
   "refresh_md": "<if material: a dated outlook-refresh markdown in the honest,
      probabilistic baseline style, anchored to the climatology/drivers, scenario
-     odds not a single number; else empty string>",
+     odds not a single number, under {REFRESH_MAX_CHARS - 2000} characters, including the
+     section '{CHANGE_HEADING}'; else empty string>",
   "email_subject": "<if material: 'Pennrose Snow Package — Winter 2026-27 Outlook Update ({TODAY})'; else empty>",
   "email_body": "<if material: the full Bill email body — warm, plain, honest caveats,
-     framed as a request for his expert review of the rates/assumptions, signed '{NODE}';
-     else empty string>"
+     framed as a request for his expert review of the rates/assumptions, including the
+     section '{CHANGE_HEADING}', signed '{NODE}'; else empty string>"
 }}
 If the web findings are missing or too thin to judge a real change, set material_change=false
 and say so in reason. Do NOT invent ENSO states or numbers you cannot support from the
 baseline or the web findings."""
 
+
+
+CHANGE_HEADING = "What changed since last week / What did not"
+# The refresh becomes next week's baseline, and the route refuses an oversized
+# prompt: an unbounded refresh could make a later Monday unrunnable (S553).
+REFRESH_MAX_CHARS = 10000
+
+
+def has_change_section(text):
+    """The section Bill asked for: the snowfall estimate and each source's date."""
+    head, found, tail = text.lower().partition(CHANGE_HEADING.lower())
+    return bool(found) and "estimate" in tail and "publish" in tail
+
+
+def ready_for_bill(data):
+    """The final answer, after synthesis, has both required lines in both texts.
+
+    Stricter than validate_decision on purpose. That check also runs on each panel
+    member, where one missing label would abort the whole run; the judge repairs a
+    member's slip, so the exact lines are required only of what reaches Bill.
+    """
+    for text in (data["refresh_md"], data["email_body"]):
+        tail = text.lower().partition(CHANGE_HEADING.lower())[2]
+        if "snowfall estimate" not in tail or "sources:" not in tail:
+            return False
+    return True
 
 
 def validate_decision(data):
@@ -227,7 +291,10 @@ def validate_decision(data):
     if not data["reason"].strip():
         return False
     if data["material_change"]:
-        return all(data[k].strip() for k in fields)
+        return (all(data[k].strip() for k in fields)
+                and len(data["refresh_md"]) <= REFRESH_MAX_CHARS
+                and has_change_section(data["refresh_md"])
+                and has_change_section(data["email_body"]))
     return all(not data[k].strip() for k in fields[1:])
 
 
@@ -326,6 +393,9 @@ def decide():
     if not validate_decision(data):
         return {"material_change": False, "error": True,
                 "reason": "invalid model decision fields; not sending."}, urls
+    if data["material_change"] and not ready_for_bill(data):
+        return {"material_change": False, "error": True,
+                "reason": "final answer lacks the snowfall estimate or sources line; not sending."}, urls
     # Clean model decision — NOT an error, even if the reason prose happens to
     # contain a word like "failed"/"parse". error stays falsy on this path.
     data["urls"] = urls
@@ -373,6 +443,8 @@ def build_note(info):
         base = "send failed"
     elif info.get("sent"):
         base = "sent material update"
+        if info.get("baseline_failed"):
+            base += "; BASELINE NOT UPDATED"
     else:
         # S245: was `str(reason or "no material change")[:120]` -- the trigger
         # phrase completeness.py's Rule looks for (zero_phrases=("no material
@@ -420,10 +492,35 @@ def note_samples():
          "zero"),
         # Productive, not zero: the week's brief DID go out, this run just
         # refused to send it twice. Same call already asserted for billnewdev.
+        ("sent, but the baseline could not be updated",
+         build_note({"sent": True, "baseline_failed": True}), "productive"),
         ("a duplicate run was suppressed",
          build_note({"suppressed": True}), "productive"),
         ("the send failed", build_note({"sent": False}), "blind"),
     ]
+
+
+def promote_baseline(refresh_md, today=None):
+    """Make this week's sent refresh the baseline. True on success, never raises:
+    the mail has already gone, so a failure here is reported, not fatal.
+
+    The file stays tracked but changes on the running host from here on, so do
+    not commit it: `git pull --ff-only` there refuses a commit touching it (T181).
+    """
+    text = re.sub(r"[ \t]*\[\d+(?:\s*[,\u2013-]\s*\d+)*\]", "", refresh_md).strip()
+    note = (f"*Baseline note ({today or TODAY}): the refresh sent to Bill that day, so the next "
+            "run compares against what he last saw. Source markers removed.*")
+    first, _, rest = text.partition("\n")
+    text = (f"{first}\n\n{note}\n{rest}" if first.startswith("#") else f"{note}\n\n{text}") + "\n"
+    path = REF / "baseline-outlook.md"
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=REF, prefix=".baseline-", delete=False) as tf:
+            tf.write(text)
+        os.replace(tf.name, path)
+        return True
+    except Exception as e:
+        print(f"WARNING: baseline not updated ({type(e).__name__}): next week compares against the old one.")
+        return False
 
 
 def _rec(dry, ok, note=""):
@@ -511,15 +608,32 @@ def main():
                        cwd=str(DIGEST_DIR), capture_output=True, text=True, env=env)
     print((r.stdout or "") + (r.stderr or ""))
     print("send exit:", r.returncode, "| refresh:", refresh_path.name)
+    baseline_ok = True
+    stamped = False
     if r.returncode == 0:
         # Stamp FIRST, then record: the stamp is what stops a duplicate, and
         # the window between the mail leaving and the stamp landing is the only
         # window in which a restart could still double-send. Keep it short.
         import send_guard
-        if not send_guard.mark_sent("billsnow", data.get("email_subject") or ""):
+        stamped = send_guard.mark_sent("billsnow", data.get("email_subject") or "")
+        if not stamped:
             print("WARNING: send stamp not written — a restart could re-send.")
-    _rec(dry, r.returncode == 0,
-         build_note({"sent": r.returncode == 0, "draft": _draft_note()}))
+        baseline_ok = promote_baseline(data.get("refresh_md") or "")
+    # A stale baseline fails the row so the report card shows it. Without a stamp
+    # the row stays ok: a failed row and no stamp would make the catch-up re-send.
+    _rec(dry, r.returncode == 0 and (baseline_ok or not stamped),
+         build_note({"sent": r.returncode == 0, "baseline_failed": not baseline_ok,
+                     "draft": _draft_note()}))
+
+
+def _prompt_with_stub_refs():
+    global _read
+    real = _read
+    _read = lambda name: ""
+    try:
+        return build_prompt("", [])
+    finally:
+        _read = real
 
 
 def selftest() -> int:
@@ -537,6 +651,67 @@ def selftest() -> int:
         nonlocal fails
         print(f"  [{'OK ' if cond else 'FAIL'}] {name}")
         fails += 0 if cond else 1
+
+    # S553: the snowfall queries must get slots even when ENSO alone could fill them.
+    def fake_search(q, max_results=6):
+        return [f"https://{QUERIES.index(q)}.example/{i}" for i in range(max_results)]
+    picked = [u for u, _ in select_sources(QUERIES, fake_search, lambda u: "x" * 400)]
+    ck("six sources at most, one per query first", len(picked) == 6
+       and len({u.split(".")[0] for u in picked}) == 6)
+    ck("published snowfall forecast queries get a slot",
+       any("https://5." in u for u in picked))
+    sparse = select_sources(["a", "b"], lambda q, max_results=6: ["u1", "u2", "u3"] if q == "a" else [],
+                            lambda u: "x" * 400)
+    ck("an empty query's turns go to the others", [u for u, _ in sparse] == ["u1", "u2", "u3"])
+    ck("a short page is not a source",
+       select_sources(["a"], lambda q, max_results=6: ["u"], lambda u: "x" * 300) == [])
+    ck("a failed search does not end the run",
+       len(select_sources(["bad", "a"], lambda q, max_results=6: 1 / 0 if q == "bad" else ["u"],
+                          lambda u: "x" * 400)) == 1)
+
+    # S553: a material update must carry the section, in both texts.
+    section = f"{CHANGE_HEADING}\nSnowfall estimate unchanged. Source, published 11-01."
+    good = dict(material_change=True, reason="r", refresh_md=section, email_subject="s", email_body=section)
+    ck("the change section passes in both texts", validate_decision(good))
+    for key in ("refresh_md", "email_body"):
+        ck(f"{key} without the section is refused", not validate_decision(dict(good, **{key: "body"})))
+    ck("a section with no snowfall estimate is refused",
+       not validate_decision(dict(good, email_body=f"{CHANGE_HEADING}\nSource, published 11-01.")))
+    ck("a section with no publish dates is refused",
+       not validate_decision(dict(good, email_body=f"{CHANGE_HEADING}\nSnowfall estimate unchanged.")))
+    ck("the final answer with both lines is ready",
+       ready_for_bill(dict(good, refresh_md=section + "\nSources: x, published 11-01.",
+                           email_body=section + "\nSources: x, published 11-01.")))
+    ck("a final answer with no Sources line is not ready", not ready_for_bill(good))
+    ck("a final answer with no estimate line is not ready",
+       not ready_for_bill(dict(good, email_body=f"{CHANGE_HEADING}\nThe estimate held. Sources: x, published 11-01.",
+                               refresh_md=section + "\nSources: x, published 11-01.")))
+    ck("an oversized refresh is refused",
+       not validate_decision(dict(good, refresh_md=section + "x" * REFRESH_MAX_CHARS)))
+    ck("a quiet week needs no section",
+       validate_decision(dict(material_change=False, reason="r", refresh_md="", email_subject="", email_body="")))
+    ck("the prompt and the model contract name the same heading",
+       CHANGE_HEADING in SYSTEM and CHANGE_HEADING in _prompt_with_stub_refs())
+
+    # S553: the baseline becomes what Bill last saw. REF points at a temp dir (T32).
+    global REF
+    real_ref = REF
+    with tempfile.TemporaryDirectory() as tmp:
+        REF = Path(tmp)
+        try:
+            ok = promote_baseline("# Refresh\nIt rose [1], then fell [2][3] and [4, 5].\n", "2026-11-09")
+            text = (REF / "baseline-outlook.md").read_text()
+            ck("promotion reports success", ok)
+            ck("citation markers are stripped", "It rose, then fell and." in text and "[" not in text)
+            ck("a one-line provenance note follows the title",
+               text.split("\n")[2].startswith("*Baseline note (2026-11-09)"))
+            ck("no temp file is left behind", [p.name for p in REF.iterdir()] == ["baseline-outlook.md"])
+            REF = Path(tmp) / "missing"
+            ck("a failed promotion returns False, not an exception", promote_baseline("# R\nx") is False)
+        finally:
+            REF = real_ref
+    ck("a failed promotion is in the note",
+       "BASELINE NOT UPDATED" in build_note({"sent": True, "baseline_failed": True}))
 
     saved = dict(_draft_state)
     try:

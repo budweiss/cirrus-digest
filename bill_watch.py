@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT))
 BILL_JOBS = (("billsnow", "SNOW outlook", True),
              ("billnewdev", "Development leads", True),
              ("entitykbdigest", "HOA digest", False))   # (ledger name, label, has send stamp)
-ESTIMATE_RX = re.compile(r"Central estimate[^~]*~\s*([0-9]+\s*[-–]\s*[0-9]+)")
+ESTIMATE_RX = re.compile(r"(?:Central|Snowfall) estimate[^~]*~\s*([0-9]+\s*[-–]\s*[0-9]+)")
 
 
 def job_line(label, row, stamped, today, extra=""):
@@ -206,6 +206,8 @@ def selftest():
             ("2026-10-26", refresh("12–22")), ("2026-10-28", refresh("12-22"))]
     ck("estimate unchanged since the last time it moved", estimate_history(hist) == ("12-22", "2026-10-26"))
     ck("no stated estimate -> None", estimate_history([("2026-10-28", "no table")]) == (None, None))
+    ck("the S553 section's estimate line is read too",
+       estimate_history([("2026-11-09", "**Snowfall estimate:** unchanged at ~12-22\" central")]) == ("12-22", "2026-11-09"))
 
     now = 1_000_000.0
     projects = {"foundation:hoa-leads": {"evaluations": [{"approved": True, "expires_at": now + 3600}, {"approved": True, "expires_at": now + 7200}]},

@@ -23,8 +23,9 @@ class SnowFailurePipeline(unittest.TestCase):
         creds=self.root/'creds.json';creds.write_text(json.dumps(self.creds))
         decision=dict(material_change=False,reason='fixture unchanged',refresh_md='',email_subject='',email_body='')
         if material_preview:
-            decision.update(material_change=True, reason='fixture change', refresh_md='fixture outlook',
-                            email_subject='fixture subject', email_body='fixture body')
+            section=f'{snow.CHANGE_HEADING}\nSnowfall estimate: unchanged.\nSources: x, published 11-01.'
+            decision.update(material_change=True, reason='fixture change', refresh_md='fixture outlook\n'+section,
+                            email_subject='fixture subject', email_body='fixture body\n'+section)
         def answer(*args):
             self.calls.append('provider')
             L._LAST.model='m';L._LAST.finish_reason='length' if failure=='truncated' else 'stop'
@@ -46,7 +47,7 @@ class SnowFailurePipeline(unittest.TestCase):
                 raise
         with contextlib.ExitStack() as st:
             st.enter_context(patch.object(ensemble, 'best_answer', side_effect=observe_failure))
-            for name,value in [('CREDS_PATH',creds),('OUT',self.root/'out'),('DIGEST_DIR',self.root)]:st.enter_context(patch.object(snow,name,value))
+            for name,value in [('CREDS_PATH',creds),('OUT',self.root/'out'),('DIGEST_DIR',self.root),('REF',self.root/'ref')]:st.enter_context(patch.object(snow,name,value))
             st.enter_context(patch.object(snow.sys,'argv',['bill_snow_weekly.py'] + (['--dry-run'] if material_preview else [])))
             st.enter_context(patch.object(snow,'gather_web',return_value=('' if failure=='no-evidence' else 'synthetic evidence',['https://example.invalid/source'])))
             st.enter_context(patch.object(snow,'build_prompt',return_value='synthetic forecast'))
