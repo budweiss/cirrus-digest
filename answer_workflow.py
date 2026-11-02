@@ -27,6 +27,9 @@ exact supporting quote. Missing evidence requires needs_review; never invent.
 General writing/advice may be offered as a suggestion, not as a verified fact.
 In review mode reconcile the drafts against the question and source evidence;
 do not simply select or concatenate them. Explicitly reject unsupported claims.
+Your verdict, confidence, checks and missing_request_quote describe the final
+answer you return, not an earlier draft. If you repair an omission using supplied
+evidence, assess the repaired answer; do not carry forward the draft's rejection.
 Return ONE JSON object with keys:
 answer: concise plain text (maximum 2500 characters);
 confidence: number 0..1;
