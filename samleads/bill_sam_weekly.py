@@ -170,18 +170,23 @@ def read_extract(path, now=None):
     return matched, total, newest
 
 
-def load_seen(path=None):
+def _current(seen, now):
+    cutoff = (now - timedelta(days=SEEN_KEEP_DAYS)).strftime("%Y-%m-%d")
+    return {k: v for k, v in seen.items() if v >= cutoff}
+
+
+def load_seen(path=None, now=None):
     path = Path(path or STATE)
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    seen = json.loads(path.read_text())
+    return _current(seen, now) if now else seen
 
 
 def save_seen(seen, now, path=None):
     path = Path(path or STATE)
     path.parent.mkdir(parents=True, exist_ok=True)
-    cutoff = (now - timedelta(days=SEEN_KEEP_DAYS)).strftime("%Y-%m-%d")
-    keep = {k: v for k, v in seen.items() if v >= cutoff}
+    keep = _current(seen, now)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(keep))
     os.replace(tmp, path)
@@ -316,7 +321,7 @@ def run(extract_path, dry=False, now=None, state=None, send=None, record=None, g
         if not dry:
             record(False, "failed: %s" % e)
         return 1
-    seen = load_seen(state)
+    seen = load_seen(state, now)    # an expired title key must not hide a new contract
     fresh, touched = new_notices(matched, seen, now)
     subject, body = compose(fresh, total, newest, now)
     if dry:
