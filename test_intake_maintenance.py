@@ -49,6 +49,7 @@ class MaintenanceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, ExitStack() as stack:
             m.atomic(Path(d)/'config/project_maintenance.json', {'active':True})
             stack.enter_context(patch.object(intake,'PROJECT_DIR',Path(d)))
+            stack.enter_context(patch.object(intake,'NOTICE_OUTBOX_PATH',Path(d)/'outbox.json'))  # T180
             stack.enter_context(patch.object(intake,'load_allowlist',return_value={'client@example.com':{'name':'client'}}))
             stack.enter_context(patch('runtime_config.load_sources',return_value={}))
             stack.enter_context(patch.object(intake,'find_account',return_value={'credential_key':'outlook_password'}))

@@ -68,6 +68,7 @@ class InformationTest(unittest.TestCase):
             root=Path(d)
             for module in [intake,ts]: stack.enter_context(patch.object(module,'PROJECT_DIR',root))
             stack.enter_context(patch.object(intake,'FAST_POLL_STATE_PATH',root/'fast'))
+            stack.enter_context(patch.object(intake,'NOTICE_OUTBOX_PATH',root/'outbox.json'))  # T180
             stack.enter_context(patch.object(intake,'load_allowlist',return_value={'owner@example.com':dict(name='buddy',projects=['snow'],limit=10,request_kind='build',require_prefix=False)}))
             stack.enter_context(patch('runtime_config.load_sources',return_value={}))
             stack.enter_context(patch.object(intake,'find_account',return_value={'credential_key':'outlook_password'}))
