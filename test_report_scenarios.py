@@ -45,7 +45,7 @@ class ReportScenarios(unittest.TestCase):
         with patch('sys.argv',['cumulus_daily_brief.py','--dry-run']),contextlib.redirect_stdout(out):daily.main()
         return out.getvalue()
     def test_healthy_quiet_counts(self):
-        body=self.output();self.assertEqual(body.count('✅'),4);self.assertEqual(body.count('valid quiet: no changes'),4)
+        body=self.output();self.assertEqual(body.count('✅'),5);self.assertEqual(body.count('valid quiet: no changes'),5)
         self.assertIn('1 routine check(s), 0 anomaly/issue flag(s), 0 escalation(s)',body)
         self.assertIn('Unresolved incidents: 0',body);self.assertIn('$0.00 spent today',body);self.assertNotIn('UNKNOWN',body)
         self.assertNotIn('Switchboard',body)
@@ -57,7 +57,7 @@ class ReportScenarios(unittest.TestCase):
         self.assertIn('⚠️ Switchboard shadow NOT recorded for 1 delivered reply(s) (write-failed)',body)
     def test_mixed_daily_weekly_failure_stale_missing(self):
         self.status['billsnow']['last_run']='2026-09-21 04:00';self.status['billnewdev'].update(ok=False,note='source artifact missing');del self.status['pedagogy'];self.jobs.write_text(json.dumps(self.status))
-        body=self.output();self.assertEqual(body.count('✅'),1)
+        body=self.output();self.assertEqual(body.count('✅'),2)
         for value in ['billsnow: no run recorded today; last 2026-09-21','cadence not evaluated here','⚠️ billnewdev: 06:00 — source artifact missing','pedagogy: evidence UNKNOWN']:self.assertIn(value,body)
         self.assertNotIn('**Quiet day**',body)
     def test_malformed_current_day_job_timestamp_not_healthy(self):
@@ -65,7 +65,7 @@ class ReportScenarios(unittest.TestCase):
         self.jobs.write_text(json.dumps(self.status))
         body=self.output()
         self.assertIn('hoaleads: evidence UNKNOWN',body)
-        self.assertEqual(body.count('✅'),3)
+        self.assertEqual(body.count('✅'),4)
     def test_daily_missing_crm_database_unknown_without_creation(self):
         path=self.root/'db'/'hoa_leads_bill.db';path.unlink()
         self.assertIn('CRM coverage UNKNOWN: source database missing',self.output())

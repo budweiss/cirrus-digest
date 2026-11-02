@@ -92,7 +92,7 @@ class MorningBriefScenarios(unittest.TestCase):
         self.assertIn("⚠️ Needs a look", body)
         self.assertIn("ticket-x (buddy,", body)
         self.assertNotIn("PRIVATE", body)
-        q.write_text(q.read_text().replace('"queued"', '"session"'))
+        q.write_text(q.read_text().replace('"queued"', '"resolved"'))
         self.assertIn("✅ CIRRUS healthy", self.body())
 
     def body(self):

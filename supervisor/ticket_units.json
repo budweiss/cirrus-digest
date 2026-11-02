@@ -5,6 +5,7 @@
   "alopecia-collect.service",
   "cirrus-api.service",
   "cirrus-billnewdev.service",
+  "cirrus-billsam.service",
   "cirrus-billsnow.service",
   "cirrus-bot.service",
   "cirrus-deadman.service",

@@ -1,0 +1,9 @@
+[Unit]
+Description=cirrus-billsam timer (beta)
+
+[Timer]
+OnCalendar=Mon 05:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

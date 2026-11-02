@@ -1,0 +1,15 @@
+# S554: Bill's Monday SAM.gov summary (samleads/bill_sam_weekly.py).
+[Unit]
+Description=cirrus-billsam (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/samleads/bill_sam_weekly.py
+TimeoutStartSec=1200

@@ -91,6 +91,7 @@ CADENCE_H = {
     "pedagogy":      26,        # daily 06:00 (runs on CUMULUS since S57)
     "billnewdev":    24 * 8,    # weekly Monday + grace
     "billsnow":      24 * 8,    # weekly Monday + grace
+    "billsam":       24 * 8,    # S554: weekly Monday + grace
     # S537: SNOW guard (Sun 18:00 / Mon 11:00) and Bill watch (Mon 12:00 card,
     # daily 12:00 approvals) on CUMULUS; registered with the timers (T44).
     "snowpreflight":  24 * 8,
@@ -198,7 +199,7 @@ CADENCE_H = {
 # CIRRUS (dev), it reads their status from CUMULUS's ledger over the read-only SSH
 # link instead of the (now-stale) local ledger — so a moved job is reported from
 # where it actually runs, not falsely flagged OVERDUE here.
-REMOTE_JOBS   = {"billsnow", "billnewdev", "pedagogy", "hoaleads",
+REMOTE_JOBS   = {"billsnow", "billnewdev", "billsam", "pedagogy", "hoaleads",
                  "snowpreflight", "snowcatchup", "billreportcard", "approvalwatch", "hoacountyrefresh",
                  # S81 -- all of these run on CUMULUS, so when summarize()
                  # runs on CIRRUS their status must be read from CUMULUS's

@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 BILL_JOBS = (("billsnow", "SNOW outlook", True),
              ("billnewdev", "Development leads", True),
+             ("billsam", "SAM.gov summary", True),
              ("entitykbdigest", "HOA digest", False))   # (ledger name, label, has send stamp)
 ESTIMATE_RX = re.compile(r"(?:Central|Snowfall) estimate[^~]*~\s*([0-9]+\s*[-–]\s*[0-9]+)")
 
@@ -104,6 +105,7 @@ def lapsing(projects, now, advisory, window=24 * 3600):
 
 
 RERUN = {"billnewdev": ["newdev/bill_newdev_weekly.py"],
+         "billsam": ["samleads/bill_sam_weekly.py"],
          "entitykbdigest": ["entity_kb_weekly_digest.py", "--client", "bill"]}
 
 
@@ -225,7 +227,7 @@ def selftest():
     ck("a healthy route is silent", "foundation:pedagogy-topic" not in hits)
 
     # S537: retry first, tell Buddy only what is still broken.
-    states = {"billsnow": [True], "billnewdev": [False, True], "entitykbdigest": [False, False]}
+    states = {"billsnow": [True], "billnewdev": [False, True], "billsam": [True], "entitykbdigest": [False, False]}
     reruns, sent = [], []
 
     def ev(name):
@@ -239,7 +241,7 @@ def selftest():
     reruns.clear(); sent.clear()
     good, _ = card(lambda n: (True, n), lambda n: reruns.append(n) or 0, sent.append, t)
     ck("all delivered -> silent, nothing rerun", good and not sent and not reruns)
-    states = {"billsnow": [True], "billnewdev": [False], "entitykbdigest": [True]}
+    states = {"billsnow": [True], "billnewdev": [False], "billsam": [True], "entitykbdigest": [True]}
     reruns.clear(); sent.clear()
     card(ev, lambda n: reruns.append(n) or 0, sent.append, t, monday=False)
     ck("off-Monday hand-run never reruns a Bill email", reruns == [] and len(sent) == 1)

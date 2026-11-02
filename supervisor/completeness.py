@@ -451,6 +451,19 @@ RULES = {
             "the sweep itself is broken and Bill's feed is silently wrong — "
             "which is how S78 went unnoticed.",
     ),
+    # S554: Bill's Monday SAM.gov summary. A quiet week still sends, and it
+    # records how many notices it read, so a collapsed read is its own alarm.
+    "billsam": Rule(
+        "billsam", [r"(\d+)\s+new"], max_zero_runs=6,
+        zero_phrases=("quiet week sent",),
+        produced_phrases=("sent",),
+        fail_phrases=("swept 0 notices", "failed:"),
+        evidence=("notices",),
+        why="Bill's SAM.gov summary has found nothing new for six weeks. Read the "
+            "`swept` count first: about 70,000 notices means SAM.gov is answering "
+            "and the search is quiet, so check its filters against sam.gov by hand; "
+            "far fewer means the public data file changed.",
+    ),
     # S81: the real note is "sent: 2 art, 0 pod, 0 topic" -- none of the old
     # patterns matched it, so Alyssa's digest read as unreadable every day.
     # Counting the PIECES rather than the send keeps a genuinely empty digest

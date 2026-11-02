@@ -48,7 +48,7 @@ CLIENT_KB_PROJECTS = {
 # jobs" section (skip cadence/overdue math here -- that's job_status.py's
 # job on the CIRRUS side; this is just "what ran today, locally").
 CLIENT_JOBS = {
-    "Bill (property/HOA)": ["hoaleads", "billsnow", "billnewdev"],
+    "Bill (property/HOA)": ["hoaleads", "billsnow", "billnewdev", "billsam"],
     "Alyssa (pedagogy)": ["pedagogy"],
 }
 

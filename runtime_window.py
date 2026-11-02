@@ -150,6 +150,7 @@ JOB = {
     "cirrus-hoaleads.timer":         ("heavy", 4, 120, "per-property deep-dive research"),
     "cirrus-billsnow.timer":         ("heavy", 3, 60, "weather + web research, Mondays"),
     "cirrus-billnewdev.timer":       ("heavy", 1, 40, "new-development research, Mondays"),
+    "cirrus-billsam.timer":          ("light", 1, 5, "S554: public SAM.gov file (210 MB), no models, Mondays"),
     "cirrus-pedagogy.timer":         ("heavy", 1, 50, "podcast/article research"),
     "cirrus-modelhealth.timer":      ("light", 1, 2, "pings each model endpoint"),
     "cirrus-cloudflaredupdate.timer": ("light", 2, 40, "S515 version check; .deb + tunnel restart only on a new release"),
