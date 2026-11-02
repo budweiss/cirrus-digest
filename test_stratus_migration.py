@@ -10,6 +10,7 @@ from unittest.mock import patch
 from stratus import stratus_monthly as S
 import mailer
 import vendor_mail_watch
+import llm_providers
 
 ENTRY = ('### 2026-10-14\n\n- No fresh source establishes a new purchase choice. '
          'The existing hardware notes remain dated background and creator claims are '
@@ -87,6 +88,55 @@ class MonthlyTests(unittest.TestCase):
         self.assertIn('No order date is committed', prompt)
         self.assertIn('expensive refurbished', prompt)
         self.assertIn('creator claims, not our benchmark', prompt)
+
+    def test_fallback_validation_failure_is_distinct_and_retained_privately(self):
+        private = ENTRY.replace('Continue waiting', '[Private source](https://private.example/) Continue waiting')
+        with self.fixture() as (root, send), \
+             patch.object(S, 'gather_web', return_value=('', [])), \
+             patch.object(S, 'learned_block', return_value=('', [])), \
+             patch.object(S, 'local_entry', side_effect=ValueError('local_evidence_review_failed')), \
+             patch.object(llm_providers, 'escalate', return_value=('anthropic', private)), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            entry, urls, error = S.synthesize()
+            self.assertIsNone(entry)
+            self.assertEqual(error, 'Report validation failed: unoffered_source')
+            packet, = (root/'state/failures').glob('*.json')
+            self.assertEqual(packet.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(packet.read_text())['draft'], private)
+            self.assertNotIn('private.example', output.getvalue() + error)
+            send.assert_not_called()
+
+    def test_model_failure_does_not_masquerade_as_validation_or_leak_text(self):
+        with self.fixture() as (_, send), \
+             patch.object(S, 'gather_web', return_value=('', [])), \
+             patch.object(S, 'learned_block', return_value=('', [])), \
+             patch.object(S, 'local_entry', side_effect=ValueError('secret fixture body')), \
+             patch.object(llm_providers, 'escalate', side_effect=RuntimeError('secret credential')), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            entry, _, error = S.synthesize()
+            self.assertIsNone(entry)
+            self.assertEqual(error, 'Model call failed: RuntimeError')
+            self.assertNotIn('secret', output.getvalue() + error)
+            send.assert_not_called()
+
+    def test_local_review_rejection_retains_draft_and_review(self):
+        import media_pipeline
+        review = '{"approved":false,"problems":["private reviewer finding"]}'
+        with self.fixture() as (root, _), \
+             patch.object(media_pipeline, 'call', side_effect=[ENTRY, review]):
+            with self.assertRaisesRegex(ValueError, '^local_evidence_review_failed$'):
+                S.local_entry('private prompt', [])
+            packet, = (root/'state/failures').glob('*.json')
+            data = json.loads(packet.read_text())
+            self.assertEqual(data['draft'], ENTRY)
+            self.assertEqual(data['review'], review)
+            self.assertEqual(data['reason'], 'local_evidence_review_failed')
+
+    def test_diagnostic_write_failure_preserves_original_validation_reason(self):
+        with self.fixture(), patch.object(S.os, 'open', side_effect=OSError('secret path')), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            S.retain_failure('fallback-validation', ValueError('entry_shape'), 'private', [])
+            self.assertEqual(output.getvalue(), '[llm] failure evidence could not be saved\n')
 
 
 if __name__ == '__main__': unittest.main()
