@@ -217,6 +217,43 @@ class WorkflowTests(MemoryTests):
         data["confidence"] = True
         self.assertIsNone(aw.parse(json.dumps(data), SOURCE))
 
+    def test_coverage_verdict_describes_the_reviewers_own_answer(self):
+        # S539: GPT-OSS on C1, 10-29 09:47 and 14:38, verbatim public-fixture
+        # outputs. Each answer is complete, but the verdict graded the
+        # incomplete draft. They must keep failing; the verdict is the only defect.
+        import answer_workflow_eval as evaluation
+        case = dict(evaluation.fixtures())["coverage"]
+        note = case["sources"]["note"]
+        failed = [
+            {"answer": "The meeting is on Thursday at 10 AM in Room 4, and the owner is Lee.",
+             "confidence": 0.98, "verdict": "needs_review", "kind": "grounded",
+             "evidence": [{"source": "note", "quote": "The meeting is Thursday at 10 AM in Room 4."},
+                          {"source": "note", "quote": "The owner is Lee."}],
+             "reason": "The draft omitted the meeting owner; the source provides both the time/location and the owner, allowing a complete answer.",
+             "checks": {"supported": True, "complete": False, "scope_correct": True, "no_unperformed_actions": True},
+             "missing_request_quote": ""},
+            {"answer": "The meeting is Thursday at 10 AM in Room 4, and the owner is Lee.",
+             "confidence": 1.0, "verdict": "needs_review", "kind": "grounded",
+             "evidence": [{"source": "note", "quote": note}],
+             "reason": "The draft only covered when and where, missing the owner. The answer now includes all three requested items, directly supported by the source.",
+             "checks": {"supported": True, "complete": True, "scope_correct": True, "no_unperformed_actions": True},
+             "missing_request_quote": ""}]
+        for data in failed:
+            self.assertFalse(evaluation.score("coverage", json.dumps(data), case))
+            self.assertFalse(aw.reviewed(aw.parse(json.dumps(data), case["sources"]), case["question"]))
+        own = dict(failed[1], verdict="pass")
+        self.assertTrue(evaluation.score("coverage", json.dumps(own), case))
+        self.assertFalse(evaluation.score("coverage", json.dumps(dict(failed[0], verdict="pass")), case))
+        # S553: Qwen on CIRRUS, the same defect with the gap quoted; it used to pass.
+        quoted = dict(failed[0], confidence=.95, missing_request_quote="and who owns it?")
+        self.assertFalse(evaluation.score("coverage", json.dumps(quoted), case))
+        # An answer that really omits the owner may still say so honestly.
+        honest = dict(quoted, answer="The meeting is Thursday at 10 AM in Room 4.",
+                      evidence=[{"source": "note", "quote": "The meeting is Thursday at 10 AM in Room 4."}])
+        self.assertTrue(evaluation.score("coverage", json.dumps(honest), case))
+        self.assertIn('verdict: "pass" when every check below is true of your answer', aw.SYSTEM)
+        self.assertIn("checks: booleans describing your answer", aw.SYSTEM)
+
     def test_same_provider_does_not_count_twice(self):
         model = FakeModels([("ollama", output(False)), ("kimi", output(False)), ("kimi", output())])
         result = aw.compose(self.m, self.add(), model, SOURCE)
@@ -298,6 +335,23 @@ class WorkflowTests(MemoryTests):
         repair = result["meta"]["stages"]["local_repair"]
         self.assertEqual((repair["error_cause"], repair["error_cause_detail"]), ("ValueError", ""))
         self.assertNotIn("private gate text", json.dumps(result))
+        # S539: no model judged the draft, so the hold must not read as a verdict.
+        self.assertEqual(result["meta"]["reason"], "Review could not run (capability selection "
+                         "unavailable or requirements unmet); private work stays local.")
+
+    def test_hold_reason_names_a_fault_only_when_no_review_ran(self):
+        cases = [  # (draft, then review-stage replies) -> expected reason prefix
+            ([output(), RuntimeError("private detail"), RuntimeError("x")], "Review could not run (RuntimeError)"),
+            ([output(), output(False), output(False)], "Local attempts exhausted"),
+            ([output(), RuntimeError("x"), output(False)], "Local attempts exhausted"),
+            ([output(), RuntimeError("x"), output(), RuntimeError("y")], "Local attempts exhausted"),
+            ([RuntimeError("x"), RuntimeError("y")], "Local attempts exhausted")]
+        for n, (replies, expected) in enumerate(cases):
+            model = FakeModels([("ollama", r) for r in replies])
+            result = aw.compose(self.m, self.add(str(n), thread="t" + str(n), privacy="LOCAL_ONLY"), model, SOURCE)
+            self.assertEqual(result["state"], "needs_review")
+            self.assertTrue(result["meta"]["reason"].startswith(expected), (n, result["meta"]["reason"]))
+            self.assertNotIn("private detail", json.dumps(result))
 
 
 class BotTests(MemoryTests):

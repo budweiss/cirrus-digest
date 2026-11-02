@@ -33,12 +33,12 @@ evidence, assess the repaired answer; do not carry forward the draft's rejection
 Return ONE JSON object with keys:
 answer: concise plain text (maximum 2500 characters);
 confidence: number 0..1;
-verdict: "pass" or "needs_review";
+verdict: "pass" when every check below is true of your answer, otherwise "needs_review";
 kind: "grounded" or "suggestion";
 evidence: list of {"source": source id, "quote": exact nonempty quote};
 reason: brief explanation of the evidence or remaining gap.
-checks: object with booleans supported, complete, scope_correct, no_unperformed_actions;
-missing_request_quote: exact excerpt of the question when incomplete, otherwise empty.
+checks: booleans describing your answer: supported, complete, scope_correct, no_unperformed_actions;
+missing_request_quote: exact excerpt of the question your answer leaves unanswered, otherwise empty.
 In review mode independently verify every actual ask is addressed, and every factual
 claim is supported. True quotations alone do not establish support or completeness.
 Do not invent requirements beyond the actual question. A rejection explanation
@@ -272,17 +272,28 @@ def compose(memory, row, models, sources=None):
         return result
 
     local = step("local", "local")
+    reviews = []
     if accepted(local.get('parsed')):
         review = step('local_review', 'local', 'review')
+        reviews.append(review)
         if reviewed(review.get('parsed'), row['question']):
             return finish(memory, row, review, 'Local draft and checked review', checkpoints)
     # One repair, including malformed/unsupported responses. No open-ended panel.
     repair = step('local_repair', 'local', 'review')
+    reviews.append(repair)
     if reviewed(repair.get('parsed'), row['question']):
         review = step('repair_review', 'local', 'review')
+        reviews.append(review)
         if reviewed(review.get('parsed'), row['question']):
             return finish(memory, row, review, 'One local repair and checked review', checkpoints)
     if privacy == 'LOCAL_ONLY':
+        # S539: a passing draft whose every review stage errored was never
+        # judged; name the fixed gate fault instead of implying a verdict.
+        if accepted(local.get('parsed')) and all(r.get('error_type') for r in reviews):
+            fault = '; '.join(dict.fromkeys(r.get('error_detail') or r.get('error_cause_detail')
+                                            or r['error_type'] for r in reviews))
+            return hold(memory, row, 'Review could not run (%s); private work stays local.' % fault,
+                        requires_buddy=True)
         return hold(memory, row, 'Local attempts exhausted; private work stays local.', requires_buddy=True)
     foundation = step('foundation', 'cloud', 'review')
     if reviewed(foundation.get('parsed'), row['question']):

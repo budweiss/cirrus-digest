@@ -55,9 +55,13 @@ def score(case, raw, payload):
     if case in ("missing", "irrelevant"):
         return result["verdict"] == "needs_review"
     if case == 'coverage':
+        complete = all(w in text for w in ['thursday','10','room 4','lee'])
         if result['verdict']=='needs_review':
-            return bool(result.get('missing_request_quote')) and result['missing_request_quote'] in payload['question']
-        return aw.reviewed(result,payload['question']) and all(w in text for w in ['thursday','10','room 4','lee'])
+            # S553: a complete answer cannot also be incomplete. Quoting the
+            # question hid 9/20 such verdicts from Qwen, each a needless hold.
+            return (not complete and bool(result.get('missing_request_quote'))
+                    and result['missing_request_quote'] in payload['question'])
+        return aw.reviewed(result,payload['question']) and complete
     if not aw.reviewed(result,payload['question']):
         return False
     # Qualification scores correctness; runtime independently applies the
