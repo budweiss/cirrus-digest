@@ -89,11 +89,33 @@ def is_signature_image(part, cids):
             and len(part.get_payload(decode=True) or b'')<=MAX_MESSAGE_BYTES)
 
 
+class _VisibleText(HTMLParser):
+    """Readable text of an HTML attachment; script and style are not content."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts=[]; self.skip=0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script','style'):self.skip+=1
+
+    def handle_endtag(self, tag):
+        if tag in ('script','style') and self.skip:self.skip-=1
+
+    def handle_data(self, data):
+        if not self.skip and data.strip():self.parts.append(data.strip())
+
+
 def attachment_text(part):
     raw=part.get_payload(decode=True) or b''
     if len(raw)>MAX_MESSAGE_BYTES:raise ValueError('Attachment exceeds evidence limit')
     name=(part.get_filename() or '').lower()
     if name.endswith(('.txt', '.md', '.csv')):return raw.decode(part.get_content_charset() or 'utf-8')
+    if name.endswith(('.html', '.htm')):
+        # S554: Bill's 11-02 reply held only because a thread carried one.
+        parser=_VisibleText()
+        parser.feed(raw.decode(part.get_content_charset() or 'utf-8'))
+        parser.close()
+        return '\n'.join(parser.parts)
     if name.endswith('.docx'):
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             info=archive.getinfo('word/document.xml')

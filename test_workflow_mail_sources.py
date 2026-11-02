@@ -34,6 +34,11 @@ class SourceTests(unittest.TestCase):
   text=sources.attachment_text(msg);self.assertEqual(text,'First sentence.\n\nLast sentence.')
   selected=sources.select_sources({'fixture':text+'\n'},'Last sentence')
   self.assertIn('Last sentence.',selected.values())
+ def test_html_attachment_yields_visible_text_only(self):
+  msg=EmailMessage();msg.set_content(b'<html><head><style>p{color:red}</style></head><body><p>Vendor &amp; contact</p><script>hide()</script><td>Dover</td></body></html>',maintype='text',subtype='html');msg.add_header('Content-Disposition','attachment',filename='Report.HTML')
+  self.assertEqual(sources.attachment_text(msg),'Vendor & contact\nDover')
+  empty=EmailMessage();empty.set_content(b'<html><style>x</style></html>',maintype='text',subtype='html');empty.add_header('Content-Disposition','attachment',filename='blank.htm')
+  self.assertEqual(sources.attachment_text(empty),'')
  def test_unknown_or_oversize_attachment_does_not_become_empty_success(self):
   msg=EmailMessage();msg.set_content(b'image',maintype='image',subtype='png');msg.add_header('Content-Disposition','attachment',filename='figure.png')
   with self.assertRaises(ValueError):sources.attachment_text(msg)
