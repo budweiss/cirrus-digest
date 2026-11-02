@@ -70,7 +70,8 @@ class Matching(unittest.TestCase):
         for title, naics, psc in (("Forklifts, Pallet Jacks, and Pallet Stackers", "423830", "3930"),
                                   ("16--APS PALLET", "336413", "1680"),
                                   ("2420--SNOW BROOM VEHICLE", "333112", "2420"),
-                                  ("Snow Survey Services for Idaho", "541990", "F999")):
+                                  ("Snow Survey Services for Idaho", "541990", "F999"),
+                                  ("Animal Bedding", "321999", "5510")):
             self.assertIsNone(sam.category(row(title=title, naics=naics, psc=psc)), title)
 
     def test_eligibility(self):
@@ -82,6 +83,7 @@ class Matching(unittest.TestCase):
         self.assertFalse(sam.eligible(row(PopCountry="COL"), NOW), "Bogota is not nationwide")
         self.assertFalse(sam.eligible(row(BaseType="Award Notice"), NOW))
         self.assertFalse(sam.eligible(row(AwardNumber="123"), NOW))
+        self.assertFalse(sam.eligible(row(title="Notice of Intent to Award a BPA Call Order"), NOW))
 
 
 class Weekly(Base):
@@ -114,6 +116,13 @@ class Weekly(Base):
         self.assertIn("confirm each one on the notice", body)
         self.assertIn("No bid has been submitted", body)
         self.assertIn("-- CUMULUS", body)
+
+    def test_links_are_public_and_a_numeric_city_is_dropped(self):
+        self.write([row(PopCity="0", PopState="NE", Link="https://sam.gov/workspace/contract/opp/abc/view")])
+        self.go()
+        self.assertIn("https://sam.gov/opp/abc/view", self.sent[0][1])
+        self.assertNotIn("workspace", self.sent[0][1])
+        self.assertIn("  NE | Deadline", self.sent[0][1])
 
     def test_a_tiered_notice_is_flagged(self):
         self.write([row(Description="Tiered evaluation: SDVOSB first, then others")])

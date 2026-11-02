@@ -57,6 +57,8 @@ SERVICE_TITLE = re.compile(r"\b(snow|ice removal|de-?icing|landscap\w*|grounds? 
 SUPPLY_NAICS = {"321113", "321912", "321920", "423310"}
 SUPPLY_PSC = {"5510", "5520", "5530"}
 SUPPLY_TITLE = re.compile(r"\b(lumber|wood(en)? pallets?)\b", re.I)
+SUPPLY_PSC_TITLE = re.compile(r"\b(lumber|wood|timber|plywood)\b", re.I)   # not "Animal Bedding"
+NOT_BIDDABLE = re.compile(r"notice of intent", re.I)
 
 SDVOSB_CODES = {"SDVOSBC", "SDVOSBS", "VSA", "VSS"}
 # Programs Bill's business is not known to qualify for.
@@ -81,7 +83,9 @@ def category(row):
         return "snow/landscaping"
     if SERVICE_TITLE.search(title) and psc[:1] == "S":
         return "snow/landscaping"
-    if naics in SUPPLY_NAICS or psc in SUPPLY_PSC or SUPPLY_TITLE.search(title):
+    if naics in SUPPLY_NAICS or SUPPLY_TITLE.search(title):
+        return "lumber/pallets"
+    if psc in SUPPLY_PSC and SUPPLY_PSC_TITLE.search(title):
         return "lumber/pallets"
     return None
 
@@ -100,6 +104,8 @@ def posted(row):
 def eligible(row, now):
     """Could Bill's business act on this notice now?"""
     if row["BaseType"].startswith(DROP_TYPES) or row["AwardNumber"].strip():
+        return False
+    if NOT_BIDDABLE.search(row["Title"]):
         return False
     if code(row) in EXCLUDED_CODES or row["PopCountry"].strip().upper() not in US:
         return False
@@ -206,7 +212,8 @@ def _when(row):
 
 
 def _item(row):
-    place = ", ".join(x for x in (row["PopCity"].strip(), row["PopState"].strip()) if x) or "not listed"
+    city = row["PopCity"].strip()
+    place = ", ".join(x for x in ("" if city.isdigit() else city, row["PopState"].strip()) if x) or "not listed"
     lines = ["- %s" % " ".join(row["Title"].split())[:120],
              "  %s | Deadline: %s | %s" % (place, _when(row), row["BaseType"].strip()),
              "  Set-aside: %s" % (row["SetASide"].strip() or "none listed")]
@@ -216,7 +223,8 @@ def _item(row):
         lines.append("  Contact: " + contact)
     if TIERED.search(row["Description"]):
         lines.append("  The notice mentions tiered competition; check whether it is exclusively SDVOSB.")
-    lines.append("  " + row["Link"].strip())
+    # The file's links use a signed-in workspace path; /opp/ is the public page.
+    lines.append("  " + row["Link"].strip().replace("/workspace/contract/opp/", "/opp/"))
     return "\n".join(lines)
 
 
