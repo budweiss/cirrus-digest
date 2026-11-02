@@ -230,7 +230,8 @@ def synthesise(question, requirements, findings, creds):
             "retrieval means UNCHECKED, never that no evidence, study, or product exists. Say 'no evidence was "
             "supplied or retrieved', not 'no evidence exists'. Never infer undocumented product features or "
             'limitations; distinguish source facts from your hypothetical risks.\nMarkdown. No preamble.\nFor '
-            'every requirement report supported, contradicted, or UNCHECKED. Describe undocumented properties as '
+            'every requirement report a status that is exactly one of these three words: supported, contradicted, '
+            'or UNCHECKED. Never use any other status wording. Describe undocumented properties as '
             'unknown. A conditional risk must remain conditional and cannot introduce an undocumented product '
             'limitation. Before returning, check each claimed feature or limitation against the supplied source '
             'sentence, including claims in the counterargument. Put unverified questions in WHAT I DID NOT '

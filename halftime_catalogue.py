@@ -336,7 +336,8 @@ EXCLUDE, always:
 - pre-game and national-anthem performances (a different, shorter slot)
 - anything you cannot tie to BOTH a named team and a named season
 
-Return ONLY a JSON array, no prose. Each element:
+Return a standalone JSON array starting with [ and ending with ]; never use
+Markdown fences. Return ONLY a JSON array, no prose. Each element:
 {"team": "the team or school, as the source names it",
  "season": "the four-digit season year, e.g. 2023",
  "act": "the NAME of what performed, not a description of it. 'T-Pain',
@@ -357,7 +358,10 @@ Return ONLY a JSON array, no prose. Each element:
 
 NEVER invent a season or an act. An omitted record is correct and useful; a
 guessed one poisons a catalogue that a client may quote from. If the sources
-contain no qualifying programme, return []."""
+contain no qualifying programme, return [].
+
+Final format check, however long the sources are: the first character of your
+reply is [ and the last character is ]. Never write ``` anywhere in the reply."""
 
 
 _SYSTEM_FOR_POOL = {
