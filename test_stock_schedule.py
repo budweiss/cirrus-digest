@@ -215,6 +215,97 @@ class ScheduleChecks(unittest.TestCase):
             choices=S.adopt_sources(trials,['need'],folder)
         self.assertEqual([x['decision'] for x in choices],['KEEP TRIALING'])
 
+    def test_rejected_review_withholds_reasons_but_keeps_them_for_diagnosis(self):
+        # S554: a reason the source-decision review disputed sank the report's own
+        # review when it was offered as reviewed. It stays in adoption-rejected.json.
+        import json
+        from pathlib import Path
+        trials=[{'status':'fetched','published':None,'text':QUOTE}]
+        decision={'trial':0,'decision':'KEEP TRIALING','reason':'Synthetic reason the reviewer disputed for a date.','quote':''}
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.media,'complete',return_value=json.dumps({'decisions':[decision]})), \
+             patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["Reason states a date."]}'):
+            folder=Path(td)/'run';folder.mkdir()
+            choices=S.adopt_sources(trials,['need'],folder)
+            kept=json.loads((folder/'adoption-rejected.json').read_text())
+        self.assertEqual(choices[0]['reason'],S.WITHHELD_REASON)
+        self.assertEqual(choices[0]['decision'],'KEEP TRIALING')
+        self.assertEqual(kept['decisions'][0]['reason'],decision['reason'])
+        self.assertEqual(S.validate_adoptions({'decisions':choices},trials)[0]['reason'],S.WITHHELD_REASON)
+
+    def test_passed_review_keeps_reasons(self):
+        import json
+        from pathlib import Path
+        trials=[{'status':'fetched','published':None,'text':QUOTE}]
+        decision={'trial':0,'decision':'REJECT','reason':'Synthetic reason the reviewer accepted as fine.','quote':''}
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.media,'complete',return_value=json.dumps({'decisions':[decision]})), \
+             patch.object(S.research,'structured_review',return_value='{"passed":true,"issues":[]}'):
+            folder=Path(td)/'run';folder.mkdir()
+            self.assertEqual(S.adopt_sources(trials,['need'],folder)[0]['reason'],decision['reason'])
+
+    def _discovery_preview(self,td,prose):
+        # The real discovery() with synthetic pages: two URLs reach one body.
+        import json,sqlite3,sys
+        from pathlib import Path
+        from types import ModuleType,SimpleNamespace
+        home=Path(td)/'home';(home/'research').mkdir(parents=True);folder=Path(td)/'run';folder.mkdir()
+        (home/'research/universe.json').write_text('{}')
+        def database(_):
+            conn=sqlite3.connect(':memory:');conn.row_factory=sqlite3.Row
+            conn.execute('CREATE TABLE source_candidates(url TEXT,status TEXT,discovered_at TEXT)')
+            for i,name in enumerate(('a','b','c')):
+                conn.execute('INSERT INTO source_candidates VALUES(?,?,?)',('https://example.com/'+name,'candidate',str(i)))
+            return conn
+        bodies={'https://example.com/a':b'same page','https://example.com/b':b'same page','https://example.com/c':b'other page'}
+        daily=ModuleType('cirrus_daily');daily.search_web=lambda *a,**k:[]
+        def adopt(trials,questions,_):
+            self.assertEqual(questions,[{'company':'Example Co','question':'Synthetic open question?'}])
+            return [{'trial':i,'decision':'REJECT','reason':'Synthetic reason | with a pipe.','quote':''} for i in range(len(trials))]
+        with patch.dict(sys.modules,{'cirrus_daily':daily}),patch.object(S,'HOME',home), \
+             patch.object(S.research,'validate_manifest',return_value={'companies':[{'name':'Example Co','ticker':'EXAMPLE','hosts':['example.com']}]}), \
+             patch.object(S.research,'database',side_effect=database), \
+             patch.object(S.research,'latest_review',return_value={'draft':json.dumps({'next_check':'Synthetic open question?'})}), \
+             patch.object(S.research,'fetch',side_effect=lambda url,_:(bodies[url],'text/html')), \
+             patch.object(S.research,'Page',return_value=SimpleNamespace(title='Synthetic title',text=QUOTE*20,published=None)), \
+             patch.object(S,'adopt_sources',side_effect=adopt),patch.object(S,'checked_prose',side_effect=prose) as checked:
+            result=S.discovery(False,'2026-11-08',folder)
+        return folder,result,checked.call_args[0][1],json.loads((folder/'preview-trials.json').read_text())
+
+    def test_discovery_prose_evidence_has_numbered_trials_and_no_question_list(self):
+        # S554: with the question list in the evidence the reviewer rejected a true
+        # one-line draft. The list still reaches the adoption step and the saved record.
+        with tempfile.TemporaryDirectory() as td:
+            _,result,data,saved=self._discovery_preview(td,lambda *a,**k:'Synthetic commentary.')
+        self.assertNotIn('unanswered_questions',data)
+        self.assertEqual([t['trial'] for t in data['trials']],[0,1,2])
+        self.assertEqual(saved['unanswered_questions'],[{'company':'Example Co','question':'Synthetic open question?'}])
+        self.assertEqual((result['trials'],result['fetched']),(3,2))
+
+    def test_discovery_counts_one_page_reached_by_two_urls_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder,_,data,_=self._discovery_preview(td,lambda *a,**k:'Synthetic commentary.')
+            self.assertEqual(len(list(folder.glob('source-*.txt'))),2)
+        self.assertEqual([t.get('failure') for t in data['trials']],[None,'duplicate_of_earlier_trial',None])
+
+    def test_discovery_report_prints_the_trial_record_from_the_data(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            folder,_,_,_=self._discovery_preview(td,lambda *a,**k:'Synthetic commentary.')
+            report=(folder/'preview.md').read_text()
+        self.assertIn('Synthetic commentary.\n\n## Trial record',report)
+        self.assertIn('| 1 | failed: duplicate_of_earlier_trial | no title https://example.com/b | not extracted | none | REJECT | Synthetic reason with a pipe. |',report)
+        self.assertIn('- Example Co: Synthetic open question?',report)
+        self.assertIn('not assess whether a source answers',report)
+
+    def test_failed_discovery_prose_writes_no_report(self):
+        def prose(*a,**k):raise ValueError('weekly_review_failed')
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(ValueError,'weekly_review_failed'):
+                self._discovery_preview(td,prose)
+            from pathlib import Path
+            self.assertFalse((Path(td)/'run/preview.md').exists())
+
     def test_adopted_source_is_read_by_daily_followup(self):
         from pathlib import Path
         from types import SimpleNamespace

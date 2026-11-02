@@ -37,6 +37,12 @@ class Summaries(unittest.TestCase):
                          'financial outcome, cause or certainty beyond the evidence')
         self.assertEqual(fs.category('The quote is not in the source.'), 'missing or inexact evidence quote')
 
+    def test_source_trial_wording_is_not_a_tool_claim(self):
+        # S554: every stock discovery finding says "Trial N"; all four labelled tool claims were this.
+        self.assertEqual(fs.category('Trial 2 is not supported by the evidence.'), 'claim not supported by the evidence')
+        self.assertEqual(fs.category('Keep trialing is not supported by the evidence.'), 'claim not supported by the evidence')
+        self.assertEqual(fs.category('TRIAL has nothing to run.'), 'tool claim without installable evidence')
+
     def test_no_private_text_survives(self):
         s = fs.build('stockdiscovery', 'source_adoption_review_failed', issues=ISSUES,
                      errors=['ValueError: Jane Doe ZXQW broke', 'source_decision_reason'])

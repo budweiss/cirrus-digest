@@ -32,7 +32,7 @@ RULES = (
     ('index page or snippet treated as full content', r'\bindex\b|snippet|excerpt|teaser|full content|landing page'),
     ('promotional or subscription source', r'promot|subscri|newsletter|signup|sign-up'),
     ('delayed disclosure treated as a live trade', r'delay|disclosure|13f|live trade|live signal'),
-    ('tool claim without installable evidence', r'install|\btrial\b|package|repositor|\bsdk\b|library'),
+    ('tool claim without installable evidence', r'install|\btrial-rating\b|package|repositor|\bsdk\b|library'),
     ('useful technique rated SKIP', r'\bskip\b|technique|practice'),
     ('claim beyond the supplied metadata', r'pric|capabilit|compatib|invent|not in the metadata|unsupported claim'),
     ('relevance not supported', r'relevan|research need|unrelated|does not answer'),
@@ -49,7 +49,9 @@ KEYS = ('job', 'code', 'at', 'attempts', 'review_categories', 'validation_errors
 
 
 def category(text):
-    low = str(text).lower()
+    # S554: only the capitalised TRIAL is a rating. Stock discovery's reports are
+    # about source trials, so "Trial 2" gave every finding this label.
+    low = re.sub(r'\bTRIAL\b', 'trial-rating', str(text)).lower()
     return next((label for label, pattern in RULES if re.search(pattern, low)), 'other')
 
 
