@@ -18,11 +18,15 @@ from pathlib import Path
 import re
 import socket
 from datetime import datetime, timezone
-from workflow_mail_sources import full_body_documents, attachment_text, MAX_MESSAGE_BYTES
+from workflow_mail_sources import full_body_documents, attachment_text
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MAILBOXES = {'cirrustask@gmail.com', 'cumulus@cumulustask.com'}
 MAX_MESSAGES = 500
+# Full delivery audits retain large MIME attachments locally. The answer model
+# extractor keeps its smaller bound; unsupported parts still hold absence.
+MAX_REVIEW_MESSAGE_BYTES = 50_000_000
+MAX_REVIEW_TOTAL_BYTES = 200_000_000
 
 
 def digest(raw):
@@ -36,7 +40,7 @@ def inspect_message(raw):
               'message_id': str(msg.get('Message-ID', '')),
               'date': str(msg.get('Date', '')), 'subject': str(msg.get('Subject', '')),
               'parts': [], 'issues': [], 'links': []}
-    if not raw or len(raw) > MAX_MESSAGE_BYTES:
+    if not raw or len(raw) > MAX_REVIEW_MESSAGE_BYTES:
         result['issues'].append('message_size_limit_or_empty')
         return result
     try:
@@ -92,6 +96,7 @@ def collect(mail, addresses, mailbox, since, directory, client):
               'collected_at': datetime.now(timezone.utc).isoformat(),
               'search_complete': False, 'errors': [], 'messages': []}
     seen = set()
+    total_bytes = 0
     try:
         for folder, direction, fields in (
             ('"[Gmail]/All Mail"', 'incoming', ('FROM',)),
@@ -115,9 +120,12 @@ def collect(mail, addresses, mailbox, since, directory, client):
                 if status != 'OK' or not size:
                     raise ValueError('size_fetch_failed')
                 size = int(size.group(1))
-                if size > MAX_MESSAGE_BYTES:
+                if size > MAX_REVIEW_MESSAGE_BYTES:
                     packet['errors'].append('message_size_limit')
                     continue
+                total_bytes += size
+                if total_bytes > MAX_REVIEW_TOTAL_BYTES:
+                    raise ValueError('total_size_limit')
                 status, data = mail.uid('fetch', uid, '(BODY.PEEK[])')
                 raw = b''.join(p[1] for p in data or [] if isinstance(p, tuple))
                 if status != 'OK' or not raw or len(raw) != size:
@@ -153,6 +161,7 @@ def summary(packet):
     return {'client': packet['client'], 'machine': packet['machine'],
             'mailbox': packet['mailbox'], 'since': packet['since'],
             'search_complete': packet['search_complete'],
+            'collection_errors': packet['errors'],
             'messages': len(rows),
             'incoming': sum(r['direction'] == 'incoming' for r in rows),
             'outgoing': sum(r['direction'] == 'outgoing' for r in rows),

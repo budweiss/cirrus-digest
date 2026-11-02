@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import client_mail_review as review
 
 
@@ -106,6 +106,18 @@ class ReviewTests(unittest.TestCase):
         raw=message(to='notclient@example.test').as_bytes()
         with tempfile.TemporaryDirectory() as tmp:
             self.assertFalse(review.collect(mail,['client@example.test'],'owner@example.test','01-Jan-2026',Path(tmp),'fixture')['messages'])
+
+    def test_large_image_is_inventoried_and_held_without_losing_message(self):
+        msg = message('The requested diagram is attached.')
+        msg.add_attachment(b'x' * 2_100_000, maintype='image', subtype='png', filename='diagram.png')
+        raw = msg.as_bytes()
+        row = review.inspect_message(raw)
+        self.assertGreater(row['bytes'], 2_000_000)
+        self.assertEqual(len(row['parts']), 2)
+        self.assertIn('unread_part:2', row['issues'])
+        self.assertIn('requested diagram', row['parts'][0]['text'])
+        with patch.object(review, 'MAX_REVIEW_MESSAGE_BYTES', 100):
+            self.assertIn('message_size_limit_or_empty', review.inspect_message(raw)['issues'])
 
     def test_partial_fetch_cannot_report_complete(self):
         mail=MagicMock();mail.select.return_value=('OK',[])
