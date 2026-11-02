@@ -190,17 +190,26 @@ def save_seen(seen, now, path=None):
 def new_notices(matched, seen, now):
     """(new eligible notices, the keys of everything read). Newest row wins, so an
     amended deadline replaces the old one."""
-    fresh, done, today = [], set(), now.strftime("%Y-%m-%d")
-    touched = {}
+    fresh, done, touched = [], set(), {}
     for row in matched:
         ks = keys(row)
         known = any(k in seen or k in done for k in ks)
         done.update(ks)
-        for k in ks:
-            touched[k] = today
+        _touch(touched, row, now)
         if not known and eligible(row, now):
             fresh.append(row)
     return fresh, touched
+
+
+def _touch(store, row, now):
+    """A solicitation number stays known while its row stays in the file. A title
+    key ages from the row's own posted date, because SAM.gov keeps old rows for
+    years: refreshing it would hide next season's contract under the same title."""
+    for k in keys(row):
+        if k.startswith("t:"):
+            store[k] = max(store.get(k, ""), posted(row))
+        else:
+            store[k] = now.strftime("%Y-%m-%d")
 
 
 def _when(row):
@@ -208,7 +217,8 @@ def _when(row):
     if not due:
         return "none listed"
     zone = row["ResponseDeadLine"].strip()[19:]
-    return due.strftime("%b %d, %-I:%M %p") + (" (UTC%s)" % zone if zone else "")
+    # Always the year: a standing agreement can run to 2028.
+    return due.strftime("%b %d, %Y, %-I:%M %p") + (" (UTC%s)" % zone if zone else "")
 
 
 def _item(row):
@@ -328,14 +338,12 @@ def seed(extract_path, through, now=None, state=None):
     """Mark notices posted on or before `through` as already seen. Sends nothing."""
     now = now or datetime.now()
     matched, _, _ = read_extract(extract_path, now)
-    today = now.strftime("%Y-%m-%d")
     seen = load_seen(state)
     n = 0
     for row in matched:
         if posted(row) <= through:
             n += 1
-            for k in keys(row):
-                seen[k] = today
+            _touch(seen, row, now)
     save_seen(seen, now, state)
     return n
 

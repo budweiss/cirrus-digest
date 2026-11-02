@@ -117,6 +117,20 @@ class Weekly(Base):
         self.assertIn("No bid has been submitted", body)
         self.assertIn("-- CUMULUS", body)
 
+    def test_next_seasons_contract_alerts_while_last_years_row_never_returns(self):
+        old = row(sol="OLD26", when="2026-10-01 10:00:00", due="2027-03-30T10:00:00-05:00")
+        self.write([old])
+        self.go()
+        later = datetime(2027, 10, 11, 5, 15)     # a year on, the old row is still in the file
+        fresh_file = row(sol="NEW27", when="2027-10-08 10:00:00", due="2027-10-30T10:00:00-05:00")
+        self.write([old, fresh_file])
+        sent = []
+        sam.run(self.file, now=later, state=self.state, send=lambda s, b: sent.append((s, b)) or True,
+                record=lambda ok, note: None, guard=self.guard)
+        self.assertIn("1 new", sent[0][0])
+        self.assertIn("Oct 30, 2027", sent[0][1])
+        self.assertEqual(sent[0][1].count("Snow Removal Services"), 1)
+
     def test_links_are_public_and_a_numeric_city_is_dropped(self):
         self.write([row(PopCity="0", PopState="NE", Link="https://sam.gov/workspace/contract/opp/abc/view")])
         self.go()
