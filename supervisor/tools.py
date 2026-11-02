@@ -339,10 +339,12 @@ def check_thread_stalls(hours: int = 48) -> str:
         lines = [f"{len(stalls)} client thread(s) needing full-mail review "
                  f"({len(waiting)} where a reply was expected):"]
         for x in stalls:
+            import hashlib
+            thread_id = hashlib.sha256(str(x.get("thread", "")).encode()).hexdigest()[:12]
             flag = "UNVERIFIED LEDGER GAP" if x["expected_reply"] else f"queued as {x['kind']}"
             lines.append(
                 f"  • [{x.get('_box')}] {x['requester']} — "
-                f"\"{str(x.get('title') or x['thread'])[:70]}\" "
+                f"thread {thread_id} "
                 f"[{x['age_hours']}h, {flag}]")
         lines.append("Ledger gaps do not establish work owed. Before any missing-delivery "
                      "claim, review complete incoming and Sent Mail on both hosts, all "

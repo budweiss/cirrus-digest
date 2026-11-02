@@ -14,6 +14,15 @@ class Handoffs(unittest.TestCase):
         def broken():raise OSError('offline')
         result=ch.check(probes={'cirrus':broken,'cumulus1':self.health})
         self.assertFalse(result['ok']);self.assertIn('cirrus:request-check-unavailable',result['issues'])
+    def test_thread_check_does_not_export_private_title_or_subject(self):
+        import tools
+        row={'requester':'fixture','thread':'PRIVATE SUBJECT','title':'PRIVATE TITLE',
+             'expected_reply':True,'kind':'answer','age_hours':200}
+        with patch.object(tools,'_both_boxes',return_value=([row],[])),patch.object(tools,'ledger_append'):
+            result=tools.check_thread_stalls()
+        self.assertNotIn('PRIVATE',result)
+        self.assertIn('UNVERIFIED LEDGER GAP',result)
+
     def test_healthy_quiet(self):
         self.assertTrue(ch.check(probes={'cirrus':self.health,'cumulus1':self.health})['ok'])
     def test_blocked_request_reaches_existing_incident_policy(self):
