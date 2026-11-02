@@ -10,6 +10,7 @@ gets ledgered, once the heartbeat decides something is worth escalating.
 import subprocess
 
 import completeness
+import client_handoffs
 from tools import ALLOWED_UNITS
 
 CREDS_PROBE = ["sudo", "-n", "-u", "buddy", "/usr/local/sbin/cumulus_creds_health.py"]
@@ -138,6 +139,12 @@ def run_heartbeat() -> dict:
         comp = {"ok": False, "detail": f"completeness check raised: {e!r}",
                 "stalled": [], "unreadable": [], "unmonitored": []}
 
+    handoffs = client_handoffs.check()
+    if not handoffs['ok']:
+        comp = dict(comp, ok=False,
+                    unreadable=list(comp.get('unreadable', [])) + handoffs['issues'],
+                    detail=comp.get('detail', '') + '; client handoffs: ' + ', '.join(handoffs['issues']))
+
     detail_parts = []
     if failed:
         detail_parts.append(f"failed units: {', '.join(failed)}")
@@ -191,6 +198,8 @@ def selftest() -> bool:
        "opportunity-scout.service" not in ALLOWED_UNITS)
 
     import completeness as _c
+    saved_handoffs = client_handoffs.check
+    client_handoffs.check = lambda: {'ok':True, 'issues':[]}
     saved = (globals()["_list_failed_units"], globals()["_credentials_ok"],
              _c.check, globals()["_unit_is_failed"])
     try:
@@ -236,6 +245,7 @@ def selftest() -> bool:
         globals()["_list_failed_units"], globals()["_credentials_ok"] = saved[0], saved[1]
         _c.check = saved[2]
         globals()["_unit_is_failed"] = saved[3]
+        client_handoffs.check = saved_handoffs
 
     ck("no failures parses empty", _parse_failed_units("") == [])
     ck("a legend/blank line is not mistaken for a unit",

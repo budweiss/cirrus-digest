@@ -31,6 +31,7 @@ Modes:
 
 import email
 import intake_maintenance
+import intake_lifecycle
 import email.utils
 import imaplib
 import json
@@ -500,9 +501,9 @@ def _settle_tickets(rec: dict, delivered: bool, mark: int):
     attempt just filed (tickets past `mark`) to this message. Runs after the
     send, never raises: bookkeeping must not touch the reply path."""
     try:
-        if delivered:
+        if delivered and rec.get("sent_receipt"):
             closed = dev_loop.ticket_resolve_request(
-                [rec.get("message_id")], "delivered to the requester by intake", PROJECT_DIR)
+                [rec.get("message_id")], "Actual Sent Mail verified: " + rec["sent_receipt"], PROJECT_DIR)
             if closed:
                 log(f"  → ticket(s) resolved: {', '.join(closed)}")
         elif mark is not None:
@@ -618,7 +619,7 @@ def find_account(config: dict):
 
 
 def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
-               rescan: bool = False, creds: dict = None):
+               rescan: bool = False, creds: dict = None, capture_root=None):
     """Yields (uid, from_addr, subject, body, message_id) for new mail from
     allowlisted senders. Uses BODY.PEEK (no \\Seen flag) and its own UID
     cursor so the digest pipeline is untouched.
@@ -633,11 +634,14 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
     mail = imaplib.IMAP4_SSL(account["imap_server"],
                              account.get("imap_port", 993), timeout=60)
     mail.login(account["address"], password)
-    mail.select("inbox", readonly=True)
+    mailbox = '"[Gmail]/All Mail"' if capture_root is not None else 'inbox'
+    if mail.select(mailbox, readonly=True)[0] != 'OK':
+        raise OSError('Intake mailbox selection failed')
+    migrating = capture_root is not None and state.get('mailbox') != mailbox
 
     uidvalidity = None
     try:
-        typ, data = mail.status("inbox", "(UIDVALIDITY)")
+        typ, data = mail.status(mailbox, "(UIDVALIDITY)")
         if typ == "OK" and data and data[0]:
             m = re.search(rb"UIDVALIDITY (\d+)", data[0])
             if m:
@@ -646,29 +650,47 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
         pass
 
     last_uid = state.get("last_uid", 0)
-    if uidvalidity is not None and state.get("uidvalidity") != uidvalidity:
+    if migrating or (uidvalidity is not None and state.get("uidvalidity") != uidvalidity):
         last_uid = 0
     if rescan:
         log("  rescan: ignoring last_uid (Message-ID dedupe still applies)")
         last_uid = 0
-    state["uidvalidity"] = uidvalidity
 
     since = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%d-%b-%Y")
-    _, msg_ids = mail.uid("search", None, f"SINCE {since}")
+    typ, msg_ids = mail.uid("search", None, f"UID {last_uid + 1}:*" if last_uid else f"SINCE {since}")
+    if typ != "OK":
+        raise OSError("IMAP search failed")
     uids = sorted(int(u) for u in msg_ids[0].split())
+    if capture_root is not None and uidvalidity is not None and state.get('uidvalidity') != uidvalidity:
+        migrating = True
+    if migrating:
+        state['migration_hold_through_uid'] = max(uids, default=0)
+    # Commit mailbox identity only after a successful search. The hold watermark
+    # survives failed fetches and later polls, so catch-up never becomes new work.
+    state['uidvalidity'] = uidvalidity
+    state['mailbox'] = mailbox
     new_uids = [u for u in uids if u > last_uid]
     log(f"inbox: {len(uids)} in window, {len(new_uids)} new (last_uid={last_uid})")
 
     out = []
+    failed_uids = []
     bounces = []
     seen_ids = set(state.get("seen_message_ids", [])[-500:])
     for uid in new_uids:
         try:
-            _, msg_data = mail.uid("fetch", str(uid), "(BODY.PEEK[])")
-            msg = email.message_from_bytes(msg_data[0][1])
+            typ, msg_data = mail.uid("fetch", str(uid), "(BODY.PEEK[])")
+            if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                raise OSError("IMAP fetch failed")
+            raw = msg_data[0][1]
+            if capture_root is not None:
+                size_status, size_data = mail.uid('fetch', str(uid), '(RFC822.SIZE)')
+                size = re.search(rb'RFC822.SIZE (\d+)', b' '.join(x for x in size_data if isinstance(x, bytes)))
+                if size_status != 'OK' or not size or len(raw) != int(size.group(1)):
+                    raise OSError('Incomplete MIME fetch')
+            msg = email.message_from_bytes(raw)
             from_addr = (email.utils.parseaddr(msg.get("From", ""))[1] or "").lower()
             if BOUNCE_FROM_RX.match(from_addr):
-                mid = msg.get("Message-ID", f"uid-{uid}")
+                mid = msg.get("Message-ID", f"uid-{account.get('address', 'unknown')}-{uidvalidity}-{uid}")
                 if mid not in seen_ids:
                     seen_ids.add(mid)
                     rcpt = extract_bounced_recipient(msg, account.get("address", ""))
@@ -684,7 +706,7 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                     or msg.get("Precedence", "").lower() in ("bulk", "list", "junk")
                     or msg.get("List-Id") or msg.get("X-Auto-Response-Suppress")):
                 continue
-            mid = msg.get("Message-ID", f"uid-{uid}")
+            mid = msg.get("Message-ID", f"uid-{account.get('address', 'unknown')}-{uidvalidity}-{uid}")
             if mid in seen_ids:
                 # The only skip branch that used to log nothing at all (every
                 # other branch above/below does) — 2026-08-14: this made a
@@ -695,7 +717,6 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                 log(f"  skipped (duplicate Message-ID, already processed): "
                     f"{from_addr} — '{decode_hdr(msg.get('Subject', ''))[:60]}'")
                 continue
-            seen_ids.add(mid)
             subj = decode_hdr(msg.get("Subject", ""))
             names = attachment_names(msg)
             if names and creds:
@@ -709,15 +730,31 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                         f"the digest queue.", creds)
                 except Exception as e:
                     log(f"  attachment alert failed (continuing): {e}")
-            out.append((uid, from_addr, subj, body_text(msg), mid))
+            if capture_root is not None:
+                from workflow_mail_sources import full_body_documents
+                documents = full_body_documents(msg)
+                # Preserve every alternative and attachment in the immutable MIME.
+                body = "\n\n".join(documents.values()) or "(no readable body; inspect retained MIME)"
+                row = (uid, from_addr, subj, body, mid)
+                intake_lifecycle.capture(capture_root, row, raw)
+                if uid <= state.get('migration_hold_through_uid', 0):
+                    # Old All Mail messages may already have been handled by a
+                    # session. Capture the migration backlog without replaying it.
+                    intake_lifecycle.hold_catchup(capture_root, row)
+            else:
+                row = (uid, from_addr, subj, body_text(msg), mid)
+            out.append(row)
+            seen_ids.add(mid)
         except Exception as e:
-            log(f"uid {uid}: parse error, skipping ({e})")
+            failed_uids.append(uid)
+            log(f"uid {uid}: fetch/parse/capture failed; retained for retry ({type(e).__name__})")
     try:
         mail.logout()
     except Exception:
         pass
 
-    state["last_uid"] = max([state.get("last_uid", 0)] + new_uids) if new_uids else last_uid
+    state["last_uid"] = min(failed_uids) - 1 if failed_uids else max([last_uid] + new_uids)
+    state["scan_failed_uids"] = failed_uids
     state["seen_message_ids"] = list(seen_ids)[-500:]
     return out, bounces
 
@@ -849,7 +886,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         try:
             messages, bounces = scan_inbox(account, password, allowlist, state,
                                            rescan=rescan,
-                                           creds=None if dry_run else creds)
+                                           creds=None if dry_run else creds,
+                                           capture_root=None if dry_run else PROJECT_DIR)
             last_err = None
             break
         except OSError as e:
@@ -875,6 +913,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                      f"attempt(s): `{last_err}`", creds)
         return 1
 
+    if not dry_run:
+        intake_lifecycle.recover(PROJECT_DIR)
+        for row in messages:
+            intake_lifecycle.capture(PROJECT_DIR, row)
+        # Capture is committed before any cursor update or external effect.
+        # Rate-limited messages stay queued even after the mailbox cursor moves.
+        messages = intake_lifecycle.pending(PROJECT_DIR)
     holding = intake_maintenance.active(PROJECT_DIR)
     if holding:
         # Preserve all allowlisted human mail, even requests without a prefix.
@@ -898,12 +943,29 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
 
     processed, limited, prefix_skipped = [], [], []
     for uid, from_addr, subject, body, mid in messages:
+        if from_addr not in allowlist:
+            if not dry_run:
+                intake_lifecycle.update(PROJECT_DIR, (uid, from_addr, subject, body, mid),
+                    'blocked_on_evidence', 'cowork', 'sender removed from allowlist; review locally')
+            continue
         entry = allowlist[from_addr]
         if needs_prefix_skip(entry, subject):
             log(f"  skipped (no REQUEST: prefix, sender requires it): "
                 f"{entry['name']} — '{(subject or '')[:60]}'")
             prefix_skipped.append((entry["name"], subject))
+            if not dry_run:
+                intake_lifecycle.update(PROJECT_DIR, (uid, from_addr, subject, body, mid),
+                    'blocked_on_evidence', 'cowork', 'prefix policy requires review')
             continue
+        if not dry_run:
+            try:
+                if not intake_lifecycle.coordinate(PROJECT_DIR, (uid, from_addr, subject, body, mid)):
+                    continue
+            except Exception:
+                # No effects have started. Keep the original queued for a safe
+                # next-poll claim retry; do not reset any worker/model budget.
+                log('cross-mailbox claim unavailable; request remains queued')
+                continue
         # S266: Buddy's reply to a contact-list review email ([CL:<run>] in the
         # subject) is an approval step, not a request. list_delivery delivers on
         # a plain SEND and holds anything else, telling Buddy why. It never gets
@@ -911,6 +973,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if entry["name"] == OWNER and list_delivery.TAG_RX.search(subject or ""):
             if dry_run:
                 log(f"  DRY RUN: would handle a contact-list reply: '{(subject or '')[:70]}'")
+                continue
+            if not intake_lifecycle.begin(PROJECT_DIR, (uid, from_addr, subject, body, mid)):
                 continue
             try:
                 res = list_delivery.handle_send_reply(
@@ -921,17 +985,25 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             dev_loop.ledger_append({"event": "list-send-reply", "subject": (subject or "")[:120],
                                     "sent": bool(res and res.get("sent")),
                                     "reason": (res or {}).get("reason", "")}, PROJECT_DIR)
+            intake_lifecycle.update(PROJECT_DIR, (uid, from_addr, subject, body, mid),
+                'sent_unverified' if res and res.get('sent') else 'blocked_on_evidence',
+                'delivery-review', 'verify approval handling and actual Sent Mail')
             intake_maintenance.complete(PROJECT_DIR, from_addr, mid)
             continue
         if not under_limit(state, entry["name"], entry["limit"]):
-            limited.append((entry["name"], subject))
+            if dry_run or intake_lifecycle.rate_limit_notice(PROJECT_DIR,
+                    (uid, from_addr, subject, body, mid), datetime.now().strftime('%Y-%m-%d')):
+                limited.append((entry["name"], subject))
             log(f"rate-limited: {entry['name']} over {entry['limit']}/day — skipping '{subject}'")
+            continue
+        if not dry_run and not intake_lifecycle.begin(PROJECT_DIR, (uid, from_addr, subject, body, mid)):
             continue
         rec = classify(entry["name"], entry["projects"], subject, body)
         rec["from"] = from_addr
         rec["from_email"] = from_addr
         rec["conversation_body"] = body
         rec["message_id"] = mid
+        rec["original_subject"] = subject
         rec["kind"] = entry["request_kind"]
         # Research senders: a REPLY without an explicit REQUEST: subject is
         # feedback (e.g. Alyssa answering the intro email), not a topic —
@@ -1013,6 +1085,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     try:
                         proj = (entry["projects"] or ["general"])[0]
                         append_topic(proj, rec["title"], entry["name"])
+                        rec["topic_queued"] = True
                         log(f"  → focus topic queued for '{proj}'")
                     except Exception as e:
                         log(f"  topic append failed (backlog still recorded): {e}")
@@ -1113,6 +1186,12 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 rec["solved"] = solved
                 log(f"  → answer {'sent' if solved['answered'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
+                if solved.get('answered'):
+                    try:
+                        import intake_delivery_evidence
+                        rec['sent_receipt'] = intake_delivery_evidence.verify(PROJECT_DIR, rec, creds)
+                    except Exception:
+                        log('answer Sent Mail verification incomplete; completion remains unverified')
                 _settle_tickets(rec, bool(solved.get("answered")), mark)
             if rec["kind"] == "resend" and rec["status"] != "refused":
                 try:
@@ -1123,6 +1202,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 log(f"  → resend {'sent (' + str(solved['count']) + ')' if solved['resent'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
                 _settle_tickets(rec, bool(solved.get("resent")), mark)
+        if not dry_run:
+            intake_lifecycle.finish(PROJECT_DIR, (uid, from_addr, subject, body, mid), rec)
         processed.append(rec)
 
     if not dry_run:
@@ -1215,8 +1296,26 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             f"{len(prefix_skipped)} prefix-skipped")
     if undelivered:
         note += f"; {undelivered} Telegram notice(s) undelivered, retrying each pass"
-    _record_status(not undelivered, note)
-    return 0
+    if not dry_run:
+        # Detached bounded preparation cannot hold up the next mailbox poll.
+        import subprocess
+        if intake_lifecycle.summary(PROJECT_DIR)['counts'].get('queued_preparation'):
+            subprocess.Popen([sys.executable, str(PROJECT_DIR / 'client_request_prepare.py')],
+                             cwd=PROJECT_DIR, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        notice = intake_lifecycle.notice(PROJECT_DIR)
+        fingerprint_path = PROJECT_DIR / 'data/intake-lifecycle/notice.json'
+        previous = json.loads(fingerprint_path.read_text()) if fingerprint_path.exists() else None
+        if notice != previous:
+            # Existing durable outbox owns delivery retries; unchanged state is quiet.
+            undelivered += _notify(notice, creds)
+            intake_maintenance.atomic(fingerprint_path, notice)
+        if not state.get("scan_failed_uids"):
+            log("poll completed")
+    scan_failed = bool(state.get('scan_failed_uids'))
+    _record_status(not undelivered and not scan_failed, note)
+    return int(scan_failed)
 
 
 # ── Selftest (offline, no network) ───────────────────────────────────────────
@@ -1845,4 +1944,13 @@ if __name__ == "__main__":
         sys.exit(peek(names[0] if names else ""))
     if "--requeue" in args:
         sys.exit(requeue(names[0] if names else ""))
-    sys.exit(run(dry_run="--dry-run" in args, rescan="--rescan" in args))
+    if "--dry-run" in args:
+        sys.exit(run(dry_run=True, rescan="--rescan" in args))
+    import fcntl
+    lock_path = PROJECT_DIR / 'config/intake-worker.lock'
+    with lock_path.open('a') as worker_lock:
+        try:
+            fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit("Intake worker already active; no duplicate processing")
+        sys.exit(run(rescan="--rescan" in args))

@@ -58,11 +58,11 @@ def _parse_ts(s: str):
 
 
 def read_ledger(path=None, hours: int = 168) -> list:
-    """Ledger rows inside the window, newest last. Raises if unreadable."""
+    """Ledger rows inside the window; None retains history. Raises if unreadable."""
     path = Path(path or LEDGER)
     if not path.exists():
         raise FileNotFoundError(f"self-changes ledger not found at {path}")
-    cutoff = datetime.now() - timedelta(hours=hours)
+    cutoff = datetime.now() - timedelta(hours=hours) if hours is not None else None
     rows = []
     with open(path) as f:
         for line in f:
@@ -74,7 +74,7 @@ def read_ledger(path=None, hours: int = 168) -> list:
             except Exception:
                 continue          # one corrupt line must not blind the fold
             ts = _parse_ts(row.get("ts"))
-            if ts and ts >= cutoff:
+            if ts and (cutoff is None or ts >= cutoff):
                 row["_ts"] = ts
                 rows.append(row)
     return rows
@@ -160,7 +160,9 @@ def stalled_threads(path=None, hours: int = 48) -> list:
     four-hour-old email will be muted inside a week, and a muted check is worse
     than none: it reports clean because nobody reads it.
     """
-    rows = read_ledger(path, hours=max(hours * 4, 168))
+    # Age determines when review is due, never when unresolved evidence expires.
+    # Retain replies too so an old delivered thread does not become a false gap.
+    rows = read_ledger(path, hours=None)
     inbound, outbound = {}, {}
     for r in rows:
         thread = r.get("thread")
@@ -250,17 +252,15 @@ def shadow_brief(path=None, hours: int = 24):
 
 TICKETS = APP_DIR / "logs" / "dev-loop" / "ticket-queue.jsonl"
 STALE_TICKET_DAYS = 3
-REQUEST_ORIGINS = ("user-intake", "user-intake-answer-fallback")
+REQUEST_ORIGINS = ("user-intake", "user-intake-answer-fallback", "client-deliverable", "client-confirmation")
 
 
 def stale_tickets(path=None, days: int = STALE_TICKET_DAYS, now=None) -> list:
-    """Request tickets still `queued` after `days` days: nobody has looked.
+    """Old open request tickets, including manual-session and deliverable work.
 
-    S539. Nothing closed a ticket, so both queues read "queued" for work
-    finished in July and for Buddy's own requests nobody had picked up. A
-    triaged ticket is closed (resolved/superseded) or marked `session` with a
-    note, so only untouched ones count. Ids and requesters only, never titles:
-    a title can carry a private request. No file is an empty queue."""
+    A triage note is not delivery proof. These are review candidates, not debt;
+    compare full correspondence before closing or doing the work again. Emit
+    ids/requesters only, never private titles. No file is an empty queue."""
     path = Path(path) if path else TICKETS
     if not path.exists():
         return []
@@ -272,10 +272,10 @@ def stale_tickets(path=None, days: int = STALE_TICKET_DAYS, now=None) -> list:
         except Exception:
             continue
         created = _parse_ts(t.get("created"))
-        if (t.get("origin") in REQUEST_ORIGINS and t.get("status") == "queued"
+        if (t.get("origin") in REQUEST_ORIGINS and t.get("status") in ("queued", "session")
                 and created and now - created > timedelta(days=days)):
             out.append({"id": t.get("id"), "requester": t.get("requester"),
-                        "age_days": (now - created).days})
+                        "age_days": (now - created).days, "status": t.get("status")})
     return out
 
 
@@ -290,8 +290,8 @@ def ticket_brief(path=None, days: int = STALE_TICKET_DAYS):
         return [], None
     shown = ", ".join(f"{t['id']} ({t['requester']}, {t['age_days']}d)" for t in stale[:5])
     more = f" +{len(stale) - 5} more" if len(stale) > 5 else ""
-    msg = (f"{len(stale)} request ticket(s) queued over {days} days with nobody on them: "
-           f"{shown}{more}. Triage: dev_loop.py --ticket-update ID resolved|superseded|session \"why\"")
+    msg = (f"{len(stale)} open request ticket(s) older than {days} days requiring evidence review: "
+           f"{shown}{more}. Review complete delivery evidence before closing; session status is still open.")
     return [f"⚠️ {msg}"], msg
 
 
@@ -330,10 +330,10 @@ def intake_health(stale_minutes: int = 40, log_path=None, err_path=None) -> dict
     last = None
     for line in log_path.read_text(errors="replace").splitlines():
         m = _TS_RX.match(line.strip())
-        if m:
+        if m and "poll completed" in line:
             last = m.group(1)
     if not last:
-        raise ValueError(f"no timestamped line in {log_path} — cannot tell when "
+        raise ValueError(f"no completed poll in {log_path} — cannot tell when "
                          f"intake last ran")
 
     age = (datetime.now() - datetime.strptime(last, TS_FMT)).total_seconds() / 60
@@ -354,13 +354,17 @@ def intake_health(stale_minutes: int = 40, log_path=None, err_path=None) -> dict
         seen_success_after = False
         for line in reversed(tail):
             m = _TS_RX.match(line.strip())
-            if m and "inbox:" in line:
+            if m and "poll completed" in line:
                 seen_success_after = True
                 break
             if "intake.py failed" in line:
                 fails += 1
     out["unresolved_failures"] = fails
     out["recent_failures"] = fails      # kept: callers and the contract use it
+    if log_path == INTAKE_LOG:
+        import intake_lifecycle
+        out['handoffs'] = intake_lifecycle.summary(APP_DIR)
+        out['open_request_tickets'] = stale_tickets()
     return out
 
 
@@ -604,13 +608,13 @@ def selftest() -> int:
         # ---- intake_health: the check whose absence cost a real outage ---
         ilog = Path(td) / "intake.log"
         ierr = Path(td) / "intake-launchd.log"
-        ilog.write_text(f"[{ts(0.1)}] inbox: 6 in window, 0 new\n")
+        ilog.write_text(f"[{ts(0.1)}] poll completed\n")
         ierr.write_text("all quiet\n")
         h = intake_health(log_path=ilog, err_path=ierr)
         check("a recent poll is not stale", h["stale"] is False)
         check("the age is measured", h["age_minutes"] < 15)
 
-        ilog.write_text(f"[{ts(3)}] inbox: 6 in window, 0 new\n")
+        ilog.write_text(f"[{ts(3)}] poll completed\n")
         h = intake_health(log_path=ilog, err_path=ierr)
         check("a poll 3 hours old IS stale — this is the S78 outage shape",
               h["stale"] is True)
@@ -625,13 +629,13 @@ def selftest() -> int:
         # polls successfully again the failures are HISTORY -- otherwise a
         # resolved outage keeps firing for days and the alert gets muted.
         ierr.write_text(("intake.py failed (exit 1), will retry next cycle\n") * 3
-                        + f"[{ts(0.1)}] inbox: 6 in window, 0 new\n")
+                        + f"[{ts(0.1)}] poll completed\n")
         h = intake_health(log_path=ilog, err_path=ierr)
         check("failures BEFORE a successful poll are not still reported",
               h["recent_failures"] == 0)
 
         # ...but a failure AFTER the last success is live and must show.
-        ierr.write_text(f"[{ts(2)}] inbox: 6 in window, 0 new\n"
+        ierr.write_text(f"[{ts(2)}] poll completed\n"
                         + "intake.py failed (exit 1), will retry next cycle\n" * 2)
         h = intake_health(log_path=ilog, err_path=ierr)
         check("failures after the last success ARE reported",
@@ -709,8 +713,8 @@ def selftest() -> int:
             tk("t-done", "user-intake", "resolved", 24 * 30),
             tk("t-sky", "skywarden-repair", "queued", 24 * 30),
         ]) + "not json\n")
-        check("an untriaged request ticket past N days is flagged, a fresh or triaged one is not",
-              [t["id"] for t in stale_tickets(tq)] == ["t-old", "t-fb"])
+        check("an untriaged request ticket past N days is flagged, a fresh or resolved one is not; session stays visible",
+              [t["id"] for t in stale_tickets(tq)] == ["t-old", "t-fb", "t-triaged"])
         items, attention = ticket_brief(tq)
         check("a stale ticket is brief attention naming id and requester, never the title",
               attention and "t-old (buddy, 5d)" in attention and "PRIVATE" not in attention)

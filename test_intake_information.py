@@ -77,6 +77,8 @@ class InformationTest(unittest.TestCase):
                 stack.enter_context(patch.object(intake,name))
             stack.enter_context(patch.object(intake,'scan_inbox',return_value=([(1,'owner@example.com','Stock-picks','I would like to know the sources.','synthetic-id')],[])))
             stack.enter_context(patch.object(intake,'is_confirmation',return_value=[]))
+            stack.enter_context(patch('intake_lifecycle.coordinate',return_value=True))
+            stack.enter_context(patch('intake_delivery_evidence.verify',return_value=None))
             ack=stack.enter_context(patch.object(intake,'send_ack',return_value=True))
             solve=stack.enter_context(patch.object(info,'solve_and_answer',return_value={'answered':True,'request_id':'synthetic','reason':'synthetic delivery'}))
             ticket=stack.enter_context(patch.object(intake.dev_loop,'ticket_create'))

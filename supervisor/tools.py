@@ -421,7 +421,8 @@ def check_intake_health(stale_minutes: int = 40) -> str:
         except Exception as e:
             notes.append(f"{box} UNREADABLE ({type(e).__name__}: {e})")
 
-    bad = [r for r in rows if r.get("stale") or r.get("recent_failures")]
+    bad = [r for r in rows if r.get("stale") or r.get("recent_failures")
+           or (r.get('handoffs') or {}).get('attention') or r.get('open_request_tickets')]
     if not rows:
         out = "UNREADABLE: no box reported intake health. NOT a clean result."
     elif not bad:
@@ -439,6 +440,12 @@ def check_intake_health(stale_minutes: int = 40) -> str:
                 f"{' — STALE' if r.get('stale') else ''}"
                 f"{', ' + str(r['recent_failures']) + ' recent loop failure(s)' if r.get('recent_failures') else ''}"
                 f" (last: {r.get('last_poll')})")
+        for r in rows:
+            for h in (r.get('handoffs') or {}).get('attention', []):
+                lines.append(f"[{r['_box']}] request {h['id'][:12]}: {h['state']}; "
+                             f"owner={h['owner']}; {h['next_action']}")
+            for t in r.get('open_request_tickets', []):
+                lines.append(f"[{r['_box']}] open ticket {t['id']}: full-mail evidence review needed")
         lines.append("Client mail may be arriving and being silently ignored. "
                      "Report it — a broken deploy is not yours to fix.")
         out = "\n".join(lines)

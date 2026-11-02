@@ -34,6 +34,8 @@ class FallbackTicketTests(unittest.TestCase):
         mark = len(dev_loop.ticket_load(self.root))
         if not delivered:
             ts._fallback_to_ticket(rec)
+        if delivered:
+            rec["sent_receipt"] = "synthetic-exact-Sent-Mail-receipt"
         intake._settle_tickets(rec, delivered, mark)
 
     def status(self):
@@ -50,6 +52,12 @@ class FallbackTicketTests(unittest.TestCase):
         self.attempt(self.rec("<a@x>#information-recovery-2"), delivered=True)
         self.assertEqual(self.status(), [("queued", None), ("resolved", "<a@x>"), ("queued", "<b@x>")])
 
+    def test_smtp_success_without_sent_evidence_does_not_close(self):
+        rec=self.rec('<pending@x>')
+        self.attempt(rec,delivered=False)
+        intake._settle_tickets(rec,True,0)
+        self.assertEqual(self.status(),[('queued','<pending@x>')])
+
     def test_a_message_without_an_id_files_a_ticket_and_links_nothing(self):
         self.attempt(self.rec(""), delivered=False)
         self.attempt(self.rec(""), delivered=True)
@@ -57,7 +65,7 @@ class FallbackTicketTests(unittest.TestCase):
 
     def test_an_unreadable_queue_never_reaches_the_reply_path(self):
         with patch.object(dev_loop, "ticket_resolve_request", side_effect=OSError("disk")):
-            intake._settle_tickets(self.rec("<a@x>"), True, 0)      # must not raise
+            intake._settle_tickets(dict(self.rec("<a@x>"), sent_receipt="fixture"), True, 0)      # must not raise
         intake._settle_tickets(self.rec("<a@x>"), False, None)      # no mark: no link
         self.assertIn("ticket bookkeeping failed", (self.root / "intake.log").read_text())
 
