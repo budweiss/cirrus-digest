@@ -2333,7 +2333,11 @@ def handle_message(message, chat_id):
     elif cmd == "/builds":
         try:
             import dev_agent
-            return dev_agent.list_builds_text()
+            from contract_pins import note
+            # S560: dev_agent.py is itself pinned, so the warning is added here.
+            pins = [f"{i}. {note(b.get('files') or [])}"
+                    for i, b in enumerate(dev_agent.awaiting(), 1) if note(b.get("files") or [])]
+            return "\n".join([dev_agent.list_builds_text()] + pins)
         except Exception as e:
             return f"❌ dev-loop unavailable: {e}"
     elif cmd == "/proposals":
@@ -2381,7 +2385,14 @@ def handle_message(message, chat_id):
             if verb == "ship":
                 send_message(chat_id, "🚀 Shipping — snapshot, rebase, push, "
                                       "pull, verify. ~1 min...")
-                return dev_agent.ship(int(num))
+                from contract_pins import note
+                rows = dev_agent.awaiting()
+                pin = note(rows[int(num) - 1].get("files") or []) if 0 < int(num) <= len(rows) else ""
+                result = dev_agent.ship(int(num))
+                # S560: a shipped pinned file has just shut its route here.
+                if pin and "shipped" in result:
+                    result += f"\n{pin}. Ask a Cowork session to deploy-all and requalify."
+                return result
             if verb == "unhold":
                 return dev_agent.unhold(int(num))
             return dev_agent.discard(int(num))

@@ -160,11 +160,13 @@ def gather_awaiting_builds():
         return None                       # S348: unknown, not "nothing awaiting"
     if not isinstance(builds, list) or not all(isinstance(b, dict) for b in builds):
         return None
+    from contract_pins import note
     out = []
     for b in builds:
         if b.get("status") == "awaiting-confirm":
             summ = (b.get("summary") or b.get("detail") or "").strip().replace("\n", " ")
-            out.append(f"{b.get('id','?')}: {summ[:90]}")
+            pin = note(b.get("files") or [])      # S560: say what shipping shuts
+            out.append(f"{b.get('id','?')}: {summ[:90]}" + (f" — {pin}" if pin else ""))
     return out
 
 def _domain(url: str) -> str:
