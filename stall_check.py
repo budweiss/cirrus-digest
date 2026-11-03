@@ -135,8 +135,13 @@ def _age_days(ts_str):
 
 
 # ── watchers ────────────────────────────────────────────────────────────────
-def check_devloop_builds(days=3):
-    p = os.path.join(REPO, "logs", "dev-loop", "builds.json")
+def _empty_queue_reason():
+    from dev_agent import explain_empty_queue
+    return explain_empty_queue()
+
+
+def check_devloop_builds(days=3, _root=None, _why=_empty_queue_reason):
+    p = os.path.join(_root or REPO, "logs", "dev-loop", "builds.json")
     if not os.path.exists(p):
         return _res(UNKNOWN, "dev-loop builds", f"cannot read {p} — NOT the same as 'no builds'")
     try:
@@ -148,6 +153,19 @@ def check_devloop_builds(days=3):
         return _res(UNKNOWN, "dev-loop builds", "no parseable build dates")
     newest = min(ages)
     if newest > days:
+        # S560: ask the dev agent why the queue is empty, by the same rule its
+        # nightly sweep uses. "Waiting on you" is not a stalled loop. It counts
+        # only while the sweep still runs: dev_agent rewrites empty-streak.json
+        # on every empty night, so a file older than 36h means it has stopped.
+        sp = os.path.join(os.path.dirname(p), "empty-streak.json")
+        try:
+            fresh = datetime.now().timestamp() - os.path.getmtime(sp) < 36 * 3600
+            verdict, detail = _why() if fresh else ("", "")
+        except Exception:
+            verdict, detail = "", ""
+        if verdict == "waiting-on-buddy":
+            return _res(PREMATURE, "dev-loop builds",
+                        f"no build in {newest} days, waiting on you: {detail}")
         return _res(STALL, "dev-loop builds",
                     f"no build attempted in {newest} days — the loop is idle, "
                     "usually because nothing is approved")
@@ -194,7 +212,7 @@ def _question_attempts(project, root=None):
            # S141: attempts inside the staleness window, and how many of THOSE
            # actually landed an outcome. The pair is the point -- recent asks
            # that all recorded means the signal is working, not stalled.
-           "recent": 0, "recent_recorded": 0}
+           "recent": 0, "recent_recorded": 0, "recent_ambiguous": 0}
     try:
         with open(path) as f:
             for line in f:
@@ -218,6 +236,8 @@ def _question_attempts(project, root=None):
                         out["recent"] += 1
                         if d.get("outcome_recorded"):
                             out["recent_recorded"] += 1
+                        elif isinstance(m, int) and m > 1:
+                            out["recent_ambiguous"] += 1
                 except Exception:
                     pass
     except Exception:
@@ -350,6 +370,16 @@ def kb_outcome_verdict(rec, box, days=7):
         # this tri-state for: "nobody asked" is not "asking is broken".
         recent = (att or {}).get("recent") or 0
         landed = (att or {}).get("recent_recorded") or 0
+        # S560: an AMBIGUOUS question (several entities matched) is answered
+        # with a clarifying question, so no outcome is the right result. Bill's
+        # two 11-02 questions each matched two communities and paged a STALL
+        # every morning, which is the T9 failure this function was built to avoid.
+        unclear = (att or {}).get("recent_ambiguous") or 0
+        if recent and not landed and unclear == recent:
+            return _res(PREMATURE, label,
+                        f"{n} recorded, newest {age}d ago; all {recent} recent "
+                        f"question(s) matched several entities, so a clarifying "
+                        f"question, not an outcome, was the right answer")
         # A stall means asking STOPPED WORKING: questions came in and none of
         # them produced an outcome. Questions that did land -- or none at all --
         # are not a fault, and nagging about either is how a panel stops being
@@ -805,6 +835,16 @@ def selftest():
         r = kb_outcome_verdict(working, "CUMULUS")
         ck("kb: recent questions that DID land an outcome is working, not stalled",
            r["state"] == OK and "signal working" in r["msg"])
+        # S560, the live case: two 11-02 questions, each matching two communities.
+        unclear = dict(real, attempts={"attempts": 5, "no_match": 0,
+                                       "ambiguous": 4, "recent": 2,
+                                       "recent_recorded": 0, "recent_ambiguous": 2})
+        r = kb_outcome_verdict(unclear, "CUMULUS")
+        ck("kb: recent questions that were ALL ambiguous are not a stall",
+           r["state"] == PREMATURE and "clarifying question" in r["msg"])
+        mixed = dict(real, attempts=dict(unclear["attempts"], recent=3))
+        ck("kb: ...but one clear question that landed nothing still is",
+           kb_outcome_verdict(mixed, "CUMULUS")["state"] == STALL)
         quiet = dict(real, attempts={"attempts": 3, "no_match": 0,
                                      "ambiguous": 2, "recent": 0,
                                      "recent_recorded": 0})
@@ -1000,6 +1040,26 @@ def selftest():
            == UNKNOWN)
         ck("cache: calls that never REQUESTED caching are not counted",
            _cache([_w, _w, _w, {"cache_requested": False}])["state"] == STALL)
+
+        # S560: an idle loop that is waiting on Buddy is not a stalled loop.
+        _dl = os.path.join(_td, "logs", "dev-loop")
+        os.makedirs(_dl)
+        json.dump([{"created": "2026-01-01 21:30:00"}], open(os.path.join(_dl, "builds.json"), "w"))
+        _wait = lambda: ("waiting-on-buddy", "2 Tier-1 proposal(s) waiting in /approve")
+        ck("devloop: an old build with no empty-night record is a STALL",
+           check_devloop_builds(_root=_td, _why=_wait)["state"] == STALL)
+        _sp = os.path.join(_dl, "empty-streak.json")
+        json.dump({"count": 5}, open(_sp, "w"))
+        r = check_devloop_builds(_root=_td, _why=_wait)
+        ck("devloop: proposals waiting on Buddy is PREMATURE and names the wait",
+           r["state"] == PREMATURE and "/approve" in r["msg"])
+        ck("devloop: a no-proposals queue stays a STALL",
+           check_devloop_builds(_root=_td, _why=lambda: ("no-proposals", "x"))["state"] == STALL)
+        ck("devloop: a reason that cannot be read stays a STALL",
+           check_devloop_builds(_root=_td, _why=lambda: 1 / 0)["state"] == STALL)
+        os.utime(_sp, (0, 0))
+        ck("devloop: ...and so does a sweep that stopped 36h ago",
+           check_devloop_builds(_root=_td, _why=_wait)["state"] == STALL)
 
     _kbck(ck)
 

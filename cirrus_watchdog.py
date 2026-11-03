@@ -58,8 +58,11 @@ SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
 # "not loaded" for jobs that no longer live here. Their run-success is now watched
 # from CUMULUS's ledger via the morning brief (job_status node-aware pull); their
 # service health on CUMULUS is managed by systemd (see the CUMULUS-watchdog TODO).
+# S560: jobscheck too. Its 16:30 alert was refused by Telegram for a week while
+# it exited 0; it now exits 1 on a refused part, and this short alert gets through.
 MONITOR_ONLY = {"com.cirrus.morningbrief", "com.cirrus.stratusreview",
-                "com.cirrus.privacymon", "com.cirrus.macstudiowatch"}
+                "com.cirrus.privacymon", "com.cirrus.macstudiowatch",
+                "com.cirrus.jobscheck"}
 MAX_REPAIRS = 3
 
 
