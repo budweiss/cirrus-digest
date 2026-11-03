@@ -4,6 +4,8 @@ No real credentials, provider, SMTP, subprocess or socket is available. This
 rehearses decision/delivery boundaries, not unattended scheduling or live mail.
 The provider/admission path is separately exercised by test_snow_failure_pipeline.
 """
+import ast
+import sys
 import contextlib
 import io
 import tempfile
@@ -49,13 +51,14 @@ class ControlledSnow(unittest.TestCase):
     def run_job(self, dry=False):
         output = io.StringIO()
         with patch.object(snow.sys, 'argv', ['bill_snow_weekly.py'] + (['--dry-run'] if dry else [])), contextlib.redirect_stdout(output):
-            snow.main()
+            self.exit_code = snow.main()
         return output.getvalue()
 
     def test_material_dry_run_has_preview_but_no_receipt_or_sender(self):
         text = self.run_job(dry=True)
         self.assertIn('synthetic update', text)
         self.assertIn('DRY RUN', text)
+        self.assertEqual(self.exit_code, 0)
         self.sender.assert_not_called()
         self.assertFalse((self.root/'receipts').exists())
         self.assertEqual(list((self.root/'out').iterdir()), [])
@@ -86,6 +89,7 @@ class ControlledSnow(unittest.TestCase):
         self.run_job()
         self.assertIsNone(send_guard.already_sent_today('billsnow'))
         self.assertIs(self.record.call_args.args[1], False)
+        self.assertEqual(self.exit_code, 1)
         self.sender.return_value.returncode = 0
         self.run_job()
         self.run_job()
@@ -100,6 +104,7 @@ class ControlledSnow(unittest.TestCase):
         self.assertNotIn('[1]', text)
         self.assertIn('Baseline note', text)
         self.assertIs(self.record.call_args.args[1], True)
+        self.assertEqual(self.exit_code, 0)
         self.assertEqual(self.record.call_args.args[2].split(';')[0], 'sent material update')
 
     def test_baseline_stays_when_nothing_reached_bill(self):
@@ -119,12 +124,14 @@ class ControlledSnow(unittest.TestCase):
             self.run_job()
         self.assertIsNotNone(send_guard.already_sent_today('billsnow'))
         self.assertIs(self.record.call_args.args[1], False)
+        self.assertEqual(self.exit_code, 1)
         self.assertIn('BASELINE NOT UPDATED', self.record.call_args.args[2])
 
     def test_failed_baseline_without_a_stamp_cannot_trigger_a_catch_up_resend(self):
         with patch.object(snow, 'promote_baseline', return_value=False), patch.object(send_guard, 'mark_sent', return_value=False):
             self.run_job()
         self.assertIs(self.record.call_args.args[1], True)
+        self.assertEqual(self.exit_code, 0)
         self.assertIn('BASELINE NOT UPDATED', self.record.call_args.args[2])
 
     def test_failed_evidence_is_not_healthy_quiet(self):
@@ -133,7 +140,25 @@ class ControlledSnow(unittest.TestCase):
         self.run_job()
         self.sender.assert_not_called()
         self.assertIs(self.record.call_args.args[1], False)
+        self.assertEqual(self.exit_code, 1)
         self.assertIsNone(send_guard.already_sent_today('billsnow'))
+
+    def test_real_command_entry_propagates_status(self):
+        entry = ast.parse(Path(snow.__file__).read_text()).body[-1]
+        for code in (0, 1):
+            namespace = {'__name__': '__main__', 'sys': sys, 'main': lambda: code}
+            with patch.object(sys, 'argv', ['bill_snow_weekly.py']):
+                with self.assertRaises(SystemExit) as result:
+                    exec(compile(ast.Module(body=[entry], type_ignores=[]), snow.__file__, 'exec'), namespace)
+            self.assertEqual(result.exception.code, code)
+
+    def test_failed_dry_run_exits_nonzero_without_delivery(self):
+        self.decide.return_value = ({'material_change': False, 'error': True,
+            'reason': 'synthetic admission refusal'}, [])
+        self.run_job(dry=True)
+        self.assertEqual(self.exit_code, 1)
+        self.sender.assert_not_called()
+        self.record.assert_not_called()
 
     def test_healthy_quiet_does_not_create_delivery_receipt(self):
         self.decide.return_value = (dict(material_change=False, reason='unchanged evidence',
@@ -141,6 +166,7 @@ class ControlledSnow(unittest.TestCase):
         self.run_job()
         self.sender.assert_not_called()
         self.assertIs(self.record.call_args.args[1], True)
+        self.assertEqual(self.exit_code, 0)
         self.assertIn('no material change', self.record.call_args.args[2])
         self.assertIsNone(send_guard.already_sent_today('billsnow'))
 
@@ -157,7 +183,8 @@ class ControlledSnow(unittest.TestCase):
             text = self.run_job()
         self.assertIn('restart could re-send', text)
         self.assertIsNone(send_guard.already_sent_today('billsnow'))
-        self.assertIs(self.record.call_args.args[1], True)  # send succeeded; stamp failed
+        self.assertIs(self.record.call_args.args[1], True)
+        self.assertEqual(self.exit_code, 0)  # send succeeded; stamp failed
 
 
 if __name__ == '__main__':

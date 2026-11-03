@@ -563,7 +563,7 @@ def main():
             # Recorded as a healthy run, because it IS one: the week's send
             # happened. Staying silent here would read as a job that never ran.
             _rec(dry, True, build_note({"suppressed": True}))
-            return
+            return 0
 
     data, urls = decide()
     material = (not _run_failed(data) and validate_decision(data)
@@ -585,7 +585,7 @@ def main():
         print("=" * 70)
         print("sources:", *urls, sep="\n  ")
         print("DRY RUN — nothing sent.")
-        return
+        return int(_run_failed(data))
 
     if not material:
         reason = data.get("reason", "")
@@ -593,7 +593,7 @@ def main():
         _rec(dry, not _run_failed(data),
              build_note({"reason": reason[:120] or "no material change",
                          "draft": _draft_note()}))
-        return
+        return int(_run_failed(data))
 
     # Persist the refresh, then send to Bill (cc Buddy) via the shared SMTP sender.
     refresh_path = OUT / f"SNOW-2026-27-Outlook-Refresh-{TODAY}.md"
@@ -621,9 +621,12 @@ def main():
         baseline_ok = promote_baseline(data.get("refresh_md") or "")
     # A stale baseline fails the row so the report card shows it. Without a stamp
     # the row stays ok: a failed row and no stamp would make the catch-up re-send.
-    _rec(dry, r.returncode == 0 and (baseline_ok or not stamped),
+    ok = r.returncode == 0 and (baseline_ok or not stamped)
+    _rec(dry, ok,
          build_note({"sent": r.returncode == 0, "baseline_failed": not baseline_ok,
                      "draft": _draft_note()}))
+
+    return int(not ok)
 
 
 def _prompt_with_stub_refs():
@@ -783,4 +786,4 @@ def selftest() -> int:
 if __name__ == "__main__":
     if "selftest" in sys.argv or "--selftest" in sys.argv:
         sys.exit(selftest())
-    main()
+    sys.exit(main())

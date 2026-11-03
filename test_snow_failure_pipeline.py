@@ -64,7 +64,8 @@ class SnowFailurePipeline(unittest.TestCase):
             st.enter_context(patch('socket.socket.connect',side_effect=AssertionError('network forbidden')))
             st.enter_context(patch('socket.create_connection',side_effect=AssertionError('network forbidden')))
             output=io.StringIO()
-            with contextlib.redirect_stdout(output):snow.main()
+            with contextlib.redirect_stdout(output):exit_code=snow.main()
+            self.assertEqual(exit_code, 1 if failure else 0)
             send.assert_not_called();stamp.assert_not_called()
             self.assertEqual(list((self.root/'out').iterdir()),[])
             if material_preview:
