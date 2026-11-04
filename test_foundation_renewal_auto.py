@@ -9,6 +9,18 @@ from unittest.mock import patch
 
 import foundation_renewal_auto as auto
 
+PILOT_REVIEW_CASES = [
+    ("Label demand as a hypothesis. Propose a paid pilot; do not assert observed purchases or existing demand. "
+     "Pilot thresholds are proposed decision rules, not market facts.", "Propose a pilot for podcast editors.",
+     "Niche hypothesis to test: whether a proposed delivery package would be useful to podcast editors. "
+     "Proposed paid pilot: 3 independent buyers, up to 2 jobs each, with price set after measured costs. "
+     "Continue only if at least 2 buy a second job, every delivery passes acceptance, and measured unit margin is positive; otherwise stop.",
+     "An earlier proposal.", "pass"),
+    ("Label demand as a hypothesis. Propose a paid pilot; do not assert observed purchases or existing demand. "
+     "Pilot thresholds are proposed decision rules, not market facts.", "Propose a pilot; no purchase evidence was supplied.",
+     "Three buyers already purchased and two renewed, proving demand and positive margins.",
+     "Proposed pilot only; demand remains untested.", "fail"),
+]
 
 class RenewalAutoTest(unittest.TestCase):
     def test_idle_local_model_is_loaded_then_rechecked(self):
@@ -90,8 +102,23 @@ class RenewalAutoTest(unittest.TestCase):
              '[{"name":"Fictional Lantern Quartet"},{"name":"Fictional Harbor Duo"}]', "fail"),
             ("Extract only confirmed shows. Exclude cancelled shows.",
              "CANCELLED: Fictional Lantern Quartet, 2026-10-20.",
-             '[{"artist":"Fictional Lantern Quartet","date":"2026-10-20"}]', '[]', "fail")]
-        for index, (system, user, new, prior, expected) in enumerate(cases):
+             '[{"artist":"Fictional Lantern Quartet","date":"2026-10-20"}]', '[]', "fail"),
+            ("Propose file processing. Vendor pricing proves only a paid category, not custom API capability. "
+             "Caption retiming may cite CloudConvert as video-category market evidence. Customer supplies numeric offsets. "
+             "Our software and prelaunch testing are proposals, not existing capabilities.",
+             "Paid category evidence: CloudConvert, file/video processing. Propose timestamp editing of authored SRT.",
+             "Proposed: our code applies customer-supplied offsets to SRT and refuses nonmonotonic results. "
+             "Implement and test before launch. CloudConvert is related paid-market evidence only; no API capability claim.",
+             "CloudConvert API performs custom caption alignment automatically.", "pass"),
+            ("Only numeric timestamp edits to customer-authored captions are allowed. No transcription or inferred timing.",
+             "Propose a caption editing pipeline.",
+             "Our proposed code applies customer-provided numeric offsets to authored captions and rejects invalid times.",
+             "Transcribe the audio and infer caption timing from word counts.", "pass"),
+            ("Only numeric timestamp edits to customer-authored captions are allowed. No transcription or inferred timing.",
+             "Propose a caption editing pipeline.",
+             "Transcribe the audio and infer caption timing from word counts.",
+             "Our proposed code applies customer-provided numeric offsets to authored captions.", "fail")]
+        for index, (system, user, new, prior, expected) in enumerate(cases + PILOT_REVIEW_CASES):
             case = "--- case synthetic | shape=True identity=True finish=stop err=None\nREVIEW EVIDENCE (JSON): " + json.dumps({
                 "SYSTEM_INSTRUCTIONS": system, "INPUT": user, "NEW": new, "PRIOR": prior})
             for reviewer, rule in enumerate(auto.REVIEW_PROMPTS):
@@ -145,7 +172,7 @@ class RenewalAutoTest(unittest.TestCase):
     def test_orchestrator_keeps_distinct_reviewers_and_private_stdin(self):
         from types import SimpleNamespace
         result = SimpleNamespace(returncode=0, stdout=json.dumps({"answer": json.dumps({
-            "verdict": "pass", "issue_type": "none", "reason": "supported"})}).encode())
+            "verdict": "pass", "issue_type": "none", "reason": "supported", "new_span_id": "NONE"})}).encode())
         with patch.object(auto.subprocess, "run", return_value=result) as run:
             for rule in auto.REVIEW_PROMPTS:
                 auto.model_review(rule, "private-fixture")
@@ -172,6 +199,11 @@ class RenewalAutoTest(unittest.TestCase):
                 result = auto.local_review({"reviewer": "qwen", "prompt": "synthetic"})
             self.assertTrue(all(c.args[0].full_url.startswith(auto.QWEN_ENDPOINT)
                                 for c in opener.open.call_args_list))
+            body = json.loads(opener.open.call_args.args[0].data)
+            schema = body["response_format"]["json_schema"]["schema"]
+            self.assertEqual(schema["properties"]["reason"]["maxLength"], 384)
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(schema["properties"]["verdict"]["enum"], ["pass", "fail", "unsure"])
             return result
         self.assertEqual(run()["prompt_tokens"], 40000)
         for kwargs in ({"count": 65000}, {"model": "wrong"}, {"finish": "length"}, {"used": 39999}):
@@ -193,9 +225,51 @@ class RenewalAutoTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         auto.local_review({"reviewer": "gpt-oss", "prompt": "x"})
             request = opener.open.call_args.args[0]
+            self.assertEqual(json.loads(request.data)["format"]["properties"]["new_span_id"]["enum"], ["NONE", "NEW"])
             self.assertEqual(json.loads(request.data)["options"]["num_ctx"], 65536)
             self.assertEqual(json.loads(request.data)["options"]["num_predict"], 4096)
             self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/chat")
+
+    def test_failure_reference_must_select_new_not_prior(self):
+        from types import SimpleNamespace
+        case = "REVIEW EVIDENCE (JSON): " + json.dumps({"NEW": "A proposed file check.", "PRIOR": "Unsupported vendor claim."})
+        for reference, valid in (("PRIOR", False), ("", False), ("NEW", True)):
+            answer = {"verdict": "fail", "issue_type": "instruction_failure", "reason": "fixture concern", "new_span_id": reference}
+            response = SimpleNamespace(returncode=0, stdout=json.dumps({"answer": json.dumps(answer)}).encode())
+            with patch.object(auto.subprocess, "run", return_value=response):
+                if valid:
+                    self.assertNotIn("new_span_id", auto.model_review(auto.REVIEW_PROMPTS[0], case))
+                else:
+                    with self.assertRaises(ValueError): auto.model_review(auto.REVIEW_PROMPTS[0], case)
+
+    def test_evidence_field_ids_are_derived_only_from_new(self):
+        case = "REVIEW EVIDENCE (JSON): " + json.dumps({
+            "NEW": json.dumps({"ideas": [{"what": "proposed operation"}]}),
+            "PRIOR": json.dumps({"old_only": "unsupported claim"})})
+        self.assertEqual(auto.new_evidence_fields(case), ["NEW", "/ideas/0/what"])
+
+    def test_prior_cannot_contaminate_compliance_but_current_evidence_is_complete(self):
+        evidence = {"SYSTEM_INSTRUCTIONS": "exact rules", "INPUT": "full input",
+                    "PRIOR": "old defective answer", "NEW": "full new answer",
+                    "RESPONSE_JSON_TYPE": "str"}
+        marker = "REVIEW EVIDENCE (JSON): "
+        first = auto.current_review_case(marker + json.dumps(evidence))
+        evidence["PRIOR"] = "a different old defect"
+        self.assertEqual(first, auto.current_review_case(marker + json.dumps(evidence)))
+        actual = json.loads(first.split(marker, 1)[1])
+        self.assertEqual(actual, {k: v for k, v in evidence.items() if k != "PRIOR"})
+        evidence["NEW"] = "a new real defect"
+        self.assertNotEqual(first, auto.current_review_case(marker + json.dumps(evidence)))
+
+    def test_review_schema_refuses_overlength_and_extra_fields(self):
+        from types import SimpleNamespace
+        good = {"verdict": "pass", "issue_type": "none", "reason": "supported", "new_span_id": "NONE"}
+        for bad in (dict(good, reason="x" * (auto.REVIEW_REASON_MAX + 1)),
+                    dict(good, analysis="unbounded"), dict(good, reason=" "),
+                    dict(good, reason="x"), dict(good, reason="\nInvalid reason")):
+            result = SimpleNamespace(returncode=0, stdout=json.dumps({"answer": json.dumps(bad)}).encode())
+            with patch.object(auto.subprocess, "run", return_value=result), self.assertRaises(ValueError):
+                auto.model_review(auto.REVIEW_PROMPTS[0], "synthetic")
 
     def test_events_review_removes_only_a_complete_accepted_json_fence(self):
         item = json.loads((self.path / "decisions.json").read_text())["records"][0]
@@ -285,7 +359,7 @@ class RenewalAutoTest(unittest.TestCase):
         calls = []
         def reviewer(rule, case):
             calls.append((rule, case))
-            return {"verdict": "pass", "issue_type": "none", "reason": "supported"}
+            return {"verdict": "pass", "issue_type": "none", "reason": "supported", "new_span_id": "NONE"}
         approved, hoa, held, details = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600, reviewer)
         self.assertEqual((len(approved), len(hoa), held, len(details), len(calls)),
@@ -505,12 +579,12 @@ class RenewalAutoTest(unittest.TestCase):
             "old_record_sha256": auto.record_sha(hoa_record)}]))
         _, hoa, _, _ = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600,
-            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "supported"})
+            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "supported", "new_span_id": "NONE"})
         self.assertEqual(len(hoa), 1)
         hoa_record["expires_at"] += 100
         _, hoa, _, _ = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600,
-            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "supported"})
+            lambda *_: {"verdict": "pass", "issue_type": "none", "reason": "supported", "new_span_id": "NONE"})
         self.assertEqual(len(hoa), 0)
 
 
