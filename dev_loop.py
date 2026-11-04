@@ -835,5 +835,12 @@ if __name__ == "__main__":
                            project_dir=Path(__file__).resolve().parent,
                            by=sys.argv[5] if len(sys.argv) > 5 else "cowork")
         print(json.dumps({k: _t.get(k) for k in ("id", "status", "requester", "updated")}))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "--selftest":
+        # dev_agent's gate 2 entry point: run the existing self-test and exit
+        # non-zero on failure so an unattended caller can detect regressions.
+        try:
+            _selftest()
+        except AssertionError:
+            sys.exit(1)
     else:
         _selftest()
