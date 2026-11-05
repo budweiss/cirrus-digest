@@ -459,6 +459,11 @@ def ack_body(rec: dict) -> str:
                 "and will review. If you'd like a new subject researched, "
                 "send it as a fresh email (not a reply) and it goes straight "
                 f"into the research queue.\n\n— {node}")
+    if rec.get("kind") == "confirmation":
+        # S568 (Buddy, 11-04): a client saying yes gets a short thanks. It fell
+        # through to the build template below, which told Bill on 11-03 that his
+        # reply was queued as a minor change and he'd hear when it shipped.
+        return f"Hi {name},\n\nThanks, noted.\n\n— {node}"
     if rec.get("kind") == "research":
         return (f"Hi {name},\n\nGot it — your topic has been added to the "
                 f"research queue:\n\n    {rec['title']}\n\n"
@@ -1489,6 +1494,16 @@ def selftest() -> int:
     check("feedback ack thanks, says a fresh email gets researched", "Thanks for the note" in ack_body(rec_f)
           and "fresh email" in ack_body(rec_f))
     check("feedback ack no longer tells clients to use REQUEST: (S259)", "REQUEST:" not in ack_body(rec_f))
+
+    # S568: every non-build kind gets its own ack. A kind with no branch falls
+    # through to the build template ("queued as a minor change ... when it
+    # ships"), which is how a confirmation reached Bill on 11-03.
+    rec_c = classify("bill", ["snow"], "Re: Your weekly reports from us", "Yes, that is everything")
+    rec_c["kind"] = "confirmation"
+    check("confirmation ack is a short thanks (S568)", "Thanks, noted." in ack_body(rec_c))
+    for _k in ("research", "feedback", "deliverable", "answer", "resend", "confirmation"):
+        check(f"'{_k}' ack is not the build template (S568)",
+              "when it ships" not in ack_body(dict(rec_c, kind=_k)))
 
     # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
     import tempfile as _tf
