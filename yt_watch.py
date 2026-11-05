@@ -409,7 +409,7 @@ def run(dry_run=False, limit=None, channels=None, feed_fn=None,
                 rec["no_transcript"] = reason or "unknown"
             else:
                 try:
-                    rec["claims"] = extract_fn(v, text, rec["lane"])
+                    rec["claims"] = extract_fn(dict(v, channel_id=ch["channel_id"]), text, rec["lane"])
                 except Exception as e:
                     # NOT no_transcript. The first live run reported
                     # "no-transcript 3, 3 errors" for three videos whose

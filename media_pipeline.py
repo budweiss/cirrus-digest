@@ -478,7 +478,10 @@ def youtube(payload):
                             metadata=video, report=report)
             drops[0] += report.get('dropped', 0)
             if lane == 'business' and found:
+                channel = next((c for c in payload['channels']
+                                if c['channel_id'] == video.get('channel_id')), {})
                 business_items.append(dict(video, source='Mark Tilbury / YouTube',
+                    cloud_scoring_authorized=channel.get('business_scoring') == 'cloud-approved',
                     content='Unverified creator claims, selected from the full transcript. '
                             'These are research leads, not independently verified results.\n' +
                             '\n'.join(c['quote'] for c in found)))

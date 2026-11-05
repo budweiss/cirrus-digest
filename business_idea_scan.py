@@ -1001,6 +1001,12 @@ def ingest_youtube_reviews(creds, result, seen, inbox=None, dry_run=False, db_pa
         url = 'https://www.youtube.com/watch?v=' + video_id
         if url in seen or url in completed:
             continue
+        # Newly requested public videos stay local until Buddy explicitly opts
+        # this source into the existing cloud council. Never infer permission
+        # merely from the route already existing for other sources.
+        if item.get('cloud_scoring_authorized') is not True:
+            result['local_review_pending'] = result.get('local_review_pending', 0) + 1
+            continue
         if attempted >= 12:
             break
         attempted += 1

@@ -56,7 +56,7 @@ class CreatorReviewTests(unittest.TestCase):
     def test_business_intake_dedup_and_failure_preserves_work(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'video.json'
-            row = dict(video_id='abcdefghijk',title='Public experiment',source='YouTube',content='Evidence')
+            row = dict(video_id='abcdefghijk',title='Public experiment',source='YouTube',content='Evidence',cloud_scoring_authorized=True)
             path.write_text(json.dumps(row))
             stats = dict(fetched=0,fresh=0)
             with patch.object(business,'_score_and_store') as score:
@@ -78,12 +78,23 @@ class CreatorReviewTests(unittest.TestCase):
             for i in range(14):
                 vid='%011d'%i
                 (Path(folder)/('%02d.json'%i)).write_text(json.dumps(dict(video_id=vid,
-                    title='Public source',source='YouTube',content='Evidence')))
+                    title='Public source',source='YouTube',content='Evidence',cloud_scoring_authorized=True)))
                 if i<13: seen.add('https://www.youtube.com/watch?v='+vid)
             with patch.object(business,'_score_and_store') as score:
                 done=business.ingest_youtube_reviews({},dict(fetched=0,fresh=0),seen,inbox=folder)
             self.assertEqual(score.call_count,1)
             self.assertEqual(len(done),1)
+
+    def test_new_source_never_enters_cloud_scorer_without_permission(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder)/'source.json').write_text(json.dumps(dict(video_id='abcdefghijk',
+                title='Public source',source='YouTube',content='Evidence')))
+            result=dict(fetched=0,fresh=0)
+            with patch.object(business,'_score_and_store') as score:
+                done=business.ingest_youtube_reviews({},result,set(),inbox=folder)
+            score.assert_not_called()
+            self.assertEqual(done,set())
+            self.assertEqual(result['local_review_pending'],1)
 
 
 if __name__=='__main__':
