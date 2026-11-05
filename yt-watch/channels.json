@@ -130,7 +130,13 @@
       "channel_id": "UCxgAuX3XZROujMmGphN_scA",
       "lane": "business",
       "why": "Buddy requested businessidea intake, priority LlhTEttKcwQ and October 7-November 5 2026 backlog. Apply existing business_ideas mission, local prefilter and fit/survival scoring.",
-      "verified": "2026-11-05: live channel inventory and RSS include requested video, title and publication date"
+      "verified": "2026-11-05: live channel inventory and RSS include requested video, title and publication date",
+      "business_scoring": "cloud-approved",
+      "business_scoring_authorization": {
+        "date": "2026-11-05",
+        "scope": "Mark Tilbury public-video evidence and existing businessidea criteria through the existing cloud Claude/Kimi scorer",
+        "user_answer": "Allow the existing cloud scorer"
+      }
     }
   ]
 }
