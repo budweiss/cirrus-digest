@@ -138,13 +138,94 @@ class PersonalChecks(unittest.TestCase):
         draft={'opinion':'I executed the recommended trades in your brokerage account today.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Evidence is not available for this source test.'} for i in range(1,8)]}
         refusal=json.dumps({'passed':False,'issues':['opinion: Claims trades were executed without any execution evidence.']})
-        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',return_value=refusal) as reviewer:
+        agree={'verdict':'valid','draft_contradicts_evidence':True,'rationale':'Synthetic.'}
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',return_value=refusal) as reviewer,patch.object(S,'arbiter_call',return_value=agree) as judge:
             with self.assertRaisesRegex(ValueError,'personal_opinion_review_failed'):
                 S.assess([],{},[],[],4,'Historical context.',self.source_rules(),Path(td))
             checks=json.loads((Path(td)/'checks.json').read_text())
+            self.assertFalse(S.review_overruled(Path(td)))
         self.assertEqual(model.call_count,4)
         self.assertEqual(reviewer.call_count,4)
+        self.assertEqual(judge.call_count,1)
         self.assertTrue(all(x['passed'] is False for x in checks))
+
+    def rejected_four_times(self,td,judge):
+        from contextlib import nullcontext
+        draft={'opinion':'Synthetic stale-export opinion that names its dated estimates and makes no trades.',
+               'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
+        issues=['opinion: Synthetic objection one about the opinion.','rule_6: Synthetic objection two about rule six.']
+        refusal=json.dumps({'passed':False,'issues':issues})
+        with patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)),patch.object(S.research,'structured_review',return_value=refusal),patch.object(S,'arbiter_call',side_effect=judge) as call:
+            try:result=S.assess([],{},[],[],4,'Historical context.',self.source_rules(),Path(td))
+            except ValueError as exc:result=exc
+        return draft,result,call
+
+    def test_two_judges_must_both_overrule_every_objection(self):
+        invalid={'verdict':'invalid','draft_contradicts_evidence':False,'rationale':'Synthetic.'}
+        with tempfile.TemporaryDirectory() as td:
+            draft,result,call=self.rejected_four_times(td,lambda *a,**k:dict(invalid))
+            record=json.loads((Path(td)/'arbitration.json').read_text())
+            self.assertTrue(S.review_overruled(Path(td)))
+        self.assertEqual(result,draft)
+        self.assertEqual(call.call_count,4)
+        self.assertEqual([c.args[0] for c in call.call_args_list],['gpt-oss:120b']*2+['qwen3.8:27b']*2)
+        self.assertTrue(record['overruled']);self.assertEqual(len(record['judgements']),4)
+
+    def test_any_doubt_from_either_judge_upholds_the_rejection(self):
+        doubts=[{'verdict':'valid','draft_contradicts_evidence':False},{'verdict':'unclear','draft_contradicts_evidence':False},
+                {'verdict':'invalid','draft_contradicts_evidence':True},RuntimeError('incomplete_or_wrong_arbiter_model')]
+        for doubt in doubts:
+            calls=[]
+            def judge(model,think,evidence,draft,issue,timeout):
+                calls.append(model)
+                if len(calls)==4:
+                    if isinstance(doubt,Exception):raise doubt
+                    return dict(doubt,rationale='Synthetic.')
+                return {'verdict':'invalid','draft_contradicts_evidence':False,'rationale':'Synthetic.'}
+            with self.subTest(doubt=str(doubt)),tempfile.TemporaryDirectory() as td:
+                _,result,call=self.rejected_four_times(td,judge)
+                self.assertIsInstance(result,ValueError);self.assertIn('personal_opinion_review_failed',str(result))
+                self.assertFalse(S.review_overruled(Path(td)))
+                self.assertEqual(call.call_count,4)
+
+    def test_first_upheld_objection_stops_the_judges(self):
+        with tempfile.TemporaryDirectory() as td:
+            _,result,call=self.rejected_four_times(td,lambda *a,**k:{'verdict':'valid','draft_contradicts_evidence':False,'rationale':'Synthetic.'})
+        self.assertIsInstance(result,ValueError);self.assertEqual(call.call_count,1)
+
+    def test_exhausted_judge_time_upholds_without_calling(self):
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'arbiter_call') as judge:
+            self.assertFalse(S.arbitrate({},{'opinion':'x'},['opinion: Synthetic objection.'],Path(td),budget=0))
+            record=json.loads((Path(td)/'arbitration.json').read_text())
+            self.assertFalse(S.arbitrate({},{'opinion':'x'},[],Path(td)))
+        judge.assert_not_called()
+        self.assertEqual({r['error_type'] for r in record['judgements']},{'arbiter_time_budget'})
+
+    def test_no_reviewed_draft_means_no_arbitration(self):
+        from contextlib import nullcontext
+        bad={'opinion':'Synthetic opinion that invents a 999% figure and so never reaches review.',
+             'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(bad)),patch.object(S.research,'structured_review') as reviewer,patch.object(S,'arbiter_call') as judge:
+            (Path(td)/'arbitration.json').write_text(json.dumps({'overruled':True}))
+            with self.assertRaisesRegex(ValueError,'personal_opinion_review_failed'):
+                S.assess([],{},[],[],4,'Historical context.',self.source_rules(),Path(td))
+            self.assertFalse(S.review_overruled(Path(td)))
+        reviewer.assert_not_called();judge.assert_not_called()
+
+    def test_arbiter_uses_only_c1_loopback_and_named_models(self):
+        import io
+        response={'model':'qwen3.8:27b','done':True,'done_reason':'stop',
+                  'message':{'content':'{"verdict":"invalid","draft_contradicts_evidence":false,"rationale":"Synthetic."}'}}
+        def reply(*args,**kwargs):return io.BytesIO(json.dumps(response).encode())
+        with patch.object(S.media,'token_count',return_value=100),patch.object(S.urllib.request,'urlopen',side_effect=reply) as request,patch('llm_budget.record_call'):
+            self.assertEqual(S.arbiter_call('qwen3.8:27b',True,{},{},'opinion: x',60)['verdict'],'invalid')
+            self.assertEqual(request.call_args.args[0].full_url,'http://127.0.0.1:11434/api/chat')
+            for change in ({'done_reason':'length'},{'model':'other-model'},{'done':False}):
+                bad=dict(response,**change)
+                with patch.object(S.urllib.request,'urlopen',side_effect=lambda *a,**k:io.BytesIO(json.dumps(bad).encode())):
+                    with self.assertRaisesRegex(RuntimeError,'incomplete_or_wrong_arbiter'):S.arbiter_call('qwen3.8:27b',True,{},{},'opinion: x',60)
+            response['message']={'content':'{"verdict":"maybe","draft_contradicts_evidence":false,"rationale":"x"}'}
+            with self.assertRaisesRegex(ValueError,'arbiter_schema_invalid'):S.arbiter_call('qwen3.8:27b',True,{},{},'opinion: x',60)
 
     def test_raw_candidate_precedes_unchallenged_field_preservation(self):
         from contextlib import nullcontext

@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import subprocess
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
@@ -235,6 +236,76 @@ def sell_rule_catalog(instructions):
     return blocks[0]
 
 
+ARBITER_MODELS=(('gpt-oss:120b','medium'),('qwen3.8:27b',True))
+ARBITER_SECONDS=900
+ARBITER_SCHEMA={'type':'object','required':['verdict','draft_contradicts_evidence','rationale'],'properties':{
+    'verdict':{'type':'string','enum':['valid','invalid','unclear']},
+    'draft_contradicts_evidence':{'type':'boolean'},'rationale':{'type':'string'}}}
+ARBITER_SYSTEM=(
+    'You adjudicate ONE finding that an automated reviewer made about a draft personal-holdings opinion. '
+    'The draft author was required to: open with a staleness statement matching deterministic_export_notice; '
+    'label an export older than three days stale and never call its positions current; '
+    'name every unverified_quote_ticker as using the dated export value, not a live quote; never claim every quote is verified; '
+    'use computed_rule_evidence (pipeline arithmetic, mixed verified/dated basis) for weight, value or drawdown rules and never do its own arithmetic; '
+    'quote figures only verbatim from the sell rules, the computed table or the export notice; '
+    'map rule numbers only via canonical_sell_rules; treat the October 9 historical sell review as background, never proof a ticker is held; '
+    'mark a rule triggered only when supplied evidence meets its condition, not_established when evidence is missing (naming what is missing); '
+    'never invent business news, prices, dates or thresholds; never treat concentration alone as a sell instruction; '
+    'never claim a trade was made; keep the opinion under 350 words. '
+    'The pipeline itself adds the export notice and a price table, so their absence from the draft is not a defect. '
+    'The reviewer was told not to reject an explicitly uncertain opinion merely for lacking proof. '
+    'Reviewer findings are capped at 280 characters and may be cut off mid-sentence. '
+    'Decide whether the finding names a real defect in THIS draft given the evidence: valid, invalid (the draft already complies, '
+    'or the finding misreads the evidence or the rules), or unclear. Separately, read the whole draft: set draft_contradicts_evidence '
+    'to true when any statement in it, whether or not the finding mentions it, contradicts the supplied evidence or breaks one of '
+    'the requirements above. Return only the JSON object.')
+
+
+def arbiter_call(model,think,evidence,draft,issue,timeout):
+    """One local judge on C1's loopback Ollama; wrong model or cut-off output is an error."""
+    text=json.dumps({'evidence':evidence,'draft':draft,'reviewer_finding':issue})
+    if media.token_count(ARBITER_SYSTEM+text)+4096>32768:raise ValueError('arbiter_context_budget_exceeded')
+    payload={'model':model,'stream':False,'think':think,'format':ARBITER_SCHEMA,
+             'messages':[{'role':'system','content':ARBITER_SYSTEM},{'role':'user','content':text}],
+             'options':{'temperature':0,'num_ctx':32768,'num_predict':4096}}
+    req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
+                               headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=timeout) as response:result=json.load(response)
+    answer=result.get('message',{}).get('content','')
+    import llm_budget
+    llm_budget.record_call({},'ollama',result.get('model','?'),len(ARBITER_SYSTEM)+len(text),len(answer),
+        task='personal-opinion-arbiter',tier='local',app_dir=ROOT,
+        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'))
+    if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
+        raise RuntimeError('incomplete_or_wrong_arbiter_model')
+    verdict=json.loads(answer)
+    if verdict.get('verdict') not in ('valid','invalid','unclear') or type(verdict.get('draft_contradicts_evidence')) is not bool:
+        raise ValueError('arbiter_schema_invalid')
+    return verdict
+
+
+def arbitrate(evidence,draft,issues,folder,full=False,budget=ARBITER_SECONDS):
+    """S571: after four rejected attempts, the last reviewed draft may still be
+    sent, but only when both local judges rate EVERY reviewer objection invalid
+    and neither finds anything in the draft that contradicts the evidence. Any
+    valid, unclear, conflict, error or timeout upholds the rejection."""
+    deadline=time.monotonic()+budget;rows=[];upheld=not issues
+    for model,think in ARBITER_MODELS:
+        for index,issue in enumerate(issues):
+            if upheld and not full:break
+            row={'model':model,'index':index};remaining=deadline-time.monotonic()
+            if remaining<30:row['error_type']='arbiter_time_budget'
+            else:
+                try:row.update(arbiter_call(model,think,evidence,draft,issue,min(300,remaining)))
+                except Exception as exc:row['error_type']=research.error_code(exc)
+            rows.append(row)
+            if row.get('verdict')!='invalid' or row.get('draft_contradicts_evidence') is not False:upheld=True
+    record={'overruled':not upheld,'issues':issues,'judgements':rows,'models':[m for m,_ in ARBITER_MODELS],
+            'completed_at':datetime.now(timezone.utc).isoformat()}
+    atomic(folder/'arbitration.json',record)
+    return record['overruled']
+
+
 def repair_fields(previous,candidate,fields):
     """Only change sections the independent reviewer or validator rejected."""
     if not fields or not fields<=({'opinion'}|{'rule_'+str(i) for i in range(1,8)}):
@@ -295,7 +366,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'Return JSON {"opinion":"plain-language connected paragraphs with supplied source links, at most 350 words",'
         '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 45 words"}]}. '
         'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
-    attempts=[]
+    attempts=[];last_rejected=None
+    (folder/'arbitration.json').unlink(missing_ok=True)
     fix='';last_review_issues=[];previous=None;flagged=set()
     for attempt in range(4):
         raw=None
@@ -336,6 +408,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             if checked['passed']:return draft
             matched=[re.fullmatch(r'(opinion|rule_[1-7]): .{5,280}',issue) for issue in checked['issues']]
             if not all(matched):raise ValueError('personal_review_field_missing')
+            last_rejected=(draft,checked['issues'])
             previous=draft;flagged={match.group(1) for match in matched}
             fix='\nPrevious candidate:\n'+json.dumps(draft)+'\nPreserve unchallenged content and correct every review finding against canonical_sell_rules; omit unsupported claims rather than inventing evidence: '+json.dumps(checked['issues'])
         except (ValueError,TypeError,KeyError) as exc:
@@ -350,7 +423,14 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             if getattr(exc,'offenders',None):fix+='\nUnsupported quantities to correct or omit: '+json.dumps(exc.offenders)
             if str(exc)=='financial_numbers_belong_in_canonical_table':
                 fix+=' Remove dollar amounts, percentages, share counts and multiples from your prose. Quote only figures verbatim from the supplied sell rules, the computed_rule_evidence table or the export notice; the canonical quote table is added separately.'
+    if last_rejected is not None and arbitrate(data,*last_rejected,folder):return last_rejected[0]
     raise ValueError('personal_opinion_review_failed')
+
+
+def review_overruled(folder):
+    """Only this run's arbitration record (assess removes an older one) can mark an override."""
+    path=folder/'arbitration.json'
+    return path.exists() and json.loads(path.read_text()).get('overruled') is True
 
 
 @contextlib.contextmanager
@@ -380,6 +460,7 @@ def run(live=False):
         with result_attempt(folder,live) as metadata:
             rows,manifest,age,rules,instructions=inputs();marks=quotes(rows);news,gaps=public_news(rows)
             draft=assess(rows,marks,news,gaps,age,rules,instructions,folder,manifest['source_mtime'])
+            overruled=review_overruled(folder)
             lead=export_notice(age)
             md='# Personal Holdings Opinion — '+date+'\n\n'+lead+'\n\n'+draft['opinion']+'\n\n## Seven sell-rule checks\n\n'
             md+='\n'.join(str(x['rule'])+'. '+x['status'].replace('_',' ')+': '+x['assessment'] for x in sorted(draft['rules'],key=lambda x:x['rule']))
@@ -388,6 +469,9 @@ def run(live=False):
                 q=marks[row['ticker']]
                 md+='| '+row['ticker']+' | '+str(q.get('price','unavailable'))+' | '+str(q.get('quote_at','unavailable'))+' | '+('verified observation' if q.get('valuation_eligible') else 'unverified or stale')+' |\n'
             md+='\nOpinion only. No transactions were made. Export freshness and quote freshness are separate.\n'
+            if overruled:
+                md+=('\nReview note: the automatic reviewer rejected this opinion four times. Two separate local judges '
+                     'rated each objection to this version unfounded, so it was sent. The objections and judgements stay on CUMULUS.\n')
             path=folder/('report.md' if live else 'preview.md');path.write_text(md);path.chmod(0o600)
             creds=json.loads(sender.CREDS_PATH.read_text());sender.check_lane(md)
             (_,envelope),subject=sender.build_message(md,datetime.now(NY),creds)
@@ -396,7 +480,7 @@ def run(live=False):
                 with contextlib.redirect_stdout(io.StringIO()):sender.send_live(md,creds,subject,date)
             result=dict(metadata,status='sent' if live else 'preview',recipients=1,holdings=len(rows),
                     verified_quotes=sum(bool(x.get('valuation_eligible')) for x in marks.values()),
-                    sources=len(news),source_gaps=len(gaps),export_stale=age>3,rules_reviewed=7,
+                    sources=len(news),source_gaps=len(gaps),export_stale=age>3,rules_reviewed=7,review_overruled=overruled,
                     unknown_input_fields=sum(v is None for row in rows for v in row.values()),
                     body_sha256=hashlib.sha256(md.encode()).hexdigest(),completed_at=datetime.now(timezone.utc).isoformat())
             atomic(folder/('result.json' if live else 'preview-result.json'),result);return result
@@ -419,6 +503,7 @@ def dispatch(live=False):
         if result['status']!='already_sent':
             notice='Personal holdings opinion '+('completed locally and was accepted for your usual Yahoo address.' if ok else 'needs attention. Check its private review and delivery receipt before retrying.')
             if ok and result.get('export_stale'):notice+=' The holdings file is older than three days; refresh the export if your positions have changed.'
+            if ok and result.get('review_overruled') is True:notice+=' The automatic reviewer objected; two local judges rated its objections unfounded, and the report says so.'
             result['telegram_confirmed']=telegram(notice)
     folder=ROOT/'private/personal-schedule';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     atomic(folder/('dispatch-live.json' if live else 'dispatch-preview.json'),result);return result
