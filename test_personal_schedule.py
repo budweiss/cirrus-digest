@@ -133,6 +133,41 @@ class PersonalChecks(unittest.TestCase):
         self.assertIn('current positions need your confirmation',S.export_notice(4.1))
         self.assertNotIn('STALE',S.export_notice(1.0))
 
+    def test_repeated_substantive_review_failure_stays_held(self):
+        from contextlib import nullcontext
+        draft={'opinion':'I executed the recommended trades in your brokerage account today.',
+               'rules':[{'rule':i,'status':'not_established','assessment':'Evidence is not available for this source test.'} for i in range(1,8)]}
+        refusal=json.dumps({'passed':False,'issues':['opinion: Claims trades were executed without any execution evidence.']})
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',return_value=refusal) as reviewer:
+            with self.assertRaisesRegex(ValueError,'personal_opinion_review_failed'):
+                S.assess([],{},[],[],4,'Historical context.',self.source_rules(),Path(td))
+            checks=json.loads((Path(td)/'checks.json').read_text())
+        self.assertEqual(model.call_count,4)
+        self.assertEqual(reviewer.call_count,4)
+        self.assertTrue(all(x['passed'] is False for x in checks))
+
+    def test_raw_candidate_precedes_unchallenged_field_preservation(self):
+        from contextlib import nullcontext
+        import copy
+        first={'opinion':'Synthetic opinion needing reconciliation with its supporting rule assessments.',
+               'rules':[{'rule':i,'status':'not_established','assessment':'Original synthetic assessment with limited evidence.'} for i in range(1,8)]}
+        revised=copy.deepcopy(first)
+        revised['opinion']='Synthetic corrected opinion consistent with the updated source assessment.'
+        revised['rules'][0]['assessment']='Reconciled synthetic assessment with the supplied source.'
+        rejected=json.dumps({'passed':False,'issues':['opinion: The opinion and supporting assessment remain inconsistent.']})
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',side_effect=[json.dumps(first),json.dumps(revised)]) as model,patch.object(S.research,'structured_review',side_effect=[rejected,json.dumps({'passed':True,'issues':[]})]) as reviewer:
+            result=S.assess([],{},[],[],4,'Historical context.',self.source_rules(),Path(td))
+            raw=json.loads((Path(td)/'candidate-raw-1.json').read_text())
+            merged=json.loads((Path(td)/'candidate-1.json').read_text())
+        self.assertEqual(model.call_count,2)
+        self.assertEqual(result['opinion'],revised['opinion'])
+        self.assertEqual(result['rules'],first['rules'])
+        self.assertEqual(raw,revised)
+        self.assertEqual(merged['rules'],first['rules'])
+        reviewed=[json.loads(c.args[1])['draft'] for c in reviewer.call_args_list]
+        self.assertEqual(reviewed[1]['rules'],first['rules'])
+        self.assertEqual(reviewed[1],result)
+
     def test_quantity_repair_keeps_the_previous_semantic_review_findings(self):
         from contextlib import nullcontext
         good={'opinion':'Synthetic private opinion with limited evidence and no transactions.',

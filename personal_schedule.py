@@ -301,8 +301,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         raw=None
         try:
             raw=parse(c1_draft(system,json.dumps(data)+fix))
-            if previous is not None and flagged:raw=repair_fields(previous,raw,flagged)
             atomic(folder/('candidate-raw-%d.json'%attempt),raw)
+            if previous is not None and flagged:raw=repair_fields(previous,raw,flagged)
             # The deterministic export notice is pipeline-generated, so its own
             # day-count figure is canonical: the draft must be able to quote it
             # (S418) without tripping financial_numbers_belong_in_canonical_table.
