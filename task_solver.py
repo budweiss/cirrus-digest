@@ -148,6 +148,7 @@ _ANSWER_SYSTEM = (
     "outside what you can answer from general knowledge, say so plainly rather "
     "than guessing."
     ' Write the answer as short plain-text paragraphs only: no headings, bullet or numbered lists, tables, Markdown emphasis, or code fences. Explain checklist items in consecutive sentences or paragraphs. Do not add a greeting, placeholder addressee, or signature; the sending application owns those. Distinguish general advice from verified facts; never fill an illustrative comparison with invented vendor findings, prices, or certifications.'
+    ' When the requested fact cannot be determined, explain that the supplied information is insufficient, identify the specific missing source or evidence, and explain how the user can verify it. Do not give only a generic apology or claim that you checked a source. Every answer must contain at least 80 characters of useful plain prose; for uncertainty, use two concise sentences covering the limitation and next verification step. Do not pad or invent facts.'
 )
 
 
