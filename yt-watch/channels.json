@@ -115,6 +115,22 @@
       "lane": "hardware",
       "why": "Buddy requested via CIRRUS /todo and S459 recovery: review server/local-AI lessons in the existing daily hardware lane. Treat speed, pricing, offload and purchasing claims as hypotheses; verify on owned machines before adopting.",
       "verified": "2026-10-19: YouTube handle externalId and live RSS title KernelBrief; exact requested video 4WzfNYNXvM8 present."
+    },
+    {
+      "name": "Alex Grankin",
+      "handle": "@alexgrankin",
+      "channel_id": "UC60ORrtBjSYi9vsBBFg63WA",
+      "lane": "hardware",
+      "why": "Buddy requested entire catalog, priority iZJzViepJGg, then October 7-November 5 2026; compare exact models and configurations with MacBook, CIRRUS and both CUMULUS nodes.",
+      "verified": "2026-11-05: requested video author/channel ID and live RSS verified on owned servers"
+    },
+    {
+      "name": "Mark Tilbury",
+      "handle": "@marktilbury",
+      "channel_id": "UCxgAuX3XZROujMmGphN_scA",
+      "lane": "business",
+      "why": "Buddy requested businessidea intake, priority LlhTEttKcwQ and October 7-November 5 2026 backlog. Apply existing business_ideas mission, local prefilter and fit/survival scoring.",
+      "verified": "2026-11-05: live channel inventory and RSS include requested video, title and publication date"
     }
   ]
 }

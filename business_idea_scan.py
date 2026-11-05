@@ -988,6 +988,33 @@ def _score_and_store(url: str, title: str, text: str, source_name: str,
         result["corroborated"].append(f"{idea_label or title} ({final}/10)")
 
 
+def ingest_youtube_reviews(creds, result, seen, inbox=None, dry_run=False, db_path=None):
+    """Same businessidea scoring gates; consume only after scoring returns."""
+    inbox = Path(inbox or PROJECT_DIR / 'yt-watch/business-inbox')
+    completed = set()
+    attempted = 0
+    for path in sorted(inbox.glob('*.json')):
+        item = json.loads(path.read_text())
+        video_id = item.get('video_id', '')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+            raise ValueError('invalid_business_video_id')
+        url = 'https://www.youtube.com/watch?v=' + video_id
+        if url in seen or url in completed:
+            continue
+        if attempted >= 12:
+            break
+        attempted += 1
+        if not item.get('content', '').strip():
+            raise ValueError('empty_business_video_evidence')
+        result['fetched'] += 1
+        result['fresh'] += 1
+        if not dry_run:
+            _score_and_store(url, item['title'], item['content'], item['source'],
+                             creds, result, db_path=db_path)
+            completed.add(url)
+    return completed
+
+
 def run(dry_run: bool = False, db_path: str = None, backfill: bool = False) -> dict:
     import cirrus_daily  # lazy: needs requests/bs4/feedparser, live venv only
     import feedparser
@@ -1013,6 +1040,7 @@ def run(dry_run: bool = False, db_path: str = None, backfill: bool = False) -> d
     result = {"fetched": 0, "fresh": 0, "admitted": [], "corroborated": [],
               "scored_low": 0}
     newly_seen = set()
+    newly_seen |= ingest_youtube_reviews(creds, result, seen, dry_run=dry_run, db_path=db_path)
 
     for source in all_sources():
         try:

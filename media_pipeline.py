@@ -234,7 +234,7 @@ def analyze(text, instructions, domain='ai', claims=False, root=ROOT,
     # lane added to channels.json without this whitelist fails nightly, so the
     # whitelist edit is part of adding the lane, not an optional extra.
     if domain not in ('ai', 'pedagogy', 'youtube-news', 'youtube-hardware',
-                      'youtube-investing', 'youtube-aggie', 'articles-infra'):
+                      'youtube-investing', 'youtube-aggie', 'youtube-business', 'articles-infra'):
         raise ValueError('unknown_media_domain')
     if not text.strip():
         raise ValueError('empty_transcript')
@@ -412,6 +412,16 @@ def weekly_fetch(payload):
 
 
 def youtube_instructions(lane):
+    if lane == 'business':
+        return ('Extract business opportunities that an AI environment can RUN with little daily '
+            'human labor. Prefer small scalable experiments targeting $2,000-5,000/month; capital '
+            'is not a scoring penalty. Reject property management, HOAs, real estate, snow and '
+            'seasonal home services. Identify customer, product, acquisition, automation, ongoing '
+            'human work, tool costs and failure modes. Separate claimed revenue from profit, '
+            'refunds, sponsorships and unpaid labor. Creator results are unverified anecdotes. '
+            'No investment recommendations. Generic motivation, adverts and unrelated finance '
+            'can correctly produce zero claims. Propose a bounded validation, never a purchase, '
+            'publication or outreach. Preserve evidence that weakens the opportunity.')
     if lane == 'investing':
         return ('Extract only actionable, testable investing claims. Distinguish creator claims '
             'from established facts. Do not assume findings are new or adopt suggestions. '
@@ -439,11 +449,17 @@ def youtube_instructions(lane):
             'vague ones; a prophetic prediction counts ONLY if it names something checkable '
             '(an asset, an index level, a date). Never describe a transcript as independent '
             'verification; the claims stay attributed to the presenter.')
-    return ('Extract only actionable, testable '+lane+' claims. Current stack: two DGX Spark GB10 '
+    return ('Extract only actionable, testable '+lane+' claims. Current stack: MacBook with local '
+        'Ollama Qwen3.5 35B/9B (desktop file-tool checks failed); CIRRUS Mac Studio M4 Max 64GB '
+        'with Ollama Qwen3.8 27B and a smaller digest model; two DGX Spark GB10 '
         'machines, 128GB each; GPT-OSS120B in Ollama on C1, independent Qwen27B FP8 in vLLM on C2; '
         'on-demand MedGemma and project-scoped RAG. No pooled memory. Distinguish creator claims '
         'from established facts. Do not assume findings are new or adopt suggestions. '+
-        ('Only concrete hardware tests relevant to this stack.' if lane=='hardware' else
+        ('Compare exact model IDs, MLX/GGUF/FP8 formats, quantization, context, memory, prompt '
+         'processing and generation speed, concurrency, accuracy and tool-use reliability. '
+         'Apple-specific optimizations need separate MacBook/CIRRUS tests and cannot be assumed '
+         'to transfer to NVIDIA Sparks. Record missing settings as unknown. Only concrete tests '
+         'relevant to this stack.' if lane=='hardware' else
          'Only news that changes a concrete action: provider changes, specific tools or models worth testing.'))
 
 
@@ -454,11 +470,18 @@ def youtube(payload):
         atomic_json(seen, payload['seen'])
         out = Path(tmp)/'findings'
         drops = [0]
+        business_items = []
+        caption_failures = []
         def extract(video, text, lane):
             report = {}
             found = analyze(text, youtube_instructions(lane), domain='youtube-'+lane, claims=True,
                             metadata=video, report=report)
             drops[0] += report.get('dropped', 0)
+            if lane == 'business' and found:
+                business_items.append(dict(video, source='Mark Tilbury / YouTube',
+                    content='Unverified creator claims, selected from the full transcript. '
+                            'These are research leads, not independently verified results.\n' +
+                            '\n'.join(c['quote'] for c in found)))
             return found
         def captions(video_id):
             if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
@@ -476,9 +499,23 @@ def youtube(payload):
                         break                      # permanent (no captions, bad id): never retried
                     if attempt < 2:
                         time.sleep(8)              # S168: transient YouTube blocks are minute-scale
+            caption_failures.append({'video_id':video_id,'reason':last_reason})
             return '', last_reason
+        # Explicit backfills use a saved inventory; RSS only exposes 15 uploads.
+        feed_fn = None
+        if 'videos' in payload:
+            catalog = payload['videos']
+            if not isinstance(catalog, dict):
+                raise ValueError('invalid_youtube_backfill')
+            for channel in payload['channels']:
+                rows = catalog[channel['channel_id']]
+                if not isinstance(rows, list) or any(not re.fullmatch(r'[A-Za-z0-9_-]{11}',
+                        row.get('video_id', '')) for row in rows):
+                    raise ValueError('invalid_youtube_backfill')
+            feed_fn = lambda channel_id: catalog[channel_id]
         stats = yt.run(limit=payload.get('limit',6), channels=payload['channels'],
-            seen_path=seen,out_dir=out,extract_fn=extract,transcript_fn=captions,pause=4,feed_pause=5)
+            seen_path=seen,out_dir=out,extract_fn=extract,transcript_fn=captions,pause=4,feed_pause=5,
+            feed_fn=feed_fn)
         # Existing watcher marks extraction errors seen; undo those additions so
         # temporary local failures can retry. Never discard previous history.
         failed = {line.split(' extract:',1)[0] for line in stats['errors'] if ' extract:' in line}
@@ -487,7 +524,8 @@ def youtube(payload):
         if stats.get('transient_stop'):
             stats['errors'].append('temporary caption failure: '+stats['transient_stop'])
         stats['quotes_dropped'] = drops[0]
-        return {'stats':stats,'seen':state,'files':{p.name:p.read_text() for p in out.glob('*.md')}}
+        return {'stats':stats,'seen':state,'files':{p.name:p.read_text() for p in out.glob('*.md')},
+                'business_items': business_items, 'caption_failures':caption_failures}
 
 
 def dispatch(payload):

@@ -66,6 +66,11 @@ def youtube():
                 p=yt.OUT_DIR/name
                 previous=p.read_text() if p.exists() else ''
                 temp=p.with_suffix('.tmp');temp.write_text(merge_findings(previous,body));temp.replace(p)
+            for item in response.get('business_items', []):
+                video_id = item['video_id']
+                if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+                    raise ValueError('invalid_business_video_id')
+                media.atomic_json(yt.PROJECT_DIR/'yt-watch/business-inbox'/(video_id+'.json'), item)
             media.atomic_json(yt.SEEN_PATH,response['seen'])
         return response['stats']
     yt.run = remote_run
