@@ -3,14 +3,14 @@
   "dev": {
     "node": "CIRRUS",
     "digest_model": "qwen2.5:14b",
-    "num_ctx": 8192,
-    "note": "Mac Studio 64GB. Small/fast for high-volume summarization."
+    "num_ctx": 32768,
+    "note": "S571: 32K context for Qwen2.5 14B, its declared model limit. CIRRUS main Qwen27B separately verified at 64K."
   },
   "beta": {
     "node": "CUMULUS",
     "digest_model": "gpt-oss:120b",
-    "num_ctx": 32768,
-    "note": "S290: user-authorized Cumulus primary trial. GPT-OSS120B via local Ollama; Qwen weights/config retained for rollback. Review after September25 daily runs."
+    "num_ctx": 65536,
+    "note": "S571: GPT-OSS120B expanded to 64K after a successful input exceeding 32K. Ollama service default and primary watchdog aligned; model routes unchanged."
   },
   "prod": {
     "node": "STRATUS",
