@@ -91,9 +91,77 @@ def revoke(shas, path=PATH):
     _update(change, path)
 
 
+def selftest():
+    checks = []
+
+    def check(name, got, want):
+        checks.append((name, got, want))
+
+    # record_sha: deterministic and order-independent on keys
+    r1 = {"a": 1, "b": 2}
+    r2 = {"b": 2, "a": 1}
+    check("record_sha: order independent", record_sha(r1) == record_sha(r2), True)
+    check("record_sha: differs on content", record_sha(r1) != record_sha({"a": 1}), True)
+
+    # load: malformed/missing data yields empty structure
+    check("load: missing file", load(Path("/nonexistent/path/approval-grace.json")),
+          {"entries": {}, "revoked": []})
+
+    now = 1000000.0
+    record = {"expires_at": now - 3600}  # expired 1h ago
+    sha = record_sha(record)
+
+    # active: fresh, in grace
+    data = {"entries": {sha: {"tested_at": now - 100}}, "revoked": []}
+    check("active: fresh, in grace", active(record, now, data), True)
+
+    # active: stale evidence (older than FRESH_S)
+    data_stale = {"entries": {sha: {"tested_at": now - FRESH_S - 1}}, "revoked": []}
+    check("active: stale evidence", active(record, now, data_stale), False)
+
+    # active: past grace window
+    record_old = {"expires_at": now - GRACE_S - 1}
+    sha_old = record_sha(record_old)
+    data_old = {"entries": {sha_old: {"tested_at": now - 100}}, "revoked": []}
+    check("active: past grace window", active(record_old, now, data_old), False)
+
+    # active: revoked entry
+    data_revoked = {"entries": {sha: {"tested_at": now - 100}}, "revoked": [sha]}
+    check("active: revoked entry", active(record, now, data_revoked), False)
+
+    # active: no entry at all
+    data_empty = {"entries": {}, "revoked": []}
+    check("active: no entry", active(record, now, data_empty), False)
+
+    # active: not yet expired
+    record_future = {"expires_at": now + 3600}
+    sha_future = record_sha(record_future)
+    data_future = {"entries": {sha_future: {"tested_at": now - 100}}, "revoked": []}
+    check("active: not yet expired", active(record_future, now, data_future), False)
+
+    # active: non-finite expires_at
+    record_bad = {"expires_at": float("nan")}
+    sha_bad = record_sha(record_bad)
+    data_bad = {"entries": {sha_bad: {"tested_at": now - 100}}, "revoked": []}
+    check("active: non-finite expires_at", active(record_bad, now, data_bad), False)
+
+    failures = [(n, g, w) for n, g, w in checks if g != w]
+    for n, g, w in failures:
+        print("FAIL: %s: got %r, want %r" % (n, g, w))
+    if failures:
+        print("approval_grace.py selftest failed:")
+        for n, g, w in failures:
+            print("FAIL: %s: got %s, want %s" % (n, g, w))
+        return False
+    print("approval_grace.py selftest passed: %d checks" % len(checks))
+    return True
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if args == ["list"]:
+    if args == ["--selftest"]:
+        sys.exit(0 if selftest() else 1)
+    elif args == ["list"]:
         data, now = load(), time.time()
         for sha, e in sorted(data["entries"].items(), key=lambda kv: str(kv[1].get("label"))):
             print("%s  %-7s  tested %.1f h ago  %s" % (sha[:12], e.get("source"),
