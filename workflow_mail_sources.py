@@ -4,6 +4,7 @@ import hashlib
 import imaplib
 import io
 import re
+import sys
 import zipfile
 from html.parser import HTMLParser
 from email.utils import parseaddr
@@ -222,3 +223,101 @@ def collect(root, rec, creds):
     if sum(map(len, documents.values())) > 120000:
         raise ValueError('Full correspondence exceeds evidence limit; review required')
     return documents
+
+
+def selftest():
+    """Exercise the pure decision-making functions with explicit inputs/outputs.
+
+    Does not touch IMAP or any network/mailbox state; `collect()` is not
+    exercised here since it requires live credentials and a mail server.
+    """
+    failures = []
+
+    def check(name, got, want):
+        if got != want:
+            failures.append(f'{name}: got {got!r}, want {want!r}')
+
+    # full_body_documents: plain text body extracted, attachment ignored.
+    msg = email.message_from_string(
+        'Content-Type: multipart/mixed; boundary="B"\n\n'
+        '--B\nContent-Type: text/plain\n\nhello world\n'
+        '--B\nContent-Type: text/plain\nContent-Disposition: attachment; filename="a.txt"\n\nattached text\n'
+        '--B--\n'
+    )
+    docs = full_body_documents(msg)
+    check('full_body_documents count', len(docs), 1)
+    check('full_body_documents content', list(docs.values())[0].strip(), 'hello world')
+
+    # full_body_documents: malformed MIME raises.
+    try:
+        bad = email.message_from_string('Content-Type: multipart/mixed; boundary="B"\n\n--B\n')
+        full_body_documents(bad)
+        failures.append('full_body_documents: expected ValueError on malformed MIME')
+    except ValueError:
+        pass
+
+    # signature_image_ids: question asking about images suppresses filtering.
+    html_msg = email.message_from_string(
+        'Content-Type: text/html\n\n'
+        '<div id="signature"><img src="cid:sig1"></div><img src="cid:body1">'
+    )
+    check('signature_image_ids image-question', signature_image_ids(html_msg, 'see attached photo'), set())
+    check('signature_image_ids normal-question', signature_image_ids(html_msg, 'what did we agree on'), {'sig1'})
+
+    # is_signature_image: requires inline disposition, content-id membership, size limit.
+    sig_part = email.message_from_string(
+        'Content-Type: image/png\nContent-Disposition: inline\nContent-ID: <sig1>\n\n'
+    )
+    check('is_signature_image match', is_signature_image(sig_part, {'sig1'}), True)
+    check('is_signature_image no-match', is_signature_image(sig_part, {'other'}), False)
+
+    # attachment_text: plain text extraction.
+    txt_part = email.message_from_string(
+        'Content-Type: text/plain\nContent-Disposition: attachment; filename="notes.txt"\n\nsome notes\n'
+    )
+    check('attachment_text txt', attachment_text(txt_part).strip(), 'some notes')
+
+    # attachment_text: html attachment strips tags to visible text.
+    html_part = email.message_from_string(
+        'Content-Type: text/html\nContent-Disposition: attachment; filename="notes.html"\n\n'
+        '<html><body><script>ignored()</script><p>visible text</p></body></html>\n'
+    )
+    check('attachment_text html', attachment_text(html_part).strip(), 'visible text')
+
+    # attachment_text: unsupported extension raises.
+    try:
+        unk_part = email.message_from_string(
+            'Content-Type: application/octet-stream\nContent-Disposition: attachment; filename="data.bin"\n\nxx\n'
+        )
+        attachment_text(unk_part)
+        failures.append('attachment_text: expected ValueError on unsupported extension')
+    except ValueError:
+        pass
+
+    # select_sources: picks the span containing a query term, within budget.
+    documents = {
+        'doc1': 'This correspondence is about the quarterly budget review meeting.',
+        'doc2': 'This correspondence is about unrelated weather patterns.',
+    }
+    selected = select_sources(documents, 'What was decided about the budget?', budget=5000)
+    check('select_sources nonempty', len(selected) > 0, True)
+    check('select_sources favors relevant doc', any('doc1' in k for k in selected), True)
+
+    # select_sources: document exceeding evidence limit raises.
+    try:
+        select_sources({'big': 'x' * 120001}, 'anything')
+        failures.append('select_sources: expected ValueError on oversized document')
+    except ValueError:
+        pass
+
+    if failures:
+        for f in failures:
+            print('FAIL:', f)
+        return False
+    print('selftest OK')
+    return True
+
+
+if __name__ == '__main__':
+    if '--selftest' in sys.argv:
+        sys.exit(0 if selftest() else 1)
