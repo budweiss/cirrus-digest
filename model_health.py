@@ -312,19 +312,30 @@ CANDIDATES = {
 }
 
 
-def tg(msg):
-    creds = load()
+def tg(msg, _creds=None, _open=None):
+    """S576: Telegram's legacy Markdown answers 400 to one stray `_ * [`, and
+    this used to swallow that, losing the whole alert (intake.py had the same
+    bug, fixed S575). A 400 now retries as plain text. `_creds`/`_open` are
+    selftest seams."""
+    creds = _creds if _creds is not None else load()
     tok = creds.get("telegram_bot_token", "")
     uid = str(creds.get("telegram_user_id", "")).strip()
-    if not tok or not uid or DRY:
+    if not tok or not uid or (DRY and _open is None):
         return
-    try:
-        data = urllib.parse.urlencode(
-            {"chat_id": uid, "text": msg, "parse_mode": "Markdown"}).encode()
-        urllib.request.urlopen(
-            f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
-    except Exception:
-        pass
+    _open = _open or urllib.request.urlopen
+    for mode in ("Markdown", None):
+        fields = {"chat_id": uid, "text": msg}
+        if mode:
+            fields["parse_mode"] = mode
+        try:
+            _open(f"https://api.telegram.org/bot{tok}/sendMessage",
+                  data=urllib.parse.urlencode(fields).encode(), timeout=15)
+            return
+        except urllib.error.HTTPError as e:
+            if e.code != 400:          # only a formatting rejection is worth a plain retry
+                return
+        except Exception:
+            return
 
 
 def node_name():
@@ -1101,6 +1112,140 @@ def check_package_backlog(backlog=None):
         return (f"package backlog check failed: {type(e).__name__}: {e}", False)
 
 
+# ── Sending-domain mail authentication (S576) ────────────────────────────────
+# 2026-11-06: Outlook/Hotmail began hard-rejecting every CUMULUS send with
+# "550 5.7.1 ... lacks SPF/DKIM/DMARC Auth Records". cumulustask.com had SPF and
+# DKIM but had never had a DMARC record, and nothing watched the domain's DNS,
+# so the first sign was a client's bounced digest. This reads the three records
+# receivers read, from public DNS, every morning. Missing or malformed is an
+# OUTAGE, told every run until fixed. A record that changed but still parses is
+# an EVENT, told once. Only the box's own sending domain, and only one we own:
+# gmail.com and the like are the provider's job, so CIRRUS stays quiet.
+MAIL_AUTH_STATE = HERE / "logs" / "mail-auth.json"
+PROVIDER_MAIL_DOMAINS = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
+                         "live.com", "icloud.com", "me.com", "yahoo.com"}
+MAIL_AUTH_SPF_INCLUDE = "_spf.google.com"   # we send through smtp.gmail.com
+MAIL_AUTH_DKIM_SELECTOR = "google"
+_ANSWERED = ("NOERROR", "NXDOMAIN")         # a real answer; anything else is unmeasured
+
+
+def parse_dig_txt(text):
+    """`dig +noall +comments +answer TXT` output -> (rcode, [txt, ...]). PURE.
+    rcode is the reply header's status, or None when there was no reply.
+    Multi-string TXT records are joined, as receivers join them."""
+    m = re.search(r"status:\s*([A-Z]+)", text or "")
+    txts = []
+    for line in (text or "").splitlines():
+        parts = line.split(None, 4)
+        if not line.startswith(";") and len(parts) == 5 and parts[3] == "TXT":
+            txts.append("".join(re.findall(r'"((?:[^"\\]|\\.)*)"', parts[4])))
+    return (m.group(1) if m else None), txts
+
+
+def dig_txt(name, run=None):
+    """(rcode, txts) for one name, with one retry: a resolver blip at 05:30 is a
+    missing measurement, not a missing record (T76)."""
+    run = run or subprocess.run
+    rcode = None
+    for _ in range(2):
+        try:
+            r = run(["dig", "+time=5", "+tries=2", "+noall", "+comments", "+answer",
+                     "TXT", name], capture_output=True, text=True, timeout=30)
+            rcode, txts = parse_dig_txt(r.stdout)
+            if rcode in _ANSWERED:
+                return rcode, txts
+        except Exception as e:  # noqa: BLE001
+            rcode = type(e).__name__
+    return rcode, []
+
+
+def mail_auth_verdict(looked, spf_include=MAIL_AUTH_SPF_INCLUDE):
+    """(problems, records) from {'spf'|'dkim'|'dmarc': (rcode, txts)}. PURE.
+    `records` holds the one record per kind that receivers use, for change
+    detection. Problem text carries no Markdown metacharacters: the alert is
+    legacy Markdown and DNS names are full of underscores."""
+    problems, records = [], {}
+    for kind, label in (("spf", "SPF"), ("dkim", "DKIM"), ("dmarc", "DMARC")):
+        rcode, txts = looked.get(kind) or (None, [])
+        if rcode not in _ANSWERED:
+            problems.append(f"{label} lookup failed ({rcode or 'no reply'}), not measured")
+            continue
+        low = [t.strip() for t in txts]
+        if kind == "spf":
+            recs = [t for t in low if t.lower() == "v=spf1" or t.lower().startswith("v=spf1 ")]
+        elif kind == "dmarc":
+            recs = [t for t in low if t.upper().startswith("V=DMARC1")]
+        else:
+            recs = [t for t in low if re.search(r"(^|;)\s*p=", t)]
+        if not recs:
+            problems.append(f"NO {label} record"
+                            + (" (Outlook and Hotmail reject our mail without it)"
+                               if kind == "dmarc" else ""))
+            continue
+        if len(recs) > 1 and kind != "dkim":
+            problems.append(f"{len(recs)} {label} records (receivers treat that as an error)")
+            continue
+        rec = recs[0]
+        if kind == "spf":
+            if f"include:{spf_include}" not in rec.lower():
+                problems.append("SPF does not authorize Google's mail servers")
+                continue
+            if rec.lower().rstrip().endswith("+all"):
+                problems.append("SPF lets any server send as us (+all)")
+                continue
+        elif kind == "dkim":
+            if re.search(r"(^|;)\s*p=\s*(;|$)", rec):
+                problems.append("DKIM key is REVOKED (empty p=)")
+                continue
+        elif not re.search(r";\s*p=\s*(none|quarantine|reject)\b", rec, re.I):
+            problems.append("DMARC record has no valid policy (p=)")
+            continue
+        records[kind] = rec
+    return problems, records
+
+
+def check_mail_auth(creds=None, lookup=None, state_path=None):
+    """(line, should_notify). S576. Never raises."""
+    import hashlib
+    try:
+        creds = creds or {}
+        domain = str(creds.get("outlook_email") or "").rpartition("@")[2].strip().lower()
+        if not domain:
+            return ("no sending address configured, not checked", False)
+        if domain in PROVIDER_MAIL_DOMAINS:
+            return (f"{domain} is provider-managed, not checked", False)
+        lookup = lookup or dig_txt
+        selector = creds.get("dkim_selector") or MAIL_AUTH_DKIM_SELECTOR
+        problems, records = mail_auth_verdict({
+            "spf": lookup(domain),
+            "dkim": lookup(f"{selector}._domainkey.{domain}"),
+            "dmarc": lookup(f"_dmarc.{domain}")})
+        if problems:
+            return (f"{domain}: " + "; ".join(problems), True)
+        state_path = state_path or MAIL_AUTH_STATE
+        fps = {k: hashlib.sha256(v.encode()).hexdigest()[:16] for k, v in records.items()}
+        prev = {}
+        try:
+            prev = json.loads(state_path.read_text())
+        except Exception:  # noqa: BLE001 -- first run: this run is the baseline
+            pass
+        old = prev.get("fp") if prev.get("domain") == domain else None
+        changed = [k.upper() for k in fps if old and old.get(k) not in (None, fps[k])]
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(
+                {"domain": domain, "fp": fps,
+                 "last_ok": datetime.now().strftime("%Y-%m-%d %H:%M")}, indent=2) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        if changed:
+            return (f"{domain}: {', '.join(changed)} record CHANGED since "
+                    f"{prev.get('last_ok', '?')}, still valid", True)
+        return (f"{domain}: SPF, DKIM and DMARC present", False)
+    except Exception as e:  # noqa: BLE001
+        return (f"check failed: {type(e).__name__}: {e}"[:200], True)
+
+
 MODEL_DRIFT_STATE = HERE / "logs" / "model-drift.json"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_REGISTRY = "https://registry.ollama.ai/v2/%s/manifests/%s"
@@ -1720,6 +1865,7 @@ def main():
     tn_line, tn_notify = check_tailnet(creds)                     # S173
     cf_line, cf_notify = check_cloudflared()                      # S510
     pk_line, pk_notify = check_package_backlog()                  # S510
+    ma_line, ma_notify = check_mail_auth(creds)                   # S576
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
@@ -1733,6 +1879,7 @@ def main():
     print(f"  runtime: {runtime_line}")
     print(f"  tunnel:  {cf_line}")
     print(f"  pkgs:    {pk_line}")
+    print(f"  mailauth: {ma_line}")
     if sl_line:
         print(f"  servebin: {sl_line}")
     print(f"  {models_line}")
@@ -1748,8 +1895,17 @@ def main():
     if (healed or broken or errored or needs_funding or runtime_notify or models_notify
             or cloud_notify or local_notify or fb_notify or tr_notify or pe_notify
             or ep_notify or dj_notify or dl_notify or tn_notify or sl_notify
-            or cf_notify or pk_notify):
+            or cf_notify or pk_notify or ma_notify):
         lines = [f"🩺 *{node_name()} model-health*"]
+        if ma_notify:
+            # First: while it stands, every client send may be bouncing.
+            lines += ["*MAIL SETUP for our sending domain needs attention:*",
+                      f"• {ma_line}",
+                      "_Missing or malformed means receivers such as Outlook "
+                      "reject our mail; told every morning until fixed. A record "
+                      "that changed but still parses is told once. Records live "
+                      "in Squarespace DNS (account cumulus at cumulustask.com); "
+                      "the right values are in docs/OPEN-ITEMS.md section 1e._"]
         if local_notify:
             # First, because it is the one that costs money every hour it stands.
             lines += ["*LOCAL MODEL CANNOT LOAD — every local call is going to the paid model:*",
@@ -1856,7 +2012,7 @@ def main():
                            "broken": len(broken), "needs_funding": len(needs_funding),
                            "err": len(errored),
                            "lines": [local_line, runtime_line, cf_line, pk_line,
-                                     models_line, cloud_line]})
+                                     ma_line, models_line, cloud_line]})
         job_status.record("modelhealth",
                           ok=(not broken and not errored and not needs_funding
                               and not local_notify),
@@ -2595,6 +2751,75 @@ def selftest():
     _ok = any("cirrus is OFFLINE" in x for x in _probs)
     print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: ...but a HEALTHY node still audits its peers")
     fails += 0 if _ok else 1
+
+    # S576: mail authentication for the sending domain.
+    def _mk(label, cond):
+        nonlocal fails
+        print(f"  [{'OK ' if cond else 'FAIL'}] mail-auth: {label}")
+        fails += 0 if cond else 1
+    _dig = (";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\n"
+            "google._domainkey.example.org. 300 IN CNAME k.example.net.\n"
+            'k.example.net. 300 IN TXT "v=DKIM1; k=rsa; p=MIIBAA" "QAB"\n')
+    _mk("dig parser joins split TXT strings and skips CNAME lines",
+        parse_dig_txt(_dig) == ("NOERROR", ["v=DKIM1; k=rsa; p=MIIBAAQAB"]))
+    _mk("dig parser reports no reply as rcode None",
+        parse_dig_txt(";; connection timed out; no servers could be reached\n")[0] is None)
+    _good = {"spf": ("NOERROR", ["v=spf1 include:_spf.google.com ~all", "google-site-verification=x"]),
+             "dkim": ("NOERROR", ["v=DKIM1; k=rsa; p=MIIBAAQAB"]),
+             "dmarc": ("NOERROR", ["v=DMARC1; p=none;"])}
+    _p, _r = mail_auth_verdict(_good)
+    _mk("the live cumulustask.com shape passes (the control)", not _p and len(_r) == 3)
+    for _label, _patch, _want in (
+            ("NO DMARC record is the 2026-11-06 outage", {"dmarc": ("NXDOMAIN", [])}, "NO DMARC"),
+            ("two SPF records are an error", {"spf": ("NOERROR", ["v=spf1 -all", "v=spf1 include:_spf.google.com ~all"])}, "2 SPF"),
+            ("SPF without Google is caught", {"spf": ("NOERROR", ["v=spf1 include:spf.protection.outlook.com -all"])}, "authorize Google"),
+            ("a revoked DKIM key is caught", {"dkim": ("NOERROR", ["v=DKIM1; k=rsa; p="])}, "REVOKED"),
+            ("a DMARC record with no policy is caught", {"dmarc": ("NOERROR", ["v=DMARC1; rua=mailto:a@b.c"])}, "no valid policy"),
+            ("a SERVFAIL is unmeasured, not missing", {"dkim": ("SERVFAIL", [])}, "not measured")):
+        _p, _ = mail_auth_verdict({**_good, **_patch})
+        _mk(_label, len(_p) == 1 and _want in _p[0])
+    _p, _ = mail_auth_verdict({"spf": ("NXDOMAIN", []), "dkim": ("NXDOMAIN", []), "dmarc": (None, [])})
+    _mk("problem text has no Markdown metacharacters (alert must survive Telegram)",
+        len(_p) == 3 and not any(c in x for x in _p for c in "_*[`"))
+
+    with tempfile.TemporaryDirectory() as _td:       # never the live state file (T32)
+        _sp = Path(_td) / "mail-auth.json"
+        _calls = []
+        def _look(answers):
+            def f(name):
+                _calls.append(name)
+                return answers["dmarc" if name.startswith("_dmarc.") else
+                               "dkim" if "._domainkey." in name else "spf"]
+            return f
+        _line, _n = check_mail_auth({"outlook_email": "x@gmail.com"}, _look(_good), _sp)
+        _mk("a provider-managed domain is skipped without a lookup", not _n and not _calls)
+        _c = {"outlook_email": "cumulus@example.org"}
+        _line, _n = check_mail_auth(_c, _look(_good), _sp)
+        _mk("first healthy run is quiet and records a baseline", not _n and _sp.exists())
+        _mk("it looks up the records receivers read",
+            {"example.org", "google._domainkey.example.org", "_dmarc.example.org"} <= set(_calls))
+        _line, _n = check_mail_auth(_c, _look(_good), _sp)
+        _mk("an unchanged healthy run is quiet", not _n)
+        _rot = {**_good, "dkim": ("NOERROR", ["v=DKIM1; k=rsa; p=NEWKEY"])}
+        _line, _n = check_mail_auth(_c, _look(_rot), _sp)
+        _mk("a changed record is told", _n and "DKIM record CHANGED" in _line)
+        _line, _n = check_mail_auth(_c, _look(_rot), _sp)
+        _mk("...once", not _n)
+        _bad = {**_rot, "dmarc": ("NXDOMAIN", [])}
+        _line, _n = check_mail_auth(_c, _look(_bad), _sp)
+        _line2, _n2 = check_mail_auth(_c, _look(_bad), _sp)
+        _mk("a missing record is told EVERY run (outage, not event)", _n and _n2 and "NO DMARC" in _line)
+        _line, _n = check_mail_auth(_c, _look(_rot), _sp)
+        _mk("a broken run does not overwrite the baseline", not _n)
+
+    _sent = []
+    def _fake_open(url, data=None, timeout=None):
+        _sent.append(urllib.parse.parse_qs(data.decode()))
+        if len(_sent) == 1:
+            raise urllib.error.HTTPError(url, 400, "can't parse entities", {}, None)
+    tg("bad _markdown", _creds={"telegram_bot_token": "t", "telegram_user_id": "1"}, _open=_fake_open)
+    _mk("tg retries a Markdown 400 as plain text instead of losing the alert",
+        len(_sent) == 2 and "parse_mode" in _sent[0] and "parse_mode" not in _sent[1])
 
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
