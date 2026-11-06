@@ -350,6 +350,56 @@ def extract_bounced_recipient(msg, own_address: str) -> str:
     return ""
 
 
+def bounce_details(msg) -> dict:
+    """The failed message's own subject plus the receiver's status and reason.
+
+    S575: the alert showed only the DSN's generic subject and always said
+    "check the address". Outlook was BLOCKING valid addresses (5.7.1, sender
+    authentication), so that advice pointed at the one thing that was fine."""
+    out = {"status": "", "reason": "", "orig_subject": ""}
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            for block in part.get_payload() or []:
+                if hasattr(block, "get"):
+                    out["status"] = out["status"] or str(block.get("Status", "")).strip()
+                    out["reason"] = out["reason"] or re.sub(
+                        r"\s+", " ", str(block.get("Diagnostic-Code", ""))).strip()
+        elif ctype in ("text/rfc822-headers", "message/rfc822") and not out["orig_subject"]:
+            inner = None
+            try:
+                if ctype == "message/rfc822":
+                    payload = part.get_payload()
+                    inner = payload[0] if isinstance(payload, list) and payload else None
+                else:
+                    inner = email.message_from_bytes(part.get_payload(decode=True) or b"")
+            except Exception:
+                inner = None
+            if inner is not None:
+                out["orig_subject"] = decode_hdr(inner.get("Subject", ""))[:80]
+    return out
+
+
+def bounce_alert_lines(address: str, bounces: list) -> list:
+    """Telegram lines for the delivery-failure alert (selftested)."""
+    def plain(s):  # Telegram legacy Markdown rejects stray _ * ` [
+        return re.sub(r"[_*`\[\]]", "", s or "")
+    lines = [f"⚠️ *Intake*: {len(bounces)} delivery failure(s) in {address}:"]
+    for b in bounces:
+        lines.append(f"• bounced: `{plain(b['recipient'])}` — "
+                     f"{plain(b.get('orig_subject') or b['subject'])}")
+        if b.get("status") or b.get("reason"):
+            lines.append(f"  `{plain(b.get('status', ''))} {plain(b.get('reason', ''))[:180]}`")
+    if any(str(b.get("status", "")).startswith("5.7") for b in bounces):
+        lines.append("5.7.x = the receiving server BLOCKED our mail (policy or "
+                     "sender authentication); the address itself is fine. Check "
+                     "the sending domain's SPF/DKIM/DMARC, then resend.")
+    else:
+        lines.append("Check the address (intake senders list / recipient "
+                     "config) and resend.")
+    return lines
+
+
 # ── Classification (wraps dev_loop) ───────────────────────────────────────────
 
 # Every intake sender is on Buddy's hand-kept allowlist, and he knows them
@@ -708,8 +758,10 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                     seen_ids.add(mid)
                     rcpt = extract_bounced_recipient(msg, account.get("address", ""))
                     subj = decode_hdr(msg.get("Subject", ""))[:80]
-                    log(f"  BOUNCE detected: to={rcpt or 'unknown'} — '{subj}'")
-                    bounces.append({"recipient": rcpt or "unknown", "subject": subj})
+                    info = bounce_details(msg)
+                    log(f"  BOUNCE detected: to={rcpt or 'unknown'} — "
+                        f"'{info['orig_subject'] or subj}' {info['status']}")
+                    bounces.append({"recipient": rcpt or "unknown", "subject": subj, **info})
                 continue
             if from_addr not in allowlist:
                 log(f"  skipped (not allowlisted): {from_addr} — "
@@ -1227,12 +1279,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
     # Delivery-failure alert: any outgoing mail from this inbox that bounced
     # (client acks, digests, intro emails) — tell Buddy who it failed to reach.
     if bounces:
-        blines = [f"⚠️ *Intake*: {len(bounces)} delivery failure(s) in "
-                  f"{account['address']}:"]
-        for b in bounces:
-            blines.append(f"• bounced: `{b['recipient']}` — _{b['subject']}_")
-        blines.append("Check the address (intake_senders.json / recipient "
-                      "config) and resend.")
+        blines = bounce_alert_lines(account["address"], bounces)
         if dry_run:
             log("DRY RUN — would telegram:\n" + "\n".join(blines))
         else:
@@ -1641,6 +1688,36 @@ def selftest() -> int:
                     "From: cirrustask@gmail.com")
     check("bounce rcpt via body (skips own address)",
           extract_bounced_recipient(bm2, "cirrustask@gmail.com") == "teacher@school.org")
+    # S575 — the real 2026-11-06 Outlook block: a valid address, refused for
+    # sender authentication. The alert must say so, not "check the address".
+    dsn = email.message_from_bytes(
+        b"From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>\r\n"
+        b"Subject: Delivery Status Notification (Failure)\r\nMIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/report; report-type=delivery-status; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\n** Message blocked **\r\n"
+        b"--B\r\nContent-Type: message/delivery-status\r\n\r\n"
+        b"Reporting-MTA: dns; googlemail.com\r\n\r\n"
+        b"Final-Recipient: rfc822; someone@hotmail.com\r\nAction: failed\r\n"
+        b"Status: 5.7.1\r\nDiagnostic-Code: smtp; 550 5.7.1 Message rejected: "
+        b"Message lacks SPF/DKIM/DMARC Auth Records [SJ5PEPF000001CD]\r\n\r\n"
+        b"--B\r\nContent-Type: text/rfc822-headers\r\n\r\n"
+        b"From: cumulus@cumulustask.com\r\nTo: someone@hotmail.com\r\n"
+        b"Subject: Literacy Research Digest\r\n\r\n--B--\r\n")
+    info = bounce_details(dsn)
+    check("DSN status parsed", info["status"] == "5.7.1")
+    check("DSN reason parsed", "SPF/DKIM/DMARC" in info["reason"])
+    check("DSN original subject parsed", info["orig_subject"] == "Literacy Research Digest")
+    blocked = "\n".join(bounce_alert_lines("cumulus@cumulustask.com", [
+        {"recipient": "someone@hotmail.com", "subject": "Delivery Status Notification (Failure)", **info}]))
+    check("blocked alert names the failed message", "Literacy Research Digest" in blocked)
+    check("blocked alert points at SPF/DKIM/DMARC, not the address",
+          "DMARC, then resend" in blocked and "Check the address" not in blocked)
+    check("blocked alert has no stray Markdown _ or [",
+          "_" not in blocked and "[" not in blocked)
+    unknown = "\n".join(bounce_alert_lines("cirrustask@gmail.com", [
+        {"recipient": "x@y.org", "subject": "Delivery Status Notification (Failure)",
+         **bounce_details(bm)}]))
+    check("address-not-found alert still says check the address", "Check the address" in unknown)
 
     # S236 — attachment_names(): the only detection this pipeline has ever
     # had for "this needs a human, not the digest queue." Confirmed live:
