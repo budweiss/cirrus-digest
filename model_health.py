@@ -495,6 +495,20 @@ LOCAL_FIRST_TASKS = {
 # because "this task ran and NOTHING went local" is not a sampling artefact.
 FALLBACK_MIN_ROWS = 8
 
+# S578. Rows the daily approval renewal (foundation_renewal.py) writes while
+# re-qualifying each APPROVED provider on its reviewed synthetic fixtures. It
+# tags every call session_id="renewal-<stamp>-<provider>" (or "renewal-hoa").
+# Those calls go to the paid providers ON PURPOSE -- they test the paid
+# fallback route itself -- so they are not a local call that fell back. Counted
+# as production they made intake:promise_detect read "ALL 6 went PAID" every
+# day from 10-31 to 11-07, while all 26 real intake calls on CUMULUS since
+# 10-01 went to vllm and all 34 on CIRRUS to ollama.
+PROBE_SESSION_PREFIXES = ("renewal-",)
+
+
+def _is_probe(row):
+    return str(row.get("session_id") or "").startswith(PROBE_SESSION_PREFIXES)
+
 
 def _ledger_rows(path, hours=24, now=None):
     """Rows from the spend ledger inside the window. Never raises."""
@@ -534,8 +548,12 @@ def fallback_verdict(rows, tasks=None, min_rows=FALLBACK_MIN_ROWS):
         enough to mean something.
     A task with no rows at all is silent: it did not run in the window, which is
     a scheduling question, not a fallback question, and other checks own it.
+    Renewal qualification rows (_is_probe) are left out of both rules and
+    counted separately, so the line still says they ran.
     """
     tasks = LOCAL_FIRST_TASKS if tasks is None else tasks
+    probes = sum(1 for r in rows if r.get("task") in tasks and _is_probe(r))
+    rows = [r for r in rows if not _is_probe(r)]
     seen, alarms = [], []
     for task, thr in sorted(tasks.items()):
         local = sum(1 for r in rows if r.get("task") == task
@@ -553,11 +571,13 @@ def fallback_verdict(rows, tasks=None, min_rows=FALLBACK_MIN_ROWS):
         elif share > thr and total >= min_rows:
             alarms.append(f"{task}: {share:.0%} paid ({paid}/{total}) "
                           f"over its {thr:.0%} threshold")
+    note = f" ({probes} renewal probe row(s) not counted)" if probes else ""
     if not seen:
-        return ("local fallback: no local-first task ran in the last 24h", False)
+        return ("local fallback: no local-first task ran in the last 24h" + note,
+                False)
     if alarms:
-        return ("local fallback: " + "; ".join(alarms), True)
-    return ("local fallback: " + ", ".join(seen), False)
+        return ("local fallback: " + "; ".join(alarms) + note, True)
+    return ("local fallback: " + ", ".join(seen) + note, False)
 
 
 def truncation_verdict(rows):
@@ -2239,6 +2259,32 @@ def _selftest_fallback(ck):
     line, _ = verdict(rows("halftime_catalogue", local=45, paid=4))
     ck("fallback: the quiet line still reports the observed rate",
        "4/49 paid" in line and "8%" in line)
+
+    # S578: the 10-31..11-07 shape. The daily renewal re-qualifies the approved
+    # paid providers (3 synthetic fixtures each) under the production task name.
+    def probe(task, provider, stamp="20261107-0440"):
+        return {"task": task, "provider": provider,
+                "session_id": f"renewal-{stamp}-{provider}"}
+    _renew = ([probe("intake:promise_detect", "anthropic")] * 3
+              + [probe("intake:promise_detect", "kimi")] * 3)
+    line, n = verdict(_renew)
+    ck("fallback: renewal probes alone (no real intake call) are SILENT, "
+       "not 'ALL 6 went PAID'",
+       n is False and "ALL" not in line and "6 renewal probe" in line)
+    _prod = [{"task": "intake:promise_detect", "provider": "vllm",
+              "session_id": "intake:promise_detect"}]
+    line, n = verdict(_renew + _prod)
+    ck("fallback: renewal probes + one local intake call reads 0/1 paid",
+       n is False and "intake:promise_detect 0/1 paid" in line)
+    _paid = [{"task": "intake:promise_detect", "provider": "anthropic",
+              "session_id": "intake:promise_detect"}]
+    line, n = verdict(_renew + _paid)
+    ck("fallback: ...but a REAL intake call that went paid still ALERTS "
+       "beside the probes (the inverse)",
+       n is True and "ALL 1 call(s) went PAID" in line)
+    _, n = verdict([dict(r, session_id="intake-renewal-x") for r in _paid])
+    ck("fallback: only the renewal- PREFIX marks a probe, not the word anywhere",
+       n is True)
 
 
 def _selftest_truncation(ck):
