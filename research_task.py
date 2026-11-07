@@ -243,6 +243,17 @@ def synthesise(question, requirements, findings, creds):
             'supplied evidence or stated user priorities. Keep a hypothetical risk visibly conditional, and '
             'distinguish that reasoning from sourced product facts. Prefer a short grounded answer over '
             'speculative elaboration.'
+            '\nFinal evidence-to-status audit (mandatory, including after long source text): for each option '
+            'and each requirement, choose the source sentence first and then the status. Use supported only '
+            'if that sentence establishes the entire requirement; use contradicted only if it establishes a '
+            'conflict; otherwise use UNCHECKED. Silence, no mention, and compatibility with a requirement '
+            'are never positive evidence. In particular, offline operation without an explicit statement '
+            'about accounts, dependencies and third-party transfers leaves a no-third-party-cloud '
+            'requirement UNCHECKED. A caveat admitting that a requirement is unverified must agree with its '
+            'UNCHECKED status everywhere, including tables and the recommendation. Do not infer no automatic '
+            'backup from a manual-backup requirement. Preserve uncertainty instead of inventing a feature or '
+            'limitation. Check the final answer for these contradictions before returning it.'
+            ' Keep each stated requirement separate and preserve its meaning. Distinguish instructions governing your answer from empirical claims about a candidate: audit a no-invented-evidence requirement by whether this answer invents evidence; do not merge it with whether effectiveness is established. Unknown effectiveness stays UNCHECKED in a separate entry. Cite the supplied URL again when repeating a sourced fact in the counterargument; keep conditional reasoning explicitly conditional.'
         )
     )
     usr = (f"BRIEF\n{question}\n\nREQUIREMENTS\n{reqs}\n\nEVIDENCE\n"
