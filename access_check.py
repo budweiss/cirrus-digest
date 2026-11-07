@@ -59,7 +59,9 @@ CF_ORIGIN_UNREACHABLE = {520, 521, 522, 523, 524, 525, 526, 527, 530}
 TARGETS = [
     ("cirrus-lan",    "tcp",    ("192.168.0.202", 22)),
     ("cirrus-public", "https",  "https://cirrus.cirrustask.com/status"),
-    ("cumulus2-tail", "tcp",    ("100.87.241.34", 22)),
+    # S579: cumulus2 re-registered as tag:server on 2026-11-07 and got a new
+    # tailnet address (was 100.87.241.34, now an expired stale record).
+    ("cumulus2-tail", "tcp",    ("100.68.199.39", 22)),
     ("self-outbound", "https",  "https://1.1.1.1/"),
 ]
 
