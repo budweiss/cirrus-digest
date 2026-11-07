@@ -80,6 +80,31 @@ def command(args, label):
     return proc.stdout
 
 
+def failure_note(exc):
+    """Only fixed labels may leave this workflow; exceptions can contain evidence."""
+    kind = type(exc).__name__
+    if kind not in {"RuntimeError", "ValueError", "TimeoutExpired", "OSError",
+                    "FileNotFoundError", "FileExistsError", "JSONDecodeError"}:
+        kind = "Exception"
+    reasons = {
+        "CUMULUS local reviewer failed": "cumulus_local_reviewer_failed",
+        "fresh renewal packet missing": "fresh_packet_missing",
+        "CUMULUS renewal packet missing": "cumulus_packet_missing",
+        "CIRRUS renewal packet missing": "cirrus_packet_missing",
+        "installer did not apply exactly the reviewed records": "install_count_mismatch",
+        "live admission did not match renewed record count": "admission_count_mismatch",
+    }
+    reason = reasons.get(str(exc), "unclassified")
+    labels = {"locate CUMULUS packet", "copy CUMULUS packet", "read CUMULUS registry",
+              "copy reviewed packet to CUMULUS"}
+    labels.update(host + " " + step for host in ("CIRRUS", "CUMULUS")
+                  for step in ("renewal plan", "precheck", "check", "apply", "verify"))
+    match = re.fullmatch(r"(.+) failed \(exit -?\d+\)", str(exc))
+    if match and match[1] in labels:
+        reason = match[1].lower().replace(" ", "_") + "_failed"
+    return "error=" + kind + " reason=" + reason
+
+
 def remote_packet_name():
     code = ("from pathlib import Path; import re; "
             "p=sorted(x for x in (Path.home()/'model-evaluation').glob('renewal-*-cumulus') "
@@ -703,7 +728,7 @@ def main():
             note = "reviewed=%d renewed=%d held=%d evidence_pending=%d packets=%d" % (
                 result["reviewed"], result["renewed"], result["held"], result["pending"], result["packets"])
         except Exception as exc:
-            ok, note = False, "error=" + type(exc).__name__
+            ok, note = False, failure_note(exc)
         if not args.dry_run:
             import job_status
             job_status.record("foundationrenewalauto", ok, note)

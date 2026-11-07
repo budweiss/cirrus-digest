@@ -23,6 +23,32 @@ PILOT_REVIEW_CASES = [
 ]
 
 class RenewalAutoTest(unittest.TestCase):
+    def test_failure_notes_keep_stages_and_withhold_private_errors(self):
+        cases = [
+            (RuntimeError("CUMULUS local reviewer failed"), "cumulus_local_reviewer_failed"),
+            (RuntimeError("fresh renewal packet missing"), "fresh_packet_missing"),
+            (RuntimeError("CUMULUS precheck failed (exit 1)"), "cumulus_precheck_failed"),
+            (RuntimeError("CIRRUS apply failed (exit -9)"), "cirrus_apply_failed"),
+            (RuntimeError("installer did not apply exactly the reviewed records"), "install_count_mismatch"),
+            (RuntimeError("live admission did not match renewed record count"), "admission_count_mismatch"),
+            (RuntimeError("PRIVATE_FIXTURE failed (exit 1)"), "unclassified"),
+            (ValueError("PRIVATE_FIXTURE token=fixture-secret"), "unclassified"),
+        ]
+        for error, reason in cases:
+            with self.subTest(reason=reason), \
+                 patch.object(auto, "EVROOT", self.path), \
+                 patch.object(auto, "run_once", side_effect=error), \
+                 patch("sys.argv", ["foundation_renewal_auto.py"]), \
+                 patch("job_status.record") as record, \
+                 patch.object(auto.renewal, "notify") as notify, \
+                 patch("builtins.print") as output:
+                self.assertEqual(auto.main(), 1)
+                expected = "error=" + type(error).__name__ + " reason=" + reason
+                record.assert_called_once_with("foundationrenewalauto", False, expected)
+                self.assertIn(expected, notify.call_args.args[0])
+                self.assertEqual(json.loads(output.call_args.args[0]), {"ok": False, "note": expected})
+                self.assertNotIn("PRIVATE_FIXTURE", str(record.call_args) + str(notify.call_args) + str(output.call_args))
+
     def test_idle_local_model_is_loaded_then_rechecked(self):
         import io
         import capability_health as health
