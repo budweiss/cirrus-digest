@@ -136,6 +136,9 @@ def finish(root, row, rec):
         state, owner, action = 'working', 'project-research', 'verify requested source produces results'
     elif rec.get('kind') in ('answer', 'resend'):
         state, owner, action = 'blocked_on_evidence', 'cowork', 'review saved attempt; preserve budget and send uncertainty'
+        if rec.get('held_label'):
+            import held_label
+            action = held_label.wording(rec['held_label']) + '; ' + action
     elif rec.get('kind') in ('feedback','deliverable','confirmation','build'):
         state, owner, action = 'queued_preparation', 'client_request_prepare', 'check text capability and prepare local draft'
     else:

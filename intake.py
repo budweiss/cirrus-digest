@@ -49,6 +49,7 @@ from pathlib import Path
 
 import client_promises
 import dev_loop
+import held_label
 import list_delivery
 import mailer
 import task_solver
@@ -1264,6 +1265,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 rec["solved"] = solved
                 log(f"  → answer {'sent' if solved['answered'] else 'FELL BACK to ticket'}: "
                     f"{solved['reason']}")
+                if solved.get('request_id') and not solved.get('answered'):
+                    rec['held_label'] = held_label.label(
+                        subject, task_solver.strip_quoted_reply(body or ""), creds)
                 if solved.get('answered'):
                     try:
                         import intake_delivery_evidence
@@ -1341,9 +1345,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 if solved.get("answered"):
                     flag = f"✅ Answer delivered — request {request_id}"
                 else:
-                    flag = (f"✋ Answer held for local review — request {request_id}: "
-                            f"{solved.get('reason', 'Review required.')} "
-                            f"Saved packet: data/conversations/{request_id}-review.json")
+                    # Only fixed category wording leaves the box; reasons stay local.
+                    flag = (f"✋ Answer held: {held_label.wording(r.get('held_label'))} "
+                            f"— request {request_id}")
             elif r.get("kind") == "deliverable" and r.get("contact_list_run"):
                 flag = (f"📋 LIST request — research job {r['contact_list_run']} running; "
                         f"its review email comes to you, reply SEND to deliver")
