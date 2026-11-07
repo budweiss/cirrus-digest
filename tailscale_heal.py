@@ -262,7 +262,11 @@ def hygiene(f, me):
         if n and n["keyexp"] and TAG not in n["tags"]:
             out.append(("exp:" + name, "key expiry is still on for %s (expires %s). Tagging it "
                         "tag:server turns it off." % (name, n["keyexp"][:10])))
-    extra = sorted(n["dns"] for n in nodes if TAG in n["tags"] and n["dns"] not in EXPECT)
+    # "Expected" = the record pick() chose for each server, NOT the bare names:
+    # a re-registered server is legitimately cumulus2-1 until renamed (11-07,
+    # when the name-based version told Buddy to revoke the OAuth client).
+    mine = {pick(f, name)["dns"] for name in EXPECT if pick(f, name)}
+    extra = sorted(n["dns"] for n in nodes if TAG in n["tags"] and n["dns"] not in mine)
     if extra:
         out.append(("extra-tag", "UNEXPECTED tag:server node(s): %s. If you did not add them, "
                     "revoke the OAuth client now." % ", ".join(extra)))
@@ -821,6 +825,8 @@ def selftest():
     ck("hygiene: the live box's -1 name is flagged for a rename", "name:cumulus2" in hy3)
     ck("hygiene: a tagged live node is not nagged about the stale record's expiry",
        "exp:cumulus2" not in hy3)
+    ck("hygiene: the re-registered cumulus2-1 is NOT an unexpected tag:server node",
+       "extra-tag" not in hy3)
     ck("hygiene: a box with NO live record is left to F5",
        not any(k.endswith("cumulus1") for k in dict(hygiene(facts(st_json(peers=[
            peer("cumulus1", "cumulus1", False, "100.88.81.60")])), "cirrus"))))
