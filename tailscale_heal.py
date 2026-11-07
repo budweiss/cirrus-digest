@@ -259,9 +259,10 @@ def hygiene(f, me):
                         "machine's menu, Edit machine name)." % (name, live[0]["dns"], live[0]["ip"], name)))
     for name in EXPECT:
         n = pick(f, name)
-        if n and n["keyexp"] and TAG not in n["tags"]:
-            out.append(("exp:" + name, "key expiry is still on for %s (expires %s). Tagging it "
-                        "tag:server turns it off." % (name, n["keyexp"][:10])))
+        # Tagged or not: tagging from the console leaves expiry on (cirrus, 11-07).
+        if n and n["keyexp"]:
+            out.append(("exp:" + name, "key expiry is still on for %s (expires %s). Machines, "
+                        "its menu, Disable key expiry." % (name, n["keyexp"][:10])))
     # "Expected" = the record pick() chose for each server, NOT the bare names:
     # a re-registered server is legitimately cumulus2-1 until renamed (11-07,
     # when the name-based version told Buddy to revoke the OAuth client).
@@ -824,7 +825,8 @@ def selftest():
     tagged = facts(st_json(tags=[TAG], keyexp="2027-05-06T00:00:00Z",
                            peers=[peer("rogue", "rogue", True, "100.1.1.1", tags=[TAG])]))
     hy2 = dict(hygiene(tagged, "cirrus"))
-    ck("tagged node with a KeyExpiry is not nagged", "exp:cirrus" not in hy2)
+    ck("console-tagged node whose KeyExpiry is still set IS nagged (cirrus, 11-07)",
+       "exp:cirrus" in hy2)
     ck("an unexpected tag:server node is flagged", "extra-tag" in hy2)
     ck("self registered as cirrus-1 is flagged",
        "name:cirrus" in dict(hygiene(facts(st_json(dns="cirrus-1")), "cirrus")))
