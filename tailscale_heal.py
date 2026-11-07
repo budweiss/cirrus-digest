@@ -229,27 +229,34 @@ def classify(p, starting_since=None, now=None, net=None):
 
 
 def pick(f, name):
-    """The record for an expected name: DNS label first, then an ONLINE record
-    with that HostName (a stale duplicate keeps the HostName, ab2dfc1)."""
+    """The record for an expected name. A re-registered box leaves a stale
+    record, and EITHER one can hold the DNS name: on 10-01 the stale record was
+    cirrus-1; on 11-07 the stale one kept "cumulus2" and the live box came back
+    as cumulus2-1. So an ONLINE record wins, then the DNS label."""
     nodes = f["peers"] + [f["self"]]
-    for n in nodes:
-        if n["dns"] == name:
-            return n
-    same = [n for n in nodes if n["host"] == name]
-    return next((n for n in same if n["online"]), same[0] if same else None)
+    cands = [n for n in nodes if n["dns"] == name or n["host"] == name]
+    cands.sort(key=lambda n: (not n["online"], n["dns"] != name))
+    return cands[0] if cands else None
 
 
 def hygiene(f, me):
-    """[(key, text)] warnings. Never repaired."""
+    """[(key, text)] warnings. Never repaired: deleting a record is Buddy's."""
     out = []
     nodes = f["peers"] + [f["self"]]
-    if f["self"]["dns"] and f["self"]["dns"] != me:
-        out.append(("name:" + me, "%s is registered as %s, not %s: a stale record holds the "
-                    "name. Remove it in the admin console." % (me, f["self"]["dns"], me)))
-    for n in nodes:
-        if n["host"] in EXPECT and n["dns"] != n["host"] and not n["online"]:
-            out.append(("dup:" + n["dns"], "stale record %s (%s), offline since %s. Remove it at "
-                        "login.tailscale.com/admin/machines." % (n["dns"], n["ip"], n["lastseen"] or "?")))
+    for name in EXPECT:
+        recs = [n for n in nodes if n["dns"] == name or n["host"] == name]
+        live = [n for n in recs if n["online"]]
+        if not live:
+            continue                        # a box that is down is F5's, not hygiene's
+        for n in recs:
+            if not n["online"]:
+                out.append(("dup:" + n["dns"], "stale record %s (%s) duplicates %s, offline since "
+                            "%s. Remove it at login.tailscale.com/admin/machines."
+                            % (n["dns"], n["ip"], name, n["lastseen"] or "?")))
+        if live[0]["dns"] != name:
+            out.append(("name:" + name, "%s is registered as %s (%s) because a stale record held "
+                        "the name. After removing that record, rename it to %s (Machines, the "
+                        "machine's menu, Edit machine name)." % (name, live[0]["dns"], live[0]["ip"], name)))
     for name in EXPECT:
         n = pick(f, name)
         if n and n["keyexp"] and TAG not in n["tags"]:
@@ -716,13 +723,20 @@ def remote(verb):
             print(json.dumps({"ok": False, "why": why or "not NEEDS_LOGIN, held, or no key"}))
             return 0
         rc, err = relogin(cfg, val)
-        s2, _ = classify(wait_running(cfg, 30))
+        p2 = wait_running(cfg, 30)
+        s2, _ = classify(p2)
         attempted(st, "relogin", s2 == "OK")
         if s2 == "OK":
+            f = p2["facts"]["self"]
+            text = ("Tailscale HEALED on cumulus2: was logged out; cumulus1 logged it back in as "
+                    "tag:server. Back as %s %s." % (f["dns"], f["ip"]))
+            if st.get("last_ip") and f["ip"] != st["last_ip"]:
+                text += " NEW IP (was %s): update anything hard-coded." % st["last_ip"]
+            if f["dns"] != me:
+                text += " It came back as %s: a stale record holds the name." % f["dns"]
             evs = st.setdefault("events", [])
             nid = st.get("next_event", 1)
-            evs.append({"id": nid, "text": "Tailscale (cumulus2) HEALED: was logged out; cumulus1 "
-                        "logged it back in as tag:server."})
+            evs.append({"id": nid, "text": text})
             st["next_event"] = nid + 1
         save_state(spath, st)
         print(json.dumps({"ok": s2 == "OK", "rc": rc, "err": err}))
@@ -794,6 +808,22 @@ def selftest():
     ck("an unexpected tag:server node is flagged", "extra-tag" in hy2)
     ck("self registered as cirrus-1 is flagged",
        "name:cirrus" in dict(hygiene(facts(st_json(dns="cirrus-1")), "cirrus")))
+    # 2026-11-07, measured: cumulus2 re-logged in as tag:server came back as a NEW
+    # node, cumulus2-1, while the expired old record kept the name "cumulus2".
+    c2day = facts(st_json(peers=[
+        peer("cumulus2", "cumulus2", False, "100.87.241.34", "2026-11-06T16:00:18Z",
+             ls="2026-11-07T16:00:16Z"),
+        peer("cumulus2", "cumulus2-1", True, "100.68.199.39", tags=[TAG])]))
+    ck("pick: the ONLINE cumulus2-1 beats the stale record holding the name",
+       pick(c2day, "cumulus2")["ip"] == "100.68.199.39")
+    hy3 = dict(hygiene(c2day, "cumulus1"))
+    ck("hygiene: the stale record that kept the name is flagged", "dup:cumulus2" in hy3)
+    ck("hygiene: the live box's -1 name is flagged for a rename", "name:cumulus2" in hy3)
+    ck("hygiene: a tagged live node is not nagged about the stale record's expiry",
+       "exp:cumulus2" not in hy3)
+    ck("hygiene: a box with NO live record is left to F5",
+       not any(k.endswith("cumulus1") for k in dict(hygiene(facts(st_json(peers=[
+           peer("cumulus1", "cumulus1", False, "100.88.81.60")])), "cirrus"))))
 
     down = {"up": False, "loaded": False, "age": None, "detail": "launchd job not loaded"}
     ck("no status + daemon gone = DAEMON_DOWN",
