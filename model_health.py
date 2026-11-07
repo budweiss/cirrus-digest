@@ -724,7 +724,11 @@ def tailnet_verdict(status, expect=TAILNET_EXPECT, now=None):
     seen = {}
     for peer in ((status or {}).get("Peer") or {}).values():
         h = (peer.get("HostName") or "").lower()
-        if h:
+        # S576: a stale record keeps the OS hostname (only its DNS name becomes
+        # "cirrus-1"), so a re-registered box appears TWICE. Last-one-wins let
+        # the dead record shadow the live one and report a healthy CIRRUS
+        # OFFLINE. An online record for the name wins.
+        if h and (h not in seen or (peer.get("Online") and not seen[h].get("Online"))):
             seen[h] = peer
 
     for want in expect:
@@ -2797,6 +2801,20 @@ def selftest():
     _ok = any("cirrus is OFFLINE" in x for x in _probs)
     print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: ...but a HEALTHY node still audits its peers")
     fails += 0 if _ok else 1
+    # S576, measured on cumulus1 the day CIRRUS re-registered: the stale
+    # record (same HostName, DNS name cirrus-1) shadowed the live one. Both
+    # dict orders, because the bug depended on which record came last.
+    _live = {"HostName": "cirrus", "Online": True}
+    _dead = {"HostName": "cirrus", "Online": False, "LastSeen": "2026-10-01T12:15:21Z"}
+    for _order in ((_dead, _live), (_live, _dead)):
+        _probs, _ = tailnet_verdict(
+            {"BackendState": "Running", "Self": _SELF_C1,
+             "Peer": {"a": _order[0], "b": _order[1],
+                      "c": {"HostName": "cumulus2", "Online": True}}})
+        _ok = not _probs
+        print(f"  [{'OK ' if _ok else 'FAIL'}] tailnet: a stale duplicate record does not hide the live one "
+              f"({'dead first' if _order[0] is _dead else 'live first'})")
+        fails += 0 if _ok else 1
 
     # S576: mail authentication for the sending domain.
     def _mk(label, cond):
