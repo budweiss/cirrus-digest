@@ -25,7 +25,9 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/buddy/projects/cirrus-digest/foundation_renewal_cirrus.py</string>
+        <string>/Users/buddy/projects/cirrus-digest/renewal_recovery.py</string>
+        <string>--job</string>
+        <string>foundationrenewal</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
