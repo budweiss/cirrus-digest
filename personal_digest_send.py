@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import smtplib
 import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -112,17 +113,55 @@ def deliver_once(md, creds, subject, date_str, send_fn=None):
             out.write(json.dumps(record))
         os.chmod(receipt, 0o600)
         sender = send_fn or mailer.send
-        ok = sender(creds["outlook_email"], creds["outlook_password"], TO_EMAIL,
-                    subject, md, html=report_html(md), creds=creds,
-                    on_error="raise", log=print)
-        if not ok:
-            raise ValueError("send_unconfirmed_receipt_requires_review")
+        try:
+            ok = sender(creds["outlook_email"], creds["outlook_password"], TO_EMAIL,
+                        subject, md, html=report_html(md), creds=creds,
+                        on_error="raise", log=print)
+            if not ok:
+                raise ValueError("send_unconfirmed_receipt_requires_review")
+        except Exception as exc:
+            # Keep the ambiguous reservation: neither an exception nor a broken
+            # connection proves nondelivery. Save only fixed diagnostic labels,
+            # never SMTP response text, credentials, recipients or body content.
+            record.update(failed_at=datetime_utc_now(), failure=delivery_failure(exc))
+            try:
+                temporary = receipt.with_suffix('.tmp')
+                temporary.write_text(json.dumps(record))
+                os.chmod(temporary, 0o600)
+                temporary.replace(receipt)
+            except OSError:
+                # The original durable reservation still blocks a duplicate.
+                pass
+            raise
         record.update(status="sent", sent_at=datetime_utc_now())
         temporary = receipt.with_suffix(".tmp")
         temporary.write_text(json.dumps(record))
         os.chmod(temporary, 0o600)
         temporary.replace(receipt)
         return True
+
+
+def delivery_failure(exc):
+    """Classify an SMTP failure without retaining arbitrary exception strings."""
+    kinds = ((smtplib.SMTPServerDisconnected, 'disconnected'),
+             (smtplib.SMTPAuthenticationError, 'authentication'),
+             (smtplib.SMTPRecipientsRefused, 'recipients_refused'),
+             (smtplib.SMTPDataError, 'data_rejected'),
+             (TimeoutError, 'timeout'), (OSError, 'transport'))
+    kind = next((label for cls, label in kinds if isinstance(exc, cls)), 'other')
+    phases = {'connect': 'connect', 'ehlo': 'ehlo', 'starttls': 'starttls',
+              'login': 'login', 'auth': 'login', 'sendmail': 'sendmail',
+              'mail': 'mail_from', 'rcpt': 'recipient', 'data': 'data',
+              '__exit__': 'quit', 'quit': 'quit'}
+    phase = 'unknown'
+    tb = exc.__traceback__
+    while tb is not None:
+        # Trust frames from the SMTP implementation, not names in callers.
+        frame = tb.tb_frame
+        if frame.f_globals.get('__name__') == 'smtplib':
+            phase = phases.get(frame.f_code.co_name, phase)
+        tb = tb.tb_next
+    return {'kind': kind, 'phase': phase}
 
 
 def datetime_utc_now():
