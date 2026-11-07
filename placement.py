@@ -53,6 +53,8 @@ ALLOWED_BOTH = {
     "autoupdate": ("S516: each box classifies (later: applies) ITS OWN pending OS "
                    "updates, at different hours; one box cannot patch the other"),
     "netsample": "each box samples its own counters; the whole point is per-box",
+    "tailscaleheal": ("S579: each box keeps ITS OWN tailscaled on the tailnet; a box "
+                      "off the tailnet cannot be repaired from another one"),
     "watchdog": "each box watches its own services",
     "deadman": "each box proves its own liveness",
     "rebootmonthly": ("each box reboots ITSELF, on DIFFERENT days (CIRRUS the 1st, "
