@@ -1,0 +1,16 @@
+# S579: keep cumulus1 on the tailnet, and speak for cumulus2 (tailscale_heal.py).
+# Installed by runner `tailscale-heal` action=install. Runs as buddy; restarts
+# and re-logins go through sudo -n. Mode: logs/tailscale-heal.mode.
+[Unit]
+Description=Tailscale self-heal for cumulus1 and cumulus2's relay (S579)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+ExecStart=/usr/bin/python3 /home/buddy/cirrus-digest/tailscale_heal_cumulus.py
+TimeoutStartSec=300

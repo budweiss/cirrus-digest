@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- S579: keep CIRRUS on the tailnet (tailscale_heal.py). Every 5 min and at
+     load, so it also runs at boot: the 2026-10-01 logout surfaced at the
+     monthly reboot. Mode: logs/tailscale-heal.mode.
+     Installed by runner `tailscale-heal` action=install. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.cirrus.tailscaleheal</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/buddy/projects/cirrus-digest/tailscale_heal.py</string>
+	</array>
+	<key>UserName</key>
+	<string>buddy</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/buddy</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/tailscaleheal-launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/buddy/projects/cirrus-digest/logs/tailscaleheal-launchd.log</string>
+</dict>
+</plist>

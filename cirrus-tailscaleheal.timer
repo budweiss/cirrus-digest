@@ -1,0 +1,12 @@
+# S579: every 5 minutes and 2 minutes after boot (reboots are when a lost
+# login shows up: CIRRUS's 2026-10-01 logout surfaced at its monthly reboot).
+[Unit]
+Description=Tailscale self-heal timer (S579)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

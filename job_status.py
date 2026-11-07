@@ -193,6 +193,10 @@ CADENCE_H = {
     "fleetautoreconcile": 1,
     # S497 P2: fleet_qualify.timer 10:30 + 22:30 on CUMULUS (renews on evidence).
     "fleetqualify": 13,
+    # S579: Tailscale self-heal, every 5 min. CIRRUS LaunchDaemon; cumulus1
+    # system timer, whose row also carries cumulus2's state (it has no ledger).
+    "tailscaleheal":        1,
+    "tailscalehealcumulus": 1,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
@@ -228,6 +232,7 @@ REMOTE_JOBS   = {"billsnow", "billnewdev", "billsam", "pedagogy", "hoaleads",
                  # cumulus2 at all. Exactly the omission the comment above warns
                  # about, made four rows below the warning.
                  "autoupdatecumulus",                     # S520: read cumulus1 ledger
+                 "tailscalehealcumulus",                  # S579, cumulus1 system timer
                  "accesscheck"}                           # S101, runs on cumulus1
 REMOTE_HOST   = "buddy@192.168.0.204"                     # cumulus1 over LAN (CIRRUS read-only key)
 REMOTE_STATUS = "cirrus-digest/logs/jobs-status.json"     # ~ on cumulus1

@@ -48,7 +48,8 @@ HB_PATH     = PROJECT_DIR / "logs/heartbeats.json"
 LOG_PATH    = PROJECT_DIR / "logs/watchdog.log"
 
 PERSISTENT = {"com.cirrus.bot", "com.cirrus.api", "com.cirrus.tunnel"}
-SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop"}
+SCHEDULED  = {"com.cirrus.daily", "com.cirrus.devloop",
+              "com.cirrus.tailscaleheal"}   # S579: idempotent, safe to kickstart
 # MONITOR_ONLY (S49): scheduled agents we watch for loaded + clean-exit and ALERT
 # on trouble, but NEVER kickstart — several of these send client email, and a
 # repair kickstart would fire an off-schedule send. Loaded/exit monitoring only;
