@@ -1090,7 +1090,19 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # capability triage (an explicit "resend me X" is more specific) and
         # BEFORE the research safety net, so a confirmation is never rewritten
         # into a focus topic.
-        confirms = is_confirmation(entry["name"], subject, body)
+        import report_inventory
+        inventory_reply = (
+            rec["status"] != "refused"
+            and rec["kind"] != "resend"
+            and task_solver.is_reply_subject(subject)
+            and client_promises.is_inventory_thread(entry["name"], subject)
+            and report_inventory.is_plain_assent(task_solver.strip_quoted_reply(body)))
+        confirms = [] if inventory_reply else is_confirmation(entry["name"], subject, body)
+        if inventory_reply:
+            rec["kind"] = "confirmation"
+            rec["confirmation_scope"] = "existing_reports"
+            rec["confirms"] = []
+            rec["dev_spec"]["auto_eligible"] = False
         if confirms and rec["kind"] not in ("feedback", "resend"):
             rec["kind"] = "confirmation"
             rec["confirms"] = [p["id"] for p in confirms]
@@ -1100,7 +1112,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # of silently landing in the dev-ticket queue. Exempts 'resend' (S63)
         # — a detected capability match is more specific than the static
         # per-sender default and shouldn't be clobbered by it.
-        if (rec["kind"] not in ("feedback", "resend")
+        if (rec["kind"] not in ("feedback", "resend", "confirmation")
                 and any(p in RESEARCH_PROJECTS for p in entry["projects"])):
             if rec["kind"] != "research":
                 log(f"  routing override: {entry['name']} is on a research-only "
@@ -1155,8 +1167,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     except Exception as e:
                         log(f"  topic append failed (backlog still recorded): {e}")
                 elif rec["kind"] == "confirmation":
-                    # Answers nothing. The client did not ask a question -- he
-                    # said yes. So mark what he agreed to and QUEUE THE WORK.
+                    if rec.get("confirmation_scope") == "existing_reports":
+                        log("  → existing report list confirmed; no delivery work")
+                    # Only actual outstanding promises create delivery tickets.
                     for p in confirms:
                         client_promises.confirm_promise(
                             p["id"], note=rec["body_head"][:200])

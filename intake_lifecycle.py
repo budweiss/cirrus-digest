@@ -122,6 +122,12 @@ def finish(root, row, rec):
         state, owner, action = 'sent_unverified', 'delivery-review', 'verify actual Sent Mail and artifact'
     elif rec.get('status') == 'refused':
         state, owner, action = 'blocked_on_evidence', 'cowork', 'review request safety hold locally'
+    elif (rec.get('kind') == 'confirmation'
+          and rec.get('confirmation_scope') == 'existing_reports'
+          and not rec.get('confirms') and not rec.get('ticket_id')):
+        evidence['confirmation_scope'] = 'existing_reports'
+        # This closes the intake task, not a claim that a report was delivered.
+        state, owner, action = 'noted', 'intake', 'existing report list confirmed; no delivery work'
     elif rec.get('contact_list_run'):
         state, owner, action = 'working', 'contact_list', 'check job artifact and request send approval'
     elif rec.get('kind') == 'research' and rec.get('topic_queued'):

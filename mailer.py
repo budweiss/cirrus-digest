@@ -203,8 +203,8 @@ def send(from_email, password, to, subject, body, cc=None, html=None,
             try:
                 who, proj = (client, project) if client else resolve_client(to, project)
                 if who:
-                    import promise_detect
-                    promise_detect.record(body, creds or {}, client=who,
+                    import report_inventory
+                    report_inventory.record_outbound(body, creds or {}, client=who,
                                           subject=subject, project=proj,
                                           message_id=message_id, log=log)
             except Exception:

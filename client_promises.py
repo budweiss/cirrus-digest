@@ -192,6 +192,31 @@ def open_for_thread(client: str, subject: str, path: Path = None) -> list:
             and p.get("state") in OPEN_STATES]
 
 
+def record_thread_context(client: str, subject: str, kind: str) -> bool:
+    """Save outbound intent separately from obligations; no message body."""
+    if kind not in ("report_inventory", "other"):
+        raise ValueError("unknown outbound context")
+    return _append({"at": _now(), "event": "thread_context", "client": client,
+                    "thread": thread_key(subject), "kind": kind})
+
+
+def is_inventory_thread(client: str, subject: str) -> bool:
+    """Latest outbound context wins; a later promise invalidates an inventory.
+
+    Unknown/legacy threads remain on the normal path. Outstanding promises on
+    the same subject also prevent suppressing real work.
+    """
+    if open_for_thread(client, subject):
+        return False
+    key = thread_key(subject)
+    for event in reversed(_events()):
+        if event.get("client") == client and event.get("thread") == key:
+            if event.get("event") in ("opened", "thread_context"):
+                return (event.get("event") == "thread_context"
+                        and event.get("kind") == "report_inventory")
+    return False
+
+
 def overdue(now: datetime = None, path: Path = None) -> list:
     """Promises past their SLA and still owed.
 
