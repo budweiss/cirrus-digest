@@ -1,0 +1,10 @@
+[Unit]
+Description=November 14 2026 Tailscale review on CUMULUS1 (S580)
+
+[Timer]
+OnCalendar=2026-11-14 09:00:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -509,6 +509,9 @@ def watch_keys(key: str):
 # Scheduled jobs that deliberately have no ledger entry, each with the reason.
 # An exemption must say WHY, so it can be argued with later.
 EXEMPT = {
+    "tailscalereview": "S580: one-time November 14 review writes a ledger receipt; "
+                       "tailscale_heal on C1 watches its timer before due and its "
+                       "completion/delivery receipt after due every five minutes",
     "jobscheck":  "IS the overdue checker -- it reads the ledger, so watching "
                   "itself in the ledger would be circular",
     "watchdog":   "the liveness watchdog itself; its own failure surfaces via "

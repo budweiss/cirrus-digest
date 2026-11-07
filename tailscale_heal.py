@@ -667,6 +667,8 @@ def main(argv, record=None):
     if cfg.get("relay"):
         c2_view = c2("status")
         active.update(relay(state, c2_view, mode, msgs, now))
+        from tailscale_review import watch
+        active.update(watch(now))
     if sname == "OK" and f:
         active.update(observe(me, cfg, f, state, c2_view, now))
         if cfg["hygiene"]:
@@ -723,7 +725,11 @@ def _log(line):
 
 
 def remote(verb):
-    """cumulus2's forced command. Two verbs only; anything else is refused."""
+    """C2 forced command; review verbs are fixed, never arbitrary shell input."""
+    if verb in ("review", "review-enable-repair"):
+        from tailscale_review import snapshot, enable_repair
+        print(json.dumps(enable_repair() if verb == "review-enable-repair" else snapshot()))
+        return 0
     me, cfg = "cumulus2", HOSTS["cumulus2"]
     spath = LOGS / "tailscale-heal-state.json"
     if verb == "status":

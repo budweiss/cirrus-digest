@@ -1,0 +1,18 @@
+[Unit]
+Description=One-time Tailscale shadow-week review (S580)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+Environment=HOME=/home/buddy
+Environment=TZ=America/New_York
+WorkingDirectory=/home/buddy/cirrus-digest
+ExecStart=/usr/bin/python3 /home/buddy/cirrus-digest/tailscale_review.py
+TimeoutStartSec=1200
+Restart=on-failure
+RestartSec=300
