@@ -429,11 +429,25 @@ def repair_daemon(cfg):
     return rc, err
 
 
+def advertised(cfg, _run=None):
+    """The box's own AdvertiseTags PREF, or None if unreadable. Only this one
+    field is kept; the rest of `debug prefs` is parsed and dropped, never
+    logged. Status Tags are not the same thing: a box tagged in the admin
+    console shows the tag in status with an EMPTY pref, and restating
+    --advertise-tags there would change the pref and can force a login."""
+    rc, out, _ = (_run or run)([cfg["ts"], "debug", "prefs"], 15)
+    try:
+        return list(json.loads(out).get("AdvertiseTags") or []) if rc == 0 else None
+    except ValueError:
+        return None
+
+
 def repair_up(cfg, tags=(), _run=None):
     """Undo `tailscale down`. A BARE `tailscale up` is refused ("requires
     mentioning all non-default flags"): measured on cumulus2 2026-11-07, when a
     scheduled bare `up` left it off the tailnet. So restate the pinned flags,
-    and the tag once the box is tagged. No --reset: nothing else is touched."""
+    and --advertise-tags exactly when the box's PREF has it (advertised()).
+    No --reset: nothing else is touched."""
     cmd = ["sudo", "-n", cfg["ts"], "up"] + cfg["flags"]
     if TAG in (tags or ()):
         cmd.append("--advertise-tags=" + TAG)
@@ -511,7 +525,9 @@ def heal(me, cfg, mode, state, p, now):
     if kind == "restart":
         rc, err = repair_daemon(cfg)
     elif kind == "up":
-        rc, err = repair_up(cfg, p["facts"]["self"]["tags"] if p["facts"] else ())
+        pref = advertised(cfg)
+        rc, err = repair_up(cfg, pref if pref is not None else
+                            (p["facts"]["self"]["tags"] if p["facts"] else ()))
     else:
         val = auth_value(secret())
         if not val:
@@ -922,6 +938,14 @@ def selftest():
        and not any(x.startswith("--advertise-tags") for x in seen[0]))
     ck("...and the tag once the box is tagged",
        "--operator=buddy" in seen[1] and "--advertise-tags=" + TAG in seen[1])
+    fake = '{"AdvertiseTags": ["tag:server"], "Persist": {"PrivateNodeKey": "privkey:SECRET"}}'
+    ck("advertised() returns only the tag pref (auth-key-tagged box)",
+       advertised(HOSTS["cumulus2"], _run=lambda c, t: (0, fake, "")) == [TAG])
+    ck("advertised(): console-tagged box has an EMPTY pref -> no --advertise-tags",
+       advertised(HOSTS["cirrus"], _run=lambda c, t: (0, '{"AdvertiseTags": null}', "")) == [])
+    ck("advertised(): unreadable -> None (caller falls back to status tags)",
+       advertised(HOSTS["cirrus"], _run=lambda c, t: (1, "", "x")) is None
+       and advertised(HOSTS["cirrus"], _run=lambda c, t: (0, "not json", "")) is None)
     print("selftest: %d failed" % len(fails))
     return 1 if fails else 0
 
