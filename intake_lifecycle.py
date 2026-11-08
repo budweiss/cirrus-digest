@@ -220,7 +220,22 @@ def coordinate(root, row):
     return True
 
 
+def selftest():
+    """Run the existing intake suites through the builder's supported gate."""
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromNames([
+        'test_intake_lifecycle', 'test_held_label', 'test_intake_notice_outbox'])
+    if not suite.countTestCases():
+        return 1
+    return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+
+
 if __name__=='__main__':
+    import sys
+    if '--selftest' in sys.argv:
+        if sys.argv[1:] != ['--selftest']:
+            raise SystemExit(2)
+        raise SystemExit(selftest())
     import argparse
     parser=argparse.ArgumentParser(description='Hash-only cross-mailbox claim; no sends')
     parser.add_argument('--claim',required=True)
