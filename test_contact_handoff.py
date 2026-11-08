@@ -31,6 +31,11 @@ class ContactHandoff(unittest.TestCase):
   t=datetime(2026,11,7,10);a=self.start(now=t)
   b=lists.start_job('fixture',ASK,'Research','<second>',self.root,self.launch,t)
   self.assertNotEqual(a,b);self.assertEqual(self.launch.call_count,2)
+ def test_concurrent_starts_launch_only_once(self):
+  from concurrent.futures import ThreadPoolExecutor
+  self.launch.side_effect=lambda *a,**kw:time.sleep(0.05)
+  with ThreadPoolExecutor(max_workers=2) as pool:runs=list(pool.map(lambda _:self.start(),range(2)))
+  self.assertEqual(runs[0],runs[1]);self.launch.assert_called_once()
  def test_uncertain_launch_never_retried(self):
   self.launch.side_effect=OSError('fixture')
   with self.assertRaises(OSError):self.start()
@@ -62,6 +67,8 @@ class ContactHandoff(unittest.TestCase):
  def test_corrupt_metadata_does_not_abort_poll(self):
   d=self.complete('cl-one');(d/'meta.json').write_text('bad')
   self.assertEqual(life.reconcile_contact_jobs(self.root),1)
+  self.assertEqual(life.summary(self.root)['counts'],{'blocked_on_evidence':1})
+  (d/'meta.json').write_text('[]');life.reconcile_contact_jobs(self.root)
   self.assertEqual(life.summary(self.root)['counts'],{'blocked_on_evidence':1})
  def test_verified_never_reopened(self):
   self.complete('cl-one');life.update(self.root,self.row,'sent_verified','review','done',{'sent_receipt':'fixture'})

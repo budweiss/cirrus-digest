@@ -273,6 +273,8 @@ def matching_jobs(project_dir, client, message_id):
     paths = list((runs / 'requests').glob('*.json')) + list(runs.glob('*/meta.json'))
     for path in paths:
         meta = json.loads(path.read_text())
+        if not isinstance(meta, dict):
+            raise ValueError('Invalid contact job metadata')
         run_id = path.parent.name if path.name == 'meta.json' else path.stem
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', run_id):
             raise ValueError('Invalid contact job identity')
