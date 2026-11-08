@@ -732,11 +732,40 @@ def merge_same_place(rows: list) -> list:
         for k in keys:
             seen[k] = r
         out.append(r)
-    return out
+    # S592 Sussex run: 'Bro's Hauling' / 'Bro's Hauling and Snow Removal' and
+    # 'Broker Post' / 'Broker Post Ground Crew' shared their own website and had
+    # no phone. Same own site plus one name inside the other is one business;
+    # keep whichever row has more verified details.
+    final = []
+    for r in out:
+        twin = None
+        if r.get("status") == "ok" and _own_site(r):
+            twin = next((k for k in final if k.get("status") == "ok"
+                         and _own_site(k) == _own_site(r) and _name_within(k, r)), None)
+        if twin is None:
+            final.append(r)
+            continue
+        keep, drop = (r, twin) if _richness(r) > _richness(twin) else (twin, r)
+        src = keep.setdefault("roster_sources", [])
+        src += [u for u in drop.get("roster_sources") or [] if u not in src]
+        if keep is r:
+            final[next(i for i, x in enumerate(final) if x is twin)] = r
+    return final
+
+
+def _richness(r: dict) -> int:
+    return sum(bool(r.get(k)) for k in ("phone", "address", "contact", "website"))
+
+
+def _name_within(a: dict, b: dict) -> bool:
+    ka, kb = set(dedupe_key(a["name"]).split()), set(dedupe_key(b["name"]).split())
+    return bool(ka and kb) and (ka <= kb or kb <= ka)
 
 
 TOLL_FREE = re.compile(r"^8(00|33|44|55|66|77|88)-")
 REFERRAL_STATUS = "referral line (toll-free number shared by several names)"
+FREE_HOSTS = (".netlify.app", ".pages.dev")
+TEMPLATE_STATUS = "template lead site (free host, toll-free or no number)"
 
 
 def mark_referral_lines(rows: list) -> list:
@@ -757,6 +786,15 @@ def mark_referral_lines(rows: list) -> list:
         if r.get("status") == "ok" and (len(names.get(ph, ())) >= 3
                                          or (len(names.get(ph, ())) >= 2 and len(sites.get(ph, ())) >= 2)):
             r["status"] = REFERRAL_STATUS
+    # S592 Sussex run: 'TitanSnowRemoval' (netlify.app, 855-921-3695, the same
+    # call center as four Philadelphia template sites) and 'ProSnowRemoval'
+    # (netlify.app, no number) each appeared once, so the shared-number test
+    # above could not see them. A free-hosted site with a toll-free number or
+    # none is a lead template, not a business the client can hire.
+    for r in rows:
+        if (r.get("status") == "ok" and _own_site(r).endswith(FREE_HOSTS)
+                and (not r.get("phone") or TOLL_FREE.match(r["phone"]))):
+            r["status"] = TEMPLATE_STATUS
     return rows
 
 
@@ -1246,6 +1284,24 @@ def selftest() -> bool:
              "website": "https://thesnowremovalcompany.com"} for t in ("Langhorne", "Willow Grove", "Upper Darby")]
     check("three town names on one toll-free number and one site are all referral lines",
           [r["status"] for r in merge_same_place(mark_referral_lines(town))] == [REFERRAL_STATUS] * 3)
+    bros = merge_same_place([
+        {"name": "Bro’s Hauling and Snow Removal", "status": "ok", "website": "https://broshauling.com",
+         "roster_sources": ["a"]},
+        {"name": "Bro's Hauling", "status": "ok", "website": "https://broshauling.com/",
+         "address": {"street": "1 Main St", "city": "Millsboro"}, "roster_sources": ["b"]},
+        {"name": "Gerardi Construction Inc", "status": "ok", "website": "https://www.namesandnumbers.com"},
+        {"name": "Milford Construction Inc", "status": "ok", "website": "https://www.namesandnumbers.com"}])
+    check("same own site with one name inside the other is one business; the richer row is kept",
+          [r["name"] for r in bros] == ["Bro's Hauling", "Gerardi Construction Inc", "Milford Construction Inc"]
+          and bros[0]["roster_sources"] == ["b", "a"])
+    tmpl = mark_referral_lines([
+        {"name": "TitanSnowRemoval", "status": "ok", "phone": "855-921-3695",
+         "website": "https://titansnowremoval.netlify.app"},
+        {"name": "ProSnowRemoval", "status": "ok", "website": "https://prosnowremoval.netlify.app"},
+        {"name": "Joe's Plowing", "status": "ok", "phone": "302-555-0100",
+         "website": "https://joesplowing.pages.dev"}])
+    check("a free-hosted site with a toll-free number or none is a template; a local number is not",
+          [r["status"] for r in tmpl] == [TEMPLATE_STATUS, TEMPLATE_STATUS, "ok"])
     two = [{"name": n, "status": "ok", "phone": "800-555-0199", "website": "https://brightview.com"}
            for n in ("BrightView", "BrightView Landscape Services")]
     check("one company under two names on its own site and toll-free number is merged, not removed",
