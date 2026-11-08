@@ -704,22 +704,55 @@ def client_about_lines(p: dict, stats: dict) -> list:
     return lines
 
 
+def _own_site(r: dict) -> str:
+    s = (r.get("website") or "").lower().split("//")[-1].split("/")[0]
+    return s[4:] if s.startswith("www.") else s
+
+
 def merge_same_place(rows: list) -> list:
     """S591: 'Dejana Truck of Greater Philadelphia' and 'Dejana Truck & Utility
-    Equipment' were two confirmed rows with the same verified street and phone:
-    one shop under two names. Confirmed rows sharing both keep the first, with
-    the later one's source pages folded in."""
+    Equipment' were two confirmed rows with the same verified street and phone;
+    'Philadelphia Snow Removal' and 'Philly Snow Removal' shared a phone and their
+    own website. One business under two names: confirmed rows sharing a phone and
+    either the street or the own website keep the first, with the later one's
+    source pages folded in."""
     seen, out = {}, []
     for r in rows:
-        key = (r.get("phone") or "", _n((r.get("address") or {}).get("street") or ""))
-        if r.get("status") == "ok" and all(key):
-            if key in seen:
-                kept = seen[key].setdefault("roster_sources", [])
-                kept += [u for u in r.get("roster_sources") or [] if u not in kept]
-                continue
-            seen[key] = r
+        if r.get("status") != "ok":
+            out.append(r)
+            continue
+        phone = r.get("phone") or ""
+        keys = [k for k in ((phone, "street", _n((r.get("address") or {}).get("street") or "")),
+                            (phone, "site", _own_site(r))) if k[0] and k[2]]
+        kept = next((seen[k] for k in keys if k in seen), None)
+        if kept is not None:
+            src = kept.setdefault("roster_sources", [])
+            src += [u for u in r.get("roster_sources") or [] if u not in src]
+            continue
+        for k in keys:
+            seen[k] = r
         out.append(r)
     return out
+
+
+TOLL_FREE = re.compile(r"^8(00|33|44|55|66|77|88)-")
+REFERRAL_STATUS = "referral line (toll-free number shared by several names)"
+
+
+def mark_referral_lines(rows: list) -> list:
+    """S591: four 'snow removal' template sites shared 855-921-3695 and three
+    town pages shared 888-635-1076: services that pass calls on, not businesses
+    the client can hire. A toll-free number on two or more differently named
+    confirmed rows takes those rows off the list; the review copy keeps them
+    under Not Confirmed. Run after merge_same_place."""
+    names = {}
+    for r in rows:
+        if r.get("status") == "ok" and TOLL_FREE.match(r.get("phone") or ""):
+            names.setdefault(r["phone"], set()).add(dedupe_key(r["name"]) or r["name"])
+    for r in rows:
+        if r.get("status") == "ok" and len(names.get(r.get("phone") or "", ())) > 1:
+            r["status"] = REFERRAL_STATUS
+    return rows
 
 
 def summary(p: dict, rows: list) -> dict:
@@ -839,7 +872,7 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
             if i % 10 == 0:
                 log("enrich: %d/%d (searches %d, cloud %d, model failed %d)" % (
                     i, len(ranked), budget.searches, budget.cloud, budget.model_failed))
-    rows = merge_same_place(rows)
+    rows = mark_referral_lines(merge_same_place(rows))
     stats = {"searches": budget.searches, "fetched": budget.fetched,
              "fetch_failed": budget.fetch_failed, "local": budget.local, "cloud": budget.cloud,
              "model_failed": budget.model_failed,
@@ -1173,6 +1206,25 @@ def selftest() -> bool:
     check("rows missing a phone or street are never merged",
           len(merge_same_place([{"name": "A", "status": "ok", "address": same},
                                 {"name": "B", "status": "ok", "address": same}])) == 2)
+    check("same phone and same own website is one business",
+          [r["name"] for r in merge_same_place([
+              {"name": "Philadelphia Snow Removal", "status": "ok", "phone": "267-314-7077",
+               "website": "https://phillysnowremoval.com/"},
+              {"name": "Philly Snow Removal", "status": "ok", "phone": "267-314-7077",
+               "website": "http://www.phillysnowremoval.com/contact"}])] == ["Philadelphia Snow Removal"])
+    check("same phone on different websites and no street stays two rows",
+          len(merge_same_place([{"name": "A Plow", "status": "ok", "phone": "215-555-0101",
+                                 "website": "a.com"},
+                                {"name": "B Plow", "status": "ok", "phone": "215-555-0101",
+                                 "website": "b.com"}])) == 2)
+    ref = mark_referral_lines([
+        {"name": "IronSnowRemoval", "status": "ok", "phone": "855-921-3695"},
+        {"name": "PrimeSnowRemoval", "status": "ok", "phone": "855-921-3695"},
+        {"name": "Solo Plow", "status": "ok", "phone": "800-555-0100"},
+        {"name": "Two Local A", "status": "ok", "phone": "215-555-0101"},
+        {"name": "Two Local B", "status": "ok", "phone": "215-555-0101"}])
+    check("a toll-free number shared by two names is a referral line; one name or a local number is not",
+          [r["status"] for r in ref] == [REFERRAL_STATUS, REFERRAL_STATUS, "ok", "ok", "ok"])
     import types
     seen = {}
     fake = types.ModuleType("llm_providers")
