@@ -2097,6 +2097,12 @@ def cmd_ask(question: str) -> str:
     2. RAG + local Ollama    — answers from past digest knowledge
     3. External fallback     — Gemini → Grok → Claude for general knowledge
     """
+    # Calculate only explicit numeric questions, before retrieval or any model.
+    # A full-match parser preserves all unrelated /ask routing and permissions.
+    from verified_calculation import answer as calculate_answer
+    calculated = calculate_answer(question)
+    if calculated is not None:
+        return "🧮 *CIRRUS Calculation*\n\n" + calculated
     try:
         # ── 1. Claude API tool loop ───────────────────────────────────────────
         # Load RAG context first — useful even for tool-loop questions
