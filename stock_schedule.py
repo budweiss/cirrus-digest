@@ -624,9 +624,17 @@ def scorecard(live,date,folder):
               'policy':policy()}
         text=checked_prose('Write a concise qualitative review of these independent simulated-account idea observations. '
         'The canonical account and numerical fixed-window table are appended separately. Do not invent or '
-        'recalculate balances, returns, costs, cash drag or sample statistics. Assess original due decisions at their fixed '
-        '21/28-day dates; observations made late are late, never reconstructed on time. Distinguish facts, '
-        'valuation, timing, company changes and market luck. If no mature ideas exist, say so. '
+        'recalculate balances, returns, costs, cash drag or sample statistics. '
+        # S590: "distinguish facts, valuation, timing, company changes and market luck"
+        # asked for causes that two price observations cannot show; the reviewer
+        # rejected each attempt's attribution, 3/3 on 11-07 and 11-08.
+        'In each row, decided_at is when the decision was made, scheduled_review is its fixed 21/28-day review date and '
+        'observed_on is when its price was observed; an observation after scheduled_review is late and is not the result at the due date. '
+        'A HOLD or refused BUY on an idea the account did not own bought nothing; its price result is what the idea did, not account profit. '
+        'For each idea, state what was decided and its recorded reason, valuation and counterargument, then its observed result against SPY. '
+        'The data holds only prices and the reasoning recorded at decision time, with no later business evidence, so do not attribute '
+        'any result to facts, valuation, timing, business change, the broad market or luck, and do not say whether a decision or '
+        'ceiling was right; say that these observations cannot show that. '
         'Do not recalculate balances/returns or repeat numeric balances in the narrative; the canonical account table '
         'is appended verbatim. No strategy edits or trades; any proposed change is prospective only. Use no more than 450 words. '
         'Write dates exactly as they appear in the data; do not compute durations, day counts or how late an observation was. '

@@ -576,6 +576,9 @@ class ScheduleChecks(unittest.TestCase):
         self.assertEqual([v['ticker'] for v in seen['data']['due_21_28_day_reviews']],['EX0','EX1'])
         self.assertEqual(seen['data']['rows_without_verified_comparison'],3)
         self.assertIn('do not compute durations',seen['system'])
+        # S590: price pairs alone cannot show why an idea moved; the writer is not asked to say.
+        self.assertIn('do not attribute any result',seen['system'])
+        self.assertNotIn('Distinguish facts',seen['system'])
         self.assertIn('3 other observation(s) have no matching verified',report)
         self.assertEqual(report.count('| EX'),5)
 
