@@ -339,6 +339,46 @@ class ScheduleChecks(unittest.TestCase):
             self.assertTrue(rows[0]['observed_late']);self.assertEqual(rows[0]['excess_percentage_points'],'-5.00')
             self.assertEqual(first.read_text(),'{"original":"unchanged"}');fetch.assert_called_once()
 
+    def test_raw_reference_is_judged_at_its_own_fetch_time(self):
+        # S590: saved/account quotes are raw; without this no comparison was ever possible.
+        from pathlib import Path
+        def raw(price,at):return {'ticker':'X','price':price,'quote_at':at,'fetched_at':at,'raw_archive':'a'}
+        def judged(price,at):return {'price':price,'quote_at':at,'valuation_eligible':True}
+        calls=[]
+        def mark(x,now=None):
+            calls.append(now)
+            return dict(x,valuation_eligible=True,valuation_label='last_regular_trade') if now else x
+        d={'ticker':'EXAMPLE','decided_at':'2026-10-13T21:13:00Z','review_dates':['2026-11-03']}
+        legacy={'ticker':'OTHER','decided_at':'2026-10-16T18:54:00Z','review_dates':['2026-11-06'],
+                'review_reference':{'company':{'quote_at':'2026-10-16T18:50:00Z'},'spy':{'quote_at':'2026-10-16T18:50:00Z'}}}
+        account={'decisions':[d,legacy],'quotes':{'SPY':judged('220','2026-11-06T21:00:00Z'),
+                 'EXAMPLE':judged('110','2026-11-06T21:00:01Z'),'OTHER':judged('50','2026-11-06T21:00:01Z')}}
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td);(home/'reports').mkdir()
+            (home/'reports/r.json').write_text(json.dumps({'created_at':'2026-10-13T21:00:00Z',
+                'quotes':{'EXAMPLE':raw('100','2026-10-13T20:00:00Z'),'SPY':raw('200','2026-10-13T20:00:00Z')}}))
+            with patch.object(S.paper,'validate_mark',side_effect=mark):
+                rows,_=S.fixed_observations(account,'2026-11-07',home)
+        first,old=rows
+        self.assertTrue(first['comparison_available'],first.get('comparison_gap'))
+        self.assertEqual(first['excess_percentage_points'],'0.00')
+        self.assertEqual(sorted(c for c in calls if c),['2026-10-13T20:00:00Z']*2)
+        self.assertFalse(old['comparison_available'])  # timestamp-only reference: never judged, never backfilled
+
+    def test_decision_reference_stores_its_contemporaneous_verdict(self):
+        raw={'ticker':'EXAMPLE','price':'10','quote_at':'2026-10-14T18:45:00Z','fetched_at':'2026-10-14T18:45:01Z',
+             'raw_archive':'archive/path','source':'s','url':'u'}
+        account={'created_at':'2026-10-14T18:45:02Z','quotes':{'EXAMPLE':raw,'SPY':dict(raw,ticker='SPY')}}
+        calls=[]
+        def mark(x,now=None):
+            calls.append(now);return dict(x,valuation_eligible=True,valuation_label='current_regular_trade')
+        with patch.object(S.paper,'validate_mark',side_effect=mark):
+            ready,_=S.qualify_decisions(DEC,EV,account,'2026-10-14','am')
+        ref=ready['decisions'][0]['review_reference']['company']
+        self.assertTrue(ref['valuation_eligible']);self.assertEqual(ref['valuation_label'],'current_regular_trade')
+        self.assertEqual(ref['fetched_at'],raw['fetched_at']);self.assertNotIn('raw_archive',ref)
+        self.assertEqual(calls,[raw['fetched_at']]*2)
+
     def test_missing_original_benchmark_is_not_invented(self):
         from pathlib import Path
         d={'ticker':'EXAMPLE','decided_at':'2026-09-01T15:00:00Z','review_dates':['2026-09-22']}

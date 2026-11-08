@@ -148,6 +148,20 @@ def review_dates(date):
     return dates
 
 
+def reference_quote(raw):
+    """S590: judge a frozen quote as of its OWN fetch time. Account quotes are raw
+    provider records without valuation fields, so review_reference copied no
+    'valuation_eligible' and no fixed-window comparison could ever be made. A
+    quote already judged keeps its verdict; one without fetched_at cannot be
+    judged and stays ineligible. Never a later price."""
+    raw=raw or {}
+    if 'valuation_eligible' in raw or not raw.get('fetched_at'):return raw
+    try:verdict=paper.validate_mark(raw,now=raw['fetched_at'])
+    except Exception:return dict(raw,valuation_eligible=False)
+    return dict(raw,valuation_eligible=bool(verdict.get('valuation_eligible')),
+                valuation_label=verdict.get('valuation_label'))
+
+
 def qualify_decisions(data, evidence, account, date, slot):
     values=data.get('decisions') if isinstance(data,dict) else None
     if not isinstance(values,list) or len(values)>3:raise ValueError('decision_count')
@@ -178,9 +192,10 @@ def qualify_decisions(data, evidence, account, date, slot):
                       review_dates=review_dates(date))
         # Freeze contemporaneous observations for later fixed-window review.
         # This is neither a proposed fill nor a reconstructed entry benchmark.
+        keep=('ticker','price','quote_at','fetched_at','valuation_eligible','valuation_label','source','url')
         result['review_reference']={'recorded_at':account.get('created_at'),
-            'company':{k:q for k,q in account.get('quotes',{}).get(x['ticker'],{}).items() if k in ('ticker','price','quote_at','valuation_eligible','source','url')},
-            'spy':{k:q for k,q in account.get('quotes',{}).get('SPY',{}).items() if k in ('ticker','price','quote_at','valuation_eligible','source','url')}}
+            'company':{k:q for k,q in reference_quote(account.get('quotes',{}).get(x['ticker'],{})).items() if k in keep},
+            'spy':{k:q for k,q in reference_quote(account.get('quotes',{}).get('SPY',{})).items() if k in keep}}
         if x['action']!='HOLD':
             order=x.get('order',{})
             if set(order)-{'budget','shares','limit_price'}:raise ValueError('unsupported_order_field')
@@ -539,6 +554,9 @@ def fixed_observations(account,date,home=None):
             if eligible:
                 old=max(eligible,key=lambda x:x['created_at'])
                 reference={'recorded_at':old['created_at'],'company':old['quotes'][ticker],'spy':old['quotes'].get('SPY')}
+        if reference:
+            reference=dict(reference,company=reference_quote(reference.get('company')),
+                           spy=reference_quote(reference.get('spy')))
         if ticker and ticker not in marks:
             try:marks[ticker]=paper.get_quote(ticker,archive_dir=home/'quotes')
             except Exception as exc:marks[ticker]={'error_type':research.error_code(exc)}
