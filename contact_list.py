@@ -389,7 +389,9 @@ def ask_cloud(system: str, user: str, creds: dict, budget: Budget, max_tokens=40
     import llm_providers
     budget.cloud_roster += 1
     try:
-        raw = llm_providers.call("anthropic", system, user, creds,
+        # Copying names off a page needs little reasoning; claude-sonnet-5 with no
+        # effort set thinks at HIGH and can spend the whole reply on it (S274).
+        raw = llm_providers.call("anthropic", system, user, dict(creds, anthropic_effort="low"),
                                  max_tokens=max_tokens, task=TASK + "-roster")
     except Exception:
         budget.model_failed += 1
@@ -452,7 +454,7 @@ def plan_system(max_queries: int = MAX_ROSTER_QUERIES) -> str:
 def plan(request: str, creds: dict, max_queries: int = MAX_ROSTER_QUERIES) -> dict:
     import llm_providers
     raw = llm_providers.call("anthropic", plan_system(max_queries), request, creds,
-                             max_tokens=max(2000, 40 * max_queries), task=TASK + "-plan")
+                             max_tokens=max(2000, 80 * max_queries), task=TASK + "-plan")
     p = parse_json(raw)
     if not isinstance(p, dict) or not p.get("roster_queries") or not p.get("entity"):
         raise RuntimeError("plan did not parse: %r" % (raw or "")[:300])
@@ -1136,6 +1138,27 @@ def selftest() -> bool:
               b.names_local == 1 and b.names_cloud_only == 1)
     finally:
         g.update(saved)
+    import types
+    seen = {}
+    fake = types.ModuleType("llm_providers")
+    fake.call = lambda provider, system, user, creds, **kw: (
+        seen.update(provider=provider, effort=creds.get("anthropic_effort")) or '{"orgs": []}')
+    real = sys.modules.get("llm_providers")
+    sys.modules["llm_providers"] = fake
+    try:
+        b = Budget()
+        ask_cloud("s", "u", {"anthropic_effort": "high"}, b)
+        check("the roster's foundation-model read runs at low effort, and is counted",
+              seen == {"provider": "anthropic", "effort": "low"} and b.cloud_roster == 1)
+        b.cloud_roster = MAX_CLOUD_ROSTER
+        seen.clear()
+        check("foundation-model roster reads stop at MAX_CLOUD_ROSTER",
+              ask_cloud("s", "u", {}, b) is None and not seen)
+    finally:
+        if real is not None:
+            sys.modules["llm_providers"] = real
+        else:
+            sys.modules.pop("llm_providers", None)
     print("selftest: %s" % ("OK" if ok else "FAILED"))
     return ok
 
