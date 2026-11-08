@@ -13,6 +13,18 @@ POST = {'id': 1, 'title': 'A local tool', 'subtitle': 'A test candidate',
 
 
 class OpinionTests(unittest.TestCase):
+    def test_archive_accepts_list_and_wrapped_posts_only(self):
+        import io, json
+        at = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        for body in ([POST], {'posts': [POST], 'nextCursor': 'abc'}):
+            with patch.object(r.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(body).encode())):
+                posts, coverage = r.fetch_posts(at)
+            self.assertEqual(([p['id'] for p in posts], coverage['scanned']), ([1], 1))
+        for body in ({'error': 'x'}, {'posts': 'x'}):
+            with patch.object(r.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(json.dumps(body).encode())), \
+                    self.assertRaisesRegex(ValueError, 'archive_not_a_list'):
+                r.fetch_posts(at)
+
     def test_missing_or_unknown_post_is_rejected(self):
         for data in [{'items': []}, {'items': [{'index': 1, 'verdict': 'ACT', 'reason': 'Try it.'}]},
                      {'items': [{'index': False, 'verdict': 'ACT', 'reason': 'Try it.'}]}]:

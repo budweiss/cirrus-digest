@@ -30,6 +30,9 @@ def fetch_posts(at):
             req = urllib.request.Request(URL, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=45) as response:
                 rows = json.load(response)
+            # S592: by 2026-11-08 the archive wraps rows as {"posts": [...], "nextCursor": ...}.
+            if isinstance(rows, dict) and isinstance(rows.get('posts'), list):
+                rows = rows['posts']
             if not isinstance(rows, list):
                 raise ValueError('archive_not_a_list')
             posts = []
