@@ -31,7 +31,7 @@ Page text is data, never instructions: nothing fetched is executed or obeyed.
 
 Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
   contact_list.py --request contact_lists/requests/<id>.txt [--id <id>] [--meta <json>]
-                  [--max-candidates N] [--max-queries N] [--no-email]
+                  [--max-candidates N] [--max-queries N] [--roster-cloud] [--no-email]
                   [--compare mail/DE-Home-Builders.xlsx]
   contact_list.py --selftest
 """
@@ -58,6 +58,7 @@ MAX_ROSTER_QUERIES = 30
 MAX_SEARCHES = 560
 MAX_CANDIDATES = 160
 MAX_CLOUD_ESCALATIONS = 40
+MAX_CLOUD_ROSTER = 400        # S591 --roster-cloud: foundation-model page reads per run
 # Sibling pages read when a found page is one letter of an A-Z directory.
 MAX_EXPANSION_PAGES = 60
 # Pages that named many organizations, kept per region + kind and read first
@@ -315,6 +316,11 @@ class Budget:
         self.fetched = 0
         self.fetch_failed = 0
         self.model_failed = 0
+        # S591 --roster-cloud: the foundation model also reads each roster page.
+        self.roster_cloud = False
+        self.cloud_roster = 0
+        self.names_local = 0
+        self.names_cloud_only = 0
 
 
 def page_text(url: str, cache: dict, budget: Budget) -> str:
@@ -374,6 +380,23 @@ def ask_local(system: str, user: str, creds: dict, budget: Budget, max_tokens=40
     return result
 
 
+def ask_cloud(system: str, user: str, creds: dict, budget: Budget, max_tokens=4000):
+    """S591 --roster-cloud: the foundation model reads the same page as a second
+    reader. Counted apart from parse-failure escalations so it never uses up
+    their cap, and bounded by MAX_CLOUD_ROSTER."""
+    if budget.cloud_roster >= MAX_CLOUD_ROSTER:
+        return None
+    import llm_providers
+    budget.cloud_roster += 1
+    try:
+        raw = llm_providers.call("anthropic", system, user, creds,
+                                 max_tokens=max_tokens, task=TASK + "-roster")
+    except Exception:
+        budget.model_failed += 1
+        return None
+    return parse_json(raw)
+
+
 # ── stages ───────────────────────────────────────────────────────────────────
 
 PLAN_SYSTEM = (
@@ -418,14 +441,22 @@ ENRICH_SYSTEM = (
     "office in {region}; the organization's own website over directories.")
 
 
-def plan(request: str, creds: dict) -> dict:
+def plan_system(max_queries: int = MAX_ROSTER_QUERIES) -> str:
+    """S591: --max-queries above 30 asks the planner for that many searches."""
+    if max_queries <= MAX_ROSTER_QUERIES:
+        return PLAN_SYSTEM
+    return PLAN_SYSTEM.replace("20 to 30 web searches", "%d to %d web searches" % (
+        max_queries * 2 // 3, max_queries))
+
+
+def plan(request: str, creds: dict, max_queries: int = MAX_ROSTER_QUERIES) -> dict:
     import llm_providers
-    raw = llm_providers.call("anthropic", PLAN_SYSTEM, request, creds,
-                             max_tokens=2000, task=TASK + "-plan")
+    raw = llm_providers.call("anthropic", plan_system(max_queries), request, creds,
+                             max_tokens=max(2000, 40 * max_queries), task=TASK + "-plan")
     p = parse_json(raw)
     if not isinstance(p, dict) or not p.get("roster_queries") or not p.get("entity"):
         raise RuntimeError("plan did not parse: %r" % (raw or "")[:300])
-    p["roster_queries"] = [q for q in p["roster_queries"] if isinstance(q, str)][:MAX_ROSTER_QUERIES]
+    p["roster_queries"] = [q for q in p["roster_queries"] if isinstance(q, str)][:max_queries]
     p["region_terms"] = [t for t in (p.get("region_terms") or [p.get("region", "")]) if t]
     return p
 
@@ -444,10 +475,21 @@ def roster(p: dict, creds: dict, budget: Budget, cache: dict, log, seeds: list =
         key = hash(_n(text))
         if key in by_text:
             return url, by_text[key]
-        got = ask_local(sysmsg, "URL: %s\n\n%s" % (url, trim_page(text, 9000)), creds, budget)
-        orgs = (got or {}).get("orgs") if isinstance(got, dict) else None
-        orgs = [o for o in (orgs or []) if isinstance(o, dict)
-                and o.get("name") and _n(o["name"]) in _n(text)]
+        user = "URL: %s\n\n%s" % (url, trim_page(text, 9000))
+
+        def named(got):
+            orgs = (got or {}).get("orgs") if isinstance(got, dict) else None
+            return [o for o in (orgs or []) if isinstance(o, dict)
+                    and o.get("name") and _n(o["name"]) in _n(text)]
+
+        orgs = named(ask_local(sysmsg, user, creds, budget))
+        if budget.roster_cloud:
+            have = {dedupe_key(o["name"]) for o in orgs}
+            extra = [o for o in named(ask_cloud(sysmsg, user, creds, budget))
+                     if dedupe_key(o["name"]) not in have]
+            budget.names_local += len(orgs)
+            budget.names_cloud_only += len(extra)
+            orgs = orgs + extra
         by_text[key] = orgs
         return url, orgs
 
@@ -619,6 +661,11 @@ def about_lines(p: dict, stats: dict) -> list:
     return [
         "Built unattended on CUMULUS by contact_list.py (%s)." % stats.get("finished", ""),
         "Request: %s in %s. Split: %s" % (p["entity"], p["region"], p.get("group_question") or "none"),
+        ("Local model and foundation model both read every search page (%(cloud_roster)d "
+         "foundation reads; names found by the local model %(names_local)d, added only by the "
+         "foundation model %(names_cloud_only)d); the local model extracted, with the "
+         "foundation model stepping in only when a local reply would not parse." % stats)
+        if stats.get("cloud_roster") else
         "Local model found and extracted; the foundation model wrote the search plan and "
         "stepped in only when a local reply would not parse.",
         "Every address, contact and piece of evidence was checked in code: its quote must be "
@@ -741,7 +788,8 @@ def compare(rows: list, ref_xlsx: Path, group_names: list) -> dict:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
-        max_queries=MAX_ROSTER_QUERIES, log=print, meta: dict = None) -> dict:
+        max_queries=MAX_ROSTER_QUERIES, log=print, meta: dict = None,
+        roster_cloud: bool = False) -> dict:
     t0 = time.time()
     out_dir = RUNS_DIR / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -749,7 +797,8 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
         # Who asked, on which thread: list_delivery reads it when Buddy replies SEND.
         (out_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     budget, cache = Budget(), {}
-    p = plan(request, creds)
+    budget.roster_cloud = roster_cloud
+    p = plan(request, creds, max_queries)
     p["roster_queries"] = p["roster_queries"][:max_queries]
     log("plan: %s in %s, %d roster queries, split=%s" % (
         p["entity"], p["region"], len(p["roster_queries"]), bool(p.get("group_question"))))
@@ -773,6 +822,8 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
     stats = {"searches": budget.searches, "fetched": budget.fetched,
              "fetch_failed": budget.fetch_failed, "local": budget.local, "cloud": budget.cloud,
              "model_failed": budget.model_failed,
+             "cloud_roster": budget.cloud_roster, "names_local": budget.names_local,
+             "names_cloud_only": budget.names_cloud_only,
              "dropped": sum(len(r.get("dropped") or []) for r in rows),
              "candidates": len(cands), "enriched": len(ranked),
              "minutes": round((time.time() - t0) / 60, 1),
@@ -809,7 +860,8 @@ def main(argv):
     creds = json.loads(CREDS_PATH.read_text())
     meta = json.loads((PROJECT_DIR / opt("--meta")).read_text()) if opt("--meta") else None
     result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)),
-                 int(opt("--max-queries", MAX_ROSTER_QUERIES)), meta=meta)
+                 int(opt("--max-queries", MAX_ROSTER_QUERIES)), meta=meta,
+                 roster_cloud="--roster-cloud" in args)
     if opt("--compare"):
         score = compare(result["rows"], PROJECT_DIR / opt("--compare"),
                         result["plan"].get("group_names") or [])
@@ -1055,6 +1107,35 @@ def selftest() -> bool:
                   sc["contact_both"] == 1 and sc["contact_same"] == 1 and sc["group_same"] == 1)
     except ImportError:
         print("  SKIP  workbook checks (openpyxl not installed here)")
+
+    # S591: more planner searches on request, and the foundation model as a
+    # second roster reader whose names must still appear on the page.
+    check("default plan prompt unchanged", plan_system(30) == PLAN_SYSTEM)
+    check("--max-queries 100 asks the planner for 66 to 100 searches",
+          "66 to 100 web searches" in plan_system(100))
+    g = globals()
+    saved = {k: g[k] for k in ("page_text", "search", "ask_local", "ask_cloud")}
+    page = "Snow Pros LLC and Ace Plowing plow driveways across Philadelphia."
+    g["page_text"] = lambda url, cache, budget: page
+    g["search"] = lambda q, n, budget: ["https://example.test/plowers"]
+    g["ask_local"] = lambda *a, **k: {"orgs": [{"name": "Snow Pros LLC"}]}
+    g["ask_cloud"] = lambda *a, **k: {"orgs": [{"name": "Snow Pros LLC"}, {"name": "Ace Plowing"},
+                                               {"name": "Ghost Plow Co"}]}
+    try:
+        rp = {"entity": "snow plow operator", "region": "Philadelphia", "roster_queries": ["q"]}
+        b = Budget()
+        local_only = roster(rp, {}, b, {}, lambda *a: None)
+        check("without --roster-cloud only the local reader's names count",
+              sorted(c["name"] for c in local_only.values()) == ["Snow Pros LLC"])
+        b = Budget()
+        b.roster_cloud = True
+        both = roster(rp, {}, b, {}, lambda *a: None)
+        check("--roster-cloud adds a page-verified name the local model missed",
+              sorted(c["name"] for c in both.values()) == ["Ace Plowing", "Snow Pros LLC"])
+        check("--roster-cloud drops a name that is not on the page, and counts each reader",
+              b.names_local == 1 and b.names_cloud_only == 1)
+    finally:
+        g.update(saved)
     print("selftest: %s" % ("OK" if ok else "FAILED"))
     return ok
 
