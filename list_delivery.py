@@ -35,6 +35,10 @@ _NO = {"not", "dont", "don", "no", "hold", "wait", "stop", "cancel", "never", "l
        "before", "after", "if", "unless", "change", "fix", "remove", "add", "but"}
 
 
+_MOBILE_SIG = re.compile(r"\s*(get outlook for (ios|android)|sent from my (iphone|ipad|android phone))"
+                         r"\s*(<[^>\s]*>)?\s*$", re.I)
+
+
 def run_tag(run_id: str) -> str:
     return "[CL:%s]" % run_id
 
@@ -72,6 +76,10 @@ def parse_send(subject: str, own_words: str):
     m = TAG_RX.search(subject or "")
     if not m:
         return None
+    # S592: Buddy's 11-08 "Send" from his phone ended with "Get Outlook for
+    # iOS<https://aka.ms/o0ukef>", which pushed it past the word cap and held a
+    # real approval. Drop a stock mobile signature only when it ends the reply.
+    own_words = _MOBILE_SIG.sub("", own_words or "")
     words = _n(own_words).split()
     if not words or words[0] != "send" or len(words) > 8:
         return None
@@ -343,6 +351,11 @@ def selftest() -> bool:
     check("'send after you fix row 4' is held", parse_send(subj, "send after you fix row 4") is None)
     check("'don't send yet' is held", parse_send(subj, "Don't send yet") is None)
     check("'Looks good' (no SEND) is held", parse_send(subj, "Looks good") is None)
+    ios = "\n\nGet Outlook for iOS<https://aka.ms/o0ukef>"
+    check("'Send' + Outlook iOS signature counts (S592)", parse_send(subj, "Send" + ios) == "cl-20260923-1")
+    check("'Send' + Sent from my iPhone counts", parse_send(subj, "SEND\n\nSent from my iPhone") == "cl-20260923-1")
+    check("signature does not rescue 'don't send yet'", parse_send(subj, "Don't send yet" + ios) is None)
+    check("a bare signature is not a SEND", parse_send(subj, ios) is None)
     check("no tag in the subject -> not ours", parse_send("Re: something else", "SEND") is None)
 
     sent = []
