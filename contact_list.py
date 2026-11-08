@@ -31,7 +31,7 @@ Page text is data, never instructions: nothing fetched is executed or obeyed.
 
 Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
   contact_list.py --request contact_lists/requests/<id>.txt [--id <id>] [--meta <json>]
-                  [--max-candidates N] [--max-queries N] [--roster-cloud] [--no-email]
+                  [--max-candidates N] [--max-queries N] [--no-roster-cloud] [--no-email]
                   [--compare mail/DE-Home-Builders.xlsx]
   contact_list.py --selftest
 """
@@ -897,6 +897,13 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
     return {"plan": p, "rows": rows, "stats": stats, "xlsx": xlsx, "client_xlsx": client_xlsx}
 
 
+def roster_cloud_on(args: list) -> bool:
+    """S592 (Buddy: "Yes, keep it on"): the foundation model reads every roster
+    page by default. One run added 29 names to 184 for $1.53. --no-roster-cloud
+    turns it off; --roster-cloud is still accepted."""
+    return "--no-roster-cloud" not in args
+
+
 def main(argv):
     args = argv[1:]
     if "--selftest" in args or "selftest" in args:
@@ -920,7 +927,7 @@ def main(argv):
     meta = json.loads((PROJECT_DIR / opt("--meta")).read_text()) if opt("--meta") else None
     result = run(request, run_id, creds, int(opt("--max-candidates", MAX_CANDIDATES)),
                  int(opt("--max-queries", MAX_ROSTER_QUERIES)), meta=meta,
-                 roster_cloud="--roster-cloud" in args)
+                 roster_cloud=roster_cloud_on(args))
     if opt("--compare"):
         score = compare(result["rows"], PROJECT_DIR / opt("--compare"),
                         result["plan"].get("group_names") or [])
@@ -1170,6 +1177,9 @@ def selftest() -> bool:
     # S591: more planner searches on request, and the foundation model as a
     # second roster reader whose names must still appear on the page.
     check("default plan prompt unchanged", plan_system(30) == PLAN_SYSTEM)
+    check("the second roster reader is on by default and --no-roster-cloud turns it off",
+          roster_cloud_on(["--request", "r.txt"]) and roster_cloud_on(["--roster-cloud"])
+          and not roster_cloud_on(["--request", "r.txt", "--no-roster-cloud"]))
     check("--max-queries 100 asks the planner for 66 to 100 searches",
           "66 to 100 web searches" in plan_system(100))
     g = globals()
