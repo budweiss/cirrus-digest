@@ -1004,6 +1004,11 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
 
     if not dry_run:
         intake_lifecycle.reconcile_contact_jobs(PROJECT_DIR)
+        try:
+            intake_lifecycle.verify_contact_sends(PROJECT_DIR, creds)
+        except Exception as e:
+            # Read-only proof; failure leaves rows unverified and visible.
+            log(f"contact Sent Mail verification incomplete: {type(e).__name__}")
         intake_lifecycle.recover(PROJECT_DIR)
         for row in messages:
             intake_lifecycle.capture(PROJECT_DIR, row)

@@ -207,6 +207,30 @@ def reconcile_contact_jobs(root):
     return changed
 
 
+def verify_contact_sends(root, creds, verify=None):
+    """sent_unverified contact deliveries -> sent_verified on one Sent Mail copy.
+
+    Read-only on the mailbox; no resend. A missing or ambiguous copy leaves the
+    row unverified (and visible), exactly as before.
+    """
+    if verify is None:
+        import contact_delivery_evidence
+        verify = contact_delivery_evidence.verify
+    with connect(root) as db:
+        rows = list(db.execute("SELECT payload,evidence FROM requests WHERE state='sent_unverified'"))
+    done = 0
+    for r in rows:
+        evidence = json.loads(r['evidence'])
+        if not evidence.get('contact_list_run') or not evidence.get('client'):
+            continue
+        receipt = verify(root, evidence['contact_list_run'], evidence['client'], creds)
+        if receipt:
+            update(root, json.loads(r['payload']), 'sent_verified', 'delivery-review',
+                   'completed with actual Sent Mail proof', {'sent_receipt': receipt})
+            done += 1
+    return done
+
+
 def recover(root):
     # Caller holds intake process lock. Only the intake handler is abandoned;
     # detached project workers retain their own lifecycle and must not be reset.
