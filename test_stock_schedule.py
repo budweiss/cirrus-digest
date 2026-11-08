@@ -538,7 +538,7 @@ class ScheduleChecks(unittest.TestCase):
                 report=(folder/'preview.md').read_text()
         self.assertLess(seen['tokens'],32768-2300)
         self.assertEqual(len(seen['data']['due_21_28_day_reviews']),18)
-        self.assertEqual(seen['data']['table_rows_not_in_this_narrative'],0)
+        self.assertEqual(seen['data']['comparable_rows_not_in_this_narrative'],0)
         self.assertEqual(report.count('| EX'),18)
         self.assertNotIn('exceeded its review size limit',report)
         with tempfile.TemporaryDirectory() as td:
@@ -553,7 +553,31 @@ class ScheduleChecks(unittest.TestCase):
                 report=(folder/'preview.md').read_text()
         self.assertEqual(len(seen['data']['due_21_28_day_reviews']),5)
         self.assertEqual(report.count('| EX'),18)
-        self.assertIn('covers 5 of these 18 rows',report)
+        self.assertIn('13 comparable row(s) were left out',report)
+
+    def test_only_comparable_rows_are_narrated_and_the_rest_counted(self):
+        from pathlib import Path
+        from contextlib import nullcontext
+        rows=[self.observation(i,quote_chars=10) for i in range(5)]
+        for row in rows[2:]:
+            for k in ('price_return_percent','spy_price_return_percent','excess_percentage_points'):row.pop(k)
+            row.update(comparison_available=False,comparison_gap='unavailable')
+        seen={}
+        def prose(system,data,task,audit=None):seen['data']=data;seen['system']=system;return 'Synthetic narrative.'
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);account={'decisions':[],'report':'Synthetic account','report_id':'fixture'}
+            with patch.object(S,'ROOT',folder),patch.object(S,'HOME',folder),patch.object(S,'snapshot',return_value=account), \
+                    patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
+                    patch.object(S.paper,'tax_export',return_value={}),patch.object(S,'policy',return_value='Synthetic policy'), \
+                    patch.object(S,'fixed_observations',return_value=(rows,5)),patch.object(S.media,'token_count',side_effect=lambda t:len(t)//4), \
+                    patch.object(S,'checked_prose',side_effect=prose):
+                S.scorecard(False,'2026-11-07',folder)
+                report=(folder/'preview.md').read_text()
+        self.assertEqual([v['ticker'] for v in seen['data']['due_21_28_day_reviews']],['EX0','EX1'])
+        self.assertEqual(seen['data']['rows_without_verified_comparison'],3)
+        self.assertIn('do not compute durations',seen['system'])
+        self.assertIn('3 other observation(s) have no matching verified',report)
+        self.assertEqual(report.count('| EX'),5)
 
     def test_no_comparable_observation_gets_fixed_text_not_model_prose(self):
         # S590: 18 rows, none with a verified price pair; the model invented outcomes.
