@@ -51,6 +51,9 @@ def validate_bullets(data, claims):
     return bullets
 
 
+SUMMARY_ATTEMPTS = 3
+
+
 def summarize(claims, caller=media.complete, reject_path=None):
     if not claims:
         return [], {'approved': True, 'reason': 'no relevant source claims'}
@@ -77,7 +80,11 @@ def summarize(claims, caller=media.complete, reject_path=None):
     # S497 P4(a): keep every draft and the reviewer's findings. A rejection used to
     # leave nothing, and diagnosing six failed nights took two diagnostic reruns.
     attempts = []
-    for attempt in range(2):
+    # S590: two drafts were not enough. On 11-07 and 11-08 the first draft broke
+    # the 1-4 bullet format, so the reviewer's concrete findings on the second
+    # (a misread number, a misplaced date) never got a revision. The reviewer
+    # and its standard are unchanged.
+    for attempt in range(SUMMARY_ATTEMPTS):
         raw = caller(system, json.dumps(evidence) + feedback, 'media:aggie:summary')
         attempts.append({'attempt': attempt + 1, 'draft': raw[:6000]})
         try:

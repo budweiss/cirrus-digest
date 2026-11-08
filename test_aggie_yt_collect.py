@@ -55,8 +55,8 @@ class CollectionTests(unittest.TestCase):
                 c.summarize([{'quote': 'I think the market could go higher from here into next year.'}],
                             caller=caller, reject_path=path)
             saved = json.loads(path.read_text())
-            self.assertEqual(len(saved['attempts']), 2)
-            self.assertEqual(saved['attempts'][1]['review'], problems)
+            self.assertEqual(len(saved['attempts']), c.SUMMARY_ATTEMPTS)
+            self.assertEqual(saved['attempts'][-1]['review'], problems)
             self.assertIn('market may rise', saved['attempts'][0]['draft'])
             self.assertEqual(saved['evidence'][0]['id'], 0)
 
@@ -66,12 +66,29 @@ class CollectionTests(unittest.TestCase):
             '{"bullets":[{"text":"The outcome is guaranteed.","evidence":[0]}]}',
             '{"approved":false,"problems":["lost uncertainty"]}',
             '{"bullets":[{"text":"It is guaranteed.","evidence":[0]}]}',
+            '{"approved":false,"problems":["still unsupported"]}',
+            '{"bullets":[{"text":"Certain.","evidence":[0]}]}',
             '{"approved":false,"problems":["still unsupported"]}'])
         with self.assertRaisesRegex(ValueError, 'review_failed'):
             c.summarize(claims, caller)
-        self.assertEqual(caller.call_count, 4)
+        self.assertEqual(caller.call_count, 6)
         self.assertIn("The outcome is guaranteed.",caller.call_args_list[2].args[1])
         self.assertIn("lost uncertainty",caller.call_args_list[2].args[1])
+
+    def test_format_slip_still_leaves_a_reviewed_revision(self):
+        # S590: 11-07/11-08 Financial Education: draft 1 had 5 bullets, draft 2 drew
+        # concrete findings, and no draft was left to fix them.
+        claims = [{'quote': 'We might see prices fall, but there are no guarantees.'}]
+        five = json.dumps({'bullets': [{'text': 'The presenter says point %d.' % i, 'evidence': [0]} for i in range(5)]})
+        caller = Mock(side_effect=[
+            five,
+            '{"bullets":[{"text":"The presenter says prices will fall.","evidence":[0]}]}',
+            '{"approved":false,"problems":["lost the uncertainty"]}',
+            '{"bullets":[{"text":"The presenter says prices might fall, with no guarantees.","evidence":[0]}]}',
+            '{"approved":true,"problems":[]}'])
+        bullets, review = c.summarize(claims, caller)
+        self.assertTrue(review['approved'])
+        self.assertIn('lost the uncertainty', caller.call_args_list[3].args[1])
 
     def test_reviewed_summary_keeps_evidence(self):
         caller = Mock(side_effect=[
