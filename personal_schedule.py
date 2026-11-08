@@ -113,11 +113,12 @@ def validate(data,news,rule_source=''):
     # when quoting a rule threshold like "15 %". The figure WAS sourced
     # verbatim apart from the space variant, so normalise both sides before
     # matching — otherwise a correct quote is falsely rejected.
-    norm=lambda text:text.replace('\u202f',' ').replace('\u00a0',' ')
-    pattern=r'(?<![\w.,])(?:\$\s*\d[\d,.]*|\d[\d,.]*\s*%|\d[\d,.]*\s*(?:shares?\b|dollars?\b|times earnings\b|[xX]\b))'
+    norm=lambda text:text.replace('\u202f',' ').replace('\u00a0',' ').replace('−','-')
+    pattern=r'(?<![\w.,+\-])(?:[+\-]?\s*\$\s*[+\-]?\s*\d[\d,.]*|[+\-]?\s*\d[\d,.]*\s*(?:%|shares?\b|dollars?\b|times earnings\b|[xX]\b))'
     numbers=re.findall(pattern,norm(prose),re.I)
     def number_key(value):
-        amount=Decimal(re.search(r'\d[\d,.]*',value).group().replace(',','').rstrip('.'))
+        numeric=re.sub(r'[\s$,]', '',value)
+        amount=Decimal(re.search(r'[+\-]?\d[\d.]*',numeric).group().rstrip('.'))
         unit=('percent' if '%' in value else 'shares' if 'share' in value.lower() else
               'currency' if '$' in value or 'dollar' in value.lower() else 'multiple')
         return unit,amount

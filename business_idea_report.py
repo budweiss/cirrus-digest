@@ -23,6 +23,7 @@ Usage:
 import json
 import sys
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import entity_kb
@@ -61,19 +62,39 @@ def _theme_for(flaw: str) -> str:
 
 
 def _spend_today(day: str) -> tuple:
-    total, calls = 0.0, 0
+    # A partial total is not a verified total. Keep scanning after damaged
+    # rows, but render spending unavailable if completeness cannot be proved.
+    total, calls, complete = Decimal('0'), 0, True
     try:
-        for line in SPEND_LEDGER.read_text().splitlines():
-            try:
-                d = json.loads(line)
-            except Exception:
+        lines = SPEND_LEDGER.read_text().splitlines()
+    except OSError:
+        return None, 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+            if not isinstance(d, dict) or not isinstance(d.get('task'), str):
+                raise ValueError('ledger_schema')
+            if 'business-idea' not in d['task']:
                 continue
-            if "business-idea" in (d.get("task") or "") and str(d.get("ts", "")).startswith(day):
-                total += float(d.get("cost", 0) or 0)
-                calls += 1
-    except Exception:
-        pass
-    return round(total, 2), calls
+            if not isinstance(d.get('ts'), str) or len(d['ts']) < 10:
+                raise ValueError('ledger_timestamp')
+            if not d['ts'].startswith(day):
+                continue
+            calls += 1
+            cost = Decimal(str(d['cost']))
+            if not cost.is_finite() or cost < 0:
+                raise ValueError('ledger_cost')
+            total += cost
+        except (ValueError, TypeError, KeyError, InvalidOperation):
+            complete = False
+    try:
+        rounded = total.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        complete = False
+        rounded = None
+    return (rounded if complete else None), calls
 
 
 def compose(days: int = 1, db_path: str = None) -> tuple:
@@ -212,7 +233,10 @@ def compose(days: int = 1, db_path: str = None) -> tuple:
     L.append(f"- {counts.get('total_entities',0)} ideas tracked "
              f"({counts.get('by_lead_state',{}).get('candidate',0)} live, "
              f"{counts.get('by_lead_state',{}).get('rejected',0)} rejected and remembered)")
-    L.append(f"- {calls} model call(s) today, ${cost} spent")
+    if cost is None:
+        L.append(f"- {calls} identifiable model call(s) today; spending unavailable — ledger incomplete or invalid")
+    else:
+        L.append(f"- {calls} model call(s) today, ${cost:.2f} spent")
     L.append("")
     L.append("*Sources: your Medium/Substack subscriptions (by email), followed feeds, "
              "targeted web search, and direct generation by the model council.*")
