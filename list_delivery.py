@@ -53,7 +53,13 @@ def wants_contact_list(subject: str, body: str) -> bool:
     listy = re.search(r" (every|all the|list of|a list|directory|mailing labels?) ", t)
     contact = re.search(r" (address|addresses|point of contact|contact info|contact information|"
                         r"contacts|phone|phone numbers?|emails?|e mail|mailing labels?) ", t)
-    return bool(listy and contact)
+    # Owner names and phone numbers describe supported contact research even
+    # without "list". Require request language and organization/name scope.
+    owner_contacts = (re.search(r" (looking for|need|provide|identify|compile|want) ", t)
+                      and re.search(r" (company|companies|business|businesses) ", t)
+                      and re.search(r" (owner|owners) ", t)
+                      and re.search(r" names? ", t))
+    return bool((listy or owner_contacts) and contact)
 
 
 def parse_send(subject: str, own_words: str):
@@ -238,6 +244,48 @@ def new_run_id(client: str, now=None) -> str:
 
 def start_job(client: str, request_text: str, thread_subject: str, message_id: str,
               project_dir: Path = PROJECT_DIR, popen=None, now=None, extra_args=()) -> str:
+    """One launch per original client message, including manual prior runs.
+
+    Keep the reservation after an uncertain launch; never spend or send twice
+    by treating a later poll as a new request. Different subjects are irrelevant.
+    """
+    import fcntl
+    if not client or not message_id:
+        raise ValueError('Original client and Message-ID required')
+    req_dir = project_dir / REQUESTS_REL
+    req_dir.mkdir(parents=True, exist_ok=True)
+    with (req_dir / '.launch.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        matches = matching_jobs(project_dir, client, message_id)
+        if len(matches) > 1:
+            raise ValueError('Ambiguous existing jobs; reconcile before execution')
+        if matches:
+            return next(iter(matches))
+        return _start_job(client, request_text, thread_subject, message_id,
+                          project_dir, popen, now, extra_args)
+
+
+def matching_jobs(project_dir, client, message_id):
+    """Read-only exact request identity lookup; never match by subject alone."""
+    runs = Path(project_dir) / 'logs/contact_lists'
+    found = {}
+    identities = {}
+    paths = list((runs / 'requests').glob('*.json')) + list(runs.glob('*/meta.json'))
+    for path in paths:
+        meta = json.loads(path.read_text())
+        run_id = path.parent.name if path.name == 'meta.json' else path.stem
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', run_id):
+            raise ValueError('Invalid contact job identity')
+        identities.setdefault(run_id, set()).add((meta.get('client'), meta.get('message_id')))
+        if meta.get('client') == client and meta.get('message_id') == message_id:
+            found[run_id] = meta
+    if any(len(identities[run_id]) != 1 for run_id in found):
+        raise ValueError('Conflicting contact job identity; reconcile before execution')
+    return found
+
+
+def _start_job(client: str, request_text: str, thread_subject: str, message_id: str,
+               project_dir: Path, popen, now, extra_args) -> str:
     """Write the request and its client/thread record, then launch
     contact_list.py through job_runner, detached, so intake's poll returns at
     once. Returns the run id. Raises DailyCap past the per-client cap."""
@@ -247,6 +295,9 @@ def start_job(client: str, request_text: str, thread_subject: str, message_id: s
     run_id = new_run_id(client, now)
     req_dir = project_dir / REQUESTS_REL
     req_dir.mkdir(parents=True, exist_ok=True)
+    if (req_dir / (run_id + '.json')).exists():
+        import hashlib
+        run_id += '-' + hashlib.sha256(message_id.encode()).hexdigest()[:8]
     who = run_id.rsplit("-", 2)[0] + "-" + now.strftime("%Y%m%d")
     if len(list(req_dir.glob(who + "-*.txt"))) >= MAX_JOBS_PER_CLIENT_PER_DAY:
         raise DailyCap("%s already has %d list job(s) today" % (client, MAX_JOBS_PER_CLIENT_PER_DAY))

@@ -146,6 +146,67 @@ def finish(root, row, rec):
     update(root, row, state, owner, action, evidence)
 
 
+def _contact_job_state(root, row, evidence):
+    import list_delivery
+    import zipfile
+    client = evidence["client"]
+    jobs = list_delivery.matching_jobs(root, client, row[4])
+    if not jobs:
+        return None
+    if len(jobs) != 1:
+        state, owner, action = 'blocked_on_evidence', 'cowork', 'multiple jobs for original message; reconcile without replay'
+    else:
+        run_id = next(iter(jobs))
+        run_dir = Path(root) / 'logs/contact_lists' / run_id
+        artifact = run_dir / ('contact-list-' + run_id + '-client.xlsx')
+        evidence['contact_list_run'] = run_id
+        if list_delivery.delivered(run_id, Path(root) / 'logs/contact_lists'):
+            state, owner, action = 'sent_unverified', 'delivery-review', 'verify actual Sent Mail and workbook; never resend'
+        elif artifact.is_file() and (run_dir / 'stats.json').is_file() and (run_dir / 'summary.json').is_file():
+            with zipfile.ZipFile(artifact) as workbook:
+                if 'xl/workbook.xml' not in workbook.namelist() or workbook.testzip():
+                    raise ValueError('Incomplete contact workbook')
+            evidence['artifact'] = str(artifact)
+            evidence['artifact_sha256'] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            state, owner, action = 'ready_for_send', 'cowork', 'review existing workbook and obtain specific send approval'
+        else:
+            state, owner, action = 'working', 'contact_list', 'check existing job progress; never launch duplicate'
+    return state, owner, action
+
+
+def reconcile_contact_jobs(root):
+    """Refresh existing worker handoffs from exact identity/artifact evidence.
+
+    No launches, sends, budget resets, or inference from a ticket's 'resolved'
+    label. A delivered ledger row is still unverified until Sent Mail is checked.
+    """
+    import zipfile
+    changed = 0
+    with connect(root) as db:
+        rows = list(db.execute("SELECT * FROM requests WHERE state IN "
+                               "('blocked_no_worker','blocked_on_evidence','working','ready_for_send')"))
+        for r in rows:
+            row, evidence = json.loads(r['payload']), json.loads(r['evidence'])
+            client = evidence.get('client')
+            if not client or not row[4]:
+                continue
+            try:
+                result = _contact_job_state(root, row, evidence)
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+                result = ('blocked_on_evidence', 'cowork',
+                          'contact job evidence unreadable: ' + type(exc).__name__ + '; never replay')
+            if result is None:
+                continue
+            state, owner, action = result
+            if ((r['state'], r['owner'], r['next_action']) == (state, owner, action)
+                    and json.loads(r['evidence']) == evidence):
+                continue  # polls must not reset the stalled-work clock
+            db.execute('UPDATE requests SET state=?,owner=?,next_action=?,updated=?,evidence=? WHERE id=?',
+                       (state, owner, action, time.time(), json.dumps(evidence), r['id']))
+            changed += 1
+    return changed
+
+
 def recover(root):
     # Caller holds intake process lock. Only the intake handler is abandoned;
     # detached project workers retain their own lifecycle and must not be reset.

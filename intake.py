@@ -986,6 +986,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         return 1
 
     if not dry_run:
+        intake_lifecycle.reconcile_contact_jobs(PROJECT_DIR)
         intake_lifecycle.recover(PROJECT_DIR)
         for row in messages:
             intake_lifecycle.capture(PROJECT_DIR, row)
@@ -1131,7 +1132,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # checks a list of names and phones for invented entries before it goes.
         # Only 'answer' changes; a confirmation, resend or feedback is left be.
         intake_information.route(rec, subject, body)
-        if rec["kind"] == "answer" and task_solver.wants_deliverable(subject, body):
+        if rec["kind"] == "answer" and (task_solver.wants_deliverable(subject, body)
+                or list_delivery.wants_contact_list(
+                    "" if task_solver.is_reply_subject(subject) else subject,
+                    task_solver.strip_quoted_reply(body or ""))):
             rec["kind"] = "deliverable"
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
@@ -1910,7 +1914,7 @@ def selftest() -> int:
     _ov = _run_src.find("task_solver.wants_deliverable(subject, body)")
     check("run() routes an answer-kind list/file request away from the auto-answer",
           _ov > 0 and 'rec["kind"] = "deliverable"' in _run_src
-          and 'rec["kind"] == "answer" and task_solver.wants_deliverable' in _run_src)
+          and 'rec["kind"] == "answer" and (task_solver.wants_deliverable' in _run_src)
     check("  ...after the confirmation and research-project overrides",
           _ov > _run_src.find('rec["kind"] = "confirmation"') > 0
           and _ov > _run_src.find('rec["kind"] = "research"') > 0)
