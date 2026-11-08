@@ -860,6 +860,23 @@ def bump_count(state: dict, sender_name: str):
 # Anything with a question mark keeps its normal routing, even mid-thread.
 
 
+# S592: a reply that asks for MORE work is a new request, not a yes. Bill's
+# 11-08 reply to the plow list asked for the same list in another county, had
+# no "?", and was filed as the open Amazon promise's confirmation ("Thanks,
+# noted."; no job). Narrow on purpose: "yes please", "please proceed" and
+# "please do" are still go-aheads.
+_ASKS_FOR_WORK = re.compile(
+    r"\b(can|could|would|will) (you|u)\b"
+    r"|\bplease (find|get|send|search|look|pull|make|build|run|compile|provide|research|add|include)\b"
+    r"|\b(same|similar)\b.{0,40}?\b(for|in)\b"
+    r"|\b(what|how) about\b"
+    r"|\b(also|next) (need|want|find|get|look|search|pull|run|send|do)\b", re.I)
+
+
+def asks_for_work(own_words: str) -> bool:
+    return bool(_ASKS_FOR_WORK.search(own_words or ""))
+
+
 def is_confirmation(name: str, subject: str, body: str) -> list:
     """Returns the open promises this message confirms ([] if it is not one)."""
     try:
@@ -870,7 +887,7 @@ def is_confirmation(name: str, subject: str, body: str) -> list:
         if not re.match(r"\s*(re|aw|antw|res)\s*(\[\d+\])?\s*:", subject or "", re.I):
             return []
         own_words = task_solver.strip_quoted_reply(body or "")
-        if "?" in own_words:
+        if "?" in own_words or asks_for_work(own_words):
             return []
         # Stripping quotes can leave behind the quote punctuation itself. A body
         # of ">" is a client who wrote nothing, not a client who said yes --
@@ -1548,6 +1565,15 @@ def selftest() -> int:
                   and len(is_confirmation("bill", "AW: " + SUBJ, "yes go ahead")) == 1)
             check("S590: a forward is not a confirmation",
                   is_confirmation("bill", "Fwd: " + SUBJ, "yes go ahead") == [])
+            check("S592: a reply asking for the same list elsewhere is a new request",
+                  all(is_confirmation("bill", "Re: " + SUBJ, b) == [] for b in (
+                      "Can you do the same for Sussex County Delaware",
+                      "Same thing for Sussex County, name title company and phone",
+                      "Please find the same list for Kent County.",
+                      "What about New Castle County")))
+            check("S592: plain go-aheads still confirm",
+                  all(len(is_confirmation("bill", "Re: " + SUBJ, b)) == 1 for b in (
+                      "Yes please proceed", "Yes, please do.", "Sounds good, go ahead")))
 
             _cp.close_promise(_cp.list_promises(state="open")[0]["id"], by="test")
             check("once delivered, the same reply is no longer a confirmation",
