@@ -704,6 +704,24 @@ def client_about_lines(p: dict, stats: dict) -> list:
     return lines
 
 
+def merge_same_place(rows: list) -> list:
+    """S591: 'Dejana Truck of Greater Philadelphia' and 'Dejana Truck & Utility
+    Equipment' were two confirmed rows with the same verified street and phone:
+    one shop under two names. Confirmed rows sharing both keep the first, with
+    the later one's source pages folded in."""
+    seen, out = {}, []
+    for r in rows:
+        key = (r.get("phone") or "", _n((r.get("address") or {}).get("street") or ""))
+        if r.get("status") == "ok" and all(key):
+            if key in seen:
+                kept = seen[key].setdefault("roster_sources", [])
+                kept += [u for u in r.get("roster_sources") or [] if u not in kept]
+                continue
+            seen[key] = r
+        out.append(r)
+    return out
+
+
 def summary(p: dict, rows: list) -> dict:
     """What list_delivery needs for its cover note."""
     ok = [r for r in rows if r.get("status") == "ok"]
@@ -821,6 +839,7 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
             if i % 10 == 0:
                 log("enrich: %d/%d (searches %d, cloud %d, model failed %d)" % (
                     i, len(ranked), budget.searches, budget.cloud, budget.model_failed))
+    rows = merge_same_place(rows)
     stats = {"searches": budget.searches, "fetched": budget.fetched,
              "fetch_failed": budget.fetch_failed, "local": budget.local, "cloud": budget.cloud,
              "model_failed": budget.model_failed,
@@ -1138,6 +1157,22 @@ def selftest() -> bool:
               b.names_local == 1 and b.names_cloud_only == 1)
     finally:
         g.update(saved)
+    same = {"street": "2502 Route 130", "city": "Cinnaminson"}
+    merged = merge_same_place([
+        {"name": "Dejana Truck of Greater Philadelphia", "status": "ok", "phone": "856-303-1315",
+         "address": same, "roster_sources": ["a"]},
+        {"name": "Dejana Truck & Utility Equipment", "status": "ok", "phone": "856-303-1315",
+         "address": dict(same), "roster_sources": ["b"]},
+        {"name": "Other Shop", "status": "ok", "phone": "856-303-1315",
+         "address": {"street": "9 Elm St"}},
+        {"name": "Unconfirmed", "status": "not confirmed as a match", "phone": "856-303-1315",
+         "address": dict(same)}])
+    check("one shop under two names (same phone and street) becomes one row, sources kept",
+          [r["name"] for r in merged] == ["Dejana Truck of Greater Philadelphia", "Other Shop",
+                                          "Unconfirmed"] and merged[0]["roster_sources"] == ["a", "b"])
+    check("rows missing a phone or street are never merged",
+          len(merge_same_place([{"name": "A", "status": "ok", "address": same},
+                                {"name": "B", "status": "ok", "address": same}])) == 2)
     import types
     seen = {}
     fake = types.ModuleType("llm_providers")
