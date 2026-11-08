@@ -12,12 +12,14 @@ needs no account or key. A failed or stale pull fails the run and sends nothing:
 Usage:
   bill_sam_weekly.py --dry-run             print the email; send and save nothing
   bill_sam_weekly.py --seed YYYY-MM-DD     mark notices posted up to that date seen
+  bill_sam_weekly.py --preflight           Sunday check that Monday's run will go through
   bill_sam_weekly.py                       live: email Bill, cc Buddy, once a day
 """
 import csv
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -353,8 +355,122 @@ def seed(extract_path, through, now=None, state=None):
     return n
 
 
+# S585 (Buddy, 11-07): a Sunday pre-flight, so Monday's first real run has no
+# surprises. It replays Monday with this file's own code, sends and saves nothing.
+MIN_SEEN_KEYS = 100       # 668 at the 11-02 seed, 522 after a replayed first run
+MAX_NEW_PLAUSIBLE = 60    # the 11-09 replay found 13; far more means a lost baseline
+MIN_FREE_BYTES = 1 << 30  # the extract is about 220 MB
+TIMER = "cirrus-billsam.timer"
+
+
+def next_run(now=None):
+    """The timer's slot: Monday 05:15, today if it is Monday before then."""
+    now = now or datetime.now()
+    slot = (now + timedelta(days=(7 - now.weekday()) % 7)).replace(hour=5, minute=15, second=0,
+                                                                   microsecond=0)
+    return slot if slot > now else slot + timedelta(days=7)
+
+
+def baseline_problems(state=None):
+    path = Path(state or STATE)
+    try:
+        seen = json.loads(path.read_text())
+    except FileNotFoundError:
+        return ["baseline %s is missing, so Bill would get every open notice as new" % path.name]
+    except ValueError:
+        return ["baseline %s is not readable JSON" % path.name]
+    n = len(seen) if isinstance(seen, dict) else 0
+    if n < MIN_SEEN_KEYS:
+        return ["baseline %s holds %d entries, expected %d or more" % (path.name, n, MIN_SEEN_KEYS)]
+    return []
+
+
+def replay(extract_path, when, state=None):
+    """(problems, summary): Monday's pass at `when`, then the same file a week
+    later, which must list nothing again. Reads the baseline, writes nothing."""
+    try:
+        matched, total, newest = read_extract(extract_path, when)
+    except DataError as e:
+        return ["the SAM.gov file would fail Monday's checks: %s" % e], ""
+    try:
+        seen = load_seen(state, when)
+    except ValueError:              # reported by baseline_problems
+        seen = {}
+    fresh, touched = new_notices(matched, seen, when)
+    compose(fresh, total, newest, when)          # raises here, not at 05:15
+    problems = []
+    if len(fresh) > MAX_NEW_PLAUSIBLE:
+        problems.append("Monday would list %d new notices (limit %d), which looks like a lost "
+                        "baseline" % (len(fresh), MAX_NEW_PLAUSIBLE))
+    later = when + timedelta(days=7)
+    kept = _current(_current({**seen, **touched}, when), later)   # what save_seen keeps, aged a week
+    again, _ = new_notices(matched, kept, later)
+    if again:
+        problems.append("%d notices would be listed again the following week" % len(again))
+    sd = sum(1 for r in fresh if code(r) in SDVOSB_CODES)
+    return problems, "%d new (%d SDVOSB), swept %d notices, newest %s" % (len(fresh), sd, total, newest)
+
+
+def environment_problems(when, run=subprocess.run, disk=shutil.disk_usage):
+    """Timer, disk and mail settings. Prints no setting's value."""
+    problems = []
+    out = run(["systemctl", "show", TIMER, "-p", "UnitFileState", "-p", "ActiveState",
+               "-p", "NextElapseUSecRealtime"], capture_output=True, text=True).stdout
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if (props.get("UnitFileState"), props.get("ActiveState")) != ("enabled", "active"):
+        problems.append("%s is not enabled and active (%s/%s)" % (
+            TIMER, props.get("UnitFileState", "?"), props.get("ActiveState", "?")))
+    elif when.strftime("%Y-%m-%d %H:%M") not in props.get("NextElapseUSecRealtime", ""):
+        problems.append("%s next fires %s, not %s" % (
+            TIMER, props.get("NextElapseUSecRealtime") or "never", when.strftime("%a %Y-%m-%d %H:%M")))
+    if disk(str(OUT)).free < MIN_FREE_BYTES:
+        problems.append("under 1 GB free for the 220 MB SAM.gov file")
+    mail = run([sys.executable, "-c", "import send_digest as s; print(bool(s.FROM_EMAIL and s.FROM_PASS))"],
+               cwd=str(DIGEST_DIR), capture_output=True, text=True)
+    if mail.stdout.strip().splitlines()[-1:] != ["True"]:
+        problems.append("the mail sender's settings did not load")
+    return problems
+
+
+def preflight(notify, when=None, state=None, extract=None, env=environment_problems, fetcher=fetch):
+    """(problems, summary). Telegrams Buddy only about what a Monday retry will
+    not fix: a failed download is left to Monday's 3 attempts and the noon rerun."""
+    when = when or next_run()
+    extract = Path(extract or OUT / "preflight-extract.csv")
+    problems = env(when) + baseline_problems(state)
+    summary, download = "", None
+    try:
+        fetcher(extract)
+        found, summary = replay(extract, when, state)
+        problems += found
+    except DataError as e:
+        download = "SAM.gov download failed (%s); Monday retries it" % e
+    except Exception as e:          # Monday's run would most likely crash the same way
+        problems.append("the replay of Monday's run crashed (%s: %s)" % (type(e).__name__, str(e)[:80]))
+    finally:
+        extract.unlink(missing_ok=True)
+    if problems:
+        notify("SAM.gov pre-flight: Bill's %s report is at risk -- %s. Fix before then "
+               "(samleads/bill_sam_weekly.py --preflight)." % (when.strftime("%a %m-%d %H:%M"),
+                                                               "; ".join(problems)))
+    problems += [download] if download else []
+    for p in problems:
+        print("PROBLEM:", p)
+    print("preflight for %s: %s" % (when.strftime("%a %Y-%m-%d %H:%M"),
+                                    "READY, " + summary if not problems else "AT RISK"))
+    return problems, summary
+
+
 def main(argv):
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--preflight" in argv:
+        from immaculate_agent import send_telegram
+        import job_status
+        problems, summary = preflight(send_telegram)
+        job_status.record("billsampreflight", not problems,
+                          "monday ready: " + summary if not problems
+                          else "monday at risk: " + "; ".join(problems)[:300])
+        return 1 if problems else 0
     extract = OUT / "extract.csv"
     dry = "--dry-run" in argv
     try:

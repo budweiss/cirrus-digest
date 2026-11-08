@@ -152,6 +152,7 @@ JOB = {
     "cirrus-billsnow.timer":         ("heavy", 3, 60, "weather + web research, Mondays"),
     "cirrus-billnewdev.timer":       ("heavy", 1, 40, "new-development research, Mondays"),
     "cirrus-billsam.timer":          ("light", 1, 5, "S554: public SAM.gov file (210 MB), no models, Mondays"),
+    "cirrus-billsam-preflight.timer": ("light", 2, 5, "S585: Sunday replay of the Monday run on the same file; no models, no send"),
     "cirrus-pedagogy.timer":         ("heavy", 1, 50, "podcast/article research"),
     "cirrus-modelhealth.timer":      ("light", 1, 2, "pings each model endpoint"),
     "cirrus-cloudflaredupdate.timer": ("light", 2, 40, "S515 version check; .deb + tunnel restart only on a new release"),

@@ -217,5 +217,105 @@ class State(Base):
             self.assertIn(expect, ("productive", "zero", "blind"))
 
 
+class Preflight(Base):
+    """S585: the Sunday check. Temp baseline and extract; env and fetch injected."""
+    SUN = datetime(2026, 11, 8, 18, 15)
+
+    def seed_baseline(self, extra=None, n=sam.MIN_SEEN_KEYS):
+        seen = {"s:FILLER%d" % i: "2026-11-02" for i in range(n)}
+        seen.update(extra or {})
+        self.state.write_text(json.dumps(seen))
+
+    def fly(self, env=(), fetch_ok=True):
+        msgs = []
+
+        def fetcher(path):
+            if not fetch_ok:
+                raise sam.DataError("download failed after 3 attempts")
+            Path(path).write_bytes(self.file.read_bytes())
+        out = sam.preflight(msgs.append, when=NOW, state=self.state, extract=self.root / "pf.csv",
+                            env=lambda when: list(env), fetcher=fetcher)
+        return out, msgs
+
+    def test_next_run_is_the_coming_monday_0515(self):
+        self.assertEqual(sam.next_run(self.SUN), NOW)
+        self.assertEqual(sam.next_run(datetime(2026, 11, 9, 4, 0)), NOW, "Monday before 05:15 is today")
+        self.assertEqual(sam.next_run(datetime(2026, 11, 9, 6, 0)), datetime(2026, 11, 16, 5, 15))
+
+    def test_a_ready_monday_is_silent_and_says_what_bill_will_get(self):
+        self.seed_baseline()
+        self.write([row()])
+        before = self.state.read_text()
+        (problems, summary), msgs = self.fly()
+        self.assertEqual((problems, msgs), ([], []))
+        self.assertTrue(summary.startswith("1 new (1 SDVOSB), swept"), summary)
+        self.assertEqual(self.state.read_text(), before, "the real baseline is never written")
+        self.assertFalse((self.root / "pf.csv").exists(), "the downloaded file is removed")
+        self.assertEqual(self.sent, [])
+
+    def test_a_missing_or_broken_baseline_is_reported(self):
+        self.assertIn("missing", sam.baseline_problems(self.state)[0])
+        self.state.write_text("{not json")
+        self.assertIn("not readable", sam.baseline_problems(self.state)[0])
+        self.seed_baseline(n=5)
+        self.assertIn("holds 5 entries", sam.baseline_problems(self.state)[0])
+        self.seed_baseline()
+        self.assertEqual(sam.baseline_problems(self.state), [])
+
+    def test_a_lost_baseline_flood_is_caught_before_bill_sees_it(self):
+        self.write([row(sol="N%d" % i, title="Snow Removal Site %d" % i)
+                    for i in range(sam.MAX_NEW_PLAUSIBLE + 1)])
+        (problems, _), msgs = self.fly()
+        self.assertTrue(any("missing" in p for p in problems))
+        self.assertTrue(any("lost baseline" in p for p in problems))
+        self.assertEqual(len(msgs), 1)
+
+    def test_a_notice_that_would_come_back_next_week_is_caught(self):
+        # Only a title identity, posted over 180 days ago, no deadline: known
+        # Monday, then aged out of the saved baseline and listed again a week on.
+        old = row(sol="", when="2026-04-01 10:00:00", due="")
+        self.seed_baseline({k: "2026-11-02" for k in sam.keys(old)})
+        self.write([old])
+        (problems, _), msgs = self.fly()
+        self.assertTrue(any("listed again the following week" in p for p in problems), problems)
+        self.assertEqual(len(msgs), 1)
+
+    def test_a_bad_file_is_reported_as_mondays_failure(self):
+        self.seed_baseline()
+        self.write([row()], filler=10)
+        (problems, _), msgs = self.fly()
+        self.assertIn("would fail Monday's checks", problems[0])
+        self.assertEqual(len(msgs), 1)
+
+    def test_a_failed_download_is_recorded_but_left_to_mondays_retries(self):
+        self.seed_baseline()
+        self.write([row()])
+        (problems, _), msgs = self.fly(fetch_ok=False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Monday retries", problems[0])
+        self.assertEqual(msgs, [], "a transient download failure does not page Buddy")
+
+    def test_environment_problems_are_reported(self):
+        self.seed_baseline()
+        self.write([row()])
+        (problems, _), msgs = self.fly(env=["cirrus-billsam.timer is not enabled and active"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not enabled", msgs[0])
+
+    def _env(self, show, mail="True", free=5 << 30):
+        def run(cmd, **kw):
+            return Mock(stdout=show if cmd[0] == "systemctl" else mail + "\n")
+        return sam.environment_problems(NOW, run=run, disk=lambda p: Mock(free=free))
+
+    def test_environment_checks_read_the_timer_disk_and_mail(self):
+        good = ("NextElapseUSecRealtime=Mon 2026-11-09 05:15:00 EST\nActiveState=active\n"
+                "UnitFileState=enabled\n")
+        self.assertEqual(self._env(good), [])
+        self.assertIn("not enabled", self._env(good.replace("=enabled", "=disabled"))[0])
+        self.assertIn("next fires", self._env(good.replace("2026-11-09", "2026-11-16"))[0])
+        self.assertIn("1 GB", self._env(good, free=10 << 20)[0])
+        self.assertIn("mail sender", self._env(good, mail="False")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,15 @@
+# S585: Sunday check that Monday's SAM.gov summary will go through (samleads/bill_sam_weekly.py --preflight).
+[Unit]
+Description=cirrus-billsam-preflight (beta)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=buddy
+Group=buddy
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=TARGET_ENV=beta
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/samleads/bill_sam_weekly.py --preflight
+TimeoutStartSec=1800
