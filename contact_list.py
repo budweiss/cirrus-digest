@@ -742,15 +742,20 @@ REFERRAL_STATUS = "referral line (toll-free number shared by several names)"
 def mark_referral_lines(rows: list) -> list:
     """S591: four 'snow removal' template sites shared 855-921-3695 and three
     town pages shared 888-635-1076: services that pass calls on, not businesses
-    the client can hire. A toll-free number on two or more differently named
-    confirmed rows takes those rows off the list; the review copy keeps them
-    under Not Confirmed. Run after merge_same_place."""
-    names = {}
+    the client can hire. A toll-free number on three or more differently named
+    confirmed rows, or on two or more own websites, takes those rows off the
+    list; the review copy keeps them under Not Confirmed. One company under two
+    names on its own site is left for merge_same_place. Run BEFORE it: merging
+    first folded the three town pages into one row that no longer looked shared."""
+    names, sites = {}, {}
     for r in rows:
         if r.get("status") == "ok" and TOLL_FREE.match(r.get("phone") or ""):
             names.setdefault(r["phone"], set()).add(dedupe_key(r["name"]) or r["name"])
+            sites.setdefault(r["phone"], set()).update({_own_site(r)} - {""})
     for r in rows:
-        if r.get("status") == "ok" and len(names.get(r.get("phone") or "", ())) > 1:
+        ph = r.get("phone") or ""
+        if r.get("status") == "ok" and (len(names.get(ph, ())) >= 3
+                                         or (len(names.get(ph, ())) >= 2 and len(sites.get(ph, ())) >= 2)):
             r["status"] = REFERRAL_STATUS
     return rows
 
@@ -872,7 +877,7 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
             if i % 10 == 0:
                 log("enrich: %d/%d (searches %d, cloud %d, model failed %d)" % (
                     i, len(ranked), budget.searches, budget.cloud, budget.model_failed))
-    rows = mark_referral_lines(merge_same_place(rows))
+    rows = merge_same_place(mark_referral_lines(rows))
     stats = {"searches": budget.searches, "fetched": budget.fetched,
              "fetch_failed": budget.fetch_failed, "local": budget.local, "cloud": budget.cloud,
              "model_failed": budget.model_failed,
@@ -1218,13 +1223,24 @@ def selftest() -> bool:
                                 {"name": "B Plow", "status": "ok", "phone": "215-555-0101",
                                  "website": "b.com"}])) == 2)
     ref = mark_referral_lines([
-        {"name": "IronSnowRemoval", "status": "ok", "phone": "855-921-3695"},
-        {"name": "PrimeSnowRemoval", "status": "ok", "phone": "855-921-3695"},
+        {"name": "IronSnowRemoval", "status": "ok", "phone": "855-921-3695",
+         "website": "https://ironsnowremoval.netlify.app"},
+        {"name": "PrimeSnowRemoval", "status": "ok", "phone": "855-921-3695",
+         "website": "https://primesnowremoval.netlify.app"},
         {"name": "Solo Plow", "status": "ok", "phone": "800-555-0100"},
-        {"name": "Two Local A", "status": "ok", "phone": "215-555-0101"},
-        {"name": "Two Local B", "status": "ok", "phone": "215-555-0101"}])
-    check("a toll-free number shared by two names is a referral line; one name or a local number is not",
+        {"name": "Two Local A", "status": "ok", "phone": "215-555-0101", "website": "a.com"},
+        {"name": "Two Local B", "status": "ok", "phone": "215-555-0101", "website": "b.com"}])
+    check("a toll-free number on two names and two sites is a referral line; one name or a local number is not",
           [r["status"] for r in ref] == [REFERRAL_STATUS, REFERRAL_STATUS, "ok", "ok", "ok"])
+    town = [{"name": "%s Snow Removal Company" % t, "status": "ok", "phone": "888-635-1076",
+             "website": "https://thesnowremovalcompany.com"} for t in ("Langhorne", "Willow Grove", "Upper Darby")]
+    check("three town names on one toll-free number and one site are all referral lines",
+          [r["status"] for r in merge_same_place(mark_referral_lines(town))] == [REFERRAL_STATUS] * 3)
+    two = [{"name": n, "status": "ok", "phone": "800-555-0199", "website": "https://brightview.com"}
+           for n in ("BrightView", "BrightView Landscape Services")]
+    check("one company under two names on its own site and toll-free number is merged, not removed",
+          [(r["name"], r["status"]) for r in merge_same_place(mark_referral_lines(two))]
+          == [("BrightView", "ok")])
     import types
     seen = {}
     fake = types.ModuleType("llm_providers")
