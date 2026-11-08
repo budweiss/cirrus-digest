@@ -461,5 +461,17 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT count(*) FROM runs').fetchone()[0], 0)
 
 
+class ErrorCodeTests(unittest.TestCase):
+    def test_labels_name_imap_and_fixed_budget_failures_without_server_text(self):
+        # S590: Telegram said only "error=error" (imaplib) and "error=ValueError".
+        import imaplib
+        self.assertEqual(s.error_code(imaplib.IMAP4.error('[AUTHENTICATIONFAILED] Invalid credentials (Failure)')), 'imap_error')
+        self.assertEqual(s.error_code(ValueError('media request exceeds context budget')), 'media_context_budget_exceeded')
+        self.assertEqual(s.error_code(ValueError('one character exceeds token budget')), 'media_token_budget_exceeded')
+        self.assertEqual(s.error_code(ValueError('weekly_review_failed')), 'weekly_review_failed')
+        self.assertEqual(s.error_code(ValueError('see https://example.com/x?token=abc')), 'ValueError')
+        self.assertEqual(s.error_code(RuntimeError('media request exceeds context budget')), 'RuntimeError')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -49,6 +49,41 @@ def policy():
                        ('PROJECT.md','PAPER-RUNBOOK.md','scorekeeping.md'))
 
 
+# S590: on 11-07 eighteen overdue reviews, each carrying full provider quote
+# records (~2,600 tokens a row), made a 52K-token request to the 32K worker, and
+# failed reviews are never saved, so every later Saturday would be larger still.
+# The narrative and its reviewer get a compact view within a token budget; the
+# table, the saved reviews and every number still come from the full rows.
+DECISION_FIELDS=('ticker','action','decided_at','reason','valuation','counterargument','exit_trigger','evidence')
+OBSERVATION_FIELDS=('scheduled_review','observed_on','observed_late','comparison_available','comparison_gap',
+                    'price_return_percent','spy_price_return_percent','excess_percentage_points')
+NARRATIVE_TOKENS=14000
+
+
+def observation_view(row,evidence=True):
+    decision=row.get('decision') or {}
+    view={k:decision[k] for k in DECISION_FIELDS if k in decision and (evidence or k!='evidence')}
+    view.update({k:row[k] for k in OBSERVATION_FIELDS if k in row})
+    return view
+
+
+def narrative_observations(due,prior,budget=None,count=None):
+    """Due rows first (this pass's subject), then the newest prior reviews, within
+    the budget. Returns (due_views, prior_views, rows_left_out)."""
+    budget=NARRATIVE_TOKENS if budget is None else budget;count=count or media.token_count
+    used,due_views,prior_views=0,[],[]
+    for row in due:
+        view=observation_view(row);cost=count(json.dumps(view))
+        if used+cost>budget:break
+        due_views.append(view);used+=cost
+    for row in reversed(prior):
+        view=observation_view(row,evidence=False);cost=count(json.dumps(view))
+        if used+cost>budget:break
+        prior_views.append(view);used+=cost
+    prior_views.reverse()
+    return due_views,prior_views,len(due)+len(prior)-len(due_views)-len(prior_views)
+
+
 def feedback(since):
     """Read only replies to the paper report; never inspect brokerage alerts."""
     from cumulus_inbox_peek import load_creds,dec,body_text
@@ -539,9 +574,7 @@ def scorecard(live,date,folder):
             taxes=paper.tax_export(HOME,ledger,int(date[:4]))
     due,total_due=fixed_observations(account,date)
     prior=[json.loads(p.read_text()) for p in sorted((HOME/'fixed-window-reviews').glob('*.json'))[-40:]]
-    data={'due_21_28_day_reviews':due,'prior_fixed_reviews':prior,
-          'remaining_due_reviews':max(0,total_due-len(due)),
-          'policy':policy()}
+    left_out=0
     if not due and not prior:
         text=('No recorded decision has reached a fixed review date, and no earlier fixed-window review is available. '
               'There is no mature sample from which to estimate decision success or attribute results to skill. '
@@ -549,7 +582,22 @@ def scorecard(live,date,folder):
               'are separate from the future fixed-window idea reviews. Cash, modeled costs and unadjusted '
               'corporate actions limit comparisons. No strategy change or trade is made by this review.')
         atomic(folder/'scorecard-checks.json',{'passed':True,'method':'deterministic_no_mature_reviews','due':0,'prior':0})
+    elif not any(row.get('comparison_available') for row in due+prior):
+        # S590: with no verified start/current price pair there is nothing to assess,
+        # and asking the model anyway produced invented dates and outcomes that the
+        # reviewer rejected three times (10-31, and the 11-07 preview).
+        text=('%d fixed-window observation(s) are recorded, but none has matching verified start and current prices, '
+              'so no idea can be assessed for success or attributed to skill. Missing historical prices are not '
+              'backfilled; the table below gives each due date and its gap. The current simulated account is shown '
+              'below. No strategy change or trade is made by this review.')%(len(due)+len(prior))
+        atomic(folder/'scorecard-checks.json',{'passed':True,'method':'deterministic_no_comparable_observations',
+                                               'due':len(due),'prior':len(prior)})
     else:
+        due_views,prior_views,left_out=narrative_observations(due,prior)
+        data={'due_21_28_day_reviews':due_views,'prior_fixed_reviews':prior_views,
+              'remaining_due_reviews':max(0,total_due-len(due)),
+              'table_rows_not_in_this_narrative':left_out,
+              'policy':policy()}
         text=checked_prose('Write a concise qualitative review of these independent simulated-account idea observations. '
         'The canonical account and numerical fixed-window table are appended separately. Do not invent or '
         'recalculate balances, returns, costs, cash drag or sample statistics. Assess original due decisions at their fixed '
@@ -567,6 +615,7 @@ def scorecard(live,date,folder):
             'late' if row.get('observed_late') else 'on due date',row.get('price_return_percent','unavailable'),
             row.get('spy_price_return_percent','unavailable'),row.get('excess_percentage_points','unavailable')))+' |\n'
     if not due and not prior:report+='\nNo fixed-window observations are due yet.\n'
+    if left_out:report+='\nThe narrative above covers '+str(len(prior)+len(due)-left_out)+' of these '+str(len(prior)+len(due))+' rows; the rest exceeded its review size limit.\n'
     if total_due>len(due):report+='\nAdditional due observations await the next bounded pass: '+str(total_due-len(due))+'.\n'
     report+='\nSimulated lot records were refreshed; they are not a broker statement or a real tax return. Missing corporate-action adjustments remain unresolved.\n'
     path=folder/('report.md' if live else 'preview.md');path.write_text(report);path.chmod(0o600)

@@ -155,6 +155,22 @@ def check_system_health(**kwargs) -> str:
         except Exception:
             pass
 
+    # S590: with no hardware line, /ask called CIRRUS a "Mac Mini (implied)" and
+    # a Grok fallback a Cray. Name it from the hardware profile; only these three
+    # fields are read, never the serial number or platform UUID.
+    try:
+        result = subprocess.run(
+            ["system_profiler", "-json", "SPHardwareDataType"], capture_output=True,
+            text=True, timeout=15, check=True
+        )
+        hw = json.loads(result.stdout)["SPHardwareDataType"][0]
+        parts = [hw["machine_name"], hw["machine_model"], hw["chip_type"]]
+        if not all(isinstance(p, str) and re.fullmatch(r"[A-Za-z0-9 ,.()-]{1,40}", p) for p in parts):
+            raise ValueError("unexpected hardware profile")
+        lines.append(f"Hardware: {parts[0]} ({parts[1]}), {parts[2]}.")
+    except Exception:
+        lines.append("Hardware: unknown (hardware profile query failed).")
+
     # Installed RAM is a hardware value, never a sum of selected VM counters.
     try:
         result = subprocess.run(

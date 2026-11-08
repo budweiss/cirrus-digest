@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 from datetime import datetime,timezone
@@ -450,6 +451,93 @@ class ScheduleChecks(unittest.TestCase):
                 S.scorecard(True,'2026-10-14',folder)
             self.assertTrue((home/'digests/stock-scorecard-latest.md').exists())
             self.assertFalse((root/'digests').exists())
+
+    @staticmethod
+    def observation(i,quote_chars=9000):
+        quote={'price':'1.00','quote_at':'2026-11-06T21:00:01Z','raw_archive':'x'*quote_chars}
+        return {'decision':{'ticker':'EX%d'%i,'action':'BUY','decided_at':'2026-10-%02dT14:45:00Z'%(i+1),
+                            'reason':'Synthetic reason.','evidence':[{'id':1,'quote':QUOTE}],
+                            'idempotency_key':'k%d'%i,'review_dates':['2026-10-30']},
+                'scheduled_review':'2026-10-30','observed_on':'2026-11-07','observed_late':True,
+                'original_reference':{'company':quote,'spy':quote},'current_company_quote':quote,
+                'current_spy_quote':quote,'comparison_available':True,'price_return_percent':'1.00',
+                'spy_price_return_percent':'0.50','excess_percentage_points':'0.50','notice':'n'}
+
+    def test_narrative_view_drops_quote_records_and_keeps_budget(self):
+        count=lambda text:len(text)//4
+        due=[self.observation(i) for i in range(3)];prior=[self.observation(i+10) for i in range(3)]
+        views=S.narrative_observations(due,prior,budget=10**6,count=count)
+        self.assertEqual([len(views[0]),len(views[1]),views[2]],[3,3,0])
+        self.assertNotIn('raw_archive',json.dumps(views))
+        self.assertEqual(views[0][0]['ticker'],'EX0')
+        self.assertIn('evidence',views[0][0]);self.assertNotIn('evidence',views[1][0])
+        self.assertNotIn('idempotency_key',views[0][0])
+        one=count(json.dumps(S.observation_view(due[0])))
+        # Due rows are this pass's subject; prior reviews fill what is left, newest first.
+        due_views,prior_views,left=S.narrative_observations(due,prior,budget=one*3+count(json.dumps(S.observation_view(prior[-1],False))),count=count)
+        self.assertEqual((len(due_views),[v['ticker'] for v in prior_views],left),(3,['EX12'],2))
+
+    def test_overdue_backlog_scorecard_fits_worker_and_keeps_full_table(self):
+        # S590 regression: 18 overdue rows of ~2,600 tokens were a 52K request.
+        from pathlib import Path
+        from contextlib import nullcontext
+        count=lambda text:len(text)//4
+        rows=[self.observation(i) for i in range(18)]
+        self.assertGreater(count(json.dumps(rows)),32768)
+        seen={}
+        def prose(system,data,task,audit=None):
+            seen['tokens']=count(system+'\n'+json.dumps(data));seen['data']=data;return 'Synthetic narrative.'
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);account={'decisions':[],'report':'Synthetic account','report_id':'fixture'}
+            with patch.object(S,'ROOT',folder),patch.object(S,'HOME',folder),patch.object(S,'snapshot',return_value=account), \
+                    patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
+                    patch.object(S.paper,'tax_export',return_value={}),patch.object(S,'policy',return_value='Synthetic policy'), \
+                    patch.object(S,'fixed_observations',return_value=(rows,18)),patch.object(S.media,'token_count',side_effect=count), \
+                    patch.object(S,'checked_prose',side_effect=prose):
+                S.scorecard(False,'2026-11-07',folder)
+                report=(folder/'preview.md').read_text()
+        self.assertLess(seen['tokens'],32768-2300)
+        self.assertEqual(len(seen['data']['due_21_28_day_reviews']),18)
+        self.assertEqual(seen['data']['table_rows_not_in_this_narrative'],0)
+        self.assertEqual(report.count('| EX'),18)
+        self.assertNotIn('exceeded its review size limit',report)
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);account={'decisions':[],'report':'Synthetic account','report_id':'fixture'}
+            with patch.object(S,'ROOT',folder),patch.object(S,'HOME',folder),patch.object(S,'snapshot',return_value=account), \
+                    patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
+                    patch.object(S.paper,'tax_export',return_value={}),patch.object(S,'policy',return_value='Synthetic policy'), \
+                    patch.object(S,'fixed_observations',return_value=(rows,18)),patch.object(S.media,'token_count',side_effect=count), \
+                    patch.object(S,'NARRATIVE_TOKENS',count(json.dumps(S.observation_view(rows[0])))*5), \
+                    patch.object(S,'checked_prose',side_effect=prose):
+                S.scorecard(False,'2026-11-07',folder)
+                report=(folder/'preview.md').read_text()
+        self.assertEqual(len(seen['data']['due_21_28_day_reviews']),5)
+        self.assertEqual(report.count('| EX'),18)
+        self.assertIn('covers 5 of these 18 rows',report)
+
+    def test_no_comparable_observation_gets_fixed_text_not_model_prose(self):
+        # S590: 18 rows, none with a verified price pair; the model invented outcomes.
+        from pathlib import Path
+        from contextlib import nullcontext
+        rows=[self.observation(i,quote_chars=10) for i in range(18)]
+        for row in rows:
+            for k in ('price_return_percent','spy_price_return_percent','excess_percentage_points'):row.pop(k)
+            row.update(comparison_available=False,comparison_gap='unavailable')
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);account={'decisions':[],'report':'Synthetic account','report_id':'fixture'}
+            with patch.object(S,'ROOT',folder),patch.object(S,'HOME',folder),patch.object(S,'snapshot',return_value=account), \
+                    patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'Ledger'), \
+                    patch.object(S.paper,'tax_export',return_value={}),patch.object(S,'policy',return_value='Synthetic policy'), \
+                    patch.object(S,'fixed_observations',return_value=(rows,18)), \
+                    patch.object(S,'checked_prose') as prose:
+                result=S.scorecard(False,'2026-11-07',folder)
+                report=(folder/'preview.md').read_text()
+                checks=json.loads((folder/'scorecard-checks.json').read_text())
+        prose.assert_not_called()
+        self.assertEqual(result['status'],'preview')
+        self.assertIn('18 fixed-window observation(s) are recorded, but none has matching verified',report)
+        self.assertEqual(report.count('| EX'),18)
+        self.assertEqual(checks['method'],'deterministic_no_comparable_observations')
 
 class SimpleCursor:
     def __init__(self,row):self.row=row

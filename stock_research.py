@@ -355,10 +355,22 @@ def discover(conn, company, page, parent, at):
     return candidates
 
 
+# S590: two Telegram alerts said only "error=ValueError" and "error=error". These
+# are our own fixed messages, or imaplib's error class (named "error"); a server's
+# IMAP text is never copied.
+FIXED_MESSAGES = {'media request exceeds context budget': 'media_context_budget_exceeded',
+                  'one character exceeds token budget': 'media_token_budget_exceeded'}
+
+
 def error_code(exc):
     # Never print third-party exception strings (can contain request URLs/headers).
     if isinstance(exc, urllib.error.HTTPError):
         return f'http_{exc.code}'
+    import imaplib
+    if isinstance(exc, imaplib.IMAP4.error):
+        return 'imap_error'
+    if isinstance(exc, ValueError) and str(exc) in FIXED_MESSAGES:
+        return FIXED_MESSAGES[str(exc)]
     if isinstance(exc, (ValueError, RuntimeError)) and re.fullmatch(r'[a-z_]{5,80}', str(exc)):
         return str(exc)
     return type(exc).__name__
