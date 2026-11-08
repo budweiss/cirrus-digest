@@ -110,6 +110,32 @@ def check_disk_space(**kwargs) -> str:
 
 # ── System Health ─────────────────────────────────────────────────────────────
 
+def _format_vm_memory(output: str) -> str:
+    """Convert vm_stat's page counts using its reported hardware page size."""
+    match = re.search(r"page size of (\d+) bytes", output)
+    if not match or int(match.group(1)) <= 0:
+        raise ValueError("vm_stat page size missing or invalid")
+    page = int(match.group(1))
+    vm = {}
+    for line in output.splitlines():
+        match = re.match(r"(.+?):\s+(\d+)\.\s*$", line)
+        if match:
+            vm[match.group(1).strip()] = int(match.group(2))
+    categories = (
+        ("Pages active", "active"),
+        ("Pages wired down", "wired"),
+        ("Pages free", "free"),
+        ("Pages inactive", "inactive"),
+        ("Pages speculative", "speculative"),
+        ("Pages occupied by compressor", "compressor physical"),
+    )
+    # Missing counters are an unreadable sample, not zero memory usage.
+    values = [f"{vm[key] * page / 2**30:.1f} GiB {label}"
+              for key, label in categories]
+    return ("Memory snapshot: " + ", ".join(values)
+            + ". These categories are not the installed RAM total.")
+
+
 def check_system_health(**kwargs) -> str:
     """
     CPU load average and memory pressure on CIRRUS.
@@ -129,25 +155,27 @@ def check_system_health(**kwargs) -> str:
         except Exception:
             pass
 
-    # Memory (macOS)
+    # Installed RAM is a hardware value, never a sum of selected VM counters.
     try:
         result = subprocess.run(
-            ["vm_stat"], capture_output=True, text=True, timeout=5
+            ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True,
+            timeout=5, check=True
         )
-        vm = {}
-        for line in result.stdout.splitlines():
-            m = re.match(r"(.+?):\s+(\d+)", line)
-            if m:
-                vm[m.group(1).strip()] = int(m.group(2))
-        page = 4096  # 4KB pages
-        free   = vm.get("Pages free", 0) * page / 1e9
-        active = vm.get("Pages active", 0) * page / 1e9
-        wired  = vm.get("Pages wired down", 0) * page / 1e9
-        lines.append(
-            f"Memory: {active:.1f}GB active, {wired:.1f}GB wired, {free:.1f}GB free"
-        )
+        total = int(result.stdout.strip())
+        if total <= 0:
+            raise ValueError("invalid installed memory")
+        lines.append(f"Installed RAM: {total / 2**30:.1f} GiB ({total} bytes).")
     except Exception:
-        pass
+        lines.append("Installed RAM: unknown (hardware memory query failed).")
+
+    # Memory (macOS): Apple Silicon uses 16 KiB pages; Intel can use 4 KiB.
+    try:
+        result = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=5, check=True
+        )
+        lines.append(_format_vm_memory(result.stdout))
+    except Exception:
+        lines.append("Memory snapshot: unknown (vm_stat unavailable or invalid).")
 
     # CPU temp (macOS, needs osx-cpu-temp or similar — skip if unavailable)
     if shutil.which("osx-cpu-temp"):
