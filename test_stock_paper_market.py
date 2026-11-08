@@ -330,7 +330,13 @@ class ValuationTests(unittest.TestCase):
         q = self.mark('2026-10-09T11:45:00Z', '2026-10-08T19:00:00Z')
         self.assertTrue(q['valuation_eligible'], q['valuation_reasons'])
         self.assertEqual(q['valuation_label'], 'last_regular_trade')
-        for quoted in ('2026-10-08T18:59:59Z', '2026-10-08T20:00:01Z', '2026-10-07T20:00:00Z'):
+        # S590: closing prints are stamped up to ~90 s after 16:00; 5 min allowed.
+        for quoted in ('2026-10-08T20:00:01Z', '2026-10-08T20:01:29Z', '2026-10-08T20:05:00Z'):
+            q = self.mark('2026-10-09T11:45:00Z', quoted)
+            self.assertTrue(q['valuation_eligible'], (quoted, q['valuation_reasons']))
+            self.assertEqual(q['valuation_label'], 'last_regular_trade')
+        for quoted in ('2026-10-08T18:59:59Z', '2026-10-08T20:05:01Z', '2026-10-08T20:30:00Z',
+                       '2026-10-07T20:00:00Z'):
             q = self.mark('2026-10-09T11:45:00Z', quoted)
             self.assertFalse(q['valuation_eligible'], quoted)
             self.assertIsNone(q['valuation_label'])

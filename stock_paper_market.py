@@ -37,6 +37,10 @@ NY = ZoneInfo('America/New_York')
 MAX_QUOTE_AGE_SECONDS = 120
 MAX_FUTURE_SECONDS = 5
 MAX_CLOSE_OBSERVATION_AGE_SECONDS = 60 * 60
+# S590 (Buddy, 11-08): the provider stamps most closing prints 1-89 s after the
+# close (SPY exactly at it), so an exact-close bound rejected nearly every company
+# outside regular hours. Accept a regular-session print up to 5 min after close.
+MAX_CLOSE_PRINT_LAG_SECONDS = 5 * 60
 MAX_BYTES = 2_000_000
 SOURCE = 'Yahoo public chart'
 CALENDAR_SOURCE = 'https://www.nyse.com/trade/hours-calendars'
@@ -339,8 +343,9 @@ def validate_mark(quote, now=None):
 
     Fetch evidence must still be <=120 seconds old. During regular hours only
     the usual fresh observation is eligible. At other times require a trade in
-    the final hour of the latest completed regular session, through its exact
-    close. This is an explicitly dated last-trade mark, not a current quote;
+    the final hour of the latest completed regular session, through its close
+    print (stamped up to 5 min after the close, S590). This is an explicitly
+    dated last-trade mark, not a current quote;
     only a timestamp equal to the close receives the close label. Uncovered
     calendar years and missing/old evidence produce no portfolio value.
     """
@@ -371,7 +376,7 @@ def validate_mark(quote, now=None):
         closed = _at(session['close'])
         quoted = _at(out['quote_at']) if out.get('quote_at') else None
         if (quoted is None or not closed - timedelta(seconds=MAX_CLOSE_OBSERVATION_AGE_SECONDS)
-                <= quoted <= closed):
+                <= quoted <= closed + timedelta(seconds=MAX_CLOSE_PRINT_LAG_SECONDS)):
             reasons.append('latest_completed_session_quote_missing')
         if closed > at:
             reasons.append('valuation_session_not_complete')
