@@ -863,6 +863,12 @@ def bump_count(state: dict, sender_name: str):
 def is_confirmation(name: str, subject: str, body: str) -> list:
     """Returns the open promises this message confirms ([] if it is not one)."""
     try:
+        # S590: only a reply can confirm. Bill's NEW 11-07 email "Research"
+        # (snow-plow contacts) shared a bare subject with the open Amazon
+        # "Research " promise, was filed as its confirmation, and was never
+        # handled as the new request it was.
+        if not re.match(r"\s*(re|aw|antw|res)\s*(\[\d+\])?\s*:", subject or "", re.I):
+            return []
         own_words = task_solver.strip_quoted_reply(body or "")
         if "?" in own_words:
             return []
@@ -1530,6 +1536,14 @@ def selftest() -> int:
                                   "> On Aug 25, CUMULUS wrote: > send the 224") == [])
             check("another client's reply on a same-named thread is not",
                   is_confirmation("aggie", "Re: " + SUBJ, "yes go ahead") == [])
+            check("S590: a NEW email sharing only the subject is not a confirmation",
+                  is_confirmation("bill", SUBJ, "Look for people in Philadelphia "
+                                  "offering snow plow services.") == [])
+            check("S590: other reply prefixes still confirm",
+                  len(is_confirmation("bill", "RE[2]: " + SUBJ, "yes go ahead")) == 1
+                  and len(is_confirmation("bill", "AW: " + SUBJ, "yes go ahead")) == 1)
+            check("S590: a forward is not a confirmation",
+                  is_confirmation("bill", "Fwd: " + SUBJ, "yes go ahead") == [])
 
             _cp.close_promise(_cp.list_promises(state="open")[0]["id"], by="test")
             check("once delivered, the same reply is no longer a confirmation",
