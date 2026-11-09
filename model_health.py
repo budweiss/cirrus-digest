@@ -312,6 +312,13 @@ CANDIDATES = {
 }
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def tg(msg, _creds=None, _open=None):
     """S576: Telegram's legacy Markdown answers 400 to one stray `_ * [`, and
     this used to swallow that, losing the whole alert (intake.py had the same
@@ -330,12 +337,13 @@ def tg(msg, _creds=None, _open=None):
         try:
             _open(f"https://api.telegram.org/bot{tok}/sendMessage",
                   data=urllib.parse.urlencode(fields).encode(), timeout=15)
-            return
+            return _outbox(msg, True, tok)
         except urllib.error.HTTPError as e:
             if e.code != 400:          # only a formatting rejection is worth a plain retry
-                return
+                return _outbox(msg, False, tok)
         except Exception:
-            return
+            return _outbox(msg, False, tok)
+    _outbox(msg, False, tok)     # both modes refused
 
 
 def node_name():

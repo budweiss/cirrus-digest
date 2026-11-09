@@ -451,6 +451,13 @@ def fetch_candidates(creds: dict) -> tuple:
 
 
 # ── Alerting ─────────────────────────────────────────────────────────────────
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(msg: str) -> bool:
     try:
         creds = json.loads(CREDS_PATH.read_text())
@@ -461,8 +468,13 @@ def telegram(msg: str) -> bool:
         data = urllib.parse.urlencode({"chat_id": user, "text": msg}).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return bool(json.loads(r.read()).get("ok"))
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                ok = bool(json.loads(r.read()).get("ok"))
+        except Exception:
+            ok = False
+        _outbox(msg, ok, token)
+        return ok
     except Exception:
         return False
 

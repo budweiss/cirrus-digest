@@ -388,6 +388,13 @@ def deliver(state, msgs, send, now=None):
     state["sent_log"] = log
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(text, creds=None):
     """Plain text on purpose: no Markdown 400s (S576)."""
     try:
@@ -402,8 +409,10 @@ def telegram(text, creds=None):
     try:
         urllib.request.urlopen("https://api.telegram.org/bot%s/sendMessage" % tok,
                                data=data, timeout=15).read()
+        _outbox(text, True, tok)
         return True
     except Exception:  # noqa: BLE001 -- the exception text can carry the URL
+        _outbox(text, False, tok)
         return False
 
 

@@ -591,6 +591,13 @@ def send_ack(to_addr: str, rec: dict, creds: dict, orig_subject: str) -> bool:
         log=lambda m: log(f"ack to {to_addr}: {m}"))
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(text: str, creds: dict) -> bool:
     """Send to Buddy. Tries Markdown first; on HTTP 400 (Telegram rejects
     unbalanced _/*/` entities) retries as plain text — same pattern as
@@ -612,14 +619,16 @@ def telegram(text: str, creds: dict) -> bool:
 
     base = {"chat_id": int(chat), "text": text}
     try:
-        return _post({**base, "parse_mode": "Markdown"})
+        ok = _post({**base, "parse_mode": "Markdown"})
     except Exception as e:
         log(f"telegram markdown send failed ({e}) — retrying plain")
         try:
-            return _post(base)
+            ok = _post(base)
         except Exception as e2:
             log(f"telegram send failed: {e2}")
-            return False
+            ok = False
+    _outbox(text, ok, token)
+    return ok
 
 
 def _notify(text, creds: dict) -> int:

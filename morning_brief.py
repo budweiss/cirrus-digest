@@ -524,6 +524,13 @@ def tg_chunks(text, limit=3900):
     return parts or [""]
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def send_telegram(text):
     if not TG_TOKEN or not TG_USER:
         return "telegram: no token/user configured — skipped"
@@ -544,7 +551,9 @@ def send_telegram(text):
             if ok:
                 break
         else:
+            _outbox(text, False, TG_TOKEN)
             return "telegram: failed"
+    _outbox(text, True, TG_TOKEN)
     if len(parts) == 1:
         return "telegram: sent"
     return f"telegram: sent ({len(parts)} parts)"

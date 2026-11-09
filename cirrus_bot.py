@@ -222,6 +222,13 @@ def split_for_telegram(text, max_len=TELEGRAM_MAX_LEN):
         chunks.append(remaining)
     return chunks or [text]
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def send_message(chat_id, text):
     # Split long messages into multiple sequential messages BEFORE calling
     # sendMessage — Telegram rejects >4096-char messages with HTTP 400.
@@ -229,6 +236,7 @@ def send_message(chat_id, text):
     total = len(chunks)
     if total > 1:
         log(f"send_message: splitting {len(text)}-char message into {total} chunks")
+    delivered = True
     for n, chunk in enumerate(chunks, 1):
         result = api_call("sendMessage", {
             "chat_id": chat_id,
@@ -246,10 +254,18 @@ def send_message(chat_id, text):
             # a successful plain-text retry left ONLY the error line in
             # bot.log, so the morning brief counted a delivered message as a
             # failure ("2 error line(s)", 2026-09-12).
+            delivered = delivered and bool(retry.get("ok"))
             if retry.get("ok"):
                 log("sendMessage: markdown rejected — delivered as plain text")
         if n < total:
             time.sleep(0.5)
+    return delivered
+
+
+def send_alert(chat_id, text):
+    """A message the bot starts on its own (not a reply to Buddy): also kept
+    in the Telegram outbox for Telewarden (S592)."""
+    _outbox(text, send_message(chat_id, text), BOT_TOKEN)
 
 def folder_size_gb(path: Path) -> float:
     if not path.exists():
@@ -601,7 +617,7 @@ def check_heartbeats():
     if missed_return:
         if not _hb_watch["stale_alerted"]:
             _hb_watch["stale_alerted"] = True
-            send_message(ALLOWED_ID, "⚠️ MacBook planned offline window expired; no heartbeat since the expected return. Check the MacBook or extend its offline window.")
+            send_alert(ALLOWED_ID, "⚠️ MacBook planned offline window expired; no heartbeat since the expected return. Check the MacBook or extend its offline window.")
         return
     if availability["mode"] == "expired" and hb_time >= availability["until"]:
         clear_returned_window(availability)
@@ -631,7 +647,7 @@ def check_heartbeats():
             return
         if not _hb_watch["stale_alerted"]:
             _hb_watch["stale_alerted"] = True
-            send_message(ALLOWED_ID,
+            send_alert(ALLOWED_ID,
                 f"⚠️ *MacBook watchdog is silent* — last heartbeat "
                 f"{int(age_min)} min ago (status: {hb.get('status','?')}).\n"
                 f"The Cowork runner + cookie-sync are likely down too.\n"
@@ -641,14 +657,14 @@ def check_heartbeats():
 
     if _hb_watch["stale_alerted"]:
         _hb_watch["stale_alerted"] = False
-        send_message(ALLOWED_ID, "✅ MacBook watchdog heartbeat is back.")
+        send_alert(ALLOWED_ID, "✅ MacBook watchdog heartbeat is back.")
 
     # Fresh heartbeat with a self-heal / degradation report → surface it once.
     # ("sleeping" is a deliberate state, not a fault — never report it here.)
     if hb.get("status") not in ("ok", "sleeping") and hb.get("ts") != _hb_watch["last_reported_ts"]:
         _hb_watch["last_reported_ts"] = hb.get("ts", "")
         icon = "🔧" if hb.get("status") == "repaired" else "⚠️"
-        send_message(ALLOWED_ID,
+        send_alert(ALLOWED_ID,
             f"{icon} *MacBook self-heal report* ({hb.get('status')}):\n"
             f"{hb.get('note','')[:350]}")
 
@@ -1909,7 +1925,7 @@ Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Ris
     # Notify Buddy in Telegram so proposals don't pile up unnoticed between
     # Cowork sessions. Sends directly to ALLOWED_ID (Buddy's private chat).
     try:
-        send_message(ALLOWED_ID,
+        send_alert(ALLOWED_ID,
             f"📝 *New proposal generated:* `{path.name}`\n\n"
             f"_{detail[:150]}_\n\n"
             f"Review with `/proposals` or in your next Cowork session.")

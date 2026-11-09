@@ -410,6 +410,13 @@ def ticket_create(requester: str, projects, title: str, detail: str = "",
     return ticket
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def _notify_ticket(requester, title, status, tid, pd):
     """Telegram, best-effort. Bot token goes in the POST body, never the URL —
     a URL is argv and that is how a token leaked on 2026-08-22 (T21)."""
@@ -425,8 +432,13 @@ def _notify_ticket(requester, title, status, tid, pd):
            f"Nothing is blocked on the client's side \u2014 they got a reply. "
            f"This is the part that needs you.")
     data = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
-    urllib.request.urlopen(urllib.request.Request(
-        f"https://api.telegram.org/bot{tok}/sendMessage", data=data), timeout=20)
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{tok}/sendMessage", data=data), timeout=20)
+    except Exception:
+        _outbox(msg, False, tok)
+        raise
+    _outbox(msg, True, tok)
 
 
 # S539: until now nothing closed a ticket, so "queued" said nothing about

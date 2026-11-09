@@ -133,6 +133,13 @@ def status(now=None) -> dict:
     return live
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def _alert(msg):
     """Best-effort Telegram alert (same pattern as model_health.tg). Never raises."""
     try:
@@ -143,8 +150,13 @@ def _alert(msg):
             return
         data = urllib.parse.urlencode(
             {"chat_id": uid, "text": msg, "parse_mode": "Markdown"}).encode()
-        urllib.request.urlopen(
-            f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+        try:
+            urllib.request.urlopen(
+                f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+        except Exception:
+            _outbox(msg, False, tok)
+            raise
+        _outbox(msg, True, tok)
     except Exception:
         pass
 

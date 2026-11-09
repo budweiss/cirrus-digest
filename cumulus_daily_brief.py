@@ -355,6 +355,13 @@ def compose():
     return subject, "\n".join(lines)
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def send_telegram(text, creds):
     token = creds.get("telegram_bot_token", "")
     user = str(creds.get("telegram_user_id", "")).strip()
@@ -364,7 +371,7 @@ def send_telegram(text, creds):
     # S382: same fix as morning_brief.py — send long bodies as SEQUENTIAL
     # parts (split on a line boundary under the cap) instead of clipping the
     # tail off at 3900 chars and tagging it "(truncated)".
-    parts = []
+    body, parts = text, []   # the loop below consumes text
     while text:
         if len(text) <= 3900:
             parts.append(text)
@@ -393,7 +400,9 @@ def send_telegram(text, creds):
             if ok:
                 break
         else:
+            _outbox(body, False, token)
             return "telegram: failed"
+    _outbox(body, True, token)
     if len(parts) == 1:
         return "telegram: sent"
     return f"telegram: sent ({len(parts)} parts)"

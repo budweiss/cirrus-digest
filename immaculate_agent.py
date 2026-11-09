@@ -200,6 +200,13 @@ def _load_creds():
     return json.loads(CREDS_PATH.read_text())
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def send_telegram(message):
     """To Buddy only. Returns "sent" or "FAILED: ..." -- never raises, so a
     failed alert cannot take the run down with it. Also used by the tick."""
@@ -214,8 +221,10 @@ def send_telegram(message):
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             r.read()
+        _outbox(message, True, token)
         return "sent"
     except (urllib.error.URLError, OSError) as e:
+        _outbox(message, False, token)
         return f"FAILED: {type(e).__name__}"
 
 

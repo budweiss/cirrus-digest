@@ -59,6 +59,13 @@ def _refusal(e):
         return ""
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(text):
     try:
         creds = json.loads((DIGEST_DIR / "config/credentials.json").read_text())
@@ -71,6 +78,7 @@ def telegram(text):
             headers={"Content-Type": "application/json",
                      "User-Agent": "CirrusJobsCheck/1.0"})
         urllib.request.urlopen(req, timeout=30).read()
+        _outbox(text, True, tok)
         return True
     except Exception as e:
         # S161: job output breaks Markdown — a square-bracketed error line
@@ -86,10 +94,12 @@ def telegram(text):
                          "User-Agent": "CirrusJobsCheck/1.0"})
             urllib.request.urlopen(req, timeout=30).read()
             print("telegram: Markdown 400 — sent as plain text instead")
+            _outbox(text, True, tok)
             return True
         except Exception as e2:
             why = _refusal(e2)
             print("telegram send failed:", e2, ("— " + why) if why else "")
+            _outbox(text, False, locals().get("tok"))
             return False
 
 

@@ -79,6 +79,13 @@ def log(msg):
 
 
 # ── independent Telegram send (works when the bot is down) ────────────────────
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(text: str) -> bool:
     try:
         creds = json.loads(CREDS_PATH.read_text())
@@ -94,9 +101,11 @@ def telegram(text: str) -> bool:
             headers={"Content-Type": "application/json",
                      "User-Agent": "CirrusWatchdog/1.0"})
         urllib.request.urlopen(req, timeout=30).read()
+        _outbox(text, True, token)
         return True
     except Exception as e:
         log(f"telegram send failed: {e}")
+        _outbox(text, False, token)
         return False
 
 

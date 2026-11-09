@@ -44,7 +44,8 @@ class AvailabilityTests(unittest.TestCase):
                  "macbook_availability": lambda: window,
                  "macbook_overdue": overdue,
                  "clear_returned_window": lambda expected: None,
-                 "send_message": lambda *args: calls.append(args)}
+                 "send_message": lambda *args: calls.append(args),
+                 "send_alert": lambda *args: calls.append(args)}   # S592: alerts go via send_alert
         tree = ast.parse(Path(__file__).with_name("cirrus_bot.py").read_text())
         fn = next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == "check_heartbeats")
         exec(compile(ast.Module(body=[fn], type_ignores=[]), "bot-check", "exec"), scope)

@@ -267,6 +267,13 @@ def decide(prev, bad_now):
     return {"bad": False}, "none"
 
 
+try:
+    from telegram_outbox import record as _outbox
+except ImportError:  # not deployed beside this copy: send exactly as before
+    def _outbox(*_a):
+        pass
+
+
 def telegram(msg):
     try:
         creds = json.loads(CREDS_PATH.read_text())
@@ -275,8 +282,13 @@ def telegram(msg):
             return False
         import urllib.parse
         data = urllib.parse.urlencode({"chat_id": user, "text": msg}).encode()
-        urllib.request.urlopen(
-            f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20)
+        try:
+            urllib.request.urlopen(
+                f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20)
+        except Exception:
+            _outbox(msg, False, token)
+            raise
+        _outbox(msg, True, token)
         return True
     except Exception:
         return False
