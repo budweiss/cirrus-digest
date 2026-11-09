@@ -10,7 +10,7 @@ class GroundingTests(unittest.TestCase):
         src={'id':'1','url':'https://vendor.test/pricing','quote':'Batch conversion costs $2 per GB including input and output bytes.'}
         good={'name':'Batch converter','evidence_id':'1','evidence_quote':'fabricated model quote','demand_evidence':'fabricated claim','why_now':'Stop if fewer than half the buyers report unusable output.'}
         bad=dict(good,name='Unknown source',evidence_id='99')
-        call=SimpleNamespace(best_answer=lambda *a,**k: ('fixture',json.dumps({'ideas':[good,bad,dict(good,name='Unsupported API',autonomous_loop='Apply arbitrary vector deltas through Transloadit.')]})))
+        call=SimpleNamespace(best_answer=lambda *a,**k: ('fixture',json.dumps({'ideas':[good,bad,dict(good,name='Unsupported API',autonomous_loop='Apply arbitrary vector deltas through Transloadit.'),dict(bad,name='Another missing source')]})))
         with patch.object(B,'demand_sources',return_value=[src]),patch.dict('sys.modules',{'ensemble':call}):
             rows=B.generate(B.LENSES[0],{})
         self.assertEqual(len(rows),1)

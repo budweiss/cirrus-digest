@@ -158,7 +158,17 @@ def _body(r):
     if not isinstance(r, dict) or not {"case", "system", "user"} <= set(r):
         return None
     mt = r.get("max_tokens") or MAX_TOKENS_DEFAULT.get(r.get("task", ""))
-    return {"case": r["case"], "system": r["system"], "user": r["user"], "max_tokens": mt} if mt else None
+    if not mt:
+        return None
+    body = {"case": r["case"], "system": r["system"], "user": r["user"], "max_tokens": mt}
+    if "private_workflow_input" in r or "private_workflow_version" in r:
+        if (r.get("private_workflow_version") != "public-generation-private-review-v1"
+                or not isinstance(r.get("private_workflow_input"), str)
+                or not r["private_workflow_input"].strip()):
+            return None
+        body.update(private_workflow_input=r["private_workflow_input"],
+                    private_workflow_version=r["private_workflow_version"])
+    return body
 
 
 def build_manifest(projects, providers, served, index, bodies):
@@ -203,7 +213,7 @@ def qualification_shape_valid(case, text):
     The events route retains its separately authored wrapper allowance.
     """
     import foundation_contracts as F
-    task, user = case['task'], case.get('user', '')
+    task, user = case['task'], case.get('private_workflow_input', case.get('user', ''))
     if not isinstance(text, str) or not text.strip():
         return False
     if task in ('billsnow', 'business-idea-estimate', 'research:decompose',
@@ -264,6 +274,14 @@ def run_provider(manifest_path, provider, out_path, session):
                          strict_accounting=True)
             health = H.observe(c, provider) if private else H.observe_cloud(c, provider)
             delivered = raw
+            normalization_ok = True
+            if (case['task'] == 'business-idea-ideate'
+                    and case.get('private_workflow_version') == 'public-generation-private-review-v1'):
+                from business_idea_ideate import normalize_demand_evidence
+                prepared = normalize_demand_evidence(raw)
+                normalization_ok = prepared is not None
+                delivered = prepared if normalization_ok else raw
+                row.update(raw_response=raw, format_normalized=normalization_ok and prepared != raw)
             if case['task'] == 'alopecia-brief':
                 prepared = F.prepare_medical_brief(raw, case['user'])
                 delivered = prepared if prepared is not None else raw
@@ -271,7 +289,7 @@ def run_provider(manifest_path, provider, out_path, session):
                            format_normalized=delivered != raw)
             row.update(response=delivered, model=L.last_model(), finish=L.last_finish_reason(), usage=L._LAST.usage,
                        health=health)
-            row["shape_valid"] = qualification_shape_valid(case, delivered)
+            row["shape_valid"] = normalization_ok and qualification_shape_valid(case, delivered)
             row["identity_valid"] = row["model"] == case["expected_model"]
         except Exception as ex:
             row.update(error_type=type(ex).__name__, error=str(ex)[:300])

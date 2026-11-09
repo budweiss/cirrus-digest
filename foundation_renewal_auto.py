@@ -163,6 +163,17 @@ def complete_cases(path, item, visible):
         # against its old greeting/list rather than the corrected NEW answer.
         evidence = {"SYSTEM_INSTRUCTIONS": row["system"], "INPUT": row["user"],
                     "PRIOR": prior["prior"], "NEW": row["response"]}
+        if "private_workflow_input" in row or "private_workflow_version" in row:
+            if (item["route"] != "foundation:business-idea-ideate"
+                    or row.get("private_workflow_version") != "public-generation-private-review-v1"
+                    or not isinstance(row.get("private_workflow_input"), str)
+                    or not row["private_workflow_input"].strip()):
+                raise ValueError("invalid private workflow evidence")
+            evidence["INPUT"] = row["private_workflow_input"]
+            evidence["ACTUAL_PROVIDER_INPUT"] = row["user"]
+            evidence["EXECUTION_BOUNDARY"] = (
+                "The provider received only ACTUAL_PROVIDER_INPUT. Evaluate NEW against every original "
+                "INPUT and SYSTEM requirement; omitted private context is not an excuse.")
         # Review the JSON the events caller consumes, without discarding prose,
         # fields or invalid items. The original transport remains in the packet.
         if item["route"] == "foundation:halftime:events":
@@ -267,7 +278,7 @@ def current_review_case(case):
     return case.split(" PRIOR:", 1)[0] if case == CONTROL else case
 
 
-def model_review(rule, case):
+def model_review(rule, case, *, local=False):
     fields = new_evidence_fields(case)
     case = current_review_case(case)
     prompt = ("You are reviewing an approved model route against its exact fixture "
@@ -306,12 +317,15 @@ def model_review(rule, case):
     # Both requests execute on C1. Private prompts travel only over SSH stdin.
     payload = {"reviewer": "qwen" if rule == REVIEW_PROMPTS[0] else "gpt-oss",
                "prompt": prompt, "new_span_ids": fields}
-    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1",
-                           "python3 /home/buddy/cirrus-digest/foundation_renewal_auto.py --review-local"],
-                          input=json.dumps(payload).encode(), capture_output=True, timeout=960)
-    if proc.returncode:
-        raise RuntimeError("CUMULUS local reviewer failed")
-    answer = json.loads(proc.stdout)["answer"]
+    if local:
+        answer = local_review(payload)["answer"]
+    else:
+        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "cumulus1",
+                               "python3 /home/buddy/cirrus-digest/foundation_renewal_auto.py --review-local"],
+                              input=json.dumps(payload).encode(), capture_output=True, timeout=960)
+        if proc.returncode:
+            raise RuntimeError("CUMULUS local reviewer failed")
+        answer = json.loads(proc.stdout)["answer"]
     data = json.loads(answer or "null")
     if not isinstance(data, dict) or data.get("verdict") not in ("pass", "fail", "unsure"):
         raise ValueError("local reviewer returned no valid verdict")
