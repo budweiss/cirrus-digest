@@ -7,9 +7,11 @@ The route, Buddy's decisions of 2026-09-23 and 2026-11-08:
   delivered list: same_list_request) -> honest ack -> contact_list.py runs on
   this box -> auto_deliver() sends the workbook to the client, from this box,
   cc Buddy, asking "Is this what you were looking for?" -> Buddy's copy carries
-  a [CL:<run id>] tag and says it was delivered. A run that is held (not an
-  intake request, nothing confirmed, the send failed) still waits for Buddy's
-  SEND reply -> handle_send_reply() -> deliver().
+  a [CL:<run id>] tag and says it was delivered. Buddy 11-08: "make sure all
+  email sent to me were also sent to Bill", so hand-started runs and empty runs
+  go to the client too. Held only when a run was started with auto-delivery off
+  or the send failed; those still wait for Buddy's SEND reply ->
+  handle_send_reply() -> deliver().
 
 What this module guarantees, because a client email cannot be unsent:
   * ONE delivery per run id. The ledger is checked before sending and written
@@ -129,6 +131,17 @@ def cover_note(client: str, meta: dict, summary: dict, box: str) -> tuple:
     shown to Buddy with this build."""
     subj = meta.get("thread_subject") or "Your list"
     subj = subj if subj.lower().startswith("re:") else "Re: " + subj
+    if summary.get("rows") == 0:
+        # S592 (Buddy: everything goes to Bill, who is the expert): an empty
+        # run is still reported to the client, with a request for a lead.
+        return subj, "\n".join([
+            "Hi %s," % client.capitalize(), "",
+            "I searched for %s in %s but could not confirm any from their own web "
+            "pages, so the attached workbook is empty. If you know a directory, an "
+            "association or a few names, reply and I'll search again from those." % (
+                plural(summary.get("entity", "organization")), summary.get("region", "your area")), "",
+            "Could you tell me more about what you're looking for?", "",
+            "— %s (Buddy's assistant)" % box])
     lines = ["Hi %s," % client.capitalize(), "",
              "Here's the list you asked for: %s in %s. It's attached as an Excel "
              "workbook." % (plural(summary.get("entity", "organization")), summary.get("region", "your area")),
@@ -212,26 +225,19 @@ def auto_deliver(run_id: str, creds: dict, senders: dict = None, runs_dir: Path 
                  send=None, now=None, record=None) -> dict:
     """S592 (Buddy 11-08: client-request results go back without him): send a
     finished run straight to its client. deliver()'s result, plus "auto" (was
-    the run eligible). Held, never raised, and the caller tells Buddy why, when
-    the run was not started by intake for an unrefused request (meta
-    auto_deliver), nothing was confirmed, or the send failed. deliver() still
-    allows one delivery per run id."""
+    the run eligible). Held, never raised, and the caller tells Buddy why, only
+    when the run was started with auto-delivery off (meta auto_deliver false)
+    or the send failed. An empty run is delivered with a note that says so.
+    deliver() still allows one delivery per run id."""
     res = {"sent": False, "reason": "", "client": "", "auto": False}
     try:
         meta = json.loads((runs_dir / run_id / "meta.json").read_text())
     except (OSError, ValueError):
         meta = {}
-    if not isinstance(meta, dict) or meta.get("auto_deliver") is not True:
-        res["reason"] = "this run was not started by intake for a client request"
+    if not isinstance(meta, dict) or meta.get("auto_deliver") is False:
+        res["reason"] = "this run was started with auto-delivery off"
         return res
     res["auto"] = True
-    try:
-        rows = int(json.loads((runs_dir / run_id / "summary.json").read_text()).get("rows") or 0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        rows = 0
-    if rows < 1:
-        res["reason"] = "no organization was confirmed, so there is nothing to send"
-        return res
     calls = []
 
     def tracked(*a, **k):
@@ -418,12 +424,13 @@ def new_run_id(client: str, now=None) -> str:
 
 def start_job(client: str, request_text: str, thread_subject: str, message_id: str,
               project_dir: Path = PROJECT_DIR, popen=None, now=None, extra_args=(),
-              auto_deliver: bool = False, extra_meta: dict = None) -> str:
+              auto_deliver: bool = True, extra_meta: dict = None) -> str:
     """One launch per original client message, including manual prior runs.
 
-    auto_deliver (S592): intake passes True for a request its gate did not
-    refuse; the finished run then goes straight to the client (auto_deliver()).
-    Every other launch keeps the review email and Buddy's SEND.
+    auto_deliver (S592): the finished run goes straight to the client
+    (auto_deliver()). Intake passes False for a request its gate refused
+    (it never launches one today); a session can pass False to hold a run
+    for Buddy's SEND.
 
     Keep the reservation after an uncertain launch; never spend or send twice
     by treating a later poll as a new request. Different subjects are irrelevant.
@@ -466,8 +473,8 @@ def matching_jobs(project_dir, client, message_id):
 
 
 def _start_job(client: str, request_text: str, thread_subject: str, message_id: str,
-               project_dir: Path, popen, now, extra_args, auto_deliver=False,
-               extra_meta=None) -> str:
+               project_dir: Path, popen, now, extra_args, auto_deliver,
+               extra_meta) -> str:
     """Write the request and its client/thread record, then launch
     contact_list.py through job_runner, detached, so intake's poll returns at
     once. Returns the run id. Raises DailyCap past the per-client cap."""
@@ -613,8 +620,12 @@ def selftest() -> bool:
         check("a third list job for one client in a day is refused (search budget)", capped and len(launched) == 2)
         start_job("bill", bill, "s", "<m4@x>", proj, fake_popen, datetime(2026, 9, 24, 8, 0, 0))
         check("...and the cap resets the next day", len(launched) == 3)
-        check("a launch without auto_deliver keeps the SEND step (manual runs)",
-              json.loads((proj / REQUESTS_REL / (rid + ".json")).read_text())["auto_deliver"] is False)
+        check("a launch delivers by default, hand-started ones too (Buddy: all mail goes to Bill)",
+              json.loads((proj / REQUESTS_REL / (rid + ".json")).read_text())["auto_deliver"] is True)
+        rid_off = start_job("bill", bill, "s", "<m6@x>", proj, fake_popen, datetime(2026, 9, 26, 8, 0, 0),
+                            auto_deliver=False)
+        check("...and auto_deliver=False holds it for SEND",
+              json.loads((proj / REQUESTS_REL / (rid_off + ".json")).read_text())["auto_deliver"] is False)
         rid5 = start_job("bill", bill, "s", "<m5@x>", proj, fake_popen, datetime(2026, 9, 25, 8, 0, 0),
                          auto_deliver=True, extra_meta={"same_list_of": "cl-prior"})
         rq5 = json.loads((proj / REQUESTS_REL / (rid5 + ".json")).read_text())
@@ -654,17 +665,22 @@ def selftest() -> bool:
         a2 = auto_deliver("cl-a1", creds, senders, auto, send=fake_send, record=rec)
         check("one delivery per run id: a second auto_deliver sends nothing",
               not a2["sent"] and "already delivered" in a2["reason"] and len(sent) == n)
+        mkrun("cl-off", dict(intake_meta, auto_deliver=False))
+        a3 = auto_deliver("cl-off", creds, senders, auto, send=fake_send, record=rec)
+        check("a run started with auto-delivery off is held for SEND",
+              not a3["sent"] and not a3["auto"] and len(sent) == n and delivered("cl-off", auto) is None)
         mkrun("cl-man", {"client": "bill", "thread_subject": "Research"})
-        a3 = auto_deliver("cl-man", creds, senders, auto, send=fake_send, record=rec)
-        check("a run intake did not start for an unrefused request (no auto_deliver) is held",
-              not a3["sent"] and not a3["auto"] and len(sent) == n and delivered("cl-man", auto) is None)
-        mkrun("cl-str", dict(intake_meta, auto_deliver="yes"))
-        check("auto_deliver must be literally true", not auto_deliver("cl-str", creds, senders, auto,
-                                                                       send=fake_send)["sent"])
+        a3b = auto_deliver("cl-man", creds, senders, auto, send=fake_send, record=rec)
+        check("a hand-started run for a client (no flag in its meta) goes to the client",
+              a3b["sent"] and sent[-1]["to"] == "bill@example.com" and len(sent) == n + 1)
         mkrun("cl-zero", intake_meta, rows=0)
+        n = len(sent)
         a4 = auto_deliver("cl-zero", creds, senders, auto, send=fake_send, record=rec)
-        check("a run that confirmed nothing is held, not sent",
-              not a4["sent"] and a4["auto"] and "nothing to send" in a4["reason"] and len(sent) == n)
+        check("an empty run still goes to the client, says nothing was confirmed, and asks for a lead",
+              a4["sent"] and len(sent) == n + 1 and sent[-1]["to"] == "bill@example.com"
+              and "searched for snow plow operators in Philadelphia but could not confirm any" in sent[-1]["body"]
+              and "what you're looking for?" in sent[-1]["body"] and "Here's the list" not in sent[-1]["body"])
+        n = len(sent)
 
         def boom(*a, **k):
             raise ConnectionError("smtp down for bill@example.com")
