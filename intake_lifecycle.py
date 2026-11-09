@@ -129,7 +129,7 @@ def finish(root, row, rec):
         # This closes the intake task, not a claim that a report was delivered.
         state, owner, action = 'noted', 'intake', 'existing report list confirmed; no delivery work'
     elif rec.get('contact_list_run'):
-        state, owner, action = 'working', 'contact_list', 'check job artifact and request send approval'
+        state, owner, action = 'working', 'contact_list', 'check job artifact and automatic delivery status; honor explicit holds'
     elif rec.get('kind') == 'research' and rec.get('topic_queued'):
         state, owner, action = 'working', 'project-research', 'verify topic execution and resulting artifact'
     elif rec.get('auto_applied'):
@@ -168,7 +168,7 @@ def _contact_job_state(root, row, evidence):
                     raise ValueError('Incomplete contact workbook')
             evidence['artifact'] = str(artifact)
             evidence['artifact_sha256'] = hashlib.sha256(artifact.read_bytes()).hexdigest()
-            state, owner, action = 'ready_for_send', 'cowork', 'review existing workbook and obtain specific send approval'
+            state, owner, action = 'ready_for_send', 'cowork', 'check automatic delivery outcome or explicit hold; verify Sent Mail before retry'
         else:
             state, owner, action = 'working', 'contact_list', 'check existing job progress; never launch duplicate'
     return state, owner, action
