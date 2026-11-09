@@ -24,8 +24,9 @@ foundation model, do this?):
            it cites and the value is inside the quote. In S264 a web summarizer
            invented a builder's owner from a customer testimonial; this is the
            check that would have caught it.
-  DELIVER  a workbook with every value's source, emailed to BUDDY for review.
-           Nothing here ever mails a client.
+  DELIVER  a workbook with every value's source. An intake request goes
+           straight to the client, cc Buddy (S592, list_delivery.auto_deliver);
+           Buddy gets a copy, and anything held waits for his SEND.
 
 Page text is data, never instructions: nothing fetched is executed or obeyed.
 
@@ -809,23 +810,40 @@ def summary(p: dict, rows: list) -> dict:
     return {"entity": p["entity"], "region": p["region"], "rows": len(ok), "groups": groups}
 
 
-def review_note(p: dict, rows: list, stats: dict, run_id: str = "", meta: dict = None) -> str:
+def review_note(p: dict, rows: list, stats: dict, run_id: str = "", meta: dict = None,
+                delivery: dict = None) -> str:
+    import list_delivery
     ok = [r for r in rows if r.get("status") == "ok"]
     grp = [r for r in ok if r.get("evidence")]
     meta = meta or {}
-    if meta.get("client"):
+    delivery = delivery or {}
+    who = (meta.get("client") or "").capitalize()
+    thread = meta.get("thread_subject") or "their thread"
+    if delivery.get("sent"):
+        # S592: an intake request went straight to the client (Buddy, 11-08).
+        head = "This contact list has been delivered to %s. Your copy is for the record." % who
+        send_line = ("It went to %s on \"%s\", cc you, asking \"%s\"\n"
+                     "Nothing to do; a SEND reply is refused as already delivered." % (
+                         who, thread, list_delivery.FIT_CHECK))
+        what = "what %s received" % who
+    elif meta.get("client"):
+        head = "A contact list is ready for your review. Nothing has been sent to the client."
         send_line = ("To deliver it to %s (on \"%s\"), reply to this email with just: SEND\n"
-                     "Any other reply, or none, and it stays here." % (
-                         meta["client"].capitalize(), meta.get("thread_subject") or "their thread"))
+                     "Any other reply, or none, and it stays here." % (who, thread))
+        if delivery.get("reason"):
+            send_line = "Held: %s.\n%s" % (delivery["reason"], send_line)
+        what = "exactly what SEND delivers"
     else:
+        head = "A contact list is ready for your review. Nothing has been sent to the client."
         send_line = "No client is attached to this run, so SEND does nothing."
+        what = "exactly what SEND delivers"
     return "\n".join([
-        "A contact list is ready for your review. Nothing has been sent to the client.",
+        head,
         "",
         send_line,
         "",
-        "Attached: contact-list-%s-client.xlsx is exactly what SEND delivers; "
-        "contact-list-%s.xlsx adds the names that could not be confirmed." % (run_id, run_id),
+        "Attached: contact-list-%s-client.xlsx is %s; "
+        "contact-list-%s.xlsx adds the names that could not be confirmed." % (run_id, what, run_id),
         "",
         "Request: %s in %s" % (p["entity"], p["region"]),
         "Confirmed: %d (%s: %d)" % (len(ok), (p.get("group_names") or ["with evidence"])[0], len(grp)),
@@ -976,11 +994,15 @@ def main(argv):
     import mailer
     import list_delivery
     p = result["plan"]
+    # S592: an intake request goes to the client now, no SEND step; anything
+    # held comes to Buddy as before, with the reason.
+    delivery = list_delivery.auto_deliver(run_id, creds) if (meta or {}).get("client") else {}
+    print("delivery: %s" % (delivery.get("reason") or "no client on this run"))
+    head = list_delivery.DELIVERED_SUBJECT if delivery.get("sent") else list_delivery.REVIEW_SUBJECT
     # The [CL:<run id>] tag is how Buddy's SEND reply finds this run again.
     mailer.send(creds["outlook_email"], creds["outlook_password"], TO_EMAIL,
-                "%s %s: %s in %s" % (list_delivery.REVIEW_SUBJECT, list_delivery.run_tag(run_id),
-                                     p["entity"], p["region"]),
-                review_note(p, result["rows"], result["stats"], run_id, meta),
+                "%s %s: %s in %s" % (head, list_delivery.run_tag(run_id), p["entity"], p["region"]),
+                review_note(p, result["rows"], result["stats"], run_id, meta, delivery),
                 attachments=[str(result["client_xlsx"]), str(result["xlsx"])],
                 creds=creds, watch_promises=False)
     return 0
@@ -1211,6 +1233,31 @@ def selftest() -> bool:
                   sc["contact_both"] == 1 and sc["contact_same"] == 1 and sc["group_same"] == 1)
     except ImportError:
         print("  SKIP  workbook checks (openpyxl not installed here)")
+
+    # S592: Buddy's copy says what happened to the client copy.
+    import list_delivery
+    rp = {"entity": "snow plow operator", "region": "Sussex County"}
+    rr = [{"name": "Bro's Hauling", "status": "ok"}]
+    rs = dict(searches=1, fetched=1, fetch_failed=0, local=1, cloud=0, model_failed=0, dropped=0)
+    bm = {"client": "bill", "thread_subject": "Research", "auto_deliver": True}
+    dn = review_note(rp, rr, rs, "cl-1", bm, {"sent": True, "reason": "delivered to bill"})
+    check("review copy of a delivered run: says delivered, asks nothing of Buddy",
+          dn.startswith("This contact list has been delivered to Bill") and list_delivery.FIT_CHECK in dn
+          and "reply to this email with just: SEND" not in dn and "what Bill received" in dn)
+    hn = review_note(rp, rr, rs, "cl-1", bm, {"sent": False, "reason": "the send failed (OSError), "
+                                                                    "so nothing reached the client"})
+    check("review copy of a held run: says why, and SEND still delivers",
+          "Nothing has been sent to the client" in hn and "Held: the send failed (OSError)" in hn
+          and "reply to this email with just: SEND" in hn)
+    check("no delivery result: the old review note, unchanged",
+          review_note(rp, rr, rs, "cl-1", bm) == review_note(rp, rr, rs, "cl-1", bm, {})
+          and "Held:" not in review_note(rp, rr, rs, "cl-1", bm))
+    import inspect
+    msrc = inspect.getsource(main)
+    check("main(): auto_deliver runs before Buddy's copy, and its subject follows the result",
+          0 < msrc.find("list_delivery.auto_deliver(run_id, creds)") < msrc.find("mailer.send(")
+          and "DELIVERED_SUBJECT if delivery.get(\"sent\")" in msrc
+          and msrc.find('"--no-email" in args') < msrc.find("auto_deliver"))
 
     # S591: more planner searches on request, and the foundation model as a
     # second roster reader whose names must still appear on the page.

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""list_delivery.py — deliver a reviewed contact list when Buddy replies SEND (S266).
+"""list_delivery.py — deliver a client's contact list (S266; unattended since S592).
 
-The route, Buddy's decision of 2026-09-23:
+The route, Buddy's decisions of 2026-09-23 and 2026-11-08:
   client asks for a list with contact details (intake: task_solver.wants_deliverable,
-  narrowed here by wants_contact_list) -> honest ack -> contact_list.py runs on
-  this box -> its review email to Buddy carries a [CL:<run id>] tag and says
-  "reply SEND" -> Buddy's SEND reply reaches intake -> handle_send_reply()
-  delivers the workbook to the client, from this box, cc Buddy.
+  narrowed here by wants_contact_list, or a "same list for <place>" reply to a
+  delivered list: same_list_request) -> honest ack -> contact_list.py runs on
+  this box -> auto_deliver() sends the workbook to the client, from this box,
+  cc Buddy, asking "Is this what you were looking for?" -> Buddy's copy carries
+  a [CL:<run id>] tag and says it was delivered. A run that is held (not an
+  intake request, nothing confirmed, the send failed) still waits for Buddy's
+  SEND reply -> handle_send_reply() -> deliver().
 
 What this module guarantees, because a client email cannot be unsent:
   * ONE delivery per run id. The ledger is checked before sending and written
@@ -29,6 +32,8 @@ RUNS_DIR = PROJECT_DIR / "logs/contact_lists"
 SENDERS_PATH = PROJECT_DIR / "config/intake_senders.json"
 CC_ADDR = "Buddy.Weiss@outlook.com"
 REVIEW_SUBJECT = "Contact list ready for review"
+DELIVERED_SUBJECT = "Contact list delivered"
+FIT_CHECK = "Is this what you were looking for?"
 
 TAG_RX = re.compile(r"\[CL:([A-Za-z0-9][A-Za-z0-9._-]{0,63})\]")
 _NO = {"not", "dont", "don", "no", "hold", "wait", "stop", "cancel", "never", "later",
@@ -135,6 +140,7 @@ def cover_note(client: str, meta: dict, summary: dict, box: str) -> tuple:
     lines += ["Each row has the company, a contact where one is published, and a "
               "mailing address, with the web page each came from. The last tab "
               "explains how to print mailing labels from it.", "",
+              FIT_CHECK, "",
               "— %s (Buddy's assistant)" % box]
     return subj, "\n".join(lines)
 
@@ -202,6 +208,163 @@ def deliver(run_id: str, creds: dict, senders: dict, runs_dir: Path = RUNS_DIR,
     return res
 
 
+def auto_deliver(run_id: str, creds: dict, senders: dict = None, runs_dir: Path = RUNS_DIR,
+                 send=None, now=None, record=None) -> dict:
+    """S592 (Buddy 11-08: client-request results go back without him): send a
+    finished run straight to its client. deliver()'s result, plus "auto" (was
+    the run eligible). Held, never raised, and the caller tells Buddy why, when
+    the run was not started by intake for an unrefused request (meta
+    auto_deliver), nothing was confirmed, or the send failed. deliver() still
+    allows one delivery per run id."""
+    res = {"sent": False, "reason": "", "client": "", "auto": False}
+    try:
+        meta = json.loads((runs_dir / run_id / "meta.json").read_text())
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict) or meta.get("auto_deliver") is not True:
+        res["reason"] = "this run was not started by intake for a client request"
+        return res
+    res["auto"] = True
+    try:
+        rows = int(json.loads((runs_dir / run_id / "summary.json").read_text()).get("rows") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        rows = 0
+    if rows < 1:
+        res["reason"] = "no organization was confirmed, so there is nothing to send"
+        return res
+    calls = []
+
+    def tracked(*a, **k):
+        if send is None:
+            import mailer
+            out = mailer.send(*a, **k)
+        else:
+            out = send(*a, **k)
+        calls.append(1)
+        return out
+
+    try:
+        senders = senders if senders is not None else json.loads(SENDERS_PATH.read_text())
+        res.update(deliver(run_id, creds, senders, runs_dir, send=tracked, now=now, record=record))
+    except Exception as e:
+        # Class name only: an SMTP error can carry addresses.
+        if calls:
+            res.update(sent=True, reason="delivered, but the ledger row failed (%s); "
+                                         "do not SEND again" % type(e).__name__)
+        else:
+            res["reason"] = "the send failed (%s), so nothing reached the client" % type(e).__name__
+    return res
+
+
+# ── "same list for <place>" (S592) ──
+# Bill 11-08 11:22 replied to a delivered list with "same list for Sussex
+# County": no list or contact wording, so both detectors missed it. A reply on a
+# thread we delivered a list on, asking for the same list somewhere else, is a
+# list request for the prior run's kind of organization in the new place.
+
+# Up to five words between "same" and the place ("same info", "same list of
+# snow plow operators"), but not "same time / day / way as ...".
+_SAME_RX = re.compile(r"\b(?:the\s+)?(?:same|similar)\s+"
+                      r"(?:(?!(?:time|day|days|week|month|year|as|to|that|rate|price)\b)[a-z]+\s+){0,5}?"
+                      r"(?:but\s+)?(?:for|in|covering)\s+(?P<place>[^.?!\n;,]{2,80})", re.I)
+_PLACE_END = re.compile(r"\s+(?:please|pls|too|also|as well|if|thanks|thank|asap|when|by|"
+                        r"(?:in|as)\s+(?:an?\s+)?(?:excel|spreadsheet|pdf|csv|workbook|word)|"
+                        r"and\s+(?:include|add|send|also|please|can|could|would|i|we|let))\b.*$", re.I)
+_NOT_PLACE = {"me", "us", "him", "her", "them", "my", "our", "your", "his", "their", "now",
+              "today", "tomorrow", "tonight", "next", "later", "reference", "review",
+              "everyone", "everybody", "all", "that", "this", "it", "free", "sure", "a", "an",
+              "excel", "spreadsheet", "pdf", "word", "csv", "email", "format"}
+_ASK = {"can", "could", "would", "will", "please", "pls", "need", "want", "like", "do", "run",
+        "send", "make", "get", "pull", "build", "create", "prepare", "give", "find", "provide",
+        "compile", "repeat", "redo", "produce", "generate", "gather", "research", "search",
+        "look", "put", "share", "email"}
+_LEAD = {"the", "a", "and", "also", "now", "ok", "okay", "great", "thanks", "thank", "you",
+         "hi", "hello", "next", "then", "so", "bill", "buddy"}
+_NEG = {"not", "dont", "don", "no", "never", "already"}
+
+
+def asks_same_list(own_words: str):
+    """The place in "same list for <place>" when the client's own words ask for
+    it, else None. 'I already got the same list for Kent' is not an ask."""
+    text = own_words or ""
+    for m in _SAME_RX.finditer(text):
+        start = max(text.rfind(c, 0, m.start()) for c in ".!?\n") + 1
+        lead = _n(text[start:m.start()]).split()
+        # An ask: only filler before "the same", a request word, or one
+        # imperative verb ("Compile the same ..."); not "We used the same ...".
+        imperative = len(lead) == 1 and not lead[0].endswith("ed")
+        if any(w in _NEG for w in lead) or not (set(lead) <= _LEAD or set(lead) & _ASK or imperative):
+            continue
+        place = " ".join(_PLACE_END.sub("", m.group("place")).split()[:6]).strip(" '\"")
+        if _n(place) and _n(place).split()[0] not in _NOT_PLACE:
+            return place
+    return None
+
+
+def prior_delivery(client: str, subject: str, body: str = "", runs_dir: Path = RUNS_DIR):
+    """The ledgered delivery to `client` on this subject's thread that the reply
+    answers: the one whose kind is quoted first in the body (the email replied
+    to comes first in a quote chain), else the latest. None if the thread never
+    had a list delivered."""
+    import client_promises
+    key = client_promises.thread_key(subject or "")
+    p = _ledger(runs_dir)
+    if not key or not p.exists():
+        return None
+    rows = []
+    for line in p.read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(row, dict) and row.get("event") == "delivered" and row.get("run_id")
+                and row.get("client") == client
+                and client_promises.thread_key(row.get("subject") or "") == key):
+            rows.append(row)
+    if not rows:
+        return None
+    quoted, pos = _n(body), {}
+    for row in rows:
+        try:
+            entity = _n(json.loads((runs_dir / row["run_id"] / "plan.json").read_text())["entity"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        hits = [quoted.find(t) for t in {entity, _n(plural(entity))} if t and t in quoted]
+        if hits:
+            pos[row["run_id"]] = min(hits)
+    if pos:
+        first = min(pos.values())
+        rows = [r for r in rows if pos.get(r["run_id"]) == first]
+    return max(rows, key=lambda r: r.get("ts") or "")
+
+
+def same_list_request(client: str, subject: str, own_words: str, body: str = "",
+                      runs_dir: Path = RUNS_DIR):
+    """{"request", "prior_run", "place"} for a "same list for <place>" reply on a
+    delivered-list thread, else None. The request names the prior run's kind
+    of organization (plan.json entity) and split, in the new place."""
+    place = asks_same_list(own_words)
+    if not place:
+        return None
+    prior = prior_delivery(client, subject, body, runs_dir)
+    if not prior:
+        return None
+    try:
+        plan = json.loads((runs_dir / prior["run_id"] / "plan.json").read_text())
+        entity = plan["entity"].strip()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not entity:
+        return None
+    lines = ["The same list as before, for a new place: every %s in %s." % (entity, place),
+             "For each one: the company name, a point of contact with their title, "
+             "the phone number and the mailing address."]
+    if plan.get("group_question") and plan.get("group_names"):
+        lines.append("Split the list the same way as before: %s" % plan["group_question"])
+    lines.append('The client wrote: "%s"' % " ".join((own_words or "").split())[:300])
+    return {"request": "\n".join(lines), "prior_run": prior["run_id"], "place": place}
+
+
 def handle_send_reply(subject: str, own_words: str, creds: dict, senders: dict = None,
                       runs_dir: Path = RUNS_DIR, send=None, log=print, record=None):
     """Intake's entry point for a message from BUDDY. Returns None when the
@@ -251,8 +414,13 @@ def new_run_id(client: str, now=None) -> str:
 
 
 def start_job(client: str, request_text: str, thread_subject: str, message_id: str,
-              project_dir: Path = PROJECT_DIR, popen=None, now=None, extra_args=()) -> str:
+              project_dir: Path = PROJECT_DIR, popen=None, now=None, extra_args=(),
+              auto_deliver: bool = False, extra_meta: dict = None) -> str:
     """One launch per original client message, including manual prior runs.
+
+    auto_deliver (S592): intake passes True for a request its gate did not
+    refuse; the finished run then goes straight to the client (auto_deliver()).
+    Every other launch keeps the review email and Buddy's SEND.
 
     Keep the reservation after an uncertain launch; never spend or send twice
     by treating a later poll as a new request. Different subjects are irrelevant.
@@ -270,7 +438,7 @@ def start_job(client: str, request_text: str, thread_subject: str, message_id: s
         if matches:
             return next(iter(matches))
         return _start_job(client, request_text, thread_subject, message_id,
-                          project_dir, popen, now, extra_args)
+                          project_dir, popen, now, extra_args, auto_deliver, extra_meta)
 
 
 def matching_jobs(project_dir, client, message_id):
@@ -295,7 +463,8 @@ def matching_jobs(project_dir, client, message_id):
 
 
 def _start_job(client: str, request_text: str, thread_subject: str, message_id: str,
-               project_dir: Path, popen, now, extra_args) -> str:
+               project_dir: Path, popen, now, extra_args, auto_deliver=False,
+               extra_meta=None) -> str:
     """Write the request and its client/thread record, then launch
     contact_list.py through job_runner, detached, so intake's poll returns at
     once. Returns the run id. Raises DailyCap past the per-client cap."""
@@ -312,9 +481,10 @@ def _start_job(client: str, request_text: str, thread_subject: str, message_id: 
     if len(list(req_dir.glob(who + "-*.txt"))) >= MAX_JOBS_PER_CLIENT_PER_DAY:
         raise DailyCap("%s already has %d list job(s) today" % (client, MAX_JOBS_PER_CLIENT_PER_DAY))
     (req_dir / (run_id + ".txt")).write_text(request_text.strip() + "\n")
-    (req_dir / (run_id + ".json")).write_text(json.dumps({
+    (req_dir / (run_id + ".json")).write_text(json.dumps(dict(extra_meta or {}, **{
         "client": client, "thread_subject": thread_subject, "message_id": message_id,
-        "requested": now.isoformat(timespec="seconds")}, indent=1))
+        "requested": now.isoformat(timespec="seconds"), "auto_deliver": bool(auto_deliver)}),
+        indent=1))
     venv = project_dir / ".venv/bin/python"
     py = str(venv) if venv.exists() else sys.executable
     (popen or subprocess.Popen)(
@@ -440,6 +610,139 @@ def selftest() -> bool:
         check("a third list job for one client in a day is refused (search budget)", capped and len(launched) == 2)
         start_job("bill", bill, "s", "<m4@x>", proj, fake_popen, datetime(2026, 9, 24, 8, 0, 0))
         check("...and the cap resets the next day", len(launched) == 3)
+        check("a launch without auto_deliver keeps the SEND step (manual runs)",
+              json.loads((proj / REQUESTS_REL / (rid + ".json")).read_text())["auto_deliver"] is False)
+        rid5 = start_job("bill", bill, "s", "<m5@x>", proj, fake_popen, datetime(2026, 9, 25, 8, 0, 0),
+                         auto_deliver=True, extra_meta={"same_list_of": "cl-prior"})
+        rq5 = json.loads((proj / REQUESTS_REL / (rid5 + ".json")).read_text())
+        check("intake's launch records auto_deliver and the prior run; identity fields win",
+              rq5["auto_deliver"] is True and rq5["same_list_of"] == "cl-prior"
+              and rq5["client"] == "bill" and rq5["message_id"] == "<m5@x>")
+
+        # ── S592: auto_deliver (Buddy 11-08: results go back without him) ──
+        check("the cover note asks the fit question", FIT_CHECK in cover_note("bill", {}, {}, "CUMULUS")[1])
+        auto = Path(td) / "auto"
+        auto.mkdir()
+
+        def mkrun(run_id, meta, rows=3, plan=None):
+            d = auto / run_id
+            d.mkdir()
+            (d / "meta.json").write_text(json.dumps(meta))
+            (d / "summary.json").write_text(json.dumps({"entity": "snow plow operator",
+                                                        "region": "Philadelphia", "rows": rows,
+                                                        "groups": []}))
+            (d / ("contact-list-%s-client.xlsx" % run_id)).write_bytes(b"x")
+            (d / "plan.json").write_text(json.dumps(plan or {"entity": "snow plow operator",
+                                                             "region": "Philadelphia"}))
+        intake_meta = {"client": "bill", "thread_subject": "Research", "auto_deliver": True}
+        mkrun("cl-a1", intake_meta)
+        n = len(sent)
+        a1 = auto_deliver("cl-a1", creds, senders, auto, send=fake_send, record=rec)
+        check("an intake run goes straight to the client, cc Buddy, workbook attached, fit question asked",
+              a1["sent"] and a1["auto"] and len(sent) == n + 1 and sent[-1]["to"] == "bill@example.com"
+              and sent[-1]["kw"]["cc"] == CC_ADDR and sent[-1]["kw"]["attachments"][0].endswith("cl-a1-client.xlsx")
+              and FIT_CHECK in sent[-1]["body"] and sent[-1]["subject"] == "Re: Research")
+        check("...and is ledgered, so Buddy's SEND on his copy is refused",
+              delivered("cl-a1", auto) is not None
+              and not handle_send_reply("Re: %s %s: x" % (DELIVERED_SUBJECT, run_tag("cl-a1")), "SEND",
+                                        creds, senders, auto, send=fake_send, log=lambda m: None,
+                                        record=rec)["sent"])
+        n = len(sent)
+        a2 = auto_deliver("cl-a1", creds, senders, auto, send=fake_send, record=rec)
+        check("one delivery per run id: a second auto_deliver sends nothing",
+              not a2["sent"] and "already delivered" in a2["reason"] and len(sent) == n)
+        mkrun("cl-man", {"client": "bill", "thread_subject": "Research"})
+        a3 = auto_deliver("cl-man", creds, senders, auto, send=fake_send, record=rec)
+        check("a run intake did not start for an unrefused request (no auto_deliver) is held",
+              not a3["sent"] and not a3["auto"] and len(sent) == n and delivered("cl-man", auto) is None)
+        mkrun("cl-str", dict(intake_meta, auto_deliver="yes"))
+        check("auto_deliver must be literally true", not auto_deliver("cl-str", creds, senders, auto,
+                                                                       send=fake_send)["sent"])
+        mkrun("cl-zero", intake_meta, rows=0)
+        a4 = auto_deliver("cl-zero", creds, senders, auto, send=fake_send, record=rec)
+        check("a run that confirmed nothing is held, not sent",
+              not a4["sent"] and a4["auto"] and "nothing to send" in a4["reason"] and len(sent) == n)
+
+        def boom(*a, **k):
+            raise ConnectionError("smtp down for bill@example.com")
+        mkrun("cl-fail", intake_meta)
+        a5 = auto_deliver("cl-fail", creds, senders, auto, send=boom, record=rec)
+        check("a failed send is held, ledgers nothing, and names only the error class",
+              not a5["sent"] and "send failed (ConnectionError)" in a5["reason"]
+              and "bill@" not in a5["reason"] and delivered("cl-fail", auto) is None)
+        led = Path(td) / "badledger"
+        led.mkdir()
+
+        def send_then_break(*a, **k):
+            fake_send(*a, **k)
+            (led / "deliveries.jsonl").mkdir()      # so the ledger write after it fails
+            return True
+        d6 = led / "cl-led"
+        d6.mkdir()
+        for f in ("meta.json", "summary.json", "contact-list-cl-fail-client.xlsx"):
+            (d6 / f.replace("cl-fail", "cl-led")).write_bytes((auto / "cl-fail" / f).read_bytes())
+        n = len(sent)
+        a6 = auto_deliver("cl-led", creds, senders, led, send=send_then_break, record=rec)
+        check("a send that went out but could not be ledgered says so (never 'send failed')",
+              a6["sent"] and "do not SEND again" in a6["reason"] and len(sent) == n + 1)
+
+        # ── S592: "same list for <place>" replies to a delivered list ──
+        yes = ["same list for Sussex County", "Same list for Sussex County please.",
+               "Thanks! Can you do the same for Kent County?", "same thing in New Castle County too",
+               "I'd like the same list for Sussex County, DE", "Could you also run the same list "
+               "covering Cape May County and include emails",
+               # the shape of Bill's real 11-08 reply: one verb, one noun, county + state
+               "Get the same info for Sussex county Delaware.",
+               "Compile the same list of snow plow operators for Kent County in excel",
+               "Assemble the same list for Kent County"]
+        got = [asks_same_list(t) for t in yes]
+        check("'same list for <place>' asks yield the place: %s" % got,
+              got == ["Sussex County", "Sussex County", "Kent County", "New Castle County",
+                      "Sussex County", "Cape May County", "Sussex county Delaware", "Kent County",
+                      "Kent County"])
+        no = ["I already got the same list for Kent County from the county.",
+              "We used the same list for Sussex County last year", "Don't do the same for Kent County",
+              "Can you send the same list for me", "same list for now is fine",
+              "Please put the same list in excel", "Send the list for Sussex County",
+              "Plowed the same lots in Kent County", "Send it at the same time in the morning"]
+        check("not an ask, or not a place: %s" % [asks_same_list(t) for t in no],
+              all(asks_same_list(t) is None for t in no))
+        thread = Path(td) / "thread"
+        thread.mkdir()
+        for rid_, ent, ts in (("cl-ops", "snow plow operator", "2026-11-08T11:19:00"),
+                              ("cl-dlr", "snow plow dealer", "2026-11-08T10:38:00"),
+                              ("cl-old", "home builder", "2026-09-24T10:00:00")):
+            (thread / rid_).mkdir()
+            (thread / rid_ / "plan.json").write_text(json.dumps(
+                {"entity": ent, "region": "Philadelphia",
+                 "group_question": "building now?" if ent == "home builder" else None,
+                 "group_names": ["Yes", "No"] if ent == "home builder" else None}))
+        with (thread / "deliveries.jsonl").open("w") as f:
+            for rid_, subj_, ts in (("cl-ops", "Re: Research", "2026-11-08T11:19:00"),
+                                    ("cl-dlr", "Re: Research", "2026-11-08T10:38:00"),
+                                    ("cl-old", "Re: Delaware leads", "2026-09-24T10:00:00")):
+                f.write(json.dumps({"event": "delivered", "run_id": rid_, "client": "bill",
+                                    "subject": subj_, "ts": ts}) + "\n")
+        sl = same_list_request("bill", "Re: Research", "same list for Sussex County",
+                               "same list for Sussex County", thread)
+        check("Bill's 11-08 reply: the latest list on his thread, the new place, his words",
+              sl and sl["prior_run"] == "cl-ops" and sl["place"] == "Sussex County"
+              and "every snow plow operator in Sussex County" in sl["request"]
+              and "Philadelphia" not in sl["request"]
+              and wants_contact_list("", sl["request"]))
+        quoted = ("same list for Sussex County > On Nov 8, CUMULUS wrote: > Here's the list you asked "
+                  "for: snow plow dealers in Philadelphia. > > On Nov 8 > snow plow operators")
+        check("a reply quoting the dealer list gets the dealers, not the later operator list",
+              same_list_request("bill", "RE: Research", "same list for Sussex County", quoted,
+                                thread)["prior_run"] == "cl-dlr")
+        ob = same_list_request("bill", "Re: Delaware leads", "Same list for Kent County please", "", thread)
+        check("the prior run's split carries over", ob and "building now?" in ob["request"])
+        check("no delivered list on that thread -> not a same-list request",
+              same_list_request("bill", "Re: Snow totals", "same list for Sussex County", "", thread) is None)
+        check("another client's delivered list never counts",
+              same_list_request("aggie", "Re: Research", "same list for Sussex County", "", thread) is None)
+        check("no ask in the reply -> None even on a delivered thread",
+              same_list_request("bill", "Re: Research", "Thanks, got it", "", thread) is None)
     print("selftest: %s" % ("OK" if ok else "FAILED"))
     return ok
 

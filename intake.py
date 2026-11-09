@@ -520,6 +520,11 @@ def ack_body(rec: dict) -> str:
                 f"research queue:\n\n    {rec['title']}\n\n"
                 "It'll be covered in an upcoming digest. Send as many topics "
                 f"as you like — one email per topic works best.\n\n— {node}")
+    if rec.get("kind") == "deliverable" and rec.get("contact_list_run"):
+        # S592: the list job delivers on its own now; no review step to promise.
+        return (f"Hi {name},\n\nGot it. We're putting this list together for "
+                "you now. It will come to you by email as soon as it's done."
+                f"\n\n— {node}")
     if rec.get("kind") == "deliverable":
         return (f"Hi {name},\n\nGot it. We're putting this list together for "
                 "you. Buddy reviews every list before it goes out, so you'll "
@@ -1159,6 +1164,15 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     "" if task_solver.is_reply_subject(subject) else subject,
                     task_solver.strip_quoted_reply(body or ""))):
             rec["kind"] = "deliverable"
+        # S592: Bill's 11-08 "same list for Sussex County", a reply to a list we
+        # delivered, has no list wording; both detectors above missed it.
+        if rec["kind"] in ("answer", "deliverable") and rec["status"] != "refused":
+            same_list = list_delivery.same_list_request(
+                entry["name"], subject, task_solver.strip_quoted_reply(body or ""), body or "")
+            if same_list:
+                rec["kind"] = "deliverable"
+                rec["same_list"] = same_list
+                log(f"  same-list reply: {same_list['prior_run']}'s list for a new place")
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -1239,18 +1253,21 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         log(f"  → list/file request — ticket {ticket['id']} queued")
                     except Exception as e:
                         log(f"  ⚠️ TICKET FAILED for list/file request: {e}")
-                    # S266 (Buddy's decision): a list of organizations with
-                    # contact details is researched unattended; the review email
-                    # goes to Buddy, and nothing reaches the client until he
-                    # replies SEND. Other files stay a ticket.
+                    # S266/S592 (Buddy 11-08): a list of organizations with
+                    # contact details is researched unattended and goes to the
+                    # client when done, cc Buddy; Buddy gets a copy. Other
+                    # files stay a ticket.
                     own = task_solver.strip_quoted_reply(body or "")
                     ask_subject = "" if task_solver.is_reply_subject(subject) else subject
-                    if list_delivery.wants_contact_list(ask_subject, own):
+                    same_list = rec.get("same_list")
+                    if same_list or list_delivery.wants_contact_list(ask_subject, own):
                         try:
                             rec["contact_list_run"] = list_delivery.start_job(
-                                entry["name"], own, subject, mid)
+                                entry["name"], same_list["request"] if same_list else own,
+                                subject, mid, auto_deliver=rec["status"] != "refused",
+                                extra_meta={"same_list_of": same_list["prior_run"]} if same_list else None)
                             log(f"  → contact-list job {rec['contact_list_run']} started; "
-                                f"the review email goes to Buddy")
+                                f"it goes to the client when done, cc Buddy")
                         except list_delivery.DailyCap as e:
                             log(f"  → contact-list job NOT started ({e}); the ticket stands")
                         except Exception as e:
@@ -1382,7 +1399,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                             f"— request {request_id}")
             elif r.get("kind") == "deliverable" and r.get("contact_list_run"):
                 flag = (f"📋 LIST request — research job {r['contact_list_run']} running; "
-                        f"its review email comes to you, reply SEND to deliver")
+                        f"it goes to the client when done, cc you")
             elif r.get("kind") == "deliverable":
                 flag = (f"📋 LIST/FILE request — needs building, ticket "
                         f"{r.get('ticket_id') or '⚠️ NOT created'}")
@@ -1978,10 +1995,25 @@ def selftest() -> int:
           and list_delivery.wants_contact_list(
               "" if task_solver.is_reply_subject(_bill_subj) else _bill_subj,
               task_solver.strip_quoted_reply(_bill_body)))
-    check("the deliverable ack stays true once the job exists (Buddy reviews first)",
+    check("a list/file with no research job keeps the review ack (a session builds it)",
           "Buddy reviews every list before it goes out"
           in ack_body({"requester": "bill", "kind": "deliverable", "status": "backlogged",
                        "title": "t", "tier": 1, "tier_name": "x"}))
+    # S592 (Buddy 11-08): the list job delivers without him; the ack must not
+    # promise a review that no longer happens.
+    _job_ack = ack_body({"requester": "bill", "kind": "deliverable", "status": "backlogged",
+                         "title": "t", "tier": 1, "tier_name": "x", "contact_list_run": "cl-1"})
+    check("once the list job exists, the ack promises the list by email, not Buddy's review",
+          "come to you by email" in _job_ack and "Buddy" not in _job_ack)
+    _same = _run_src.find("list_delivery.same_list_request(")
+    check("a 'same list for <place>' reply is detected after the list/file override, before the ticket",
+          _ov < _same < _run_src.find('origin="client-deliverable"')
+          and 'rec["same_list"] = same_list' in _run_src
+          and 'rec["kind"] in ("answer", "deliverable") and rec["status"] != "refused"' in _run_src)
+    check("  ...and starts the job on the built request, auto-delivered only for an unrefused request",
+          'same_list["request"] if same_list else own' in _run_src[_job:]
+          and 'auto_deliver=rec["status"] != "refused"' in _run_src[_job:_job + 400]
+          and "if same_list or list_delivery.wants_contact_list(ask_subject, own)" in _run_src)
 
     import job_status as _js
     check("job_status carries a cadence for intake (nothing watched it before S102)",
