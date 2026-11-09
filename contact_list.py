@@ -39,6 +39,7 @@ Usage (on CUMULUS, via runner `cumulus-job`, script contact_list.py):
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -270,13 +271,16 @@ def load_seeds(p: dict, seeds_dir: Path = None) -> list:
     return [u for u, _ in sorted(data.items(), key=lambda kv: -kv[1])][:MAX_SEEDS]
 
 
-def save_seeds(p: dict, found: dict, seeds_dir: Path = None) -> int:
+def save_seeds(p: dict, found: dict, seeds_dir: Path = None, skip=()) -> int:
     """Remember every page that named SEED_MIN_ORGS+ organizations this run,
-    merged with earlier runs (best count kept), top MAX_SEEDS. Returns count."""
+    merged with earlier runs (best count kept), top MAX_SEEDS. Returns count.
+    `skip`: pages read only from their search snippet (S592). A seed is fetched
+    with no search behind it, so it would come back blocked and empty."""
     per_url = {}
     for row in found.values():
         for u in row.get("sources") or []:
-            per_url[u] = per_url.get(u, 0) + 1
+            if u not in skip:
+                per_url[u] = per_url.get(u, 0) + 1
     d = seeds_dir or SEEDS_DIR
     path = d / (seed_key(p) + ".json")
     try:
@@ -328,6 +332,10 @@ class Budget:
         # S592: per-domain fetch outcomes, so a run says WHICH sites fail and how.
         self.domains = {}
         self._lock = threading.Lock()
+        # S592: each search result's text (url -> [title, description, extra...]),
+        # read in place of a page that a directory site blocks.
+        self.snippets = {}
+        self.snippet_urls = set()
 
     def note_fetch(self, url: str, reason: str):
         """reason: 'ok', 'http_<code>', 'not_html', 'empty' or 'exc:<class>'.
@@ -348,6 +356,36 @@ class Budget:
 def url_domain(url: str) -> str:
     h = urlparse(url or "").netloc.lower().split(":")[0]
     return h[4:] if h.startswith("www.") else h
+
+
+# S592 replay of the Sussex run: 140 of 200 failed pages were HTTP 403 from
+# directory sites (Yelp, BBB, Angi, HomeAdvisor, YellowPages); no header,
+# user agent or retry opened one. Their search-result text named 55 businesses
+# the readable pages did not. Only a page that answered "blocked" is read from
+# its snippet: a dead site or a 404 may be a business that is gone.
+BLOCKED = ("http_401", "http_402", "http_403", "http_429")
+
+
+def in_named_fragment(name: str, needles: list, text: str, digits: bool = False) -> bool:
+    """On a page read from its search snippet, a value counts only inside one
+    snippet fragment that names the company itself (Brave joins fragments with
+    '...'). S592 replay: every BBB profile snippet for a Delaware contractor
+    carries the state contractor registry's '655 S Bay Rd ... (302) 430-7739',
+    and five businesses got that address or phone."""
+    toks = company_tokens(name)
+    for frag in re.split(r"\.\.\.|…|\n", text or ""):
+        hay = re.sub(r"\D", "", frag) if digits else _n(frag)
+        if all(n and n in hay for n in needles) and all(t in _n(frag) for t in toks):
+            return True
+    return False
+
+
+def snippet_text(parts) -> str:
+    """The search result's own text, one part per line, HTML removed. Brave
+    sends entities and tags ('Morgan&#x27;s', '&lt;p&gt;'); left in, a name
+    like Morgan's would fail the on-page check."""
+    clean = lambda s: " ".join(html.unescape(re.sub(r"<[^>]+>", " ", html.unescape(s))).split())
+    return "\n".join(c for c in (clean(p) for p in parts or [] if isinstance(p, str)) if c)
 
 
 def page_text(url: str, cache: dict, budget: Budget) -> str:
@@ -379,6 +417,12 @@ def page_text(url: str, cache: dict, budget: Budget) -> str:
         budget.fetch_failed += 1
         reason = "empty" if reason == "ok" else reason
     budget.note_fetch(url, reason)
+    if not text and reason in BLOCKED:
+        # The verify rule is unchanged: a value survives only if its quote is
+        # in this text, which is what the row's source URL now stands for.
+        text = snippet_text(budget.snippets.get(url))
+        if text:
+            budget.snippet_urls.add(url)
     cache[url] = text
     return text
 
@@ -389,7 +433,8 @@ def search(query: str, n: int, budget: Budget) -> list:
     budget.searches += 1
     import cirrus_daily
     try:
-        urls = cirrus_daily.search_web(query, max_results=n, caller=TASK) or []
+        urls = cirrus_daily.search_web(query, max_results=n, caller=TASK,
+                                       snippets=budget.snippets) or []
     except Exception:
         return []
     return [u for u in urls if not any(d in u for d in SKIP_DOMAINS)]
@@ -593,25 +638,32 @@ def enrich(cand: dict, p: dict, creds: dict, budget: Budget, cache: dict) -> dic
     if not isinstance(got, dict):
         row["status"] = "extraction failed"
         return row
-    return verify(row, got, pages, p)
+    return verify(row, got, pages, p, budget.snippet_urls)
 
 
-def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
+def verify(row: dict, got: dict, pages: dict, p: dict, snippet_urls=()) -> dict:
     """Keep only what the cited page actually says. Counts what was dropped,
-    so the review email can say how much the models got wrong."""
+    so the review email can say how much the models got wrong.
+    snippet_urls: pages read from their search result (S592). A value from one
+    must sit in a fragment that names this company, and a contact gets no
+    credit from the snippet's header, which can list a dozen businesses."""
     dropped = []
+    name = row["name"]
+    snip = lambda u: (u or "") in snippet_urls
     mq, mu = got.get("match_quote") or "", got.get("match_url") or ""
     row["is_match"] = bool(got.get("is_match")) and quote_on_page(mq, pages.get(mu, ""))
     a, c, ph = got.get("address"), got.get("contact"), got.get("phone")
     if isinstance(a, dict) and a.get("street"):
-        if address_ok(a, pages):
+        num = (re.findall(r"\d+", a.get("street") or "") or [""])[0]
+        if address_ok(a, pages) and (not snip(a.get("url")) or in_named_fragment(
+                name, [num, a.get("zip") or ""], pages.get(a.get("url"), ""))):
             row["address"] = {k: (a.get(k) or "").strip() for k in ("street", "city", "state", "zip")}
             row["address_src"] = a.get("url")
         else:
             dropped.append("address")
     if isinstance(c, dict) and c.get("name"):
-        if contact_ok(c, pages) and about_company(row["name"], c.get("quote"), c.get("url"),
-                                                   pages.get(c.get("url") or "", "")[:HEAD_CHARS]):
+        head = "" if snip(c.get("url")) else pages.get(c.get("url") or "", "")[:HEAD_CHARS]
+        if contact_ok(c, pages) and about_company(name, c.get("quote"), c.get("url"), head):
             row["contact"] = {"name": c["name"].strip(), "title": (c.get("title") or "").strip()}
             row["contact_src"] = c.get("url")
         else:
@@ -619,13 +671,17 @@ def verify(row: dict, got: dict, pages: dict, p: dict) -> dict:
     if isinstance(ph, dict) and ph.get("value"):
         digits = re.sub(r"\D", "", ph["value"])
         page = _n(pages.get(ph.get("url") or "", "")).replace(" ", "")
-        if len(digits) == 10 and digits in re.sub(r"\D", "", page):
+        if len(digits) == 10 and digits in re.sub(r"\D", "", page) and (
+                not snip(ph.get("url")) or in_named_fragment(
+                    name, [digits], pages.get(ph.get("url"), ""), digits=True)):
             row["phone"] = "%s-%s-%s" % (digits[:3], digits[3:6], digits[6:])
         else:
             dropped.append("phone")
     ev = [e for e in (got.get("evidence") or []) if isinstance(e, dict)]
     good = [e for e in ev if evidence_ok(e, pages, p.get("region_terms") or [p.get("region", "")],
-                                         company=row["name"])]
+                                         company=name)
+            and (not snip(e.get("url")) or in_named_fragment(
+                name, [_n(e.get("name"))], pages.get(e.get("url"), "")))]
     if len(good) < len(ev):
         dropped.append("evidence x%d" % (len(ev) - len(good)))
     row["evidence"] = [{"name": e["name"].strip(), "url": e["url"]} for e in good][:6]
@@ -711,7 +767,9 @@ def about_lines(p: dict, stats: dict) -> list:
         "Searches %(searches)d, pages fetched %(fetched)d (failed %(fetch_failed)d), local "
         "extractions %(local)d, cloud escalations %(cloud)d, failed model calls "
         "%(model_failed)d, values removed by the check %(dropped)d." % stats,
-    ]
+    ] + (["%d pages that blocked downloads (directory sites such as Yelp and BBB) were read "
+          "from their search-result text; values from them were checked against that text."
+          % stats["snippet_pages"]] if stats.get("snippet_pages") else [])
 
 
 def client_about_lines(p: dict, stats: dict) -> list:
@@ -956,7 +1014,8 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
         log("roster: %d remembered source page(s) for %s" % (len(seeds), seed_key(p)))
     cands = roster(p, creds, budget, cache, log, seeds)
     try:
-        log("roster: %d source page(s) remembered for next time" % save_seeds(p, cands))
+        log("roster: %d source page(s) remembered for next time" % save_seeds(
+            p, cands, skip=budget.snippet_urls))
     except OSError as e:
         log("roster: could not save source pages (%s)" % e)
     ranked = sorted(cands.values(), key=lambda c: -len(c["sources"]))[:max_candidates]
@@ -977,6 +1036,7 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
              "candidates": len(cands), "enriched": len(ranked),
              "minutes": round((time.time() - t0) / 60, 1),
              "finished": datetime.now().strftime("%Y-%m-%d %H:%M"),
+             "snippet_pages": len(budget.snippet_urls),
              "fetch_by_domain": budget.domain_table()}
     (out_dir / "rows.json").write_text(json.dumps(rows, indent=1))
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=1))
@@ -1411,8 +1471,127 @@ def selftest() -> bool:
         else:
             sys.modules.pop("llm_providers", None)
     check_fetch_log(check)
+    check_snippets(check)
     print("selftest: %s" % ("OK" if ok else "FAILED"))
     return ok
+
+
+def check_snippets(check):
+    """S592: a page that answers 'blocked' is read from its search result."""
+    import tempfile
+    import types
+    Y = "https://www.yelp.com/search?cflt=snowremoval&find_loc=Lewes"
+    rq, bs, _ = _fake_web({
+        Y: (403, "text/html", "blocked"),
+        "https://dead.example.test/": (521, "text/html", ""),
+        "https://gone.example.test/": (404, "text/html", "not found"),
+        "https://nosnip.example.test/": (403, "text/html", "blocked"),
+        "https://open.example.test/": (200, "text/html", "<p>Own page text</p>"),
+    })
+    snip = ["Best Snow Removal in Lewes, DE - Yelp",
+            "Eastern Cape Landscaping, Morgan&#x27;s Lawn &amp; Landscape, Taylor Lawn Care",
+            "&lt;p&gt;<strong>Godwin Land Services</strong> 18 Market St, Lewes, DE 19958&lt;/p&gt;"]
+    fake_daily = types.ModuleType("cirrus_daily")
+    seen = {}
+
+    def search_web(query, max_results=3, caller="", snippets=None):
+        seen["snippets"] = snippets
+        for u in (Y, "https://dead.example.test/", "https://gone.example.test/",
+                  "https://open.example.test/"):
+            snippets[u] = snip
+        return [Y, "https://dead.example.test/", "https://gone.example.test/",
+                "https://nosnip.example.test/", "https://open.example.test/"]
+
+    fake_daily.search_web = search_web
+    real = {k: sys.modules.get(k) for k in ("requests", "bs4", "cirrus_daily")}
+    sys.modules.update(requests=rq, bs4=bs, cirrus_daily=fake_daily)
+    try:
+        b, cache = Budget(), {}
+        urls = search("snow removal Lewes", 8, b)
+        got = {u: page_text(u, cache, b) for u in urls}
+    finally:
+        for k, v in real.items():
+            if v is not None:
+                sys.modules[k] = v
+            else:
+                sys.modules.pop(k, None)
+    check("snippets: search hands the run's snippet store to the search provider",
+          seen.get("snippets") is b.snippets and Y in b.snippets)
+    check("snippets: a blocked (403) page is read from its search result, entities and tags removed",
+          "Morgan's Lawn & Landscape" in got[Y] and "Godwin Land Services 18 Market St" in got[Y]
+          and "&#x27;" not in got[Y] and "<" not in got[Y] and b.snippet_urls == {Y})
+    check("snippets: a dead site (521), a 404 and a blocked page with no snippet stay empty",
+          got["https://dead.example.test/"] == got["https://gone.example.test/"]
+          == got["https://nosnip.example.test/"] == "")
+    check("snippets: a page that loads is its own text, never the snippet",
+          "Own page text" in got["https://open.example.test/"] and "Yelp" not in got["https://open.example.test/"])
+    check("snippets: the blocked fetch still counts as a failure in the domain table",
+          b.domain_table()["yelp.com"]["reasons"] == {"http_403": 1} and b.fetch_failed == 4)
+    pages = {Y: got[Y]}
+    check("snippets: an address quoted from the snippet survives the verify rule",
+          address_ok({"street": "18 Market St", "zip": "19958", "url": Y,
+                      "quote": "Godwin Land Services 18 Market St, Lewes, DE 19958"}, pages))
+    check("snippets: an address whose quote is not in the snippet is still dropped",
+          not address_ok({"street": "18 Market St", "zip": "19958", "url": Y,
+                          "quote": "Office: 18 Market St, Lewes, DE 19958 (call today)"}, pages))
+    # The S592 replay failure: a BBB profile snippet carries the state contractor
+    # registry's address and phone next to the business's own.
+    B = "https://www.bbb.org/us/de/milton/profile/landscape-contractors/sposato-landscaping-0251-1"
+    bbb = snippet_text(["Sposato Landscaping Co. | BBB Business Profile",
+                        "Tony Sposato, Founder · Mr. Matt Snyder, Office Administrator ... Contractor "
+                        "Registry State of DELAWARE 655 S Bay Rd Ste 2H Dover DE 19901 Phone Number: "
+                        "(302) 430-7739 ... Sposato Landscaping Co. 16575 Coastal Hwy, Lewes, DE 19958 "
+                        "(302) 645-0101"])
+    reg = {"is_match": True, "match_quote": "Sposato Landscaping Co. | BBB Business Profile", "match_url": B,
+           "address": {"street": "655 S Bay Rd Ste 2H", "city": "Dover", "state": "DE", "zip": "19901",
+                       "url": B, "quote": "655 S Bay Rd Ste 2H Dover DE 19901"},
+           "phone": {"value": "302-430-7739", "url": B},
+           "contact": {"name": "Tony Sposato", "title": "Founder", "url": B, "quote": "Tony Sposato, Founder"}}
+    own = dict(reg, address={"street": "16575 Coastal Hwy", "city": "Lewes", "state": "DE", "zip": "19958",
+                             "url": B, "quote": "Sposato Landscaping Co. 16575 Coastal Hwy, Lewes, DE 19958"},
+               phone={"value": "302-645-0101", "url": B})
+    pp = {"region_terms": ["Delaware", "DE"]}
+    loose = verify({"name": "Sposato Landscaping Co."}, reg, {B: bbb}, pp)
+    tight = verify({"name": "Sposato Landscaping Co."}, reg, {B: bbb}, pp, {B})
+    kept = verify({"name": "Sposato Landscaping Co."}, own, {B: bbb}, pp, {B})
+    check("snippet guard: the registry's address and phone on a BBB snippet are not the business's",
+          loose.get("phone") == "302-430-7739" and "address" in loose
+          and "phone" not in tight and "address" not in tight and tight["status"] == "ok")
+    check("snippet guard: the business's own address and phone in a fragment naming it are kept",
+          kept.get("phone") == "302-645-0101" and kept["address"]["street"] == "16575 Coastal Hwy")
+    check("snippet guard: a contact on the business's own profile URL is kept",
+          tight.get("contact", {}).get("name") == "Tony Sposato")
+    ysn = snippet_text(["Best Snow Removal in Lewes - Eastern Cape Landscaping, Taylor Lawn Care",
+                        "Jim Brown, Owner, came out the same day and plowed our lot."])
+    yc = {"is_match": True, "match_quote": "Eastern Cape Landscaping, Taylor Lawn Care", "match_url": Y,
+          "contact": {"name": "Jim Brown", "title": "Owner", "url": Y,
+                      "quote": "Jim Brown, Owner, came out the same day and plowed our lot."}}
+    check("snippet guard: a contact from a multi-business search snippet needs the company in its quote",
+          "contact" in verify({"name": "Taylor Lawn Care"}, yc, {Y: ysn}, pp)
+          and "contact" not in verify({"name": "Taylor Lawn Care"}, yc, {Y: ysn}, pp, {Y}))
+    g = globals()
+    saved = {k: g[k] for k in ("search", "page_text", "ask_local")}
+    g["search"] = lambda q, n, budget: [B]
+    g["page_text"] = lambda u, cache, budget: (budget.snippet_urls.add(u), bbb)[1]
+    g["ask_local"] = lambda *a, **k: reg
+    try:
+        er = enrich({"name": "Sposato Landscaping Co.", "sources": []},
+                    {"region": "Delaware", "region_terms": ["Delaware"], "entity": "landscaper"}, {}, Budget(), {})
+    finally:
+        g.update(saved)
+    check("snippet guard: enrich hands the run's snippet pages to verify",
+          er["status"] == "ok" and "phone" not in er and "address" not in er)
+    with tempfile.TemporaryDirectory() as td:
+        pp = {"region": "Delaware", "entity": "snow plower"}
+        found = {k: {"name": k, "sources": [Y, "https://dir/real"]} for k in ("a", "b", "c")}
+        save_seeds(pp, found, Path(td), skip={Y})
+        check("snippets: a page read only from its snippet is never remembered as a seed",
+              load_seeds(pp, Path(td)) == ["https://dir/real"])
+    base = dict(searches=1, fetched=1, fetch_failed=1, local=1, cloud=0, model_failed=0, dropped=0)
+    check("snippets: the review notes say how many pages were read from search results, only when any were",
+          any("3 pages that blocked downloads" in l for l in about_lines(
+              {"entity": "x", "region": "y"}, dict(base, snippet_pages=3)))
+          and not any("blocked downloads" in l for l in about_lines({"entity": "x", "region": "y"}, base)))
 
 
 def _fake_web(responses: dict):

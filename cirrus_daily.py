@@ -409,10 +409,14 @@ _BRAVE_MAX_QUERY_CHARS = 380   # Brave's documented cap is 400; leave headroom
 
 
 def brave_search(query: str, max_results: int = 3,
-                 caller: str = "daily_digest") -> list[str]:
+                 caller: str = "daily_digest", snippets: dict = None) -> list[str]:
     """Primary web search — Brave Search API (paid, reliable). Returns top result
     URLs; empty on no-key / error / quota, so the caller falls back to Gemini. A
-    429 (rate or the $25/mo cap) is treated as a soft fall-back, not an error."""
+    429 (rate or the $25/mo cap) is treated as a soft fall-back, not an error.
+
+    snippets: when a dict is passed, each returned URL's result text is stored
+    in it as [title, description, extra snippets...] (S592: contact_list reads
+    it when a directory site blocks the page itself). Same single request."""
     key = _load_brave_key()
     if not key or (_SPEND and _SPEND.is_paused("brave")):
         return []
@@ -433,7 +437,8 @@ def brave_search(query: str, max_results: int = 3,
                 "https://api.search.brave.com/res/v1/web/search",
                 headers={"Accept": "application/json",
                          "X-Subscription-Token": key},
-                params={"q": query, "count": max_results},
+                params=dict({"q": query, "count": max_results},
+                            **({"extra_snippets": "true"} if snippets is not None else {})),
                 timeout=15)
         if resp.status_code == 429:
             _count_search("brave", caller, "quota")
@@ -447,6 +452,9 @@ def brave_search(query: str, max_results: int = 3,
             u = r.get("url", "")
             if u.startswith("http") and u not in urls:
                 urls.append(u)
+                if snippets is not None:
+                    snippets[u] = [r.get("title") or "", r.get("description") or ""] + [
+                        s for s in (r.get("extra_snippets") or []) if isinstance(s, str)]
             if len(urls) >= max_results:
                 break
         log(f"    Brave search '{query[:50]}' → {len(urls)} result(s)")
@@ -641,7 +649,7 @@ def claude_search(query: str, max_results: int = 3,
 
 
 def search_web(query: str, max_results: int = 3,
-               caller: str = "daily_digest") -> list[str]:
+               caller: str = "daily_digest", snippets: dict = None) -> list[str]:
     """Web search, in cost order: Brave (paid, $5/1k) → Gemini grounding (billed
     to the Gemini account) → Claude web_search ($10/1k, Anthropic account) →
     DuckDuckGo scrape. Each provider is hard-deadline bounded, so a single hung
@@ -664,8 +672,11 @@ def search_web(query: str, max_results: int = 3,
 
     Ordering note: Claude sits BELOW Gemini despite being more capable, purely on
     cost ($10/1k vs Gemini's grounding). It only runs when two providers have
-    already failed, so its expected volume is ~zero."""
-    urls = brave_search(query, max_results, caller)
+    already failed, so its expected volume is ~zero.
+
+    snippets: optional dict that Brave fills with each URL's result text (see
+    brave_search); the fallback providers return links only."""
+    urls = brave_search(query, max_results, caller, snippets=snippets)
     if urls:
         return urls
     urls = gemini_search(query, max_results, caller)
