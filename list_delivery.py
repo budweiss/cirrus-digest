@@ -361,6 +361,9 @@ def same_list_request(client: str, subject: str, own_words: str, body: str = "",
              "the phone number and the mailing address."]
     if plan.get("group_question") and plan.get("group_names"):
         lines.append("Split the list the same way as before: %s" % plan["group_question"])
+    if plan.get("region"):
+        # "Kent County" alone could be Michigan; the earlier list says which state.
+        lines.append("The earlier list covered %s; this one covers %s only." % (plan["region"], place))
     lines.append('The client wrote: "%s"' % " ".join((own_words or "").split())[:300])
     return {"request": "\n".join(lines), "prior_run": prior["run_id"], "place": place}
 
@@ -728,7 +731,7 @@ def selftest() -> bool:
         check("Bill's 11-08 reply: the latest list on his thread, the new place, his words",
               sl and sl["prior_run"] == "cl-ops" and sl["place"] == "Sussex County"
               and "every snow plow operator in Sussex County" in sl["request"]
-              and "Philadelphia" not in sl["request"]
+              and "The earlier list covered Philadelphia; this one covers Sussex County only." in sl["request"]
               and wants_contact_list("", sl["request"]))
         quoted = ("same list for Sussex County > On Nov 8, CUMULUS wrote: > Here's the list you asked "
                   "for: snow plow dealers in Philadelphia. > > On Nov 8 > snow plow operators")
