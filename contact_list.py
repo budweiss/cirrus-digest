@@ -42,10 +42,12 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CREDS_PATH = PROJECT_DIR / "config/credentials.json"
@@ -322,6 +324,29 @@ class Budget:
         self.cloud_roster = 0
         self.names_local = 0
         self.names_cloud_only = 0
+        # S592: per-domain fetch outcomes, so a run says WHICH sites fail and how.
+        self.domains = {}
+        self._lock = threading.Lock()
+
+    def note_fetch(self, url: str, reason: str):
+        """reason: 'ok', 'http_<code>', 'not_html', 'empty' or 'exc:<class>'.
+        Domains and codes only, never page content."""
+        with self._lock:
+            d = self.domains.setdefault(url_domain(url), {"tries": 0, "failed": 0, "reasons": {}})
+            d["tries"] += 1
+            if reason != "ok":
+                d["failed"] += 1
+                d["reasons"][reason] = d["reasons"].get(reason, 0) + 1
+
+    def domain_table(self, top: int = 40) -> dict:
+        """Most-failed domains first, for stats.json."""
+        rows = sorted(self.domains.items(), key=lambda kv: (-kv[1]["failed"], -kv[1]["tries"], kv[0]))
+        return dict(rows[:top])
+
+
+def url_domain(url: str) -> str:
+    h = urlparse(url or "").netloc.lower().split(":")[0]
+    return h[4:] if h.startswith("www.") else h
 
 
 def page_text(url: str, cache: dict, budget: Budget) -> str:
@@ -330,21 +355,29 @@ def page_text(url: str, cache: dict, budget: Budget) -> str:
         return cache[url]
     import requests
     from bs4 import BeautifulSoup
-    text = ""
+    text, reason = "", "ok"
     try:
         r = requests.get(url, timeout=20, headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"})
-        if r.ok and "html" in r.headers.get("content-type", "html"):
+        if not r.ok:
+            reason = "http_%d" % r.status_code
+        elif "html" not in r.headers.get("content-type", "html"):
+            reason = "not_html"
+        else:
             soup = BeautifulSoup(r.text, "html.parser")
             for tag in soup(["script", "style", "noscript", "svg"]):
                 tag.decompose()
             text = soup.get_text("\n")
-            budget.fetched += 1
-    except Exception:
-        pass
-    if not text:
+    except Exception as e:
+        reason = "exc:" + type(e).__name__
+    if text:
+        budget.fetched += 1
+    else:
+        # A page that loads with no text was counted fetched AND failed before S592.
         budget.fetch_failed += 1
+        reason = "empty" if reason == "ok" else reason
+    budget.note_fetch(url, reason)
     cache[url] = text
     return text
 
@@ -942,7 +975,8 @@ def run(request: str, run_id: str, creds: dict, max_candidates=MAX_CANDIDATES,
              "dropped": sum(len(r.get("dropped") or []) for r in rows),
              "candidates": len(cands), "enriched": len(ranked),
              "minutes": round((time.time() - t0) / 60, 1),
-             "finished": datetime.now().strftime("%Y-%m-%d %H:%M")}
+             "finished": datetime.now().strftime("%Y-%m-%d %H:%M"),
+             "fetch_by_domain": budget.domain_table()}
     (out_dir / "rows.json").write_text(json.dumps(rows, indent=1))
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=1))
     (out_dir / "summary.json").write_text(json.dumps(summary(p, rows), indent=1))
@@ -1375,8 +1409,85 @@ def selftest() -> bool:
             sys.modules["llm_providers"] = real
         else:
             sys.modules.pop("llm_providers", None)
+    check_fetch_log(check)
     print("selftest: %s" % ("OK" if ok else "FAILED"))
     return ok
+
+
+def _fake_web(responses: dict):
+    """Fake `requests` and `bs4` modules for the offline selftest. responses:
+    url -> (status, content_type, body) or an exception class to raise."""
+    import types
+    rq, bs = types.ModuleType("requests"), types.ModuleType("bs4")
+    calls = []
+
+    class Resp:
+        def __init__(self, status, ctype, body):
+            self.status_code, self.ok, self.text = status, status < 400, body
+            self.headers = {"content-type": ctype}
+
+    def get(url, timeout=None, headers=None, **kw):
+        calls.append((url, dict(headers or {})))
+        got = responses[url]
+        if isinstance(got, type):
+            raise got("simulated")
+        return Resp(*got)
+
+    class Soup:
+        def __init__(self, text, parser):
+            self.t = text
+
+        def __call__(self, tags):
+            return []
+
+        def get_text(self, sep=""):
+            return re.sub(r"<[^>]+>", sep, self.t)
+
+    rq.get, bs.BeautifulSoup = get, Soup
+    return rq, bs, calls
+
+
+def check_fetch_log(check):
+    """S592: every fetch is counted against its domain with a reason."""
+    class ReadTimeout(Exception):
+        pass
+    rq, bs, calls = _fake_web({
+        "https://www.yelp.com/search?x=1": (403, "text/html", "blocked"),
+        "https://www.yelp.com/biz/a": (403, "text/html", "blocked"),
+        "https://slow.example.test/": ReadTimeout,
+        "https://ok.example.test:8443/p": (200, "text/html; charset=utf-8", "<p>Ace Plowing</p>"),
+        "https://docs.example.test/list.pdf": (200, "application/pdf", "%PDF"),
+        "https://blank.example.test/": (200, "text/html", ""),
+    })
+    real = {k: sys.modules.get(k) for k in ("requests", "bs4")}
+    sys.modules.update(requests=rq, bs4=bs)
+    try:
+        b, cache = Budget(), {}
+        texts = {u: page_text(u, cache, b) for u in (
+            "https://www.yelp.com/search?x=1", "https://www.yelp.com/biz/a", "https://slow.example.test/",
+            "https://ok.example.test:8443/p", "https://docs.example.test/list.pdf", "https://blank.example.test/")}
+        page_text("https://www.yelp.com/biz/a", cache, b)   # cached: not a second try
+    finally:
+        for k, v in real.items():
+            if v is not None:
+                sys.modules[k] = v
+            else:
+                sys.modules.pop(k, None)
+    t = b.domain_table()
+    check("fetch log: a 403 is counted against its domain, www. stripped, cache hits not recounted",
+          t.get("yelp.com") == {"tries": 2, "failed": 2, "reasons": {"http_403": 2}})
+    check("fetch log: an exception is logged by class, a PDF as not_html, a blank page as empty",
+          t["slow.example.test"]["reasons"] == {"exc:ReadTimeout": 1}
+          and t["docs.example.test"]["reasons"] == {"not_html": 1}
+          and t["blank.example.test"]["reasons"] == {"empty": 1})
+    check("fetch log: a page that loads is a try, not a failure (port stripped); text returned",
+          t["ok.example.test"] == {"tries": 1, "failed": 0, "reasons": {}}
+          and "Ace Plowing" in texts["https://ok.example.test:8443/p"])
+    check("fetch log: most-failed domain first; totals match the run counters",
+          list(t)[0] == "yelp.com" and b.fetched == 1 and b.fetch_failed == 5
+          and sum(d["failed"] for d in t.values()) == b.fetch_failed)
+    check("fetch log: the table holds domains and codes only, no page text",
+          "Ace Plowing" not in json.dumps(t) and "blocked" not in json.dumps(t))
 
 
 if __name__ == "__main__":
