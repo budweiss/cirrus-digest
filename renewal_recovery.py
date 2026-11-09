@@ -175,6 +175,13 @@ def run(plan=False):
         remote = {'groups': [], 'packet_at': 0}
         remote_error = True
         state.setdefault('remote_missing_since', now)
+    # CUMULUS qualification may finish after the 04:50 local check. Refresh
+    # existing hash-bound evidence before computing alerts; never generate or
+    # approve anything here. Plan mode remains read-only.
+    if not plan and not remote_error:
+        from foundation_renewal import sync_cumulus_grace
+        sync_cumulus_grace()
+        local = snapshot()
     calendars, disabled = {}, set()
     for job in JOBS:
         p = read_plist(job)

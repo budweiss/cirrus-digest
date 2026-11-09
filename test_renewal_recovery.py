@@ -10,6 +10,21 @@ import renewal_recovery as R
 
 
 class Recovery(unittest.TestCase):
+    def setUp(self):
+        self.grace_sync = patch('foundation_renewal.sync_cumulus_grace').start()
+        self.addCleanup(patch.stopall)
+
+    def test_late_cloud_evidence_refreshed_before_alerts_without_duplicate_jobs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'logs').mkdir(); now=200000
+            (root/'logs/jobs-status.json').write_text(json.dumps({j:{'epoch':now} for j in R.JOBS}))
+            old={'groups':[{'route':'foundation:test','field':'evaluations','fingerprint':'f','deadline':now+100,'grace':True}], 'packet_at':now}
+            fresh={'groups':[], 'packet_at':now}
+            with patch.object(R,'ROOT',root), patch.object(R,'STATE',root/'logs/state.json'), patch.object(R.time,'time',return_value=now), patch.object(R,'snapshot',side_effect=[old,fresh]), patch.object(R,'remote_snapshot',return_value=fresh), patch.object(R,'read_plist',return_value={'StartCalendarInterval':{'Hour':4,'Minute':50}}), patch.object(R,'launch_state',return_value='idle'), patch.object(R,'kick') as kick, patch('foundation_renewal.notify') as notify, patch('job_status.record'):
+                result=R.run()
+                self.assertEqual(result['warning_count'],0)
+                self.grace_sync.assert_called_once_with(); kick.assert_not_called(); notify.assert_not_called()
+
     def decision(self, **kw):
         args = dict(job='foundationrenewalauto', now=200000, due=190000,
                     next_due=276400, ledger={'foundationrenewal': {'epoch': 180000}},
@@ -94,7 +109,7 @@ class Recovery(unittest.TestCase):
             (root/'logs/jobs-status.json').write_text(json.dumps({j:{'epoch':now} for j in R.JOBS}))
             snap={'groups':[{'route':'foundation:test','field':'evaluations','fingerprint':'f','deadline':now+10000,'grace':True}], 'packet_at':now}
             with patch.object(R,'ROOT',root),patch.object(R,'STATE',root/'logs/state.json'),patch.object(R.time,'time',return_value=now),patch.object(R,'snapshot',return_value=snap),patch.object(R,'remote_snapshot',return_value={'groups':[],'packet_at':now}),patch.object(R,'read_plist',return_value={'StartCalendarInterval':{'Hour':4,'Minute':50}}),patch.object(R,'launch_state',return_value='idle'),patch.object(R,'kick') as kick,patch('foundation_renewal.notify',side_effect=['FAILED: network','sent']) as notify,patch('job_status.record'):
-                R.run(plan=True);kick.assert_not_called();notify.assert_not_called();self.assertFalse(R.STATE.exists())
+                R.run(plan=True);kick.assert_not_called();notify.assert_not_called();self.assertFalse(R.STATE.exists());self.grace_sync.assert_not_called()
                 self.assertEqual(R.run()['failed_sends'],1)
                 self.assertEqual(R.run()['failed_sends'],0)
                 self.assertEqual(R.run()['failed_sends'],0)
