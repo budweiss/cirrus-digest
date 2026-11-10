@@ -244,7 +244,7 @@ Real hits included pediatric/adolescent programs for **ritlecitinib**,
 > `filter.geo` returns a study if **ANY** of its sites falls in the radius, and
 > **the returned `locations` array is NOT ordered by distance.** Printing the
 > first three sites of a matched study showed *Encinitas CA, Miami FL, Skokie
-> IL* for a study that matched a 50-mile Pennsylvania filter. A naive brief
+> IL* for a study that matched a 50-mile filter around RCW's region. A naive brief
 > would tell Buddy the nearby trial is in California.
 > **P3 must scan the full `locations` array and compute the nearest site
 > itself**, then report that site and its distance. Pin this with a test.
