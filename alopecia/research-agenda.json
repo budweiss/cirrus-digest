@@ -76,6 +76,17 @@
         "pm-sykes-thymus",
         "pm-lionakis-apeced"
       ]
+    },
+    {
+      "id": "sunlight",
+      "question": "What does sunlight do to the follicle-directed immune attack and to hair growth? UV immune suppression, vitamin D, seasonal hair cycle and light sensing (Buddy, 2026-11-10, S606)",
+      "queries": [
+        "pm-uv-phototherapy-aa",
+        "pm-season-climate-aa",
+        "pm-vitamin-d-aa",
+        "pm-uv-treg-autoimmune-skin",
+        "pm-light-hair-cycle"
+      ]
     }
   ],
   "queries": {
@@ -99,7 +110,12 @@
     "durable": "\"alopecia areata\" AND (withdrawal OR relapse OR \"treatment free\" OR tolerance OR remission) AND (follow-up OR durability OR maintenance)",
     "negative": "\"alopecia areata\" AND (\"no association\" OR \"negative results\" OR contradictory OR confounding)",
     "thymic-output": "\"alopecia areata\" AND (TREC OR \"T-cell receptor excision circles\" OR \"T cell receptor excision circles\" OR \"recent thymic emigrants\" OR \"thymic output\")",
-    "thymoma-clonality": "(thymoma OR thymic) AND \"alopecia areata\" AND (clonotype OR clonality OR \"T cell receptor\" OR repertoire OR sequencing)"
+    "thymoma-clonality": "(thymoma OR thymic) AND \"alopecia areata\" AND (clonotype OR clonality OR \"T cell receptor\" OR repertoire OR sequencing)",
+    "pm-uv-phototherapy-aa": "\"alopecia areata\"[tiab] AND (phototherapy[tiab] OR photochemotherapy[tiab] OR PUVA[tiab] OR narrowband[tiab] OR \"NB-UVB\"[tiab] OR excimer[tiab] OR ultraviolet[tiab] OR UVB[tiab] OR UVA[tiab])",
+    "pm-season-climate-aa": "\"alopecia areata\"[tiab] AND (season*[tiab] OR climate[tiab] OR sunlight[tiab] OR \"sun exposure\"[tiab] OR \"UV index\"[tiab] OR summer[tiab] OR winter[tiab])",
+    "pm-vitamin-d-aa": "\"alopecia areata\"[tiab] AND (\"vitamin D\"[tiab] OR calcipotriol[tiab] OR calcipotriene[tiab] OR calcitriol[tiab] OR \"vitamin D receptor\"[tiab])",
+    "pm-uv-treg-autoimmune-skin": "(ultraviolet[tiab] OR UVB[tiab] OR narrowband[tiab]) AND (\"regulatory T\"[tiab] OR Treg[tiab] OR Tregs[tiab]) AND (\"hair follicle\"[tiab] OR alopecia[tiab] OR vitiligo[tiab] OR autoimmun*[tiab])",
+    "pm-light-hair-cycle": "(\"hair follicle\"[tiab] OR \"hair follicles\"[tiab] OR \"hair growth\"[tiab]) AND (opsin*[tiab] OR photoperiod*[tiab] OR \"visible light\"[tiab] OR \"blue light\"[tiab] OR seasonal[tiab])"
   },
   "lead_sources": [
     {

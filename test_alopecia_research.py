@@ -43,6 +43,12 @@ class ResearchTests(unittest.TestCase):
         with patch.object(r,'fetch') as fetch:
             with self.assertRaises(ValueError):r.investigate('personal name age address')
             fetch.assert_not_called()
+    def test_every_agenda_path_query_exists(self):
+        # S606: a mistyped query id would only fail on the live 05:50 run.
+        cfg=r.catalog()
+        for path in cfg['paths']:
+            for query_id in path['queries']:self.assertIn(query_id,cfg['queries'],path['id'])
+        self.assertIn('sunlight',{p['id'] for p in cfg['paths']})
     def test_search_fetches_actual_abstracts(self):
         with patch.object(r,'fetch',side_effect=[b'{"esearchresult":{"idlist":["123"],"count":"1"}}',XML]) as fetch:
             result=r.investigate('thymus')
