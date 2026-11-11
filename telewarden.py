@@ -609,7 +609,9 @@ def notify(text, send=None, now=None, limit=1500):
     if send is None:
         import vendor_mail_watch
         send = vendor_mail_watch.telegram
-    return bool(send("🛡 Telewarden: " + text[:limit]))
+    if len(text) > limit:                # T40: say so when a message is cut short
+        text = text[:limit - 30] + "\n… (truncated; full text on CIRRUS)"
+    return bool(send("🛡 Telewarden: " + text))
 
 
 def brief_lines(now=None):
