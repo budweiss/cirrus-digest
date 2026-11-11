@@ -121,7 +121,8 @@ def _record(provider, system, user, reply, creds, task):
                        in_tok=getattr(_LAST, "usage", {}).get("input"),
                        out_tok=getattr(_LAST, "usage", {}).get("output"),
                        cached_tok=getattr(_LAST, "cached_tok", None),
-                       wall_seconds=getattr(_LAST, "wall_seconds", None))
+                       wall_seconds=getattr(_LAST, "wall_seconds", None),
+                       finish_reason=getattr(_LAST, "finish_reason", None))
     except Exception:
         pass
 
@@ -776,10 +777,16 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
         _LAST.usage = {}
         _LAST.wall_seconds = None   # S364: no stale timing may survive a retry
         _LAST.cached_tok = None
+        _LAST.finish_reason = None
         reply = ""
+        attempt_started = time.monotonic()
         try:
             reply = _PROVIDERS[provider](creds, system, user, max_tokens) or ""
         finally:
+            # S609: every provider gets its own attempt timing, including retries.
+            # Preserve the more precise HTTP timing when its adapter supplied it.
+            if _LAST.wall_seconds is None:
+                _LAST.wall_seconds = round(time.monotonic() - attempt_started, 3)
             # A billed empty/truncated response still consumed tokens. Record
             # each retry separately, but never invent usage for transport errors.
             if record and (reply.strip() or any(v is not None for v in _LAST.usage.values())):

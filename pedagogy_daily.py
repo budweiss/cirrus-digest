@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta
@@ -138,6 +139,7 @@ def ollama(prompt, cfg, timeout=180, model=None):
     d = cfg.get("digest", {})
     host = d.get("ollama_host", "http://localhost:11434")
     mdl = model or d.get("ollama_model", "qwen2.5:14b")
+    started = time.monotonic()
     try:
         resp = requests.post(f"{host}/api/generate",
                              json={"model": mdl, "prompt": prompt,
@@ -146,6 +148,7 @@ def ollama(prompt, cfg, timeout=180, model=None):
                              timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
+        elapsed = time.monotonic() - started
         out = data.get("response", "").strip()
         # Native Ollama calls bypass llm_providers; account here exactly once.
         try:
@@ -157,7 +160,8 @@ def ollama(prompt, cfg, timeout=180, model=None):
                 load_json(CREDS_PATH, {}) or {}, "ollama", data.get("model") or mdl,
                 len(prompt), len(out), task="pedagogy:local", tier="local",
                 app_dir=str(Path(__file__).resolve().parent),
-                in_tok=tokens("prompt_eval_count"), out_tok=tokens("eval_count"))
+                in_tok=tokens("prompt_eval_count"), out_tok=tokens("eval_count"),
+                num_ctx=8192, **llm_budget.response_metrics(data, elapsed))
             if row is None:
                 log("local usage accounting unavailable")
         except Exception:

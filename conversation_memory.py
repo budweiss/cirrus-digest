@@ -13,6 +13,20 @@ def identity(*parts):
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:20]
 
 
+def state_timing(meta, state, now):
+    """S609: first observed milestone only; old states are never backfilled.
+
+    Kept with private request metadata. Reporting exports aggregate durations,
+    not identities or contents. A ready answer is not proof of delivery.
+    """
+    field = {'running': 'started_at', 'ready': 'ready_at',
+             'delivered': 'delivered_at', 'needs_review': 'held_at'}.get(state)
+    if field:
+        values = dict(meta.get('timing') or {})
+        values.setdefault(field, now)
+        meta['timing'] = values
+
+
 class Memory:
     def __init__(self, root):
         self.directory = Path(root) / "data/conversations"
@@ -75,9 +89,12 @@ class Memory:
             if privacy is not None:row['privacy']=privacy
             if meta:
                 row["meta"].update(meta)
+            now = time.time()
+            if state and state != row['state']:
+                state_timing(row['meta'], state, now)
             db.execute("UPDATE turns SET state=?,answer=?,meta=?,privacy=?,updated=? WHERE id=?",
                        (state or row["state"], row["answer"] if answer is None else answer,
-                        json.dumps(row["meta"]), row["privacy"], time.time(), key))
+                        json.dumps(row["meta"]), row["privacy"], now, key))
         return self.get(key)
 
     def claim(self, owner):
@@ -87,13 +104,23 @@ class Memory:
                 "SELECT * FROM turns WHERE owner=? AND state='queued' ORDER BY created,id LIMIT 1",
                 (owner,)).fetchone())
             if row:
-                db.execute("UPDATE turns SET state='running',updated=? WHERE id=?", (time.time(), row["id"]))
+                now = time.time()
+                state_timing(row['meta'], 'running', now)
+                db.execute("UPDATE turns SET state='running',meta=?,updated=? WHERE id=?",
+                           (json.dumps(row['meta']), now, row["id"]))
         return self.get(row["id"]) if row else None
 
     def transition(self, key, expected, state):
         with self.connect() as db:
-            changed = db.execute("UPDATE turns SET state=?,updated=? WHERE id=? AND state=?",
-                                 (state, time.time(), key, expected)).rowcount
+            db.execute('BEGIN IMMEDIATE')
+            row = self.row(db.execute('SELECT * FROM turns WHERE id=? AND state=?', (key, expected)).fetchone())
+            if row is None:
+                return False
+            now = time.time()
+            if state != expected:
+                state_timing(row['meta'], state, now)
+            changed = db.execute("UPDATE turns SET state=?,meta=?,updated=? WHERE id=? AND state=?",
+                                 (state, json.dumps(row['meta']), now, key, expected)).rowcount
         return bool(changed)
 
     def history(self, row, *, same_thread=True, limit=8):

@@ -235,7 +235,8 @@ def decision_complete(system,text,slot,companies,secondary_ids=None):
     choice=result['choices'][0];answer=choice['message'].get('content') or ''
     import llm_budget
     usage=result.get('usage',{});llm_budget.record_call({},'vllm',result.get('model','?'),len(system)+len(text),len(answer),
-        task='stock-schedule-decision',tier='local',app_dir=ROOT,in_tok=usage.get('prompt_tokens'),out_tok=usage.get('completion_tokens'))
+        task='stock-schedule-decision',tier='local',app_dir=ROOT,in_tok=usage.get('prompt_tokens'),out_tok=usage.get('completion_tokens'),
+        **llm_budget.response_metrics(result, result.get('_cowork_wall_seconds')))
     if result.get('model')!=MODEL or choice.get('finish_reason')!='stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_decision_model')
     return answer

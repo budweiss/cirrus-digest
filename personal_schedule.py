@@ -151,15 +151,20 @@ def c1_draft(system,text):
         raise ValueError('personal_draft_context_budget_exceeded')
     payload={'model':model,'stream':False,'think':'medium','format':'json',
              'messages':[{'role':'system','content':system},{'role':'user','content':text}],
-             'options':{'temperature':0,'num_ctx':32768,'num_predict':6144}}
+             # S609: match the resident GPT-OSS allocation; the input gate above
+             # stays 32K. Alternating 32K/64K forced measured ~12s runner reloads.
+             'options':{'temperature':0,'num_ctx':65536,'num_predict':6144}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})
+    started=time.monotonic()
     with urllib.request.urlopen(req,timeout=420) as response:result=json.load(response)
+    elapsed=time.monotonic()-started
     answer=result.get('message',{}).get('content','')
     import llm_budget
     llm_budget.record_call({},'ollama',result.get('model','?'),len(system)+len(text),len(answer),
         task='personal-opinion-c1',tier='local',app_dir=ROOT,
-        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'))
+        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'),
+        num_ctx=65536, **llm_budget.response_metrics(result,elapsed))
     if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_personal_draft_model')
     return answer
@@ -266,17 +271,21 @@ def arbiter_call(model,think,evidence,draft,issue,timeout):
     """One local judge on C1's loopback Ollama; wrong model or cut-off output is an error."""
     text=json.dumps({'evidence':evidence,'draft':draft,'reviewer_finding':issue})
     if media.token_count(ARBITER_SYSTEM+text)+4096>32768:raise ValueError('arbiter_context_budget_exceeded')
+    context=65536 if model=='gpt-oss:120b' else 32768
     payload={'model':model,'stream':False,'think':think,'format':ARBITER_SCHEMA,
              'messages':[{'role':'system','content':ARBITER_SYSTEM},{'role':'user','content':text}],
-             'options':{'temperature':0,'num_ctx':32768,'num_predict':4096}}
+             'options':{'temperature':0,'num_ctx':context,'num_predict':4096}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})
+    started=time.monotonic()
     with urllib.request.urlopen(req,timeout=timeout) as response:result=json.load(response)
+    elapsed=time.monotonic()-started
     answer=result.get('message',{}).get('content','')
     import llm_budget
     llm_budget.record_call({},'ollama',result.get('model','?'),len(ARBITER_SYSTEM)+len(text),len(answer),
         task='personal-opinion-arbiter',tier='local',app_dir=ROOT,
-        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'))
+        in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'),
+        num_ctx=context, **llm_budget.response_metrics(result,elapsed))
     if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_arbiter_model')
     verdict=json.loads(answer)

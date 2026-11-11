@@ -213,7 +213,8 @@ class ResearchTests(unittest.TestCase):
                     'message': {'content': '{"passed":true,"issues":[]}'}}]}
         media = types.SimpleNamespace(MODEL='fixture-local', token_count=lambda text: 10,
                                       request=lambda path, payload: response)
-        budget = types.SimpleNamespace(record_call=lambda *args, **kwargs: None)
+        from llm_budget import response_metrics
+        budget = types.SimpleNamespace(record_call=lambda *args, **kwargs: None, response_metrics=response_metrics)
         with patch.dict('sys.modules', {'media_pipeline': media, 'llm_budget': budget}):
             self.assertTrue(s.review_verdict(s.structured_review('system', 'data', 'fixture'))['passed'])
             response['model'] = 'wrong-model'
@@ -232,7 +233,8 @@ class ResearchTests(unittest.TestCase):
             payloads.append(payload)
             return response
         media=types.SimpleNamespace(MODEL='fixture-local',token_count=lambda text:10,request=request)
-        budget=types.SimpleNamespace(record_call=lambda *args,**kwargs:None)
+        from llm_budget import response_metrics
+        budget=types.SimpleNamespace(record_call=lambda *args,**kwargs:None,response_metrics=response_metrics)
         pattern=r'^(opinion|rule_[1-7]): .{5,280}$'
         with patch.dict('sys.modules',{'media_pipeline':media,'llm_budget':budget}):
             s.structured_review('system','data','personal-fixture',issue_pattern=pattern)

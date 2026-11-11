@@ -107,8 +107,12 @@ def enabled():
 def request(path, payload):
     req = urllib.request.Request(ENDPOINT + path, data=json.dumps(payload).encode(),
                                  headers={'Content-Type': 'application/json'})
+    started = time.monotonic()
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=300) as r:
-        return json.load(r)
+        result = json.load(r)
+    if path == '/v1/chat/completions':
+        result['_cowork_wall_seconds'] = time.monotonic() - started
+    return result
 
 
 def token_count(text):
@@ -157,7 +161,8 @@ def complete(system, text, task, attempts=3):
         usage = result.get('usage', {})
         llm_budget.record_call({}, 'vllm', result.get('model', '?'), len(system)+len(text),
             len(answer), task=task, tier='local', app_dir=ROOT,
-            in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'))
+            in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'),
+            **llm_budget.response_metrics(result, result.get('_cowork_wall_seconds')))
         if result.get('model') == MODEL and choice.get('finish_reason') == 'stop' and answer.strip():
             return answer.strip()
         failure = RuntimeError('incomplete_or_wrong_media_model:model=%s finish=%s answer_chars=%d'

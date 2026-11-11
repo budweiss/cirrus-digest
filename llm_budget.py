@@ -224,10 +224,36 @@ def record(session_id, provider, model, in_tok, out_tok, cfg, *, box="unknown",
     return row
 
 
+def response_metrics(response, wall_seconds=None):
+    """S609: allowlisted numeric response telemetry; never copy response content.
+
+    Native Ollama durations are nanoseconds. Missing phases remain unknown;
+    total minus phases is NOT labelled queue time (it also includes overhead).
+    """
+    import math
+    out = {}
+    fields = {'load_duration': 'load_seconds', 'total_duration': 'server_seconds',
+              'prompt_eval_duration': 'prompt_eval_seconds', 'eval_duration': 'eval_seconds'}
+    for key, name in fields.items():
+        value = response.get(key)
+        if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+            out[name] = value / 1e9
+    if wall_seconds is not None:
+        out['wall_seconds'] = wall_seconds
+    reason = response.get('done_reason')
+    choices = response.get('choices') or []
+    if choices and isinstance(choices[0], dict):
+        reason = choices[0].get('finish_reason')
+    if reason in ('stop', 'length', 'tool_calls', 'content_filter'):
+        out['finish_reason'] = reason
+    return out
+
+
 def record_call(creds, provider, model, in_chars, out_chars, *, task="",
                 session_id=None, tier="", app_dir=None, in_tok=None, out_tok=None,
                 num_ctx=None, cached_tok=None, prompt_eval_seconds=None,
-                eval_seconds=None, wall_seconds=None):
+                eval_seconds=None, wall_seconds=None, load_seconds=None,
+                server_seconds=None, finish_reason=None):
     """S132: best-effort ledger row for ONE completed model call. Never raises: a
     broken ledger must not break a client job. Returns the row, or None when
     nothing was written (recording off, no pricing file, unwritable path).
@@ -254,11 +280,17 @@ def record_call(creds, provider, model, in_chars, out_chars, *, task="",
             extras["num_ctx"] = int(num_ctx)
         if cached_tok is not None:
             extras["cached_tok"] = int(cached_tok)
+        import math
         for name, v in (("prompt_eval_seconds", prompt_eval_seconds),
                         ("eval_seconds", eval_seconds),
+                        ("load_seconds", load_seconds), ("server_seconds", server_seconds),
                         ("wall_seconds", wall_seconds)):
-            if v is not None and float(v) >= 0:
+            if type(v) in (int, float) and math.isfinite(v) and v >= 0:
                 extras[name] = round(float(v), 3)
+        if finish_reason in ('stop', 'length', 'tool_calls', 'content_filter'):
+            extras['finish_reason'] = finish_reason
+        if extras:
+            extras['telemetry_version'] = 2
         return record(session_id or task or "untagged", provider, model or "?",
                       max(0, i), max(0, o), cfg,
                       box=box, ledger_path=ledger, task=task or "", tier=tier,

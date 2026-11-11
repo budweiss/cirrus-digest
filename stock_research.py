@@ -512,7 +512,8 @@ def structured_review(system, text, task, issue_pattern=None):
     usage = result.get('usage', {})
     llm_budget.record_call({}, 'vllm', result.get('model', '?'), len(system) + len(text),
         len(answer), task=task, tier='local', app_dir=ROOT,
-        in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'))
+        in_tok=usage.get('prompt_tokens'), out_tok=usage.get('completion_tokens'),
+        **llm_budget.response_metrics(result, result.get('_cowork_wall_seconds')))
     if result.get('model') != MODEL or choice.get('finish_reason') != 'stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_review_model')
     return answer

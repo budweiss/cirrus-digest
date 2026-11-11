@@ -111,22 +111,25 @@ def call_local(model, system, user, max_tokens=2048, timeout=300, *,
     }).encode()
     req = urllib.request.Request(OLLAMA + "/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
+        elapsed = time.monotonic() - t0
         text = d.get("message", {}).get("content", "")
         if text.strip():
             try:
                 import llm_budget
                 llm_budget.record_call(creds or {}, "ollama", model,
                                        len(system or "") + len(user or ""),
-                                       len(text), task=task, app_dir=REPO)
+                                       len(text), task=task, app_dir=REPO,
+                                       in_tok=d.get('prompt_eval_count'), out_tok=d.get('eval_count'),
+                                       **llm_budget.response_metrics(d, elapsed))
             except Exception:
                 pass
-        return text, time.time() - t0, None
+        return text, elapsed, None
     except Exception as e:
-        return "", time.time() - t0, str(e)[:200]
+        return "", time.monotonic() - t0, str(e)[:200]
 
 
 def call_cloud(provider, system, user, creds, max_tokens=2048):
@@ -368,11 +371,13 @@ def selftest():
 
     _real_urlopen = urllib.request.urlopen
     recorded = []
+    from llm_budget import response_metrics as _response_metrics
 
     class _FakeBudget:
+        response_metrics = staticmethod(_response_metrics)
         @staticmethod
         def record_call(creds, provider, model, in_chars, out_chars, *,
-                        task="", app_dir=None):
+                        task="", app_dir=None, **metrics):
             recorded.append(dict(provider=provider, model=model, task=task))
 
     _real_modules_budget = sys.modules.get("llm_budget")
