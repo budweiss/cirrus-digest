@@ -28,9 +28,16 @@ telewarden-fix session under rule 3a, which records them here with --set.
   python3 telewarden.py --open [--json] cases waiting for a fix or a decision
   python3 telewarden.py --case ID       one case in full
   python3 telewarden.py --set ID STATUS "note" [--commit C] [--undo U] [--verify-after H]
-  python3 telewarden.py --notify "text" one Telegram to Buddy (fix deployed / needs you)
+  python3 telewarden.py --log-change "text"   an improvement for the weekly recap
+  python3 telewarden.py --weekly        preview the weekly recap
+  python3 telewarden.py --notify "text" one Telegram to Buddy (manual use)
   python3 telewarden.py --ingest-nimbus < rows.jsonl    (the MacBook forwarder)
   python3 telewarden.py --selftest
+
+Messages to Buddy (Buddy, 11-11: "Notify me only if it can't be correct"):
+only when a case moves to needs-buddy, plus one weekly recap after Sunday
+18:00 of what was corrected or improved. A fix, a verification or a
+regression sends nothing; the fixer takes regressed cases first.
 
 Kill switch: create logs/telewarden/disabled. Passes, notices and --set stop;
 the step-one copies keep running on their own.
@@ -42,7 +49,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -59,7 +66,8 @@ STATUSES = ("new", "explained", "fixing", "fixed", "verified", "regressed",
 SETTABLE = ("new", "explained", "fixing", "fixed", "needs-buddy", "accepted")
 OPEN = ("new", "explained", "regressed")         # waiting for the fixer
 VERIFY_H = 48            # a fix with no recurrence for this long is verified
-OVERDUE_H = 24           # plan: a fix or a named decision within 24 hours
+STUCK_H = 72             # target is 24h; three days open means the fixer is stuck
+WEEKLY_DAY, WEEKLY_HOUR = 6, 18   # Sunday 18:00: Buddy's "recap at the end of the week"
 SOURCE_ALARM_H = 1       # a source failing this long counts against the pass
 SILENT_H = 36            # a box that sends daily has stopped copying
 NOTIFY_PER_DAY = 6
@@ -418,11 +426,11 @@ def touch_case(cases, cid, row, item, now, cache, notices):
     c["days"][d] = c["days"].get(d, 0) + 1
     c["days"] = dict(sorted(c["days"].items())[-14:])
     if c["status"] in ("fixed", "verified") and c.get("fixed_at") and row["t"] > c["fixed_at"]:
+        # Buddy (11-11): no message for something we can still correct. The fixer
+        # takes regressed cases first; only a needs-buddy case messages him.
         c["status"] = "regressed"
         c["history"].append({"t": now, "status": "regressed",
                              "note": f"came back after the fix ({c.get('commit') or 'no commit'})"})
-        notices.append(f"Came back after a fix: {c['title']} ({cid}). "
-                       f"Undo: {c.get('undo') or 'see the case'}")
     return c
 
 
@@ -485,6 +493,7 @@ def run_pass(readers=None, now=None, send=None, record=None):
         _save("state.json", state)
     for n in notices:
         notify(n, send=send, now=now)
+    maybe_weekly(now, send=send)
     bad = [s for s, h in health.items()
            if h.get("err_since") and now - h["err_since"] > SOURCE_ALARM_H * 3600]
     summary = (f"{sum(counts.values())} new row(s) "
@@ -496,7 +505,94 @@ def run_pass(readers=None, now=None, send=None, record=None):
 
 
 # ── outputs ──────────────────────────────────────────────────────────────────
-def notify(text, send=None, now=None):
+def _created(c):
+    """When Telewarden opened the case (rows may be older than Telewarden)."""
+    return c["history"][0]["t"] if c.get("history") else c["first"]
+
+
+def log_change(text, now=None):
+    """An improvement not tied to one case, for the weekly recap."""
+    now = time.time() if now is None else now
+    with _Lock():
+        _append("changes.jsonl", [{"t": now, "text": str(text)[:300]}])
+
+
+def _last_boundary(now):
+    d = datetime.fromtimestamp(now)
+    b = (d.replace(hour=WEEKLY_HOUR, minute=0, second=0, microsecond=0)
+         - timedelta(days=(d.weekday() - WEEKLY_DAY) % 7))
+    if b > d:
+        b -= timedelta(days=7)
+    return b.timestamp()
+
+
+def weekly_text(since, now):
+    cases = _load("cases.json", {})
+    fixed, accepted = [], []
+    for c in cases.values():
+        for h in c.get("history", []):
+            if since <= h["t"] <= now and h["status"] == "fixed":
+                fixed.append((c, h))
+            elif since <= h["t"] <= now and h["status"] == "accepted":
+                accepted.append((c, h))
+    changes = []
+    try:
+        for line in (base() / "changes.jsonl").read_text().splitlines():
+            e = json.loads(line)
+            if since <= e.get("t", 0) <= now:
+                changes.append(e)
+    except (FileNotFoundError, ValueError):
+        pass
+    needs = [c for c in cases.values() if c["status"] == "needs-buddy"]
+    busy = [c for c in cases.values() if c["status"] in OPEN + ("fixing",)]
+    span = (f"{time.strftime('%b %d', time.localtime(since))} - "
+            f"{time.strftime('%b %d', time.localtime(now))}")
+    out = [f"Weekly recap, {span}"]
+    state_word = {"verified": "confirmed", "fixed": "waiting for its next run",
+                  "regressed": "came back, fixer on it"}
+    if fixed:
+        out.append(f"\nCorrected ({len(fixed)}):")
+        for c, h in fixed:
+            out.append(f"- {c['title'][:80]}: {h.get('note', '')[:160]}"
+                       f" ({state_word.get(c['status'], c['status'])})")
+    if changes:
+        out.append(f"\nImproved ({len(changes)}):")
+        out += [f"- {e['text'][:200]}" for e in changes]
+    if accepted:
+        out.append(f"\nClosed as by design ({len(accepted)}):")
+        out += [f"- {c['title'][:80]}: {h.get('note', '')[:120]}" for c, h in accepted]
+    if needs:
+        out.append(f"\nStill needs you ({len(needs)}):")
+        out += [f"- {c['title'][:80]}" for c in needs]
+    if not (fixed or changes or accepted):
+        out.append("\nQuiet week: nothing needed correcting.")
+    out.append(f"\n{len(busy)} case(s) still being worked on.")
+    return "\n".join(out)
+
+
+def maybe_weekly(now, send=None):
+    """Send the recap once per week, after Sunday 18:00. A failed send retries
+    on the next pass; the first ever pass only sets the starting point."""
+    with _Lock():
+        state = _load("state.json", {})
+        last = state.get("weekly_sent")
+        if last is None:
+            state["weekly_sent"] = now
+            _save("state.json", state)
+            return False
+        if last >= _last_boundary(now):
+            return False
+    text = weekly_text(last, now)
+    if not notify(text, send=send, now=now, limit=3800):
+        return False
+    with _Lock():
+        state = _load("state.json", {})
+        state["weekly_sent"] = now
+        _save("state.json", state)
+    return True
+
+
+def notify(text, send=None, now=None, limit=1500):
     """One Telegram to Buddy, capped per day. Returns True if sent."""
     now = time.time() if now is None else now
     if disabled():
@@ -513,7 +609,7 @@ def notify(text, send=None, now=None):
     if send is None:
         import vendor_mail_watch
         send = vendor_mail_watch.telegram
-    return bool(send("🛡 Telewarden: " + text[:1500]))
+    return bool(send("🛡 Telewarden: " + text[:limit]))
 
 
 def brief_lines(now=None):
@@ -539,49 +635,31 @@ def brief_lines(now=None):
         if src in ("cirrus", "cumulus1") and h.get("last_row") and now - h["last_row"] > SILENT_H * 3600:
             lines.append(f"• ⚠️ no Telegram copies from {src} in {SILENT_H}h (copy stopped?)")
             att.append(f"no Telegram copies from {src} in {SILENT_H}h")
-    ev = []
-    try:
-        for line in (base() / "events.jsonl").read_text().splitlines()[-5000:]:
-            e = json.loads(line)
-            if e.get("t", 0) >= now - 86400:
-                ev.append(e)
-    except (FileNotFoundError, ValueError):
-        pass
-    kinds = {}
-    for e in ev:
-        kinds[e["kind"]] = kinds.get(e["kind"], 0) + (e.get("n", 1) if e["kind"] == "off" else 1)
-    warn_rows = kinds.get("warning", 0) + kinds.get("private-warning", 0)
-    touched = {c for e in ev for c in e.get("cases", [])}
-    new = [c for c in cases.values() if c["first"] >= now - 86400]
-    lines.append(f"• Last 24h: {len(ev)} message(s) copied - {warn_rows} with warnings in "
-                 f"{len(touched)} case(s), {len(new)} new; {kinds.get('private', 0) + kinds.get('private-warning', 0)} private, "
-                 f"{kinds.get('routine', 0) + kinds.get('info', 0)} routine/info"
-                 + (f"; Nimbus heartbeat paused {kinds['off']}x" if kinds.get("off") else ""))
-
-    def show(label, pick, n=4):
-        sel = sorted(pick, key=lambda c: -c["last"])
-        if sel:
-            lines.append(f"• {label}: " + "; ".join(
-                f"{c['title'][:70]} [{c['id']}]" for c in sel[:n])
-                + (f" (+{len(sel) - n} more)" if len(sel) > n else ""))
+    # Buddy (11-11): "Notify me only if it can't be correct." Corrections are not
+    # news; they go in Sunday's weekly recap. The brief shows what needs him, and
+    # a case open far past the fixer's 24-hour target (the fixer is stuck, which
+    # it cannot report itself).
+    def names(sel, n=4):
+        return "; ".join(f"{c['title'][:70]} [{c['id']}]" for c in sel[:n]) + (
+            f" (+{len(sel) - n} more)" if len(sel) > n else "")
 
     vals = list(cases.values())
-    show("New", [c for c in new if c["status"] in OPEN])
-    show("Came back after a fix", [c for c in vals if c["status"] == "regressed"])
-    show("Fixed, waiting for the next run", [c for c in vals if c["status"] == "fixed"])
-    show("Verified", [c for c in vals if c["status"] == "verified"
-                      and any(h["status"] == "verified" and h["t"] >= now - 86400
-                              for h in c["history"])])
-    show("Needs you", [c for c in vals if c["status"] == "needs-buddy"])
-    over = [c for c in vals if c["status"] in OPEN and now - c["first"] > OVERDUE_H * 3600]
-    show(f"⚠️ Open over {OVERDUE_H}h (no fix or decision yet)", over)
-    if over:
-        att.append(f"Telewarden: {len(over)} case(s) open over {OVERDUE_H}h")
-    nim = state.get("nimbus_alive")
-    if nim:
-        lines.append(f"• Nimbus forwarder last heard {time.strftime('%m-%d %H:%M', time.localtime(nim))}")
+    needs = sorted((c for c in vals if c["status"] == "needs-buddy"), key=lambda c: -c["last"])
+    if needs:
+        lines.append(f"• Needs you ({len(needs)}): {names(needs)}")
+        att.append(f"Telewarden: {len(needs)} decision(s) need you")
+    busy = [c for c in vals if c["status"] in OPEN + ("fixing",)]
+    stuck = sorted((c for c in busy if now - _created(c) > STUCK_H * 3600), key=_created)
+    if stuck:
+        lines.append(f"• ⚠️ {len(stuck)} case(s) open over {STUCK_H // 24} days, so the fixer "
+                     f"may be stuck: {names(stuck)}")
+        att.append(f"Telewarden: {len(stuck)} case(s) open over {STUCK_H // 24} days")
+    lines.append(f"• {len(busy)} case(s) being handled automatically; corrections go in "
+                 f"Sunday's weekly recap" if busy else
+                 "• Nothing open; corrections go in Sunday's weekly recap")
     # A sleeping Mac is silent by design; a Mac whose heartbeat is pinging CIRRUS
     # while the forwarder is not means the forwarder itself has stopped.
+    nim = state.get("nimbus_alive")
     try:
         mac = json.loads(Path(HEARTBEATS or HERE / "logs" / "heartbeats.json").read_text())["macbook"]
         mac_t = _epoch(mac.get("ts"))
@@ -600,7 +678,10 @@ def open_cases():
                   key=lambda c: (c["status"] != "regressed", -c["last"]))
 
 
-def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now=None):
+def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now=None,
+               send=None):
+    """Moving a case to needs-buddy is the one thing that messages Buddy
+    (Buddy, 11-11): it means the fixer cannot correct it."""
     now = time.time() if now is None else now
     if disabled():
         raise SystemExit("telewarden is switched off")
@@ -613,6 +694,7 @@ def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now
         c = cases.get(cid)
         if c is None:
             raise SystemExit(f"no case {cid}")
+        was = c["status"]
         c["status"] = status
         if status == "fixed":
             c.update({"fixed_at": now, "commit": commit, "undo": undo})
@@ -621,6 +703,9 @@ def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now
         c["history"].append({"t": now, "status": status, "note": note[:500],
                              **({"commit": commit} if commit else {})})
         _save("cases.json", cases)
+    if status == "needs-buddy" and was != "needs-buddy":
+        notify(f"Needs you, could not be corrected: {c['title'][:120]} [{cid}]. {note[:600]}",
+               send=send, now=now)
     return c
 
 
@@ -743,9 +828,8 @@ def selftest():
                   _load("cases.json", {})[cid]["status"] == "verified")
             feed["cirrus"].append(row("jobs_check", "Jobs\n⚠️ stockscorecard: FAILED 11-12 ValueError\n✅ a\n✅ b", T + 100 + 50 * 3600))
             run_pass(readers, now=T + 100 + 51 * 3600, send=send, record=record)
-            check("recurrence after a fix: regressed + one notice",
-                  _load("cases.json", {})[cid]["status"] == "regressed"
-                  and len(sent) == 1 and "Came back" in sent[0])
+            check("recurrence after a fix: regressed, and no message (the fixer takes it)",
+                  _load("cases.json", {})[cid]["status"] == "regressed" and sent == [])
 
             n = ingest_nimbus("\n".join(json.dumps(r) for r in [
                 {"id": "a1", "t": T + 200, "kind": "task_run", "label": "skill-review",
@@ -762,15 +846,47 @@ def selftest():
 
             lines, att = brief_lines(now=T + 100 + 52 * 3600 + 60)
             text = "\n".join(lines)
-            check("brief shows counts, regressions and overdue cases",
-                  "Last 24h" in text and "Came back after a fix" in text and "Open over" in text)
+            check("brief lists no corrections, only what is being handled",
+                  "being handled automatically" in text and "Came back" not in text
+                  and "stockscorecard" not in text
+                  and not any("Telewarden:" in a for a in att))
             check("brief never quotes private text",
                   "Sell 10 shares" not in text and "holdings" not in text.lower())
+            lines, att = brief_lines(now=T + 80 * 3600)
+            check("a case open over 3 days says the fixer may be stuck",
+                  any("may be stuck" in l for l in lines) and any("3 days" in a for a in att))
             offs = [json.loads(l) for l in (Path(td) / "events.jsonl").read_text().splitlines()
                     if '"off"' in l]
             check("paused heartbeats counted from the forwarder's batch",
-                  len(offs) == 1 and offs[0].get("n") == 3
-                  and "paused 3x" in "\n".join(brief_lines(now=offs[0]["t"] + 60)[0]))
+                  len(offs) == 1 and offs[0].get("n") == 3)
+
+            nb = next(c["id"] for c in _load("cases.json", {}).values()
+                      if c["job"] == "skill-review")
+            set_status(nb, "needs-buddy", "Is the C2 model meant to be off?", send=send,
+                       now=T + 100 + 52 * 3600 + 90)
+            set_status(nb, "needs-buddy", "asked again", send=send, now=T + 100 + 52 * 3600 + 95)
+            check("needs-buddy (cannot be corrected) messages Buddy once",
+                  len(sent) == 1 and "could not be corrected" in sent[0]
+                  and "Is the C2 model" in sent[0])
+            lines, att = brief_lines(now=T + 100 + 52 * 3600 + 120)
+            check("brief shows what needs him",
+                  any("Needs you (1)" in l for l in lines) and att)
+
+            log_change("Telewarden built: one case per warning", now=T + 50)
+            wk = T + 3 * 86400                     # past the first Sunday 18:00
+            check("weekly recap sends once after Sunday 18:00",
+                  maybe_weekly(wk, send=send) is True and maybe_weekly(wk + 60, send=send) is False)
+            rec = sent[-1]
+            check("weekly recap lists corrections, improvements and open decisions",
+                  "Corrected (1)" in rec and "stockscorecard" in rec and "came back" in rec
+                  and "Improved (1)" in rec and "Telewarden built" in rec
+                  and "Still needs you (1)" in rec)
+            check("weekly recap never quotes private text",
+                  "Sell 10 shares" not in rec and "holdings" not in rec.lower())
+            wk2 = T + 17 * 86400
+            check("a failed weekly send is retried, not lost",
+                  maybe_weekly(wk2, send=lambda m: False) is False
+                  and maybe_weekly(wk2 + 300, send=send) is True and "Quiet week" in sent[-1])
             global HEARTBEATS
             hb = Path(td) / "heartbeats.json"
             HEARTBEATS = str(hb)
@@ -842,6 +958,15 @@ def main():
         return 0
     if "--notify" in a:
         return 0 if notify(_arg("--notify")) else 1
+    if "--log-change" in a:
+        log_change(_arg("--log-change"))
+        print("logged for the weekly recap")
+        return 0
+    if "--weekly" in a:                  # preview only; the pass sends it Sunday 18:00
+        st = _load("state.json", {})
+        now = time.time()
+        print(weekly_text(st.get("weekly_sent") or now - 7 * 86400, now))
+        return 0
     if "--ingest-nimbus" in a:
         print(f"ingested {ingest_nimbus(sys.stdin.read())}")
         return 0
