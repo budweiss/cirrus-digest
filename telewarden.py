@@ -52,6 +52,7 @@ C1_LEDGER = "cirrus-digest/logs/jobs-status.json"
 SKY = ["sudo", "-n", "-u", "cumulus-supervisor", "/opt/cumulus-supervisor/venv/bin/python3", "-"]
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
 SOURCES = ("cirrus", "cumulus1", "skywarden", "nimbus")
+HEARTBEATS = None        # logs/heartbeats.json (the MacBook's pings); tests override
 
 STATUSES = ("new", "explained", "fixing", "fixed", "verified", "regressed",
             "needs-buddy", "accepted")
@@ -466,8 +467,12 @@ def run_pass(readers=None, now=None, send=None, record=None):
                 counts[kind] = counts.get(kind, 0) + 1
                 for cid, item in items:
                     touch_case(cases, cid, row, item, now, cache, notices)
-                events.append({"t": row["t"], "src": src, "job": row["job"], "kind": kind,
-                               "cases": [cid for cid, _ in items]})
+                ev = {"t": row["t"], "src": src, "job": row["job"], "kind": kind,
+                      "cases": [cid for cid, _ in items]}
+                if kind == "off":                # the forwarder sends one row per batch
+                    m = re.search(r"paused (\d+)x", row["text"])
+                    ev["n"] = int(m.group(1)) if m else 1
+                events.append(ev)
                 if row["source"] in ("cirrus", "cumulus1") and row["job"] != "telewarden":
                     h["last_row"] = max(h.get("last_row") or 0, row["t"])
             cursors[src] = advance(cur, fresh)
@@ -542,7 +547,7 @@ def brief_lines(now=None):
         pass
     kinds = {}
     for e in ev:
-        kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+        kinds[e["kind"]] = kinds.get(e["kind"], 0) + (e.get("n", 1) if e["kind"] == "off" else 1)
     warn_rows = kinds.get("warning", 0) + kinds.get("private-warning", 0)
     touched = {c for e in ev for c in e.get("cases", [])}
     new = [c for c in cases.values() if c["first"] >= now - 86400]
@@ -573,6 +578,17 @@ def brief_lines(now=None):
     nim = state.get("nimbus_alive")
     if nim:
         lines.append(f"• Nimbus forwarder last heard {time.strftime('%m-%d %H:%M', time.localtime(nim))}")
+    # A sleeping Mac is silent by design; a Mac whose heartbeat is pinging CIRRUS
+    # while the forwarder is not means the forwarder itself has stopped.
+    try:
+        mac = json.loads(Path(HEARTBEATS or HERE / "logs" / "heartbeats.json").read_text())["macbook"]
+        mac_t = _epoch(mac.get("ts"))
+        if (mac.get("status") == "ok" and mac_t and now - mac_t < 3600
+                and (not nim or now - nim > 2 * 3600)):
+            lines.append("• ⚠️ Nimbus forwarder silent while the MacBook is up")
+            att.append("Nimbus forwarder silent while the MacBook is up")
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     return lines, att
 
 
@@ -748,6 +764,27 @@ def selftest():
                   "Last 24h" in text and "Came back after a fix" in text and "Open over" in text)
             check("brief never quotes private text",
                   "Sell 10 shares" not in text and "holdings" not in text.lower())
+            offs = [json.loads(l) for l in (Path(td) / "events.jsonl").read_text().splitlines()
+                    if '"off"' in l]
+            check("paused heartbeats counted from the forwarder's batch",
+                  len(offs) == 1 and offs[0].get("n") == 3
+                  and "paused 3x" in "\n".join(brief_lines(now=offs[0]["t"] + 60)[0]))
+            global HEARTBEATS
+            hb = Path(td) / "heartbeats.json"
+            HEARTBEATS = str(hb)
+            tnow = T + 100 + 52 * 3600 + 60
+            hb.write_text(json.dumps({"macbook": {"status": "ok", "ts": time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.localtime(tnow - 600))}}))
+            st = _load("state.json", {})
+            st["nimbus_alive"] = tnow - 3 * 3600
+            _save("state.json", st)
+            check("forwarder silent while the Mac is up is flagged",
+                  any("forwarder silent" in a for a in brief_lines(now=tnow)[1]))
+            hb.write_text(json.dumps({"macbook": {"status": "sleeping", "ts": time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.localtime(tnow - 600))}}))
+            check("a sleeping Mac's silent forwarder is not flagged",
+                  not any("forwarder silent" in a for a in brief_lines(now=tnow)[1]))
+            HEARTBEATS = None
 
             before = len(sent)
             for i in range(NOTIFY_PER_DAY + 2):
