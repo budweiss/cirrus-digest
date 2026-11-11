@@ -276,7 +276,12 @@ def check(registry, live, unreachable=()):
         # The registry writes spaces as '_' so the columns stay parseable;
         # undo that before comparing, or every multi-word schedule reads as
         # drift against itself.
-        a = r["schedule"].strip().replace("_", " ")
+        raw = r["schedule"].strip()
+        # S607: underscores inside an IANA timezone name are literal, unlike
+        # the registry's encoded spaces between calendar fields.
+        zone = re.search(r'_([A-Za-z]+/[A-Za-z_/]+)$', raw)
+        a = (raw[:zone.start()].replace('_', ' ') + ' ' + zone[1]
+             if zone else raw.replace('_', ' '))
         b = lv["schedule"].strip()
         if a and b and not (b.startswith(a) or a.startswith(b)):
             problems.append(

@@ -1,6 +1,7 @@
 """S607: observed timer shapes cannot be silently excluded from window audit."""
 import unittest
 import runtime_window as r
+import placement
 
 class CalendarReportingTests(unittest.TestCase):
     def test_real_explicit_timezone_forms(self):
@@ -25,5 +26,12 @@ class CalendarReportingTests(unittest.TestCase):
     def test_one_shot_dates_do_not_collide(self):
         self.assertFalse(r.calendars_intersect({'date':'2026-11-14'},{'date':'2026-11-21'}))
         self.assertTrue(r.calendars_intersect({'date':'2026-11-14'},{}))
+
+    def test_registry_preserves_timezone_underscore_and_detects_time_drift(self):
+        reg=placement.parse_registry('```registry\ncumulus cowork-model-report-cumulus1.timer infra *-*-*_07:05:00_America/New_York live\n```')
+        live=placement.parse_live('===== CUMULUS =====\n  cowork-model-report-cumulus1.timer *-*-* 07:05:00 America/New_York ENABLED\n')
+        self.assertEqual(placement.check(reg,live)[0],[])
+        live[0]['schedule']='*-*-* 08:05:00 America/New_York'
+        self.assertTrue(any('DRIFT' in x for x in placement.check(reg,live)[0]))
 
 if __name__=='__main__':unittest.main()
