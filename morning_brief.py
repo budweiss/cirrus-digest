@@ -442,6 +442,15 @@ def compose():
         _tk_att = f"request-ticket check UNKNOWN: client_watch could not load ({type(e).__name__})"
     if _tk_att:
         att.append(_tk_att)
+    # S613: Telewarden step two -- one case per distinct warning, and whether
+    # each has a fix or a decision yet. A broken Telewarden is flagged itself.
+    try:
+        import telewarden
+        tw_lines, tw_att = telewarden.brief_lines()
+    except Exception as e:  # noqa: BLE001
+        tw_lines = [f"• ⚠️ Telewarden UNKNOWN: could not load ({type(e).__name__})"]
+        tw_att = ["Telewarden status UNKNOWN"]
+    att += tw_att
 
     healthy, verdict = health_verdict(dig["dated_today"], att, awaiting, tm_ok)
 
@@ -493,6 +502,10 @@ def compose():
         lines.append("**Scheduled jobs**")
         lines += jlines
         lines.append("")
+
+    lines.append("**Telewarden**")
+    lines += tw_lines
+    lines.append("")
 
     lines.append(f"**Next:** {next_action(dig['dated_today'], tm_ok, awaiting, pend, att)}")
     lines.append("")

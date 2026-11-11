@@ -199,6 +199,9 @@ CADENCE_H = {
     # system timer, whose row also carries cumulus2's state (it has no ledger).
     "tailscaleheal":        1,
     "tailscalehealcumulus": 1,
+    # S613: Telewarden step two, every 5 min (CIRRUS LaunchDaemon). Its row is
+    # ok=False only when a source has been unreadable for over an hour.
+    "telewarden":           1,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
