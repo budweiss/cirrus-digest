@@ -450,6 +450,43 @@ cumulus cirrus-gone.timer       client  04:00   live
     ck("reachable host still checked",
        any("com.cirrus.api" in x for x in up), False)
 
+    # S608: the wrap found thirteen old mutation survivors. Exercise the
+    # missing failure boundaries with isolated expected outcomes.
+    bounded = parse_registry('```registry\ncirrus com.cirrus.keep infra 01:00 live\n'
+                             'too few columns\n```\n'
+                             'cirrus com.cirrus.outside infra 02:00 live\n')
+    ck("registry rejects short rows and stops at closing fence",
+       [x['unit'] for x in bounded], ['com.cirrus.keep'])
+    noise = parse_live('  before.timer 01:00 ENABLED\n'
+                       '===== UNKNOWN HOST =====\n  unknown.timer 01:00 ENABLED\n'
+                       '===== CIRRUS =====\n'
+                       'unindented.timer 01:00 ENABLED\n'
+                       '  -- not a unit\n  short.timer ENABLED\n'
+                       '  invalid/unit 01:00 ENABLED\n'
+                       '  com.cirrus.keep 01:00 LOADED\n')
+    ck("inventory excludes unknown hosts, headings and malformed units",
+       [x['unit'] for x in noise], ['com.cirrus.keep'])
+    ck("unreachable CIRRUS is retained", parse_unreachable('===== CIRRUS UNREACHABLE ====='), {'cirrus'})
+    ck("unknown host does not become CUMULUS", parse_unreachable('===== OTHER UNREACHABLE ====='), set())
+    clean_reg = parse_registry('```registry\ncirrus com.cirrus.keep buddy 01:00 live\n'
+                              'cirrus com.cirrus.off client 02:00 dormant\n```')
+    clean_live = parse_live('===== CIRRUS =====\n  com.cirrus.keep 01:00 LOADED\n'
+                           '  com.cirrus.undeclaredoff 03:00 dormant\n')
+    cp, cn = check(clean_reg, clean_live)
+    ck("dormant absent or undeclared jobs are not failures", cp, [])
+    ck("correct-home and dormant client jobs are not move candidates", cn, [])
+    stopped = parse_live('===== CIRRUS =====\n  com.cirrus.keep 01:00 dormant\n')
+    ck("declared live job that stopped is reported",
+       any('NOT RUNNING' in x for x in check(clean_reg, stopped)[0]), True)
+    tz_reg = parse_registry('```registry\ncumulus cowork-model-report-cumulus1.timer infra '
+                            '*-*-*_07:05:00_America/New_York live\n```')
+    tz_live = parse_live('===== CUMULUS =====\n  cowork-model-report-cumulus1.timer '
+                         '*-*-* 07:05:00 America/New_York ENABLED\n')
+    ck("literal timezone underscore is preserved", check(tz_reg, tz_live)[0], [])
+    tz_live[0]['schedule'] = '*-*-* 08:05:00 America/New_York'
+    ck("real timezone-qualified time drift remains detected",
+       any('DRIFT' in x for x in check(tz_reg, tz_live)[0]), True)
+
     print()
     print("all placement selftests passed" if not bad else f"{bad} FAILED")
     return bad == 0
@@ -622,7 +659,7 @@ def coverage_selftest() -> bool:
                     watched={"businessideareport"})[0])
 
     # Always-on and poll loops are a different question; they must not appear.
-    for sched in ("always-on", "service", "interval", "every 900s"):
+    for sched in ("", "always-on", "service", "interval", "every 900s"):
         un, _ = coverage([row("cirrus", "com.cirrus.api", sched)], watched=set())
         ck(f"a {sched!r} unit is not treated as a scheduled job", not un)
 
