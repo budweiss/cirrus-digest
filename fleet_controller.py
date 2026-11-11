@@ -78,6 +78,20 @@ def quarantined(r):
     return r['state']=='failed' and r.get('stage')=='validated' and (r.get('reason') or '').startswith(QUARANTINED)
 
 
+# Telewarden tw-f78a1e3343 (11-05): the controller turned degraded several times
+# and wrote no reason anywhere, so Skywarden's journal tail found a 10-15
+# traceback and reported that as the cause. One journal line per change of state
+# keeps the current reason in the journal.
+def status_change(was_ok,data):
+    if data['ok']==was_ok:return None
+    if data['ok']:return 'fleet status ok again'
+    hermes=data.get('hermes') or {}
+    why={'errors':data.get('errors',[]),'unsettled':data.get('unsettled',[])[:5],
+         'hermes_error':hermes.get('error'),
+         'hermes_failed':[str(r.get('incident',''))[:12] for r in hermes.get('reviews') or [] if r.get('exit_code')!=0]}
+    return 'fleet status degraded: '+json.dumps(why,default=str)[:800]
+
+
 def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
     workers=[];errors=[]
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
@@ -87,7 +101,7 @@ def snapshot(q,app=Path('/home/buddy/cirrus-digest')):
                 r=future.result();workers.append(r)
                 q.health(w,r['model'],r['context'],r['available_mib'],r['busy'],r['observed'])
             except Exception as e:
-                errors.append({'worker':w,'error':type(e).__name__})
+                errors.append({'worker':w,'error':type(e).__name__,'detail':str(e)[:120]})
                 q.health(w,'unavailable',0,0,True)
     q.monitor()
     try:inventory=units()
@@ -204,6 +218,7 @@ def main():
             stop=True
         signal.signal(signal.SIGTERM,halt)
         review=HermesReview(args.state)
+        was_ok=True
         while not stop:
             data=snapshot(q)
             try:
@@ -215,6 +230,9 @@ def main():
                 'error':json.loads((args.state/'hermes-error.json').read_text()) if (args.state/'hermes-error.json').exists() else None,
                 'reviews':[{"incident":p.parent.name,**json.loads(p.read_text())} for p in sorted((args.state/'hermes').glob('*/finished.json'))]}
             if data['hermes']['error'] or any(r['exit_code']!=0 for r in data['hermes']['reviews']):data['ok']=False
+            change=status_change(was_ok,data)
+            if change:print(change,flush=True)
+            was_ok=data['ok']
             atomic(args.state/'status.json',data)
             (args.state/'status.html').write_text(render(data))
             if args.action=='observe':

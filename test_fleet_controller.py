@@ -93,4 +93,22 @@ class HermesReviewTests(unittest.TestCase):
     review.tick({'workers':[{'worker':'cumulus2-qwen','busy':False,'context':65536}],
       'queue':{'jobs':[{'id':'a','state':'unknown','attempt':1,'reason':'lost','stage':'inference','progress':0}]}})
     launch.assert_not_called()
+class StatusChangeTests(unittest.TestCase):
+ # Telewarden tw-f78a1e3343 (11-05): the controller went degraded and wrote no
+ # reason, so Skywarden's journal tail found a 10-15 traceback and named that.
+ def test_degrade_and_recovery_each_log_one_line_with_the_reason(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   q=Queue(Path(tmp)/'q.db',policy())
+   with patch.object(f,'observe_worker',side_effect=TimeoutError('timed out')),patch.object(f,'units',return_value=[]):
+    d=f.snapshot(q,Path(tmp))
+   d['hermes']={'error':None,'reviews':[]}
+   line=f.status_change(True,d)
+   self.assertIn('fleet status degraded',line);self.assertIn('TimeoutError',line);self.assertIn('timed out',line)
+   self.assertIsNone(f.status_change(False,d))
+   self.assertEqual(f.status_change(False,{'ok':True}),'fleet status ok again')
+   self.assertIsNone(f.status_change(True,{'ok':True}))
+ def test_failed_hermes_review_is_named(self):
+  d={'ok':False,'errors':[],'unsettled':[],'hermes':{'error':None,'reviews':[{'incident':'ab'*32,'exit_code':1}]}}
+  self.assertIn('abababababab',f.status_change(True,d))
+
 if __name__=='__main__':unittest.main()
