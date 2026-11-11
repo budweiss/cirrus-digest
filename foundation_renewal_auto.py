@@ -492,9 +492,13 @@ def review_packet(path, registry, due_before, reviewer=model_review):
         key = (item["route"], item["field"], item["index"])
         record = registry["projects"][key[0]][key[1]][key[2]]
         fixtures = by_key.get(key, [])
-        if not fixtures or any(x["old_record_sha256"] != record_sha(record) for x in fixtures):
-            continue  # Already renewed or changed since the packet was built.
         if record.get("approved") is not True or record.get("expires_at", 0) > due_before:
+            continue
+        if not fixtures or any(x["old_record_sha256"] != record_sha(record) for x in fixtures):
+            # Still due but changed since the packet was built (S612: a 09:15
+            # contract repin left 39 strict records unreviewed and unreported).
+            details.append({"record": key, "status": "changed_since_packet",
+                            "record_sha256": record_sha(record)})
             continue
         heading = "# %s  %s[%d]  " % key
         matched = [v for h, v in sections.items() if h.startswith(heading)]
@@ -641,7 +645,12 @@ def run_once(reviewer=model_review, apply=True):
                    if PACKET_RE.fullmatch(p.name))
     if local:
         packets.append(("cirrus", local[-1]))
-    summary = {"reviewed": 0, "renewed": 0, "held": 0, "pending": 0, "packets": 0}
+    summary = {"reviewed": 0, "renewed": 0, "held": 0, "pending": 0, "packets": 0, "changed": 0}
+    # S612: each builder runs once a day and starts WINDOW_H before expiry, so
+    # only a record due within WINDOW_H - 24 h was inside its last run's window.
+    # The full 72 h from 10:00 flagged a CIRRUS record the 04:50 run had
+    # correctly left for the next day (fresh_packet_missing, 11-11).
+    alert_before = time.time() + (renewal.WINDOW_H - 24) * 3600
     for host, packet in packets:
         if host == "cumulus":
             raw = command(["ssh", "-o", "BatchMode=yes", "cumulus1", "cat",
@@ -653,17 +662,19 @@ def run_once(reviewer=model_review, apply=True):
         if packet_age_hours(packet) > 20:
             # Evidence expires at 24 h. A stale packet with due records needs
             # an explicit alert, not a successful empty run.
-            if has_due_records(host, time.time() + 72 * 3600):
+            if has_due_records(host, alert_before):
                 raise RuntimeError("fresh renewal packet missing")
             continue
         records, hoa, held, details = review_packet(packet, registry, time.time() + 72 * 3600, reviewer)
         summary["packets"] += 1
-        summary["reviewed"] += len(details)
+        summary["reviewed"] += sum(x["status"] != "changed_since_packet" for x in details)
         summary["held"] += held
         # S542: an advisory record's date refuses nothing, so it is not an alert.
         from capability_admission import expiry_is_advisory
-        summary["pending"] += sum(x.get("status") == "evidence_review_pending"
-                                  and not expiry_is_advisory(x["record"][0].split(":", 1)[-1])
+        strict = lambda x: not expiry_is_advisory(x["record"][0].split(":", 1)[-1])
+        summary["pending"] += sum(x.get("status") == "evidence_review_pending" and strict(x)
+                                  for x in details)
+        summary["changed"] += sum(x["status"] == "changed_since_packet" and strict(x)
                                   for x in details)
         audit = packet / ("auto-review-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".json")
         audit.write_text(json.dumps({"host": host, "details": details,
@@ -697,10 +708,10 @@ def run_once(reviewer=model_review, apply=True):
             install("cirrus", target)
         summary["renewed"] += len(records)
     if not any(host == "cumulus" for host, _ in packets):
-        if has_due_records("cumulus", time.time() + 72 * 3600):
+        if has_due_records("cumulus", alert_before):
             raise RuntimeError("CUMULUS renewal packet missing")
     if not any(host == "cirrus" for host, _ in packets):
-        if has_due_records("cirrus", time.time() + 72 * 3600):
+        if has_due_records("cirrus", alert_before):
             raise RuntimeError("CIRRUS renewal packet missing")
     return summary
 
@@ -738,9 +749,12 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             result = run_once(apply=not args.dry_run)
-            ok = result["held"] == 0 and result["pending"] == 0
+            ok = result["held"] == 0 and result["pending"] == 0 and not result.get("changed")
             note = "reviewed=%d renewed=%d held=%d evidence_pending=%d packets=%d" % (
                 result["reviewed"], result["renewed"], result["held"], result["pending"], result["packets"])
+            if result.get("changed"):
+                # Only when non-zero, so existing note parsers see the same text.
+                note += " changed_since_packet=%d" % result["changed"]
         except Exception as exc:
             ok, note = False, failure_note(exc)
         if not args.dry_run:

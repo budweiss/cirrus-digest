@@ -573,10 +573,65 @@ class RenewalAutoTest(unittest.TestCase):
 
     def test_changed_record_is_not_reapproved_from_old_packet(self):
         self.record["expires_at"] += 100
-        approved, _, held, _ = auto.review_packet(
+        approved, _, held, details = auto.review_packet(
             self.path, self.registry, time.time() + 72 * 3600,
             lambda *_: self.fail("reviewer should not run"))
         self.assertEqual((len(approved), held), (0, 0))
+        self.assertEqual([d["status"] for d in details], ["changed_since_packet"])
+        # Renewed since the packet (expiry moved out): skipped and not reported.
+        self.record["expires_at"] = time.time() + 7 * 86400
+        self.assertEqual(auto.review_packet(self.path, self.registry, time.time() + 72 * 3600,
+                         lambda *_: self.fail("reviewer should not run"))[3], [])
+
+    def run_packet(self, root, **patches):
+        registry = root / "registry.json"
+        registry.write_text(json.dumps(self.registry))
+        with patch.object(auto, "EVROOT", root), patch.object(auto.renewal, "REGISTRY", registry), \
+             patch.object(auto, "remote_packet_name", return_value=None), \
+             patch.object(auto, "packet_age_hours", return_value=patches.get("age", 0)), \
+             patch.object(auto, "has_due_records", side_effect=patches.get("due", lambda *_: False)), \
+             patch("capability_admission.expiry_is_advisory", return_value=patches.get("advisory", False)):
+            return auto.run_once(lambda *_: self.fail("reviewer should not run"), apply=False)
+
+    def test_still_due_record_changed_after_packet_is_an_alert(self):
+        # S612: a contract repin after the 04:40 packet changed every due record's
+        # hash; the review skipped all of them and would have reported success.
+        self.record["contract_sha256"] = "repinned"
+        for advisory, expected in ((False, 1), (True, 0)):
+            with tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                auto.shutil.copytree(self.path, root / "renewal-20261111-0440-cirrus")
+                result = self.run_packet(root, advisory=advisory)
+            self.assertEqual((result["changed"], result["reviewed"]), (expected, 0))
+        with patch.object(auto, "EVROOT", self.path), \
+             patch.object(auto, "run_once", return_value={"reviewed": 0, "renewed": 0, "held": 0,
+                          "pending": 0, "packets": 1, "changed": 39}), \
+             patch("sys.argv", ["foundation_renewal_auto.py"]), \
+             patch("job_status.record") as record, patch.object(auto.renewal, "notify"), \
+             patch("builtins.print"):
+            self.assertEqual(auto.main(), 1)
+        self.assertEqual(record.call_args.args[1:], (False,
+            "reviewed=0 renewed=0 held=0 evidence_pending=0 packets=1 changed_since_packet=39"))
+
+    def test_stale_packet_alarm_waits_for_the_daily_builder_window(self):
+        # S612: CIRRUS's record was 72 h + seconds out at the 04:50 build, so no
+        # packet was due; the 10:00 review must not call that missing.
+        now = time.time()
+        for earliest_h, raises in ((66.8, False), (47, True)):
+            due = lambda host, before, e=now + earliest_h * 3600: host == "cirrus" and e <= before
+            with self.subTest(earliest_h=earliest_h), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                auto.shutil.copytree(self.path, root / "renewal-20261107-0450-cirrus")
+                empty = root / "empty"
+                empty.mkdir()
+                if raises:
+                    with self.assertRaisesRegex(RuntimeError, "^fresh renewal packet missing$"):
+                        self.run_packet(root, age=101, due=due)
+                    with self.assertRaisesRegex(RuntimeError, "^CIRRUS renewal packet missing$"):
+                        self.run_packet(empty, due=due)
+                else:
+                    self.assertEqual(self.run_packet(root, age=101, due=due)["packets"], 0)
+                    self.assertEqual(self.run_packet(empty, due=due)["packets"], 0)
 
     def test_distant_expiry_is_not_reviewed(self):
         approved, _, held, _ = auto.review_packet(
