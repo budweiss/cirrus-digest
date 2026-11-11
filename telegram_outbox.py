@@ -67,6 +67,8 @@ def record(text, ok, token):
         main = sys.modules.get("__main__")
         job = Path(getattr(main, "__file__", "") or sys.argv[0] or "?").stem
         via = sys._getframe(1).f_globals.get("__name__", "?")
+        if job in ("", "?") or job.startswith("-"):   # G1 (S613): python3 -c / - name no script
+            job = via if via != "__main__" else "?"
         row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                "host": socket.gethostname().split(".")[0].lower(),
                "job": job, "via": via if via != "__main__" else job,
@@ -152,6 +154,16 @@ def selftest():
             check("the row has host, job, via and ok", all(rows[0].get(k) is not None
                   for k in ("host", "job", "via", "ok", "ts", "chars")))
             check("the file is private (0600)", (p.stat().st_mode & 0o777) == 0o600)
+            import types
+            ns = {"__name__": "fake_caller", "record": record}
+            exec("def go(t, tok):\n    record(t, True, tok)\n", ns)
+            with mock.patch.dict(sys.modules, {"__main__": types.ModuleType("__main__")}), \
+                    mock.patch.object(sys, "argv", ["-c"]):
+                ns["go"]("sent from python3 -c", real_token)
+            last = json.loads(p.read_text().splitlines()[-1])
+            check("a python3 -c sender is named by its caller, not '-c' (G1)",
+                  last["job"] == "fake_caller")
+            p.write_text(p.read_text().splitlines()[0] + "\n")   # keep the counts below as before
             record(f"leak {real_token} and url?token=abc123", False, real_token)
             last = json.loads(p.read_text().splitlines()[-1])
             check("a token in the text is redacted", real_token not in p.read_text()

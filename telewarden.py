@@ -92,7 +92,9 @@ KNOWN = [
      "title": "jobs_check marks a finished auto-review FAILED (F3)",
      "explanation": "Same root as Case 1: a completed review with records waiting on evidence "
                     "is recorded as failed. Fix with Case 1."},
-    {"id": "case-2", "job": r"^cirrus_bot$", "text": r"re-copied \+ reloaded",
+    # Only the false claim: after the S613 heartbeat fix a failed run reports
+    # "(degraded) ... NOT REPAIRED", which is its own case, not this one coming back.
+    {"id": "case-2", "job": r"^cirrus_bot$", "text": r"\(repaired\).*last exit code",
      "status": "explained",
      "title": "MacBook heartbeat counts a reload as 'repaired' (Case 2)",
      "explanation": "The heartbeat reloads an agent whose last run failed and reports it "
