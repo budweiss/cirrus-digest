@@ -551,6 +551,9 @@ def watch_keys(key: str):
 # Scheduled jobs that deliberately have no ledger entry, each with the reason.
 # An exemption must say WHY, so it can be argued with later.
 EXEMPT = {
+    "modelbenchmark": "S612: daily 07:20 report checks numeric benchmark receipt age <=35 minutes, latest failure and separate synthetic traffic; owning-host bounds cap inference",
+    "model-benchmark-cumulus1": "S612: daily report checks native benchmark receipt freshness/failure; activity skips expected, test calls separate from workload",
+    "model-benchmark-cumulus2": "S612: daily report checks native benchmark receipt freshness/failure; generation-guarded counters overlap, tests separate",
     "modelreport": "S607: daily 07:20 Codex report checks the owning host's saved 07:05 receipt date and source coverage; server generation continues without desktop",
     "model-report-cumulus1": "S607: daily 07:20 Codex report checks the owning host's saved 07:05 receipt date and source coverage; server generation continues without desktop",
     "model-report-cumulus2": "S607: daily 07:20 Codex report checks saved 07:05 receipt, sampler freshness and day coverage; missing data is reported unavailable, not zero",
@@ -671,6 +674,9 @@ def coverage_selftest() -> bool:
     # Exemptions apply, and only to what is listed.
     un, _ = coverage([row("cirrus", "com.cirrus.jobscheck", "16:30")], watched=set())
     ck("an exempt job is not reported", not un)
+    for unit in ('cowork-model-benchmark-cumulus1.timer','cowork-model-benchmark-cumulus2.timer'):
+        ck('benchmark daily-report monitoring '+unit,
+           not coverage([row('cumulus',unit,'*-*-* *:07,22,37,52:00 America/New_York')],watched=set())[0])
     ck("every exemption states a reason",
        all(isinstance(v, str) and len(v) > 20 for v in EXEMPT.values()))
     un, _ = coverage([row("cumulus", "cirrus-rebootmonthly.timer", "*-*-15 08:15:00")],
