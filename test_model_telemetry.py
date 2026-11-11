@@ -12,6 +12,19 @@ import media_pipeline as M
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_prefilter_uses_real_tokens_and_wall_time(self):
+        import business_idea_scan as scan
+        import types
+        response=Mock();response.json.return_value={'response':'YES','prompt_eval_count':70,
+            'eval_count':2,'eval_duration':500_000_000,'done_reason':'stop'}
+        requests=types.SimpleNamespace(post=Mock(return_value=response))
+        daily=types.SimpleNamespace(OLLAMA_HOST='http://synthetic',MODEL='synthetic')
+        with patch.dict('sys.modules',requests=requests,cirrus_daily=daily),patch.object(B,'record_call') as rec,patch.object(scan.time,'monotonic',side_effect=[1,3]):
+            self.assertTrue(scan.prefilter_local('synthetic','synthetic',creds={})[0])
+        self.assertEqual(rec.call_args.kwargs['in_tok'],70)
+        self.assertEqual(rec.call_args.kwargs['wall_seconds'],2)
+        self.assertEqual(rec.call_args.kwargs['eval_seconds'],.5)
+
     def test_request_milestones_survive_recovery_and_metadata_updates(self):
         from conversation_memory import Memory
         with tempfile.TemporaryDirectory() as td:

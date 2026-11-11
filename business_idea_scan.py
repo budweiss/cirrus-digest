@@ -526,6 +526,7 @@ def prefilter_local(title: str, text: str, creds: dict = None) -> tuple:
         import cirrus_daily as B
         import requests
         prompt = _PREFILTER_PROMPT.format(title=title[:200], text=text[:4000])
+        started = time.monotonic()
         r = requests.post(
             f"{B.OLLAMA_HOST}/api/generate",
             json={"model": B.MODEL,
@@ -534,13 +535,17 @@ def prefilter_local(title: str, text: str, creds: dict = None) -> tuple:
                   "options": {"temperature": 0, "num_ctx": 4096}},
             timeout=60)
         r.raise_for_status()
-        ans = (r.json().get("response") or "").strip().upper()
+        data = r.json()
+        elapsed = time.monotonic() - started
+        ans = (data.get("response") or "").strip().upper()
         if creds is not None:
             try:
                 import llm_budget
                 llm_budget.record_call(creds, "ollama", B.MODEL,
                                        len(prompt), len(ans),
-                                       task="business_idea_scan")
+                                       task="business_idea_scan",
+                                       in_tok=data.get('prompt_eval_count'), out_tok=data.get('eval_count'),
+                                       num_ctx=4096, **llm_budget.response_metrics(data, elapsed))
             except Exception:
                 pass
         if ans.startswith("NO"):
