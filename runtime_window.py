@@ -110,6 +110,9 @@ LINE_UP_MBPS = 158.0
 #           that data arrives 2026-08-20. Treat these as placeholders and
 #           replace them, rather than quoting them as if they were measured.
 JOB = {
+    "com.cirrus.modelbenchmark": ("light", 4, 0, "activity check; max two runs/day of three serial 64-token calls, 185-second driver ceiling"),
+    "cowork-model-benchmark-cumulus1.timer": ("light", 4, 0, "activity check; max two bounded local benchmark runs/day"),
+    "cowork-model-benchmark-cumulus2.timer": ("light", 4, 0, "activity check; max two bounded local benchmark runs/day"),
     "com.cirrus.modelreport":        ("light", 1, 0, "numeric local model report; no inference"),
     "cowork-model-report-cumulus1.timer": ("light", 1, 0, "numeric local model report; no inference"),
     "cowork-model-report-cumulus2.timer": ("light", 1, 0, "numeric local model report; no inference"),
@@ -359,11 +362,11 @@ def parse_schedule(text: str, unparsed: list = None):
                         'weekday':dt.weekday(),'monthday':dt.day,'date':dt.date().isoformat(),
                         'dormant':bool(utc[4])})
             continue
-        hourly = re.fullmatch(r'\s+(\S+\.timer)\s+\*-\*-\* \*:(\d{2}):00 UTC(\s+\[dormant\])?\s*', line)
+        hourly = re.fullmatch(r'\s+(\S+\.timer)\s+\*-\*-\* \*:([0-5]\d(?:,[0-5]\d)*):00(?: UTC)?(\s+\[dormant\])?\s*', line)
         if hourly:
-            # Every UTC hour also covers every Eastern hour; no DST offset guess.
-            out.extend({'host':'cumulus','job':hourly[1], 'hour':h,'minute':int(hourly[2]),
-                        'weekday':None,'dormant':bool(hourly[3])} for h in range(24))
+            # Hourly Eastern minute lists, or UTC hourly forms (whole-hour offset).
+            out.extend({'host':'cumulus','job':hourly[1], 'hour':h,'minute':minute,
+                        'weekday':None,'dormant':bool(hourly[3])} for h in range(24) for minute in sorted(set(map(int,hourly[2].split(',')))))
             continue
         m = _CIRRUS_LINE.match(line)
         if m:
@@ -618,6 +621,16 @@ def selftest() -> bool:
         print(("  ok   " if ok else "  FAIL ") + f"{label}: {got!r}" +
               ("" if ok else f" (want {want!r})"))
         bad += 0 if ok else 1
+
+    unknown=[]
+    bench=parse_schedule('  cowork-model-benchmark-cumulus1.timer *-*-* *:07,22,37,52:00 America/New_York',unknown)
+    ck('hourly benchmark minute lists expand all checks',len(bench),96)
+    ck('minute list preserves minutes',sorted(set(j['minute'] for j in bench)),[7,22,37,52])
+    ck('minute list fully parsed',unknown,[])
+    ck('benchmark checks have bounded light profile',profile('cowork-model-benchmark-cumulus1.timer')[0],'light')
+    bad_minutes=[]
+    ck('invalid minute lists rejected',parse_schedule('  invalid.timer *-*-* *:07,99:00 America/New_York',bad_minutes),[])
+    ck('invalid minute lists visible',len(bad_minutes),1)
 
     # --- the weight split, which IS the policy ---
     # 2026-10-12: Buddy lifted the Mon-Fri 08:00-16:00 ban. Daytime heavy work
