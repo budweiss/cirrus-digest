@@ -509,6 +509,9 @@ def watch_keys(key: str):
 # Scheduled jobs that deliberately have no ledger entry, each with the reason.
 # An exemption must say WHY, so it can be argued with later.
 EXEMPT = {
+    "modelreport": "S607: daily 07:20 Codex report checks the owning host's saved 07:05 receipt date and source coverage; server generation continues without desktop",
+    "model-report-cumulus1": "S607: daily 07:20 Codex report checks the owning host's saved 07:05 receipt date and source coverage; server generation continues without desktop",
+    "model-report-cumulus2": "S607: daily 07:20 Codex report checks saved 07:05 receipt, sampler freshness and day coverage; missing data is reported unavailable, not zero",
     "promise-route-check": "S583: hourly marker refreshed in ~/.cowork-detached; "
                            "daily model_health detached sweep alerts on stale/missing "
                            "completion; marker finished only after PASS delivery",

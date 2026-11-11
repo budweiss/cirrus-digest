@@ -47,6 +47,8 @@ rot within a week and then lie confidently.
 
 import re
 import sys
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # ── the policy ──────────────────────────────────────────────────────────────
 # Refined by Buddy 2026-08-19, second pass. The FIRST version of this file
@@ -108,6 +110,11 @@ LINE_UP_MBPS = 158.0
 #           that data arrives 2026-08-20. Treat these as placeholders and
 #           replace them, rather than quoting them as if they were measured.
 JOB = {
+    "com.cirrus.modelreport":        ("light", 1, 0, "numeric local model report; no inference"),
+    "cowork-model-report-cumulus1.timer": ("light", 1, 0, "numeric local model report; no inference"),
+    "cowork-model-report-cumulus2.timer": ("light", 1, 0, "numeric local model report; no inference"),
+    "cowork-model-sample.timer":     ("light", 1, 0, "five-minute local engine counter sample"),
+    "cirrus-tailscalereview.timer":  ("light", 1, 0, "one-time route health review"),
     # CIRRUS -------------------------------------------------------------
     "com.cirrus.daily":              ("heavy", 19, 250, "120-165 items, multi-source web research"),
     "com.cirrus.digest":             ("heavy", 4, 40, "weekly roll-up, Sundays"),
@@ -186,6 +193,8 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "cirrus-tailscalereview.timer": "S580 one-time November 14 shadow-week review at 14:00 UTC; not a same-morning brief producer",
+    "fleet-qualify.timer": "S497 existing 10:30/22:30 qualification checks; next brief reports their results",
     "cirrus-snowguard-catchup.timer": "Buddy-approved Monday 11:00 recovery of failed 04:00 SNOW; reports into the next brief",
     "com.cirrus.foundationrenewalauto": "long local review starts after the brief; counts-only failures alert directly, status reports next day",
     "com.cirrus.stockam": "existing user review time migrated from Claude; reports into the next brief",
@@ -340,6 +349,22 @@ def parse_schedule(text: str, unparsed: list = None):
         if "CIRRUS" in line and "=====" in line:
             host = "cirrus"
             continue
+        # S607: explicit Eastern calendars and observed UTC one-shot/hourly
+        # forms must not disappear from the live scheduling audit.
+        line = re.sub(r' America/New_York(?=\s*(?:\[dormant\])?\s*$)', '', line)
+        utc = re.fullmatch(r'\s+(\S+\.timer)\s+(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC(\s+\[dormant\])?\s*', line)
+        if utc:
+            dt = datetime.fromisoformat(utc[2]+'T'+utc[3]).replace(tzinfo=timezone.utc).astimezone(ZoneInfo('America/New_York'))
+            out.append({'host':'cumulus','job':utc[1], 'hour':dt.hour,'minute':dt.minute,
+                        'weekday':dt.weekday(),'monthday':dt.day,'date':dt.date().isoformat(),
+                        'dormant':bool(utc[4])})
+            continue
+        hourly = re.fullmatch(r'\s+(\S+\.timer)\s+\*-\*-\* \*:(\d{2}):00 UTC(\s+\[dormant\])?\s*', line)
+        if hourly:
+            # Every UTC hour also covers every Eastern hour; no DST offset guess.
+            out.extend({'host':'cumulus','job':hourly[1], 'hour':h,'minute':int(hourly[2]),
+                        'weekday':None,'dormant':bool(hourly[3])} for h in range(24))
+            continue
         m = _CIRRUS_LINE.match(line)
         if m:
             wd = m.group("wd")
@@ -384,7 +409,7 @@ def parse_schedule(text: str, unparsed: list = None):
 
 def calendars_intersect(a, b):
     return all(a.get(key) is None or b.get(key) is None or a[key] == b[key]
-               for key in ('weekday', 'monthday'))
+               for key in ('weekday', 'monthday', 'date'))
 
 
 def audit(jobs):
