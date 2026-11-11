@@ -196,6 +196,9 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "com.cirrus.modelbenchmark": "S612: Buddy requested activity-triggered checks through the day; separate daily report summarizes the previous complete day",
+    "cowork-model-benchmark-cumulus1.timer": "S612: continuous activity checks; next daily model report covers prior-day benchmarks, not this morning brief's producer chain",
+    "cowork-model-benchmark-cumulus2.timer": "S612: continuous activity checks; next daily model report covers prior-day benchmarks, not this morning brief's producer chain",
     "cirrus-tailscalereview.timer": "S580 one-time November 14 shadow-week review at 14:00 UTC; not a same-morning brief producer",
     "fleet-qualify.timer": "S497 existing 10:30/22:30 qualification checks; next brief reports their results",
     "cirrus-snowguard-catchup.timer": "Buddy-approved Monday 11:00 recovery of failed 04:00 SNOW; reports into the next brief",
@@ -627,6 +630,7 @@ def selftest() -> bool:
     ck('hourly benchmark minute lists expand all checks',len(bench),96)
     ck('minute list preserves minutes',sorted(set(j['minute'] for j in bench)),[7,22,37,52])
     ck('minute list fully parsed',unknown,[])
+    ck('continuous benchmark checks do not delay the morning brief',audit(bench+parse_schedule('  com.cirrus.morningbrief 07:30'))[0],[])
     ck('benchmark checks have bounded light profile',profile('cowork-model-benchmark-cumulus1.timer')[0],'light')
     bad_minutes=[]
     ck('invalid minute lists rejected',parse_schedule('  invalid.timer *-*-* *:07,99:00 America/New_York',bad_minutes),[])
