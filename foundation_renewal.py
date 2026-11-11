@@ -17,8 +17,9 @@ Daily on each box (CUMULUS 04:40 systemd timer, CIRRUS 04:50 LaunchDaemon):
   * within 72 h: runs the tests into ~/model-evaluation/renewal-<stamp>/, writes
     PACKET.txt and decisions.json (every record approved=null), and Telegrams
     Buddy the deadline;
-  * a packet under 20 h old for the same expiry: one reminder, no re-run (the
-    installer accepts evidence under 24 h old, so a stale packet is re-run);
+  * a packet under 12 h old for the same expiry: one reminder, no re-run (it
+    must still be under 20 h at the next 10:00 review; the installer accepts
+    evidence under 24 h old);
   * past expiry: says so in the alert and marks the job unhealthy.
 
   python3 foundation_renewal.py                    # the daily check
@@ -52,6 +53,12 @@ EVROOT = Path.home() / "model-evaluation"
 STATE = EVROOT / "renewal-state.json"
 WINDOW_H = 72        # allow unattended review and a retry before expiry
 STALE_H = 20         # re-run a packet older than this (installer accepts < 24 h)
+# S613: the 10:00 auto-review treats a packet over STALE_H as stale, so the
+# daily build may reuse one only if it is still fresh at the next morning's
+# review. Reusing anything under STALE_H let an 11:23 hand-forced packet be
+# "reminded" at 04:40 (17 h) and then refused at 10:00 (23 h). Under 12 h,
+# every packet built before 16:40 is rebuilt and one built after 14:00 is fresh.
+REUSE_H = 12
 VALIDITY_S = 7 * 86400
 LOCAL = ("ollama", "vllm")
 CLOUD = ("anthropic", "kimi")
@@ -117,7 +124,7 @@ def decide(now, earliest, state):
     if earliest - now > WINDOW_H * 3600:
         return "wait"
     last = state.get("last_run_at")
-    if last and now - last < STALE_H * 3600 and state.get("last_run_for") == earliest:
+    if last and now - last < REUSE_H * 3600 and state.get("last_run_for") == earliest:
         return "remind"
     return "run"
 
@@ -736,6 +743,8 @@ def selftest():
        decide(now, now + 30 * 3600, {"last_run_at": now - 3600, "last_run_for": now + 30 * 3600}) == "remind")
     ck("decide: packet older than STALE_H -> run again (installer needs < 24 h)",
        decide(now, now + 30 * 3600, {"last_run_at": now - 21 * 3600, "last_run_for": now + 30 * 3600}) == "run")
+    ck("decide: packet that would be stale at the next 10:00 review -> run (S613: 17.3 h)",
+       decide(now, now + 30 * 3600, {"last_run_at": now - 17.3 * 3600, "last_run_for": now + 30 * 3600}) == "run")
     ck("decide: a packet for an OLD expiry does not count -> run",
        decide(now, now + 30 * 3600, {"last_run_at": now - 3600, "last_run_for": now - 99}) == "run")
     ck("decide: already expired -> run (and main marks it unhealthy)", decide(now, now - 60, {}) == "run")
