@@ -202,7 +202,7 @@ CADENCE_H = {
     # S613: Telewarden step two, every 5 min (CIRRUS LaunchDaemon). Its row is
     # ok=False only when a source has been unreadable for over an hour.
     "telewarden":           1,
-    "telewardenfix":        19,  # S614: CIRRUS 10:45/17:45, independent of desktop
+    "telewardenfix":        22,  # S614: CIRRUS 13:15/17:00, independent of desktop
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on

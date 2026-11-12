@@ -12,8 +12,8 @@
 <string>/usr/bin/python3</string><string>/Users/buddy/projects/cirrus-digest/telewarden_worker.py</string><string>--supervise</string>
 </array>
 <key>StartCalendarInterval</key><array>
-<dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>45</integer></dict>
-<dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+<dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+<dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer></dict>
 </array>
 <key>RunAtLoad</key><false/>
 <key>StandardOutPath</key><string>/Users/buddy/projects/cirrus-digest/logs/telewarden-worker.log</string>

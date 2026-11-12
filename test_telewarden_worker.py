@@ -28,7 +28,7 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn('worker_lease', tw._load('cases.json', {})['test-case'])
 
     def test_enabled_marker_blocks_desktop_claim(self):
-        (tw.base()/'server-worker-enabled').touch()
+        (Path(self.tmp.name)/'server-worker-enabled').touch()
         with self.assertRaises(SystemExit): tw.set_status('test-case','fixing','desktop')
 
     def test_private_rejected_before_credentials(self):
