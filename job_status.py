@@ -1256,6 +1256,13 @@ def selftest():
                        capture_output=True, text=True, timeout=120)
         ck("an unknown CLI argument is refused non-zero and never runs the suite",
            _cli.returncode != 0 and "PASS" not in _cli.stdout and "usage" in _cli.stderr)
+    pending = {'ok':False, 'epoch':100, 'last_run':'synthetic',
+               'note':'reviewed=18 renewed=12 held=1 evidence_pending=2 packets=1'}
+    label, healthy = _row('foundationrenewalauto',24,pending,101)
+    ck('completed review is still unhealthy and visibly needs review',
+       healthy is False and 'REVIEW NEEDED (completed)' in label)
+    ck('changed renewal records are not relabelled as a completed review',
+       not review_pending('foundationrenewalauto',dict(pending,note=pending['note']+' changed_since_packet=1')))
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 

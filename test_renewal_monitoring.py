@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 import foundation_renewal as f
 class Renewal(unittest.TestCase):
+ def test_builder_selftest_preserves_existing_gates(self):
+  self.assertTrue(f.selftest())
  def test_expiry_and_notification_failure_cannot_report_healthy(self):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td); c=root/'creds';c.write_text('{}');r=root/'registry';r.write_text('{"projects":{}}')

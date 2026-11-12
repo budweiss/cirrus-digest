@@ -34,7 +34,7 @@ TARGETS = {
     'renewal_recovery': ('renewal_recovery.py', ['-m', 'unittest', 'test_renewal_recovery']),
     'model_health': ('model_health.py', ['model_health.py', '--selftest']),
     'job_status': ('job_status.py', ['job_status.py', '--selftest']),
-    'foundation_renewal': ('foundation_renewal.py', ['-m', 'unittest', 'test_renewal_monitoring', 'test_renewal_recovery', 'test_renewal_output_contracts']),
+    'foundation_renewal': ('foundation_renewal.py', ['-m', 'unittest', 'test_renewal_monitoring', 'test_renewal_recovery', 'test_renewal_output_contracts', 'test_private_workflow_renewal', 'test_foundation_renewal_auto']),
     'runtime_window': ('runtime_window.py', ['runtime_window.py', '--selftest']),
     'net_sampler': ('net_sampler.py', ['net_sampler.py', '--selftest']),
 }
