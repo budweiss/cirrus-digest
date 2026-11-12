@@ -524,6 +524,7 @@ def main(force=False):
     when = datetime.fromtimestamp(strict).strftime("%a %b %d %H:%M") if strict else "-"
     hours = (strict - now) / 3600 if strict else 0
     ok, note = True, ""
+    completed_review = False
     if action == "none":
         note = "no live approvals for this box"
     elif action == "wait":
@@ -550,11 +551,24 @@ def main(force=False):
         from capability_admission import ADVISORY_NOTE
         delivery = notify(msg + " " + ADVISORY_NOTE)
         ok = ok and delivery == "sent"
+        completed_review = (not expired and fixtures > 0 and delivery == "sent"
+                            and answer_ok and bool(bad or missing))
         note = ("EXPIRED; " if expired else "") + "ran %d fixtures, %d gate failures; %d record(s) grace-eligible; packet %s; telegram %s" % (
             fixtures, bad, graced, out_dir.name, delivery)
     note = answer_note + "; " + note
+    if completed_review:
+        note = "completed_review; " + note
     log(note)
     return ok and answer_ok, note
+
+
+def process_exit(ok, note):
+    """A completed review with rejected gates is not a crashed process.
+
+    Its ledger remains ok=False, its warning and approval gates remain active.
+    Expiry, missing fixtures, failed delivery and exceptions still fail.
+    """
+    return 0 if ok or note.startswith('completed_review; ') else 1
 
 
 # ── the install half (run after explicit review, never by the test timer) ─────
@@ -791,4 +805,4 @@ if __name__ == "__main__":
         job_status.record("foundationrenewalcumulus", ok, note[:300])
     except Exception as ex:
         log("job_status.record failed: %s" % ex)
-    sys.exit(0 if ok else 1)
+    sys.exit(process_exit(ok, note))

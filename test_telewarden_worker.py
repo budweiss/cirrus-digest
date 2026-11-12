@@ -103,5 +103,24 @@ class WorkerTests(unittest.TestCase):
                 w.handle(self.case,'owner')
         self.assertEqual(routes,[('cirrus','patch'),('cloud','patch'),('cumulus1','review')])
 
+    def test_context_removes_tests_but_keeps_real_functions(self):
+        source='def broken(x):\n    return x-1\ndef selftest():\n    assert broken(1)==0\n'
+        context=w.source_context(source,{'title':'broken counter'})
+        self.assertIn('return x-1',context)
+        self.assertNotIn('def selftest',context)
+        self.assertEqual(w.CASE_TARGETS['case-f3'],'job_status')
+        self.assertEqual(w.CASE_TARGETS['case-f4'],'foundation_renewal')
+        self.assertEqual(len(w.TARGETS),8)
+
+    def test_reviewer_has_review_instructions_not_patch_instructions(self):
+        import llm_providers as l
+        root=Path(self.tmp.name);(root/'config').mkdir()
+        (root/'config/credentials.json').write_text('{}')
+        with patch.object(w,'CODE_ROOT',root),patch.object(l,'call',return_value='{"approved":true}') as call, \
+             patch.object(l,'last_model',return_value='gpt-oss:120b'), \
+             patch.object(l,'last_finish_reason',return_value='stop'):
+            self.assertTrue(w.model('synthetic review','peer-local','review')['approved'])
+            self.assertEqual(call.call_args.args[1],w.REVIEW_SYSTEM)
+
 
 if __name__ == '__main__': unittest.main()

@@ -451,6 +451,21 @@ def _fetch_remote(_run=None):
     return None
 
 
+def review_pending(name, rec):
+    """A finished renewal review still needs attention; never turn it green."""
+    note = rec.get('note') or ''
+    if name in ('foundationrenewal', 'foundationrenewalcumulus'):
+        return not rec.get('ok') and note.startswith('completed_review; ')
+    if name != 'foundationrenewalauto' or rec.get('ok'):
+        return False
+    import re
+    match = re.fullmatch(r'reviewed=(\d+) renewed=(\d+) held=(\d+) evidence_pending=(\d+) packets=(\d+)', note)
+    if not match:
+        return False
+    reviewed, renewed, held, pending, packets = map(int, match.groups())
+    return reviewed > 0 and packets > 0 and (held > 0 or pending > 0)
+
+
 def _row(name, cad_h, rec, now, tag="", declared_since=None):
     """Pure evaluation of one job's record -> (line, good). Testable offline."""
     if not rec:
@@ -483,6 +498,8 @@ def _row(name, cad_h, rec, now, tag="", declared_since=None):
         return f"☑️ {name}{tag}: {rec.get('last_run', '?')[:16]} failed, handled — {rec['handled']}", True
     mark = "✅" if good else "⚠️"
     state = " OVERDUE" if overdue else (" FAILED" if not rec.get("ok") else "")
+    if not overdue and review_pending(name, rec):
+        state = " REVIEW NEEDED (completed)"
     # S83: the note used to render ONLY when the row was already bad, so a run
     # that succeeded WHILE degraded printed a bare tick. On 2026-08-28 the
     # alopecia collector recorded "100 found, 0 new, 1 source error(s)" and

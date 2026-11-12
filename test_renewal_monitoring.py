@@ -16,5 +16,13 @@ class Renewal(unittest.TestCase):
    root=Path(td);c=root/'creds';c.write_text('{}');r=root/'registry';r.write_text('{"projects":{}}')
    with patch.object(f,'CREDS',c),patch.object(f,'REGISTRY',r),patch.object(f,'STATE',root/'state'),patch.object(f,'providers_here',return_value=[]),patch.object(f,'served_models',return_value={}),patch.object(f,'log'),patch.object(f.time,'time',return_value=100),patch.object(f,'decide',return_value='run'),patch.object(f,'earliest_expiry',return_value=200),patch.object(f,'notify',return_value='sent'),patch('answer_workflow_eval.renewal_check',return_value=(True,'answer ok')):
     for bad,missing in [(1,[]),(0,['fixture'])]:
-     with patch.object(f,'run_all',return_value=(root,2,bad,missing,0)):self.assertFalse(f.main()[0])
+     with patch.object(f,'run_all',return_value=(root,2,bad,missing,0)):
+      ok,note=f.main()
+      self.assertFalse(ok)  # gate failure remains unhealthy
+      self.assertTrue(note.startswith('completed_review; '))
+      self.assertEqual(f.process_exit(ok,note),0)  # completed, not crashed
+      with patch.object(f,'notify',return_value='FAILED: network'):
+       ok,note=f.main()
+       self.assertFalse(ok)
+       self.assertEqual(f.process_exit(ok,note),1)
 if __name__=='__main__':unittest.main()

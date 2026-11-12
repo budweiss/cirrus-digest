@@ -31,4 +31,4 @@ if __name__ == "__main__":
         job_status.record("foundationrenewal", ok, note[:300])
     except Exception as ex:
         R.log("job_status.record failed: %s" % ex)
-    sys.exit(0 if ok else 1)
+    sys.exit(R.process_exit(ok, note))
