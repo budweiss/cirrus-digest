@@ -70,5 +70,23 @@ class WorkerTests(unittest.TestCase):
             w.reserve_cloud({'claude_model':'test'},'s','p',10)
             with self.assertRaisesRegex(w.Held,'daily_budget'):w.reserve_cloud({'claude_model':'test'},'s','p',10)
 
+    def test_local_failure_precedes_cloud_attempt(self):
+        p=Path(self.tmp.name);(p/'telegram_outbox.py').write_text('x=1\n')
+        routes=[]
+        def failure(prompt,route,phase):
+            routes.append(route)
+            raise w.Held('synthetic_provider_failure')
+        with patch.object(w,'ROOT',p),patch.object(w,'guarded_packet',return_value='synthetic'), \
+             patch.object(w,'git',return_value='base'),patch.object(w,'inspect',return_value={}), \
+             patch.object(w,'remote',return_value={}),patch.object(w,'assert_deployable'), \
+             patch.object(w,'model',side_effect=failure):
+            with self.assertRaises(w.Held):w.handle(self.case,'owner')
+        self.assertEqual(routes,['cirrus','cloud'])
+
+    def test_no_production_notice_from_canary(self):
+        with patch.object(w,'ROOT',Path(self.tmp.name)), patch.object(tw,'set_status') as status:
+            w.finish('test-case','owner','needs-buddy','synthetic')
+            self.assertFalse(status.call_args.kwargs['send']('test'))
+
 
 if __name__ == '__main__': unittest.main()

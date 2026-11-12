@@ -147,6 +147,7 @@ JOB = {
     "com.cirrus.morningbrief":       ("light", 1, 3, "composes + sends; MUST BE LAST"),
     "com.cirrus.jobscheck":          ("light", 1, 1, "reads local job status"),
     "com.cirrus.devloop":            ("heavy", 15, 80, "autonomous dev agent, evening"),
+    "com.cirrus.telewardenfix":      ("heavy", 45, 10, "bounded local-first infrastructure repair"),
     # S73: the monthly reboots. Buddy chose 08:15 deliberately — AFTER the daily
     # work finishes (07:30 morning brief is last) rather than before it, so that
     # if a reboot goes wrong there is a whole day to notice and recover. That
@@ -196,6 +197,7 @@ _DEFAULT = ("heavy", 15, 50, "UNREGISTERED -- treated as heavy until profiled")
 # not same-morning producers for it, and flagging them forever trains everyone
 # to skip the audit (T9) -- the same reasoning as the reboot exemption below.
 AFTER_BRIEF_OK = {
+    "com.cirrus.telewardenfix": "S614: twice-daily repair worker replaces desktop repair sessions; next brief reports results",
     "com.cirrus.modelbenchmark": "S612: Buddy requested activity-triggered checks through the day; separate daily report summarizes the previous complete day",
     "cowork-model-benchmark-cumulus1.timer": "S612: continuous activity checks; next daily model report covers prior-day benchmarks, not this morning brief's producer chain",
     "cowork-model-benchmark-cumulus2.timer": "S612: continuous activity checks; next daily model report covers prior-day benchmarks, not this morning brief's producer chain",

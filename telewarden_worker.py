@@ -49,6 +49,8 @@ Preserve all existing tests, imports, public function signatures, and behavior
 unrelated to the fault. Do not bypass checks or suppress genuine errors.
 Otherwise return {"action":"hold","reason":"specific missing evidence or
 required human decision"}. Do not claim historical incidents are still broken.
+If the fault is already corrected, return {"action":"resolved","summary":
+"evidence", "regression":"standalone synthetic assert test proving it"}.
 '''
 
 
@@ -105,6 +107,8 @@ def claim(cid, owner, now=None):
 
 def finish(cid, owner, status, note, **kw):
     # set_status enforces lease ownership against the desktop worker too.
+    if ROOT != CODE_ROOT:
+        kw['send'] = lambda *a, **k: False  # qualification must never send a real alert
     return tw.set_status(cid, status, note, owner=owner, **kw)
 
 
@@ -131,6 +135,7 @@ def inspect(root=None):
         except (OSError, ValueError): raise Held('contract_config_unreadable')
     return {'head': git('rev-parse', 'HEAD', cwd=root), 'pins': sorted(pins),
             'drift': sorted(set(drift)),
+            'hashes': {v[0]: digest((root/v[0]).read_text()) for v in TARGETS.values() if (root/v[0]).is_file()},
             'dirty': git('diff', '--name-only', 'HEAD', cwd=root).splitlines(),
             'staged': git('diff', '--cached', '--name-only', cwd=root).splitlines()}
 
@@ -233,6 +238,10 @@ def apply_patch(source, proposal):
         return [ast.dump(n) for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and ('selftest' in n.name or n.name.startswith('test_'))]
     if tests(before) != tests(after): raise Held('existing_tests_changed')
+    def signatures(tree):
+        return [(n.name, ast.dump(n.args)) for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    if signatures(before) != signatures(after): raise Held('function_signature_changed')
     def calls(tree):
         return {ast.dump(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     if calls(after) - calls(before): raise Held('new_call_requires_operator_review')
@@ -262,7 +271,8 @@ def candidate(root, spec):
             tar.extractall(scratch)
         old = (scratch / filename).read_text()
         if digest(old) != spec['old_sha']: raise Held('baseline_hash_changed')
-        new = apply_patch(old, spec['proposal'])
+        resolved = spec['proposal'].get('action') == 'resolved'
+        new = old if resolved else apply_patch(old, spec['proposal'])
         test = spec['proposal'].get('regression', '')
         if not isinstance(test, str) or not 20 <= len(test) <= 10000: raise Held('regression_required')
         tree = ast.parse(test)
@@ -274,6 +284,9 @@ def candidate(root, spec):
         original_tests = check(target[1])
         if original_tests.returncode: raise Held('baseline_suite_failed')
         bad = check([testpath.name])
+        if resolved:
+            if bad.returncode: raise Held('resolution_not_proven')
+            return {'ok':True, 'new_sha':digest(old), 'base':spec['base'], 'file':filename, 'resolved':True}
         if bad.returncode == 0 or 'AssertionError' not in bad.stderr: raise Held('regression_not_reproduced')
         (scratch / filename).write_text(new)
         good = check([testpath.name])
@@ -328,12 +341,14 @@ def deploy(spec, owner):
             sync_host(sha, spec['base'])
             remote('--sync', {'sha': sha, 'old': spec['base']})
             a, b = inspect(), remote('--inspect')
-            if a['head'] != sha or b['head'] != sha or a['drift'] or b['drift']:
+            if (a['head'] != sha or b['head'] != sha or a['drift'] or b['drift']
+                    or any(i['hashes'].get(spec['file']) != digest(patched) for i in (a,b))):
                 raise Held('post_deploy_check_failed')
         except Exception:
             receipt('partial_deploy', case=spec['case'], commit=sha, previous=spec['base'])
             try:
-                git('revert', '--no-edit', sha, cwd=wt)
+                git('-c', 'user.name=Telewarden', '-c', 'user.email=telewarden@localhost',
+                    'revert', '--no-edit', sha, cwd=wt)
                 rollback = git('rev-parse', 'HEAD', cwd=wt)
                 git('push', 'origin', 'HEAD:main', cwd=wt)
                 for local in (True, False):
@@ -345,6 +360,7 @@ def deploy(spec, owner):
             except Exception:
                 receipt('rollback_failed', case=spec['case'], commit=sha)
             raise Held('partial_deploy_needs_recovery:' + sha)
+        receipt('deployed', case=spec['case'], commit=sha)
         return sha
 
 
@@ -361,7 +377,7 @@ def handle(case, owner, allow_deploy=False):
     for route in ('cirrus', 'cloud'):
         try:
             proposal = model(packet + '\nPRIOR ATTEMPT: ' + failure, route, 'patch')
-            if proposal.get('action') != 'patch': raise Held('model_needs_more_evidence')
+            if proposal.get('action') not in ('patch','resolved'): raise Held('model_needs_more_evidence')
             spec['proposal'] = proposal
             local = candidate(ROOT, spec)
             peer = remote('--verify-candidate', spec)
@@ -376,6 +392,9 @@ def handle(case, owner, allow_deploy=False):
             if review.get('approved') is not True: raise Held('independent_review_rejected')
             receipt('candidate_passed', case=case['id'], route=route, file=filename)
             if not allow_deploy: return {'status': 'tested', 'case': case['id']}
+            if proposal['action'] == 'resolved':
+                finish(case['id'], owner, 'accepted', 'Existing code passed a synthetic regression on both hosts and independent review; historical fault already corrected.')
+                return {'status':'accepted', 'case':case['id']}
             sha = deploy(spec, owner)
             finish(case['id'], owner, 'fixed', 'Tested repair deployed on CIRRUS and CUMULUS1; awaiting production recurrence check.',
                    commit=sha, undo='git revert ' + sha + '; deploy both hosts')
@@ -391,13 +410,27 @@ def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--canary', action='store_true', help='only the separate synthetic test repository')
-    for name in ('inspect', 'verify-candidate', 'sync', 'run', 'dry-run', 'model-review'):
+    for name in ('inspect', 'verify-candidate', 'sync', 'run', 'dry-run', 'model-review', 'supervise'):
         parser.add_argument('--' + name, action='store_true')
     args = parser.parse_args()
     if args.canary:
         ROOT = Path.home() / 'telewarden-canary'
         os.environ['TELEWARDEN_DIR'] = str(ROOT / 'logs/telewarden')
-    if args.model_review:
+    if args.supervise:
+        import signal
+        child = subprocess.Popen([sys.executable, str(CODE_ROOT/'telewarden_worker.py')]
+                                 + (['--canary'] if args.canary else []) + ['--run'], start_new_session=True)
+        try:
+            code = child.wait(timeout=2700)
+        except subprocess.TimeoutExpired:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.wait()
+            code = 124
+        if code and not args.canary:
+            import job_status
+            job_status.record('telewardenfix', ok=False, note='Server repair worker failed or exceeded 45-minute limit; inspect worker receipts')
+        sys.exit(code)
+    elif args.model_review:
         result = model(json.load(sys.stdin)['prompt'], 'peer-local', 'review')
     elif args.inspect: result = inspect()
     elif args.verify_candidate: result = candidate(ROOT, json.load(sys.stdin))
@@ -411,17 +444,18 @@ def main():
             raise Held('server_worker_not_enabled')
         with worker_lock():
             results = []
+            expired = []
             with tw._Lock():
                 all_cases = tw._load('cases.json', {})
                 for c in all_cases.values():
                     lease = c.get('worker_lease', {})
                     if c['status'] == 'fixing' and lease and lease.get('until', 0) < time.time():
                         # Interrupted deployment needs reconciliation, not replay.
-                        c['status'] = 'explained'
-                        c.pop('worker_lease', None)
-                        c['history'].append({'t':time.time(),'status':'explained',
-                                             'note':'Worker interrupted; inspect deployment receipts before another patch.'})
-                if args.run: tw._save('cases.json', all_cases)
+                        expired.append((c['id'], lease['owner']))
+            if args.run:
+                for cid, owner in expired:
+                    finish(cid, owner, 'needs-buddy',
+                           'Worker interrupted; inspect deployment receipts before another patch.')
             cases = sorted(tw.open_cases(), key=lambda c: (c['status'] != 'regressed', c['first']))
             for case in [c for c in cases if c['status'] != 'fixing'][:MAX_CASES]:
                 if tw.disabled(): break
@@ -437,7 +471,7 @@ def main():
                     results.append({'case': case['id'], 'status': 'held', 'reason': reason})
             result = {'ok': True, 'at': time.time(), 'cases': results}
             tw._save('worker-last.json', result)
-            if args.run:
+            if args.run and ROOT == CODE_ROOT:
                 import job_status
                 job_status.record('telewardenfix', ok=True, note='CIRRUS worker completed; %d cases handled' % len(results))
     else: parser.error('choose a mode')
