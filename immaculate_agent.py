@@ -472,7 +472,7 @@ def selftest():
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if a[:1] == ["selftest"]:
+    if a[:1] in (["selftest"], ["--selftest"]):
         sys.exit(selftest())
     if a[:1] and a[0] in COMMANDS:
         sys.exit(main(a[0], dry_run="--dry-run" in a))
