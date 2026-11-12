@@ -681,7 +681,7 @@ def open_cases():
 
 
 def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now=None,
-               send=None):
+               send=None, owner=None):
     """Moving a case to needs-buddy is the one thing that messages Buddy
     (Buddy, 11-11): it means the fixer cannot correct it."""
     now = time.time() if now is None else now
@@ -696,8 +696,15 @@ def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now
         c = cases.get(cid)
         if c is None:
             raise SystemExit(f"no case {cid}")
+        lease = c.get('worker_lease', {})
+        if lease.get('owner') and lease.get('owner') != owner and lease.get('until', 0) > now:
+            raise SystemExit('case is owned by the CIRRUS repair worker')
+        if status == 'fixing' and owner is None and (base() / 'server-worker-enabled').exists():
+            raise SystemExit('repair ownership moved to CIRRUS; desktop claim refused')
         was = c["status"]
         c["status"] = status
+        if owner and lease.get('owner') == owner:
+            c.pop('worker_lease', None)
         if status == "fixed":
             c.update({"fixed_at": now, "commit": commit, "undo": undo})
             if verify_after:
