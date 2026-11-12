@@ -88,5 +88,20 @@ class WorkerTests(unittest.TestCase):
             w.finish('test-case','owner','needs-buddy','synthetic')
             self.assertFalse(status.call_args.kwargs['send']('test'))
 
+    def test_cloud_cannot_review_its_own_proposal(self):
+        p=Path(self.tmp.name);(p/'telegram_outbox.py').write_text('x=1\n')
+        routes=[]
+        def model(prompt,route,phase):
+            routes.append((route,phase))
+            if route=='cloud':return {'action':'resolved'}
+            raise w.Held('synthetic_local_unavailable')
+        with patch.object(w,'ROOT',p),patch.object(w,'guarded_packet',return_value='synthetic'), \
+             patch.object(w,'git',return_value='base'),patch.object(w,'inspect',return_value={}), \
+             patch.object(w,'remote',return_value={}),patch.object(w,'candidate',return_value={}), \
+             patch.object(w,'assert_deployable'),patch.object(w,'model',side_effect=model):
+            with self.assertRaisesRegex(w.Held,'independent_local_review_unavailable'):
+                w.handle(self.case,'owner')
+        self.assertEqual(routes,[('cirrus','patch'),('cloud','patch'),('cumulus1','review')])
+
 
 if __name__ == '__main__': unittest.main()

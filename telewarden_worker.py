@@ -388,6 +388,8 @@ def handle(case, owner, allow_deploy=False):
                 '\nPROPOSAL\n' + json.dumps(proposal))
             try: review = model(review_prompt, 'cumulus1', 'review')
             except Exception:
+                if route == 'cloud':
+                    raise Held('independent_local_review_unavailable')
                 review = model(review_prompt, 'cloud', 'review')
             if review.get('approved') is not True: raise Held('independent_review_rejected')
             receipt('candidate_passed', case=case['id'], route=route, file=filename)
