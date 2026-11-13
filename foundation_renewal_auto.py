@@ -138,6 +138,25 @@ def packet_age_hours(path):
     return (time.time() - made.timestamp()) / 3600
 
 
+def health_confirmed(path, item, record):
+    """The installer's provider-health guard, applied at review (S620).
+
+    The installer refuses any fixture whose recorded health is not confirmed,
+    and refuses the whole batch with it. On 11-13 two such records stopped 12
+    unanimous renewals, so a record failing this guard is held instead.
+    """
+    rows = json.loads((path / item["evidence_file"]).read_text())
+    key = (item["route"], item["field"], item["index"])
+    for fixture_id in item["reviewed_fixtures"]:
+        attempts = [r for r in rows if (r["route"], r["field"], r["index"], r["fixture_id"]) == (*key, fixture_id)]
+        health = attempts[-1].get("health") if attempts else None
+        if not (isinstance(health, dict) and health.get("healthy")
+                and health.get("model") == record.get("model")
+                and health.get("location") == record.get("location")):
+            return False
+    return True
+
+
 def complete_cases(path, item, visible):
     """Review complete instructions/input/answers, never the abbreviated packet."""
     rows = json.loads((path / item["evidence_file"]).read_text())
@@ -511,8 +530,9 @@ def review_packet(path, registry, due_before, reviewer=model_review):
             held += 1
             continue
         results = []
-        mechanical_failure = any("shape=True identity=True" not in c.splitlines()[0]
-                                 or "err=None" not in c.splitlines()[0] for c in cases)
+        mechanical_failure = (any("shape=True identity=True" not in c.splitlines()[0]
+                                  or "err=None" not in c.splitlines()[0] for c in cases)
+                              or not health_confirmed(path, item, record))
         if not mechanical_failure:
             for case in cases:
                 for rule in REVIEW_PROMPTS:

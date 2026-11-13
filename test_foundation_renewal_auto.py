@@ -91,6 +91,7 @@ class RenewalAutoTest(unittest.TestCase):
             "route": "foundation:test", "field": "evaluations", "index": 0,
             "fixture_id": "test-fixture", "user": "complete evidence",
             "system": "Do not invent sources", "response": "answer",
+            "health": {"healthy": True},
             "old_record_sha256": auto.record_sha(self.record)}]))
         (self.path / "review-priors.json").write_text(json.dumps([{
             "route": "foundation:test", "field": "evaluations", "index": 0,
@@ -632,6 +633,21 @@ class RenewalAutoTest(unittest.TestCase):
                 else:
                     self.assertEqual(self.run_packet(root, age=101, due=due)["packets"], 0)
                     self.assertEqual(self.run_packet(empty, due=due)["packets"], 0)
+
+    def test_unconfirmed_provider_health_holds_record_before_review(self):
+        # S620: the installer refuses an unconfirmed health snapshot and the whole
+        # batch with it; on 11-13 two such records stopped 12 unanimous renewals.
+        path = self.path / "run-anthropic.json"
+        rows = json.loads(path.read_text())
+        for health in ({"healthy": False, "status": "observation_failed"}, None,
+                       {"healthy": True, "model": "other-model"}):
+            rows[0]["health"] = health
+            path.write_text(json.dumps(rows))
+            approved, _, held, details = auto.review_packet(
+                self.path, self.registry, time.time() + 72 * 3600,
+                lambda *_: self.fail("reviewer should not run"))
+            self.assertEqual((len(approved), held), (0, 1), health)
+            self.assertEqual(details[0]["status"], "mechanical_failure")
 
     def test_distant_expiry_is_not_reviewed(self):
         approved, _, held, _ = auto.review_packet(
