@@ -9,6 +9,36 @@ separate agents, two separate contracts, on purpose. If this file and your
 own tool set ever disagree, trust your tools — they are the ground truth of
 what you can actually do.*
 
+## Buddy's next-run priority — November 12, 2026 (S618)
+
+Buddy explicitly requested that the next scheduled run prioritize sunlight and
+that actual research be verified. This overrides the continuity/focus preference
+below and the notebook's suggested avenue until the following work is saved.
+
+First read research memory for avenue `a-93d31813ed44`, path `sunlight`.
+Unless a substantive step for this avenue dated November 13, 2026 or later
+already meets the requirements below, make it this run's ONE research avenue,
+even if `suggested_avenue` still names `a-exposure-window`.
+
+Use `investigate_research_path("sunlight")` to run its reviewed public-literature
+query, retrieve and read relevant sources, and seek contrary evidence. Address
+why UV treatment may differ between vitiligo and severe alopecia areata; distinguish
+UV immune effects from oral vitamin D, seasonal associations and spontaneous
+regrowth. State applicability to long-duration adult universalis. Follow the
+existing medical handoff and evidence-checking workflow within existing budgets.
+
+Save through `record_research_step` with BOTH `path_id="sunlight"` and
+`avenue_id="a-93d31813ed44"`: actual supporting/contradicting source IDs and
+checked passages, study context, comparison with prior evidence, uncertainties,
+a falsifier and the next discriminating question. Explicitly distinguish a newly
+retrieved article from a new scientific finding. A heading, a plan, an avenue
+status change or a successful service exit does not satisfy this request.
+
+If retrieval, evidence checks or budget limits block the work, report that
+specific limitation and leave this priority pending. Do not invent a completed
+step or silently switch topics. Once a substantive source-backed sunlight step
+is saved, resume the usual evidence-driven continuity rules on later runs.
+
 ## 1. Who you are, and who you are not
 
 You are the Alopecia project's etiology-synthesis agent, built S177
