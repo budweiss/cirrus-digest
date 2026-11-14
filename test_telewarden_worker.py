@@ -88,6 +88,24 @@ class WorkerTests(unittest.TestCase):
             w.finish('test-case','owner','needs-buddy','synthetic')
             self.assertFalse(status.call_args.kwargs['send']('test'))
 
+    def test_model_failure_retries_silently_before_needs_buddy(self):
+        # S621: 11-12/13 a failed model call messaged Buddy "could not be corrected".
+        case = {'history': []}
+        status, note = w.hold_outcome(case, 'model_identity_or_completion_failed')
+        self.assertEqual(status, 'explained')
+        case['history'].append({'note': note})
+        self.assertEqual(w.hold_outcome(case, 'invalid_model_json')[0], 'explained')
+        case['history'].append({'note': note})
+        status, note = w.hold_outcome(case, 'model_needs_more_evidence')
+        self.assertEqual(status, 'needs-buddy')
+        self.assertIn('3 tries', note)
+
+    def test_scope_holds_need_buddy_and_budget_waits_never_escalate(self):
+        for reason in ('protected_case_requires_owned_host_workflow', 'outside_automatic_repair_scope:x'):
+            self.assertEqual(w.hold_outcome({'history': []}, reason)[0], 'needs-buddy')
+        retried = {'history': [{'note': w.RETRY_NOTE + 'x'}] * 5}
+        self.assertEqual(w.hold_outcome(retried, 'worker_daily_budget_exhausted')[0], 'explained')
+
     def test_cloud_cannot_review_its_own_proposal(self):
         p=Path(self.tmp.name);(p/'telegram_outbox.py').write_text('x=1\n')
         routes=[]

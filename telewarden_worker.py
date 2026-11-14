@@ -120,6 +120,30 @@ def claim(cid, owner, now=None):
         return dict(c)
 
 
+# Buddy, 11-11: message him only when a case cannot be corrected. A failed model
+# call or a rejected patch can succeed on a later run, so it retries silently and
+# escalates after RETRY_LIMIT tries; a spent budget just waits (S621).
+NEEDS_BUDDY_HOLDS = ('protected_', 'outside_automatic_repair_scope',
+                     'new_call_requires_operator_review', 'qualified_route_boundary',
+                     'target_not_allowed')
+WAIT_HOLDS = ('cloud_budget_unavailable', 'cloud_cost_unknown',
+              'global_cloud_budget_denied', 'worker_daily_budget_exhausted')
+RETRY_NOTE = 'CIRRUS repair worker will retry: '
+RETRY_LIMIT = 3
+
+
+def hold_outcome(case, reason):
+    """-> (status, note) for a case the worker could not finish this run."""
+    if reason.startswith(NEEDS_BUDDY_HOLDS):
+        return 'needs-buddy', 'CIRRUS repair worker could not safely correct this case: ' + reason
+    if reason in WAIT_HOLDS:
+        return 'explained', 'CIRRUS repair worker is waiting for budget: ' + reason
+    tries = 1 + sum(1 for h in case.get('history', []) if h.get('note', '').startswith(RETRY_NOTE))
+    if tries >= RETRY_LIMIT:
+        return 'needs-buddy', 'CIRRUS repair worker could not correct this case in %d tries: %s' % (tries, reason)
+    return 'explained', RETRY_NOTE + reason
+
+
 def finish(cid, owner, status, note, **kw):
     # set_status enforces lease ownership against the desktop worker too.
     if ROOT != CODE_ROOT:
@@ -515,7 +539,7 @@ def main():
                     reason = str(e) if isinstance(e, Held) else type(e).__name__
                     receipt('held', case=case['id'], reason=reason)
                     if args.run:
-                        finish(case['id'], owner, 'needs-buddy', 'CIRRUS repair worker could not safely correct this case: ' + reason)
+                        finish(case['id'], owner, *hold_outcome(case, reason))
                     results.append({'case': case['id'], 'status': 'held', 'reason': reason})
             result = {'ok': True, 'at': time.time(), 'cases': results}
             tw._save('worker-last.json', result)

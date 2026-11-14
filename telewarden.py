@@ -332,7 +332,9 @@ def is_private(row):
 def classify(row):
     """-> (kind, [(case_id, item)]). Private items carry no text."""
     job, text = row["job"], row["text"]
-    if job == "telewarden":
+    # S621: the CIRRUS worker's own notices are recorded as job telewarden_worker;
+    # reading them back made a new case for each needs-buddy message.
+    if job in ("telewarden", "telewarden_worker") or text.startswith("🛡 Telewarden:"):
         return "own", []
     if row.get("kind") == "off":                 # a paused Nimbus heartbeat, not a failure (F6)
         return "off", []
@@ -403,6 +405,20 @@ def _day(t):
     return time.strftime("%Y-%m-%d", time.localtime(t))
 
 
+# jobs_check's own line format: "⚠️ name (HOST): 2026-11-07T09:30 FAILED — ...".
+STAMP_RE = re.compile(r"^\W*[\w.-]+(?: \([^)]*\))?: (20\d\d-\d\d-\d\dT\d\d:\d\d)\b")
+
+
+def _item_time(item, job):
+    """The run time a jobs_check line reports (host-local). None for anything
+    else: a date elsewhere in a warning is not its failure time."""
+    m = STAMP_RE.match(item or "") if job == "jobs_check" else None
+    try:
+        return time.mktime(time.strptime(m[1], "%Y-%m-%dT%H:%M")) if m else None
+    except ValueError:
+        return None
+
+
 def touch_case(cases, cid, row, item, now, cache, notices):
     k = next((k for k in KNOWN if k["id"] == cid), None)
     c = cases.get(cid)
@@ -425,7 +441,11 @@ def touch_case(cases, cid, row, item, now, cache, notices):
     d = _day(row["t"])
     c["days"][d] = c["days"].get(d, 0) + 1
     c["days"] = dict(sorted(c["days"].items())[-14:])
-    if c["status"] in ("fixed", "verified") and c.get("fixed_at") and row["t"] > c["fixed_at"]:
+    stamp = _item_time(item, row["job"])
+    if (c["status"] in ("fixed", "verified") and c.get("fixed_at") and row["t"] > c["fixed_at"]
+            and (stamp is None or stamp > c["fixed_at"])):
+        # S621: jobs_check repeats a job's last failure until its next success, so an
+        # item stamped before the fix is the old failure again, not a regression.
         # Buddy (11-11): no message for something we can still correct. The fixer
         # takes regressed cases first; only a needs-buddy case messages him.
         c["status"] = "regressed"
@@ -784,6 +804,7 @@ def selftest():
                 row("stock_schedule", "Sell 10 shares of X", T + 3),
                 row("stock_schedule", "stock job FAILED to fetch holdings", T + 4),
                 row("telewarden", "🛡 Telewarden: fixed", T + 5),
+                row("telewarden_worker", "🛡 Telewarden: Needs you, could not be corrected: ⚠️ x FAILED", T + 5.5),
                 row("environment_scan", "New model id seen", T + 6)]
             okp, summ = run_pass(readers, now=T + 10, send=send, record=record)
             cases = _load("cases.json", {})
@@ -792,7 +813,7 @@ def selftest():
             jc = [c for c in cases.values() if c["job"] == "jobs_check"]
             check("digest split into line cases (2 warning lines, ok line ignored)", len(jc) == 2)
             check("brief, own and info rows make no case",
-                  not [c for c in cases.values() if c["job"] in ("morning_brief", "telewarden", "environment_scan")])
+                  not [c for c in cases.values() if c["job"] in ("morning_brief", "telewarden", "telewarden_worker", "environment_scan")])
             pv = [c for c in cases.values() if c["job"] == "stock_schedule"]
             check("private warning: one case, no text stored",
                   len(pv) == 1 and pv[0]["sample"] == "" and pv[0]["private"]
@@ -839,6 +860,28 @@ def selftest():
             run_pass(readers, now=T + 100 + 51 * 3600, send=send, record=record)
             check("recurrence after a fix: regressed, and no message (the fixer takes it)",
                   _load("cases.json", {})[cid]["status"] == "regressed" and sent == [])
+
+            # S621: jobs_check repeats a weekly job's last failure until it next succeeds
+            # (11-13: stockscorecard's 11-07 failure read as a regression of its fix).
+            stale = time.strftime("%Y-%m-%dT%H:%M", time.localtime(T - 86400))
+            fresh = time.strftime("%Y-%m-%dT%H:%M", time.localtime(T + 100 + 60 * 3600))
+            wk_row = lambda stamp, t: row("jobs_check", f"Jobs\n⚠️ weeklyjob: {stamp} FAILED — ValueError\n✅ a\n✅ b", t)
+            feed["cirrus"].append(wk_row(stale, T + 100 + 52 * 3600))
+            run_pass(readers, now=T + 100 + 52 * 3600 + 1, send=send, record=record)
+            wk = [c["id"] for c in _load("cases.json", {}).values() if "weeklyjob" in c["title"]]
+            set_status(wk[0], "fixed", "patched", commit="abc1234", undo="git revert abc1234", now=T + 100 + 53 * 3600)
+            feed["cirrus"].append(wk_row(stale, T + 100 + 54 * 3600))
+            run_pass(readers, now=T + 100 + 54 * 3600 + 1, send=send, record=record)
+            check("the old failure re-reported after a fix is not a regression",
+                  len(wk) == 1 and _load("cases.json", {})[wk[0]]["status"] == "fixed")
+            feed["cirrus"].append(wk_row(fresh, T + 100 + 61 * 3600))
+            run_pass(readers, now=T + 100 + 61 * 3600 + 1, send=send, record=record)
+            check("a failure stamped after the fix is a regression",
+                  _load("cases.json", {})[wk[0]]["status"] == "regressed" and sent == [])
+            check("only jobs_check's own run stamp counts, not a date elsewhere in the text",
+                  _item_time(f"⚠️ x (CUMULUS): {stale} REVIEW NEEDED", "jobs_check") is not None
+                  and _item_time(f"⚠️ x: failed reading {stale} data", "jobs_check") is None
+                  and _item_time(f"⚠️ x: {stale} FAILED", "intake") is None)
 
             n = ingest_nimbus("\n".join(json.dumps(r) for r in [
                 {"id": "a1", "t": T + 200, "kind": "task_run", "label": "skill-review",
@@ -887,7 +930,8 @@ def selftest():
                   maybe_weekly(wk, send=send) is True and maybe_weekly(wk + 60, send=send) is False)
             rec = sent[-1]
             check("weekly recap lists corrections, improvements and open decisions",
-                  "Corrected (1)" in rec and "stockscorecard" in rec and "came back" in rec
+                  "Corrected (2)" in rec and "stockscorecard" in rec and "came back" in rec
+                  and "weeklyjob" in rec
                   and "Improved (1)" in rec and "Telewarden built" in rec
                   and "Still needs you (1)" in rec)
             check("weekly recap never quotes private text",
