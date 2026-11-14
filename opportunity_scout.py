@@ -165,8 +165,10 @@ def proposal_budget(provider: str) -> int:
 
 def _ask(provider: str, question: str, creds: dict, max_tokens: int = 2500) -> str:
     try:
+        # task= is the name routing already derives from the script; passing it
+        # also tags llm_truncations.jsonl, which logged these as (untagged) (S624).
         return llm_providers.call(provider, _SYSTEM, question, creds,
-                                  max_tokens=max_tokens)
+                                  max_tokens=max_tokens, task="opportunity_scout")
     except Exception as e:
         print(f"  [{provider}] failed: {type(e).__name__}: {e}")
         return ""
