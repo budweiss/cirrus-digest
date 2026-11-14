@@ -256,6 +256,11 @@ def reserve_cloud(creds, system, prompt, tokens):
     return estimate
 
 
+# S620: at anthropic_effort=high, 2 of 6 cloud patch calls (11-12, 11-13) spent
+# all 8192 tokens thinking and returned no text; the others used 2-6k.
+CLOUD_MAX_TOKENS = 16384
+
+
 def model(prompt, route, phase):
     import llm_providers as L
     system = REVIEW_SYSTEM if phase == 'review' else SYSTEM
@@ -270,10 +275,10 @@ def model(prompt, route, phase):
     else:
         provider, url = 'anthropic', None
         name = creds.get('claude_dev_model') or creds.get('claude_model')
-        reserve_cloud(creds, system, prompt, 8192)
+        reserve_cloud(creds, system, prompt, CLOUD_MAX_TOKENS)
     if url:
         creds.update(ollama_url=url, ollama_model=name)
-    text = L.call(provider, system, prompt, creds, max_tokens=8192, retries=0,
+    text = L.call(provider, system, prompt, creds, max_tokens=8192 if url else CLOUD_MAX_TOKENS, retries=0,
                   task='telewarden-worker:' + phase, privacy='LOCAL_ONLY' if url else 'CLOUD_ALLOWED',
                   strict_accounting=True)
     actual = L.last_model()
