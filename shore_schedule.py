@@ -423,7 +423,10 @@ def main():
         result={'status':'failed','error_type':type(exc).__name__}
         # S533: name the gate that stopped it (an identifier label from this file,
         # e.g. shore_header); free text never reaches the ledger.
-        if re.fullmatch(r'[a-z][a-z0-9_]{2,59}',str(exc)):result['error_code']=str(exc)
+        # S624: also a leading code before " (" -- 11-13 recorded only RuntimeError
+        # for "Cumulus_media_worker_failed (exit 1): ...".
+        code=re.match(r'([A-Za-z][A-Za-z0-9_]{2,59})(?:$| \()',str(exc))
+        if code:result['error_code']=code[1]
         if a.live and not a.worker:
             from vendor_mail_watch import telegram
             import job_status

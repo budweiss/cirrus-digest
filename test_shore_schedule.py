@@ -98,7 +98,9 @@ class ShoreChecks(unittest.TestCase):
         for error,note in [(ValueError('shore_header'),'ValueError: shore_header'),
                            (ValueError('county_pdf_amount_alignment'),'ValueError: county_pdf_amount_alignment'),
                            (ValueError('Expecting value: line 1 column 1 (char 0)'),'ValueError'),
-                           (KeyError('price'),'KeyError'),(RuntimeError('Private Street 12 sold'),'RuntimeError')]:
+                           (KeyError('price'),'KeyError'),(RuntimeError('Private Street 12 sold'),'RuntimeError'),
+                           # S624: the 11-13 run kept only RuntimeError for this.
+                           (RuntimeError('Cumulus_media_worker_failed (exit 1): TimeoutError'),'RuntimeError: Cumulus_media_worker_failed')]:
             with self.subTest(note=note),patch.object(S,'run',side_effect=error),patch.object(S.sys,'argv',['shore_schedule.py','--live']), \
                  patch('job_status.record') as record,patch('vendor_mail_watch.telegram',return_value=True),patch('builtins.print'):
                 self.assertEqual(S.main(),1)
