@@ -483,6 +483,8 @@ def gemini_search(query: str, max_results: int = 3,
         return []
     _count_search("gemini", caller, "ok")
     try:
+        from time import monotonic
+        started = monotonic()
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{_GEMINI_MODEL}:generateContent?key={key}")
         with hard_deadline(45, "gemini_search"):
@@ -508,7 +510,8 @@ def gemini_search(query: str, max_results: int = 3,
                 _LB.record_call(_load_creds(), "gemini", _GEMINI_MODEL, len(query), 0,
                                 in_tok=_u.get("promptTokenCount"),
                                 out_tok=_u.get("candidatesTokenCount"),
-                                task="cirrus_daily:gemini_search")
+                                task="cirrus_daily:gemini_search",
+                                wall_seconds=max(0.0, monotonic() - started))
             except Exception:
                 pass
         chunks = (cand.get("groundingMetadata") or {}).get("groundingChunks", [])
