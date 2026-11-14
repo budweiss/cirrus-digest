@@ -83,6 +83,23 @@ class ShoreChecks(unittest.TestCase):
         responses=iter([json.dumps({'properties':[ROW]}),'{"approved":false,"problems":["wrong price"]}'])
         with self.assertRaisesRegex(ValueError,'property_review_failed'):S.extract(SOURCE,lambda _:next(responses))
 
+    def test_rejected_digest_gets_one_revision_then_the_same_bar(self):
+        # S624: 11-14 preview was rejected on two problems with no chance to fix them.
+        head='# Jersey Shore Deal Digest — 2026-11-17\n'
+        reject='{"approved":false,"problems":["price type wrong"]}';approve='{"approved":true,"problems":[]}'
+        for replies,expect,calls in [([head+'a',approve],head+'a',2),
+                                     ([head+'a',reject,head+'b',approve],head+'b',4),
+                                     ([head+'a',reject,head+'b',reject],None,4)]:
+            sent=[];it=iter(replies)
+            def call(action,prompt):sent.append(prompt);return next(it)
+            with self.subTest(calls=calls),tempfile.TemporaryDirectory() as td,patch.object(S,'STATE',Path(td)),patch.object(S.media,'call',side_effect=call):
+                if expect is None:
+                    with self.assertRaisesRegex(ValueError,'shore_digest_review_failed'):S.render([SOURCE],[],[],[],'',[],'2026-11-17')
+                else:self.assertEqual(S.render([SOURCE],[],[],[],'',[],'2026-11-17'),expect)
+                self.assertEqual(len(sent),calls)
+                if calls==4:self.assertIn('price type wrong',sent[2])
+                self.assertIn('at most 5 problems',sent[1])
+
     def test_uncertain_delivery_never_sends_again(self):
         import io,shore_digest_send as sender
         date=S.datetime.now(S.NY).date().isoformat()
