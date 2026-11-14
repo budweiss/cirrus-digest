@@ -106,6 +106,22 @@ class WorkerTests(unittest.TestCase):
         retried = {'history': [{'note': w.RETRY_NOTE + 'x'}] * 5}
         self.assertEqual(w.hold_outcome(retried, 'worker_daily_budget_exhausted')[0], 'explained')
 
+    def test_untried_cases_go_before_retries_and_session_holds_wait(self):
+        # S623: three retried 11-10 cases took every slot for days; a session's
+        # "next run is Tuesday" would have been retried and escalated.
+        tried = lambda cid, first: {'id': cid, 'status': 'explained', 'first': first, 'last': first,
+            'history': [{'t': 5, 'status': 'fixing', 'note': 'CIRRUS repair worker claimed case'},
+                        {'t': 6, 'status': 'explained', 'note': w.RETRY_NOTE + 'x'}]}
+        new = lambda cid, first: {'id': cid, 'status': 'new', 'first': first, 'last': first,
+            'history': [{'t': first, 'status': 'new', 'note': 'first seen'}]}
+        held = {'id': 'held', 'status': 'explained', 'first': 1, 'last': 2,
+                'history': [{'t': 9, 'status': 'explained', 'note': 'Next run Tue; reopens if it fails'}]}
+        cases = [tried('t1', 1), tried('t2', 2), tried('t3', 3), new('n1', 4), new('n2', 5), held]
+        self.assertEqual([c['id'] for c in w.queue(cases)], ['n1', 'n2', 't1'])
+        held['last'] = 10                                  # the warning came back
+        self.assertIn('held', [c['id'] for c in w.queue(cases)])
+        self.assertFalse(w.session_hold(tried('t4', 1)))   # worker retries keep their turn
+
     def test_cloud_cannot_review_its_own_proposal(self):
         p=Path(self.tmp.name);(p/'telegram_outbox.py').write_text('x=1\n')
         routes=[]

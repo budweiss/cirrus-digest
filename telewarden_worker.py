@@ -144,6 +144,27 @@ def hold_outcome(case, reason):
     return 'explained', RETRY_NOTE + reason
 
 
+WORKER_NOTE = 'CIRRUS repair worker'
+
+
+def session_hold(case):
+    """True while a session's explanation stands: explained by a session (not the
+    watcher or this worker) and not recurred since. S623: 'next run is Tuesday'
+    would otherwise be retried and sent to Buddy as needs-buddy."""
+    last = (case.get('history') or [{}])[-1]
+    note = last.get('note', '')
+    return (case['status'] == 'explained' and note != 'first seen'
+            and not note.startswith(WORKER_NOTE) and case.get('last', 0) <= last.get('t', 0))
+
+
+def queue(cases):
+    """Regressed first, then the fewest worker attempts, then the oldest. S623: three
+    retried 11-10 cases took every slot; cases from 11-11 were never tried."""
+    tries = lambda c: sum(1 for h in c.get('history', []) if h.get('status') == 'fixing')
+    todo = [c for c in cases if c['status'] != 'fixing' and not session_hold(c)]
+    return sorted(todo, key=lambda c: (c['status'] != 'regressed', tries(c), c['first']))[:MAX_CASES]
+
+
 def finish(cid, owner, status, note, **kw):
     # set_status enforces lease ownership against the desktop worker too.
     if ROOT != CODE_ROOT:
@@ -533,8 +554,7 @@ def main():
                 for cid, owner in expired:
                     finish(cid, owner, 'needs-buddy',
                            'Worker interrupted; inspect deployment receipts before another patch.')
-            cases = sorted(tw.open_cases(), key=lambda c: (c['status'] != 'regressed', c['first']))
-            for case in [c for c in cases if c['status'] != 'fixing'][:MAX_CASES]:
+            for case in queue(tw.open_cases()):
                 if tw.disabled(): break
                 owner = uuid.uuid4().hex
                 if args.run: case = claim(case['id'], owner)
