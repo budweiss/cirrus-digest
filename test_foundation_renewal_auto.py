@@ -298,6 +298,39 @@ class RenewalAutoTest(unittest.TestCase):
             with patch.object(auto.subprocess, "run", return_value=result), self.assertRaises(ValueError):
                 auto.model_review(auto.REVIEW_PROMPTS[0], "synthetic")
 
+    def test_review_failure_requires_a_reference_in_every_generation_branch(self):
+        schema = auto.constrained_review_schema(["NEW", "/ideas/0/what"])
+        fail, other = schema["anyOf"]
+        self.assertNotIn("NONE", fail["properties"]["new_span_id"]["enum"])
+        self.assertEqual(other["properties"]["new_span_id"], {"const": "NONE"})
+        for branch in schema["anyOf"]:
+            self.assertEqual(set(branch["required"]), set(auto.REVIEW_SCHEMA["required"]))
+            self.assertFalse(branch["additionalProperties"])
+        from types import SimpleNamespace
+        bad = {"verdict":"fail", "issue_type":"instruction_failure",
+               "reason":"A concrete instruction was violated.", "new_span_id":"NONE"}
+        reply = SimpleNamespace(returncode=0, stdout=json.dumps({"answer":json.dumps(bad)}).encode())
+        with patch.object(auto.subprocess,"run",return_value=reply), self.assertRaisesRegex(ValueError,"not anchored"):
+            auto.model_review(auto.REVIEW_PROMPTS[0],"synthetic")
+
+    def test_review_errors_are_retained_without_private_exception_text(self):
+        error = ValueError("local review failure is not anchored in NEW")
+        self.assertEqual(auto.review_error_code(error), "unanchored_failure")
+        self.assertEqual(auto.review_error_code(ValueError("PRIVATE_SECRET")), "review_failed")
+        from types import SimpleNamespace
+        reply = SimpleNamespace(returncode=1, stdout=b'{"error_code":"unanchored_failure"}')
+        with patch.object(auto.subprocess,"run",return_value=reply), self.assertRaisesRegex(ValueError,"not anchored"):
+            auto.model_review(auto.REVIEW_PROMPTS[0],"synthetic")
+
+    def test_invalid_review_remains_a_hold_with_content_free_cause(self):
+        def broken(*args):
+            raise ValueError("local review failure is not anchored in NEW")
+        approved, hoa, held, details = auto.review_packet(self.path, self.registry, time.time()+7200, broken)
+        self.assertEqual(approved, [])
+        self.assertEqual(details[0]["status"], "evidence_review_pending")
+        self.assertEqual(details[0]["verdicts"], ["unsure", "unsure"])
+        self.assertTrue(all(r["error_code"]=="unanchored_failure" for r in details[0]["reviews"]))
+
     def test_events_review_removes_only_a_complete_accepted_json_fence(self):
         item = json.loads((self.path / "decisions.json").read_text())["records"][0]
         item["route"] = "foundation:halftime:events"

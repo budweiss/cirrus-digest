@@ -297,6 +297,46 @@ def current_review_case(case):
     return case.split(" PRIOR:", 1)[0] if case == CONTROL else case
 
 
+REVIEW_ERROR_CODES = {
+    "local reviewer returned no rationale": "invalid_rationale",
+    "local review failure is not anchored in NEW": "unanchored_failure",
+    "non-failing local review must not cite evidence": "unexpected_reference",
+    "renewal GPT-OSS identity, completion or context mismatch": "gpt_completion_identity_context",
+    "renewal Qwen identity, completion or context mismatch": "qwen_completion_identity_context",
+    "renewal Qwen input exceeds context budget": "qwen_context_limit",
+    "local reviewer returned no valid verdict": "invalid_verdict",
+    "local reviewer returned no valid issue type": "invalid_issue_type",
+    "renewal GPT-OSS model mismatch": "gpt_model_mismatch",
+    "renewal GPT-OSS response incomplete": "gpt_incomplete",
+    "renewal GPT-OSS context mismatch": "gpt_context_mismatch",
+    "local reviewer invalid JSON": "invalid_json",
+    "local reviewer timed out": "timeout",
+}
+
+
+def review_error_code(exc):
+    if isinstance(exc, json.JSONDecodeError):
+        return "invalid_json"
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+        return "timeout"
+    return REVIEW_ERROR_CODES.get(str(exc), "review_failed")
+
+
+def constrained_review_schema(fields):
+    schema = copy.deepcopy(REVIEW_SCHEMA)
+    schema["properties"]["new_span_id"]["enum"] = ["NONE"] + fields
+    # A syntactically valid fail/NONE previously survived generation but was
+    # correctly rejected by model_review. Enforce that existing invariant here.
+    fail = copy.deepcopy(schema)
+    fail["properties"]["verdict"] = {"const": "fail"}
+    fail["properties"]["new_span_id"] = {"enum": fields}
+    other = copy.deepcopy(schema)
+    other["properties"]["verdict"] = {"enum": ["pass", "unsure"]}
+    other["properties"]["new_span_id"] = {"const": "NONE"}
+    schema["anyOf"] = [fail, other]
+    return schema
+
+
 def model_review(rule, case, *, local=False):
     fields = new_evidence_fields(case)
     case = current_review_case(case)
@@ -343,6 +383,13 @@ def model_review(rule, case, *, local=False):
                                "python3 /home/buddy/cirrus-digest/foundation_renewal_auto.py --review-local"],
                               input=json.dumps(payload).encode(), capture_output=True, timeout=960)
         if proc.returncode:
+            try:
+                code = json.loads(proc.stdout).get("error_code")
+            except (ValueError, AttributeError):
+                code = None
+            message = next((m for m, c in REVIEW_ERROR_CODES.items() if c == code), None)
+            if message:
+                raise ValueError(message)
             raise RuntimeError("CUMULUS local reviewer failed")
         answer = json.loads(proc.stdout)["answer"]
     data = json.loads(answer or "null")
@@ -370,9 +417,7 @@ def local_review(payload):
     """Renewal-only routes; no shared credentials, provider edits or fallback."""
     from media_pipeline import lease
     prompt = payload["prompt"]
-    schema = copy.deepcopy(REVIEW_SCHEMA)
-    if "new_span_id" in schema["properties"]:
-        schema["properties"]["new_span_id"]["enum"] = ["NONE"] + payload.get("new_span_ids", ["NEW"])
+    schema = constrained_review_schema(payload.get("new_span_ids", ["NEW"]))
     def request(base, path, body):
         req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
@@ -404,9 +449,12 @@ def local_review(payload):
         "format": schema, "options": {"temperature": 0, "num_ctx": REVIEW_CONTEXT,
                                         "num_predict": GPT_REVIEW_OUTPUT}})
     count = raw.get("prompt_eval_count", 0)
-    if (raw.get("model") != SECOND_MODEL or raw.get("done_reason") != "stop"
-            or not 0 < count < REVIEW_CONTEXT - GPT_REVIEW_OUTPUT):
-        raise ValueError("renewal GPT-OSS identity, completion or context mismatch")
+    if raw.get("model") != SECOND_MODEL:
+        raise ValueError("renewal GPT-OSS model mismatch")
+    if raw.get("done_reason") != "stop":
+        raise ValueError("renewal GPT-OSS response incomplete")
+    if not 0 < count < REVIEW_CONTEXT - GPT_REVIEW_OUTPUT:
+        raise ValueError("renewal GPT-OSS context mismatch")
     return {"answer": raw["message"]["content"], "prompt_tokens": count,
             "model": SECOND_MODEL}
 
@@ -540,9 +588,9 @@ def review_packet(path, registry, due_before, reviewer=model_review):
                         result = reviewer(rule, case)
                         if result.get("verdict") not in ("pass", "fail", "unsure"):
                             raise ValueError("invalid verdict")
-                    except Exception:
+                    except Exception as exc:
                         result = {"verdict": "unsure", "issue_type": "other",
-                                  "reason": "invalid local review"}
+                                  "reason": "invalid local review", "error_code": review_error_code(exc)}
                     results.append(result)
         unanimous = bool(results) and all(x["verdict"] == "pass" for x in results)
         assessment = evidence_check(path, key, record, cases)
@@ -758,8 +806,8 @@ def main():
         try:
             print(json.dumps(local_review(json.load(sys.stdin))))
             return 0
-        except Exception:
-            print("local renewal reviewer refused", file=sys.stderr)
+        except Exception as exc:
+            print(json.dumps({"error_code": review_error_code(exc)}))
             return 1
     if args.selftest:
         selftest()
