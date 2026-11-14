@@ -156,6 +156,13 @@ _SYSTEM = (
 )
 
 
+# S623: at CUMULUS1's anthropic_effort=high, adaptive thinking spent the whole
+# 4096-token floor and Claude's proposal came back empty every night; Gemini
+# 3.1 Pro and DeepSeek stopped at 2500 mid-answer (finish_reason=length).
+def proposal_budget(provider: str) -> int:
+    return 16384 if provider == "anthropic" else 8192
+
+
 def _ask(provider: str, question: str, creds: dict, max_tokens: int = 2500) -> str:
     try:
         return llm_providers.call(provider, _SYSTEM, question, creds,
@@ -259,7 +266,8 @@ def run(dry_run: bool = False, n_angles: int = None) -> dict:
     for provider, angle in pairing:
         print(f"[{provider}] {angle['key']}...")
         answered.append((provider, angle,
-                         _ask(provider, angle["q"] + grounding, creds)))
+                         _ask(provider, angle["q"] + grounding, creds,
+                              max_tokens=proposal_budget(provider))))
 
     live = [t for t in answered if t[2]]
     if not live:
@@ -330,6 +338,8 @@ def selftest() -> int:
           == {a["key"] for a in ANGLES})
     check("fewer providers than angles is fine", len(assign(["x"], ANGLES, 3)) == 1)
     check("no providers yields no work", assign([], ANGLES, 0) == [])
+    check("Claude's proposal has room past the 4096 thinking floor; others past 2500",
+          proposal_budget("anthropic") >= 16384 and proposal_budget("deepseek") == 8192)
 
     check("the snitch shape is forbidden in the system prompt",
           "reporting it to them" in _SYSTEM)
