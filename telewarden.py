@@ -314,12 +314,20 @@ def norm(s):
     return re.sub(r"\s+", " ", s).strip()[:160]
 
 
+# S623: "clean, 0 overdue" in a Skywarden all-clear made a case; a zero count is not a warning.
+ZERO_RE = re.compile(r"(?i)\b0 (?:[\w-]+ )?(?:overdue|fail\w*|errors?|warn\w*|missing|stale|expired)(?:\(s\))?")
+
+
+def _warns(s):
+    return WARN_RE.search(ZERO_RE.sub("", s))
+
+
 def warning_items(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if len(lines) <= 2:
         whole = " ".join(lines)
-        return [whole] if WARN_RE.search(whole) else []
-    items = [l for l in lines if WARN_RE.search(l)]
+        return [whole] if _warns(whole) else []
+    items = [l for l in lines if _warns(l)]
     if len(items) > 1 and items[0] == lines[0]:   # a digest's title line is not a problem
         items = items[1:]
     return items[:20]
@@ -882,6 +890,11 @@ def selftest():
                   _item_time(f"⚠️ x (CUMULUS): {stale} REVIEW NEEDED", "jobs_check") is not None
                   and _item_time(f"⚠️ x: failed reading {stale} data", "jobs_check") is None
                   and _item_time(f"⚠️ x: {stale} FAILED", "intake") is None)
+            check("a zero count is not a warning, a real one beside it still is",
+                  warning_items("Checked: open promises (clean, 0 overdue), intake health (UP)") == []
+                  and warning_items("3 fixtures, 0 gate failure(s)") == []
+                  and len(warning_items("0 overdue, 2 failed")) == 1
+                  and len(warning_items("10 overdue")) == 1)
 
             n = ingest_nimbus("\n".join(json.dumps(r) for r in [
                 {"id": "a1", "t": T + 200, "kind": "task_run", "label": "skill-review",
