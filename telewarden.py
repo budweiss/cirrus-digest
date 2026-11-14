@@ -316,10 +316,12 @@ def norm(s):
 
 # S623: "clean, 0 overdue" in a Skywarden all-clear made a case; a zero count is not a warning.
 ZERO_RE = re.compile(r"(?i)\b0 (?:[\w-]+ )?(?:overdue|fail\w*|errors?|warn\w*|missing|stale|expired)(?:\(s\))?")
+# S624: Skywarden's "billsnow: NOT actually stalled" all-clear made three cases.
+NOT_RE = re.compile(r"(?i)\bnot (?:actually |really )?(?:stalled|stale|failing|down|missing|overdue|degraded)\b")
 
 
 def _warns(s):
-    return WARN_RE.search(ZERO_RE.sub("", s))
+    return WARN_RE.search(NOT_RE.sub("", ZERO_RE.sub("", s)))
 
 
 def warning_items(text):
@@ -505,6 +507,12 @@ def run_pass(readers=None, now=None, send=None, record=None):
                 counts[kind] = counts.get(kind, 0) + 1
                 for cid, item in items:
                     touch_case(cases, cid, row, item, now, cache, notices)
+                if row.get("ok") is False and src != "nimbus":
+                    # S624: CUMULUS1's bot hung from 11-14 ~11:00; its warnings never
+                    # reached Buddy and nothing noticed. A lost send is itself a case.
+                    touch_case(cases, "tw-send-" + src, dict(row, job="telegram_send"),
+                               f"Telegram send failed on {src} ({row['job']}); Buddy did not get it",
+                               now, cache, notices)
                 ev = {"t": row["t"], "src": src, "job": row["job"], "kind": kind,
                       "cases": [cid for cid, _ in items]}
                 if kind == "off":                # the forwarder sends one row per batch
@@ -895,6 +903,18 @@ def selftest():
                   and warning_items("3 fixtures, 0 gate failure(s)") == []
                   and len(warning_items("0 overdue, 2 failed")) == 1
                   and len(warning_items("10 overdue")) == 1)
+            check("'not stalled' is an all-clear, a real failure beside it still is",
+                  warning_items("Checked COMPLETENESS alerts. billsnow: healthy, not stalled — real research runs") == []
+                  and warning_items("billsnow: NOT actually stalled. ta") == []
+                  and len(warning_items("billsnow: NOT actually stalled. tailscalereview: failed")) == 1)
+            feed["cumulus1"] = [dict(row("bill_watch", "Approval watch: x lapses today", T + 160, "cumulus1"), ok=False)]
+            feed["nimbus"] = [dict(row("skill-review", "skill-review ran", T + 161, "nimbus"), ok=False)]
+            run_pass(dict(readers, nimbus=lambda c: list(feed["nimbus"])), now=T + 170, send=send, record=record)
+            cs = _load("cases.json", {})
+            check("a failed send is a case even when its text is not a warning (nimbus rows excluded)",
+                  cs.get("tw-send-cumulus1", {}).get("job") == "telegram_send"
+                  and "bill_watch" in cs["tw-send-cumulus1"]["title"] and "tw-send-nimbus" not in cs)
+            feed["nimbus"] = []
 
             n = ingest_nimbus("\n".join(json.dumps(r) for r in [
                 {"id": "a1", "t": T + 200, "kind": "task_run", "label": "skill-review",
