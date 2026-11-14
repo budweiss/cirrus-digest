@@ -139,6 +139,12 @@ def finish(root, row, rec):
         if rec.get('held_label'):
             import held_label
             action = held_label.wording(rec['held_label']) + '; ' + action
+    elif rec.get('kind') == 'clarify':
+        # S621: we asked for the file the request names; nothing is owed yet.
+        state, owner, action = 'waiting_on_client', 'client', 'asked for the file the request names; resume on reply'
+    elif rec.get('document_build'):
+        # Text preparation reads only the body, never the attached file.
+        state, owner, action = 'blocked_no_worker', 'cowork', 'build from the attached file needs a session; assign'
     elif rec.get('kind') in ('feedback','deliverable','confirmation','build'):
         state, owner, action = 'queued_preparation', 'client_request_prepare', 'check text capability and prepare local draft'
     else:

@@ -44,6 +44,16 @@ class LifecycleTests(unittest.TestCase):
             life.finish(self.root,self.row,{'kind':kind})
             hit=life.summary(self.root,time.time()+1201)['attention'][0]
             self.assertEqual((hit['state'],hit['owner']),('queued_preparation','client_request_prepare'))
+    def test_clarify_waits_and_document_build_needs_a_session(self):
+        # S621: a wrong-file clarifying reply waits quietly on the client; a
+        # build from an attached file skips text preparation, which cannot read it.
+        life.capture(self.root,self.row)
+        life.finish(self.root,self.row,{'kind':'clarify','document_build':'document attached'})
+        self.assertEqual(life.summary(self.root,time.time()+86400)['attention'],[])
+        self.assertEqual(life.summary(self.root)['counts'],{'waiting_on_client':1})
+        life.finish(self.root,self.row,{'kind':'deliverable','document_build':'document attached'})
+        hit=life.summary(self.root)['attention'][0]
+        self.assertEqual((hit['state'],hit['owner']),('blocked_no_worker','cowork'))
     def test_ack_or_smtp_not_delivery_proof(self):
         life.capture(self.root,self.row)
         life.finish(self.root,self.row,{'kind':'answer','ack_sent':True,'solved':{'answered':True}})

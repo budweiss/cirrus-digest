@@ -299,6 +299,107 @@ def attachment_names(msg) -> list:
     return names
 
 
+# S621: what run() needs to know about each message's attachments, keyed by
+# Message-ID and filled by scan_inbox(). A side table, so the row tuple that
+# capture and the lifecycle store keeps its shape.
+ATTACHMENT_INFO = {}
+DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+                       ".odt", ".rtf")
+_PDFINFO_PATHS = ("/opt/homebrew/bin/pdfinfo", "/usr/local/bin/pdfinfo", "/usr/bin/pdfinfo")
+_MODULE_IN_TEXT = re.compile(r"(?i)\bmodule\s*(\d{1,2})\b")
+_MODULE_IN_NAME = re.compile(r"(?i)(?<![a-z0-9])m(?:od(?:ule)?)?[ _-]?(\d{1,2})(?!\d)")
+_PER_LESSON_BUILD = re.compile(r"(?i)\b(?:for|in)\s+(?:each|every)\s+lesson\b|\banswer\s+key\b")
+
+
+def _pdf_title(data: bytes) -> str:
+    """The PDF's own Title from poppler's pdfinfo, or "" when unavailable.
+    Not a raw-byte regex: the first XMP title in a Teach Book belongs to an
+    embedded icon image (S621)."""
+    import shutil
+    import subprocess
+    import tempfile
+    tool = shutil.which("pdfinfo") or next(
+        (p for p in _PDFINFO_PATHS if os.path.exists(p)), None)
+    if not tool or not data or len(data) > 80_000_000:
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+        f.write(data)
+        f.flush()
+        try:
+            out = subprocess.run([tool, f.name], capture_output=True,
+                                 timeout=20).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    m = re.search(r"(?m)^Title:\s*(.+)$", out)
+    return m.group(1).strip() if m else ""
+
+
+def attachment_info(msg) -> list:
+    """Name, MIME type and (PDF only) document title of each attachment that
+    attachment_names() counts. File contents are never kept."""
+    info = []
+    if not msg.is_multipart():
+        return info
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype in ("text/plain", "text/html", "multipart/mixed",
+                     "multipart/alternative", "multipart/related"):
+            continue
+        fname = part.get_filename()
+        if not (fname or str(part.get("Content-Disposition", "")).lower().startswith("attachment")):
+            continue
+        name = decode_hdr(fname) if fname else ""
+        title = ""
+        if ctype == "application/pdf" or name.lower().endswith(".pdf"):
+            try:
+                title = _pdf_title(part.get_payload(decode=True) or b"")
+            except Exception:
+                title = ""
+        info.append({"name": name, "type": ctype, "title": title})
+    return info
+
+
+def _is_document(a: dict) -> bool:
+    return (a.get("type") == "application/pdf"
+            or a.get("name", "").lower().endswith(DOCUMENT_EXTENSIONS))
+
+
+def research_build_reason(kind: str, own_words: str, attachments: list) -> str:
+    """S621: why a request from a research-only project is something to BUILD,
+    not a digest topic. The research safety net turned Alyssa's Teach Book
+    requests into digest topics on 2026-10-05 and again on 2026-11-13. A reply
+    counts only with a document attached: a corrected file arrives as a reply
+    to our clarifying email, while plain replies stay feedback (S258)."""
+    if any(_is_document(a) for a in attachments):
+        return "document attached"
+    if kind != "feedback" and _PER_LESSON_BUILD.search(own_words or ""):
+        return "per-lesson build wording"
+    return ""
+
+
+def module_mismatch(subject: str, own_words: str, attachments: list):
+    """S621: the request names exactly one module, and the attached documents
+    name only other modules (in the filename or the PDF's title). Alyssa asked
+    for Module 2 work on 2026-11-13 and attached the Module 1 Teach Book.
+    Returns {"asked", "attached", "file"} or None."""
+    asked = {int(n) for n in _MODULE_IN_TEXT.findall(f"{subject}\n{own_words or ''}")}
+    if len(asked) != 1:
+        return None
+    found, files = set(), []
+    for a in attachments:
+        if not _is_document(a):
+            continue
+        nums = {int(n) for n in _MODULE_IN_NAME.findall(a.get("name", ""))}
+        nums |= {int(n) for n in _MODULE_IN_TEXT.findall(a.get("title", ""))}
+        if nums:
+            found |= nums
+            files.append(a.get("name") or "the attached file")
+    (n,) = asked
+    if not found or n in found:
+        return None
+    return {"asked": n, "attached": sorted(found), "file": files[0]}
+
+
 def parse_request_title(subject: str) -> str:
     """'REQUEST: faster bids' → 'faster bids'; otherwise the subject as-is.
     Prefix match is case-insensitive and the colon is optional
@@ -520,6 +621,19 @@ def ack_body(rec: dict) -> str:
                 f"research queue:\n\n    {rec['title']}\n\n"
                 "It'll be covered in an upcoming digest. Send as many topics "
                 f"as you like — one email per topic works best.\n\n— {node}")
+    if rec.get("kind") == "clarify" and rec.get("attachment_mismatch"):
+        # S621 (Buddy, 11-13): clarifying replies go without his review.
+        mm = rec["attachment_mismatch"]
+        other = " and ".join(str(m) for m in mm["attached"])
+        return (f"Hi {name},\n\nBefore we start on this:\n\n    {rec['title']}\n\n"
+                f"Your email asks about Module {mm['asked']}, but the attached file, "
+                f"{mm['file']}, is Module {other}.\n\n"
+                f"Could you send the Module {mm['asked']} file? We'll start as soon "
+                f"as it arrives. If Module {other} is what you meant, just reply and "
+                f"say so.\n\n— {node}")
+    if rec.get("kind") == "deliverable" and rec.get("document_build"):
+        return (f"Hi {name},\n\nGot it. We're working on this:\n\n    {rec['title']}\n\n"
+                f"It will come to you by email when it's ready.\n\n— {node}")
     if rec.get("kind") == "deliverable" and rec.get("contact_list_run"):
         # S592: the list job delivers on its own now; no review step to promise.
         return (f"Hi {name},\n\nGot it. We're putting this list together for "
@@ -799,6 +913,11 @@ def scan_inbox(account: dict, password: str, allowlist: dict, state: dict,
                 continue
             subj = decode_hdr(msg.get("Subject", ""))
             names = attachment_names(msg)
+            try:
+                ATTACHMENT_INFO[mid] = attachment_info(msg) if names else []
+            except Exception as e:
+                ATTACHMENT_INFO[mid] = [{"name": n, "type": "", "title": ""} for n in names]
+                log(f"  attachment details unreadable, names only ({type(e).__name__})")
             if names and creds:
                 try:
                     sender_name = (allowlist.get(from_addr) or {}).get("name", from_addr)
@@ -1156,12 +1275,23 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # of silently landing in the dev-ticket queue. Exempts 'resend' (S63)
         # — a detected capability match is more specific than the static
         # per-sender default and shouldn't be clobbered by it.
-        if (rec["kind"] not in ("feedback", "resend", "confirmation")
+        # S621: a BUILD request (a document attached, or per-lesson build
+        # wording) is a deliverable, not a digest topic.
+        own_words = task_solver.strip_quoted_reply(body or "")
+        attachments = ATTACHMENT_INFO.get(mid, [])
+        if (rec["kind"] not in ("resend", "confirmation")
                 and any(p in RESEARCH_PROJECTS for p in entry["projects"])):
-            if rec["kind"] != "research":
-                log(f"  routing override: {entry['name']} is on a research-only "
-                    f"project → treating as research (was '{rec['kind']}')")
-            rec["kind"] = "research"
+            build = research_build_reason(rec["kind"], own_words, attachments)
+            if build:
+                log(f"  routing: {entry['name']} is on a research-only project, but this "
+                    f"is a build request ({build}) → deliverable (was '{rec['kind']}')")
+                rec["kind"] = "deliverable"
+                rec["document_build"] = build
+            elif rec["kind"] != "feedback":
+                if rec["kind"] != "research":
+                    log(f"  routing override: {entry['name']} is on a research-only "
+                        f"project → treating as research (was '{rec['kind']}')")
+                rec["kind"] = "research"
         # S264 (Buddy): an answer-kind request for a LIST or a FILE (Bill's
         # 09-23 Excel builder list) gets a ticket and an honest ack, never the
         # council auto-answer: that answers from model memory, and nothing
@@ -1175,13 +1305,24 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             rec["kind"] = "deliverable"
         # S592: Bill's 11-08 "same list for Sussex County", a reply to a list we
         # delivered, has no list wording; both detectors above missed it.
-        if rec["kind"] in ("answer", "deliverable") and rec["status"] != "refused":
+        if (rec["kind"] in ("answer", "deliverable") and rec["status"] != "refused"
+                and not rec.get("document_build")):
             same_list = list_delivery.same_list_request(
                 entry["name"], subject, task_solver.strip_quoted_reply(body or ""), body or "")
             if same_list:
                 rec["kind"] = "deliverable"
                 rec["same_list"] = same_list
                 log(f"  same-list reply: {same_list['prior_run']}'s list for a new place")
+        # S621: asked for one module, attached another -> ask for the right
+        # file at once instead of queuing work on the wrong one.
+        mismatch = module_mismatch(subject, own_words, attachments)
+        if (mismatch and rec["status"] != "refused"
+                and rec["kind"] not in ("resend", "confirmation")):
+            rec["kind"] = "clarify"
+            rec["attachment_mismatch"] = mismatch
+            log(f"  attachment check: asks for Module {mismatch['asked']}, attached "
+                f"file is Module {', '.join(map(str, mismatch['attached']))} "
+                f"→ asking the client for the right file")
         # Research topics: when the subject is a bare keyword (e.g. 'RESEARCH')
         # with no REQUEST prefix, title the topic from the body instead of the
         # useless subject so the focus-topic queue stays meaningful.
@@ -1269,7 +1410,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     own = task_solver.strip_quoted_reply(body or "")
                     ask_subject = "" if task_solver.is_reply_subject(subject) else subject
                     same_list = rec.get("same_list")
-                    if same_list or list_delivery.wants_contact_list(ask_subject, own):
+                    if rec.get("document_build"):
+                        pass  # S621: built from the attached file by a session, not the list job
+                    elif same_list or list_delivery.wants_contact_list(ask_subject, own):
                         try:
                             rec["contact_list_run"] = list_delivery.start_job(
                                 entry["name"], same_list["request"] if same_list else own,
@@ -1281,6 +1424,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                             log(f"  → contact-list job NOT started ({e}); the ticket stands")
                         except Exception as e:
                             log(f"  ⚠️ contact-list job did not start ({e}); the ticket stands")
+                elif rec["kind"] == "clarify":
+                    log("  → waiting on the client for the matching file; no ticket or topic")
                 elif rec["kind"] == "answer":
                     log("  → answer request — solving live after ack (below)")
                 elif rec["kind"] == "resend":
@@ -1406,6 +1551,14 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     # Only fixed category wording leaves the box; reasons stay local.
                     flag = (f"✋ Answer held: {held_label.wording(r.get('held_label'))} "
                             f"— request {request_id}")
+            elif r.get("kind") == "clarify":
+                mm = r.get("attachment_mismatch") or {}
+                flag = (f"📎 Asked the client for the right file: the email asks for "
+                        f"Module {mm.get('asked')}, the attachment is Module "
+                        f"{', '.join(map(str, mm.get('attached', [])))}")
+            elif r.get("kind") == "deliverable" and r.get("document_build"):
+                flag = (f"📄 BUILD request ({r['document_build']}) — needs a session, "
+                        f"ticket {r.get('ticket_id') or '⚠️ NOT created'}")
             elif r.get("kind") == "deliverable" and r.get("contact_list_run"):
                 flag = (f"📋 LIST request — research job {r['contact_list_run']} running; "
                         f"it goes to the client when done, cc you")
@@ -1839,6 +1992,61 @@ def selftest() -> int:
     check("attachment_names: multipart/alternative (plain+html only) has "
           "no false positive",
           attachment_names(html_msg) == [])
+
+    # S621: Alyssa's 2026-11-13 requests asked for Module 2 work, attached the
+    # Module 1 Teach Book, and were queued as digest topics.
+    info = attachment_info(pdf_msg)
+    check("attachment_info: names the PDF; fake bytes give no title, no crash",
+          [a["name"] for a in info] == ["Module1TeachBook.pdf"] and info[0]["title"] == "")
+    check("attachment_info: a plain message has none", attachment_info(plain_msg) == [])
+    lp_subj = "Arts and Letters Module 2 Lesson Plans"
+    lp_body = ("Use the attached Arts and Letters Grade 4 Module 2 Teach Book for the "
+               "following project. Evaluate each lesson in the learn book, and for each "
+               "lesson give me the following information: 1: PA Core Standards")
+    cfu_body = ("Review the attached curriculum for Grade 4 Arts and Letters for Module 2. "
+                "For each lesson, create a series of multiple-choice questions. "
+                "Aim to have 3 to 4 per lesson and provide an answer key.")
+    wrong = [{"name": "AL_L4_M1_Module1TeachBook.pdf", "type": "application/pdf", "title": ""}]
+    mm = module_mismatch(lp_subj, lp_body, wrong)
+    check("module_mismatch: Module 2 asked, Module 1 file attached (the 11-13 case)",
+          mm == {"asked": 2, "attached": [1], "file": "AL_L4_M1_Module1TeachBook.pdf"})
+    check("module_mismatch: the PDF title alone also counts",
+          module_mismatch(lp_subj, lp_body, [{"name": "TeachBook.pdf", "type": "application/pdf",
+                                              "title": "Level 4 Module 1 Teach"}]) is not None)
+    check("module_mismatch: the right module attached is no mismatch",
+          module_mismatch(lp_subj, lp_body, [{"name": "AL_L4_M2_Module2TeachBook.pdf",
+                                              "type": "application/pdf", "title": ""}]) is None)
+    check("module_mismatch: a request naming two modules is not judged",
+          module_mismatch("Modules", "compare Module 1 and Module 2", wrong) is None)
+    check("module_mismatch: no module in the file name or title is not judged",
+          module_mismatch(lp_subj, lp_body, [{"name": "TeachBook.pdf",
+                                              "type": "application/pdf", "title": ""}]) is None)
+    check("module_mismatch: an image attachment is not judged",
+          module_mismatch(lp_subj, lp_body, [{"name": "M1.png", "type": "image/png", "title": ""}]) is None)
+    check("module_mismatch: no attachment, no mismatch", module_mismatch(lp_subj, lp_body, []) is None)
+    check("research_build_reason: a document attached makes it a build",
+          research_build_reason("build", lp_body, wrong) == "document attached")
+    check("research_build_reason: per-lesson wording with no file is a build (the 10-05 case)",
+          research_build_reason("research", cfu_body, []) == "per-lesson build wording")
+    check("research_build_reason: an ordinary topic stays a topic",
+          research_build_reason("research", "small group ideas for fluency", []) == "")
+    check("research_build_reason: a plain reply stays feedback even with lesson wording (S258)",
+          research_build_reason("feedback", "rerun arc 1 and combine it for each lesson", []) == "")
+    check("research_build_reason: a reply carrying the corrected file is a build",
+          research_build_reason("feedback", "here it is", wrong) == "document attached")
+    rec_cl = classify("alyssa", ["pedagogy"], lp_subj, lp_body)
+    rec_cl["kind"], rec_cl["attachment_mismatch"] = "clarify", mm
+    cl_ack = ack_body(rec_cl)
+    check("clarify ack names both modules and the file, asks for the Module 2 file",
+          "Module 2" in cl_ack and "Module 1" in cl_ack
+          and "AL_L4_M1_Module1TeachBook.pdf" in cl_ack and "send the Module 2 file" in cl_ack)
+    check("clarify ack makes no digest or research-queue promise",
+          "digest" not in cl_ack and "research queue" not in cl_ack)
+    rec_db = classify("alyssa", ["pedagogy"], lp_subj, lp_body)
+    rec_db["kind"], rec_db["document_build"] = "deliverable", "document attached"
+    db_ack = ack_body(rec_db)
+    check("build ack says we're working on it, with no list or Buddy-review wording",
+          "working on this" in db_ack and "list" not in db_ack and "Buddy" not in db_ack)
 
     # rate limiting
     st = {}
