@@ -494,7 +494,8 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
             f.append("question %d: needs four different options" % i)
         if any(re.search(r"\b(all|none) of the above\b", o, re.I) for o in opts):
             f.append("question %d: 'all/none of the above' option" % i)
-        if len(opts) == 4 and len(opts[0]) > 1.6 * max(len(o) for o in opts[1:]) + 10:
+        # A definition is naturally longer; twice the longest wrong answer gives it away.
+        if len(opts) == 4 and len(opts[0]) > 2 * max(len(o) for o in opts[1:]) + 10:
             f.append("question %d: the correct answer gives itself away by length" % i)
         if q.get("tag") not in ("target", "vocab", "word study"):
             f.append("question %d: bad tag" % i)
@@ -605,9 +606,10 @@ def blind_answer(d: dict, src: str, cfg: dict, seed: str) -> list:
 
 
 def mcq_text(d: dict) -> str:
-    return "\n".join("%d. (%s) %s\nCorrect answer: %s\nWrong answers: %s" % (
-        i, q["tag"], q["stem"], q["correct"], "; ".join(q["wrong"]))
-        for i, q in enumerate(d.get("questions", []), 1))
+    """What the fact check reads: stems and correct answers only. Wrong answers
+    are false on purpose (S629 Lesson 6: the checker flagged them as invented)."""
+    return "\n".join("%d. %s\nCorrect answer: %s" % (i, q["stem"], q["correct"])
+                     for i, q in enumerate(d.get("questions", []), 1))
 
 
 # ── one lesson: local, one local repair, cloud, then hold ────────────────────
