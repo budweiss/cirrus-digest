@@ -447,6 +447,21 @@ def _pages_ok(text: str, L: dict, src: str) -> list:
     return bad
 
 
+_JUDGMENT = re.compile(r"^(?:rigor comes from|the rigor|anticipated difficulties|likely difficulties|"
+                       r"students may (?:struggle|find)|some students may)", re.I)
+
+
+def checkable_text(d: dict) -> str:
+    """What the fact check reads: the factual parts. Why it matters, where the
+    rigor comes from and likely difficulties are judgment the teacher asked
+    for (S629 Module 2 Lesson 34: flagged as "invented" at every stage)."""
+    parts = []
+    for k in ("student_considerations", "plan", "next_steps"):
+        sents = re.split(r"(?<=[.!?])\s+", d.get(k, "") or "")
+        parts.append(" ".join(x for x in sents if not _JUDGMENT.match(x.strip())))
+    return "\n".join([*d.get("i_can", []), *parts, *d.get("success_criteria", [])])
+
+
 def review_text_fields(d: dict, with_note: bool = True) -> str:
     return "\n".join([*d["i_can"], d["why_it_matters"], d["student_considerations"], d["plan"],
                       *d["success_criteria"], d["next_steps"],
@@ -650,7 +665,7 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
         if not f and model_checks:
             # The note links guide codes to activities; the checker cannot see
             # the guide and calls every code "invented". Codes are checked above.
-            f = claim_check(review_text_fields(d, with_note=False), src, cfg)
+            f = claim_check(checkable_text(d), src, cfg)
     else:
         f = check_mcq(d, L, src)
         if not f and model_checks:
@@ -682,7 +697,11 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                     tries.append({"stage": stage, "failures": ["this job's cloud allowance is used up"]})
                     break
                 ctx["cloud_calls"] += 1
-                provider, d = cloud_draft(prompt, schema, ctx["creds"])
+                try:
+                    provider, d = cloud_draft(prompt, schema, ctx["creds"])
+                except ValueError:      # a reply that is not JSON gets one retry (Lesson 34)
+                    ctx["cloud_calls"] += 1
+                    provider, d = cloud_draft(prompt, schema, ctx["creds"])
                 stage = "cloud:" + provider
             failures = lesson_failures(kind, d, book, L, codes, src, cfg)
         except Hold:
@@ -1304,6 +1323,10 @@ def selftest() -> bool:
     f = check_review(bad, L, [("CC.1.4.4.N", "t")], src1)
     for want in ("15 minutes", "quoted words", "page 40", "markdown", "I can", "CC.1.4.4.M"):
         check("review: catches %s" % want, any(want in x for x in f))
+    jt = checkable_text(dict(good, plan="Launch (2 min): read. Rigor comes from close reading.",
+                             student_considerations="Use the frame. Anticipated difficulties include pacing."))
+    check("fact check skips judgment sentences", "Rigor" not in jt and "Anticipated" not in jt
+          and "Use the frame." in jt and "Launch (2 min)" in jt)
     check("review: a sentence-frame blank is not markdown",
           check_review(dict(good, student_considerations=good["student_considerations"]
                             + " A frame (Hugo ___, but now he ___.) helps."), L, [], src1) == [])

@@ -2249,6 +2249,17 @@ def selftest() -> int:
           'same_list["request"] if same_list else own' in _run_src[_job:]
           and 'auto_deliver=rec["status"] != "refused"' in _run_src[_job:_job + 400]
           and "if same_list or list_delivery.wants_contact_list(ask_subject, own)" in _run_src)
+    # S629: a Teach Book build starts the lesson job, only for an unrefused
+    # request it supports, inside the document_build branch, before the list job.
+    _db = _run_src.find('if rec.get("document_build"):\n                        # S629')
+    _sup = _run_src.find("lesson_build.supported(", _db)
+    _lbj = _run_src.find("lesson_build.start_job(", _db)
+    check("a supported Teach Book build starts the lesson job (S629)",
+          0 < _db < _sup < _lbj < _run_src.find("elif same_list or list_delivery.wants_contact_list", _db)
+          and 'if rec["status"] != "refused" else None' in _run_src[_sup:_lbj]
+          and 'rec["lesson_build_run"] = lesson_build.start_job(' in _run_src)
+    check("  ...and the Telegram summary names the lesson job",
+          'flag = (f"📄 BUILD — lesson job {r[\'lesson_build_run\']} started' in _run_src)
 
     import job_status as _js
     check("job_status carries a cadence for intake (nothing watched it before S102)",
