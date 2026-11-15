@@ -117,8 +117,8 @@ KNOWN = [
                     "separate 'review needed' result (check supervisor/alert_policy.py)."},
     {"id": "case-vendor", "job": r"^vendor_mail_watch$", "text": r".", "nosample": True,
      "status": "needs-buddy",
-     "title": "Vendor-mail payment items still open (NordVPN x4, Anedot x1, one invoice mail)",
-     "explanation": "Buddy 11-14: closed the 30 non-payment items. The rest ask for updated "
+     "title": "Vendor-mail payment items still open (NordVPN x4, Anedot x1)",
+     "explanation": "Buddy 11-14: closed the 31 non-payment items. The rest ask for updated "
                     "payment details, which is Buddy's; close each with "
                     "vendor_mail_watch.py --resolve <id> once handled."},
     {"id": "case-aggie", "job": r"^client_contact_daily$", "text": r"tool unused",
