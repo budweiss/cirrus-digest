@@ -555,6 +555,16 @@ def review_key(decision,date):
     return hashlib.sha256(json.dumps(decision,sort_keys=True).encode()).hexdigest()+'-'+date
 
 
+def mark_on(quote,date):
+    """S624: judge a current mark as of its own fetch time when it was fetched on the
+    observation date. By wall clock, a scorecard rebuilt hours after its snapshot
+    found every quote stale (120-second rule), and the 11-14 recovery saved 4 valid
+    comparisons as unavailable. A quote fetched on another day keeps the wall clock."""
+    try:same=research.dt(quote['fetched_at']).astimezone(NY).date().isoformat()==date
+    except (KeyError,TypeError,ValueError,AttributeError):same=False
+    return paper.validate_mark(quote,now=quote['fetched_at']) if same else paper.validate_mark(quote)
+
+
 def fixed_observations(account,date,home=None):
     home=home or HOME;pending=[]
     for decision in account['decisions']:
@@ -583,8 +593,8 @@ def fixed_observations(account,date,home=None):
         if ticker and ticker not in marks:
             try:marks[ticker]=paper.get_quote(ticker,archive_dir=home/'quotes')
             except Exception as exc:marks[ticker]={'error_type':research.error_code(exc)}
-        current=paper.validate_mark(marks.get(ticker,{}) or {})
-        spy=paper.validate_mark(marks.get('SPY',{}) or {})
+        current=mark_on(marks.get(ticker,{}) or {},date)
+        spy=mark_on(marks.get('SPY',{}) or {},date)
         row={'decision':decision,'scheduled_review':target,'observed_on':date,
              'observed_late':target<date,'original_reference':reference,
              'current_company_quote':current,'current_spy_quote':spy,

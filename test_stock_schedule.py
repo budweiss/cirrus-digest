@@ -407,6 +407,26 @@ class ScheduleChecks(unittest.TestCase):
         self.assertEqual(sorted(c for c in calls if c),['2026-10-13T20:00:00Z']*2)
         self.assertFalse(old['comparison_available'])  # timestamp-only reference: never judged, never backfilled
 
+    def test_current_mark_is_judged_at_its_fetch_time_on_the_observation_date(self):
+        # S624: the 11-14 recovery ran 12 h after its 09:30 snapshot; by wall clock every
+        # quote was stale and 4 valid comparisons were saved as unavailable.
+        from pathlib import Path
+        def ref(price):return {'price':price,'quote_at':'2026-10-13T20:00:00Z','valuation_eligible':True}
+        def raw(price):return {'price':price,'quote_at':'2026-11-13T20:59:00Z','fetched_at':'2026-11-14T14:30:01Z'}
+        calls=[]
+        def mark(x,now=None):  # stale unless judged at a given time
+            calls.append(now);return dict(x,valuation_eligible=now is not None)
+        d={'ticker':'EXAMPLE','decided_at':'2026-10-13T20:00:00Z','review_dates':['2026-11-07'],
+           'review_reference':{'company':ref('100'),'spy':ref('200')}}
+        account={'decisions':[d],'quotes':{'EXAMPLE':raw('110'),'SPY':raw('210')}}
+        for date,expect in (('2026-11-14',True),('2026-11-15',False)):
+            calls.clear()
+            with self.subTest(date=date),tempfile.TemporaryDirectory() as td,patch.object(S.paper,'validate_mark',side_effect=mark):
+                rows,_=S.fixed_observations(account,date,Path(td))
+                self.assertEqual(rows[0]['comparison_available'],expect,rows[0].get('comparison_gap'))
+                self.assertEqual(calls,['2026-11-14T14:30:01Z']*2 if expect else [None]*2)
+                if expect:self.assertEqual(rows[0]['excess_percentage_points'],'5.00')
+
     def test_decision_reference_stores_its_contemporaneous_verdict(self):
         raw={'ticker':'EXAMPLE','price':'10','quote_at':'2026-10-14T18:45:00Z','fetched_at':'2026-10-14T18:45:01Z',
              'raw_archive':'archive/path','source':'s','url':'u'}
