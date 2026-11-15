@@ -438,9 +438,17 @@ _PAGE_REF = re.compile(r"\bpp?\.\s*(\d+)(?:\s*[-–]\s*(\d+))?")
 _CODE_REF = re.compile(r"CC\.\d\.\d\.\d+\.[A-Z]")
 
 
+def _quote_in(q: str, src_norm: str) -> bool:
+    # S632 (Module 1 Lesson 32): a sentence frame's blanks ("Jack ___, but in
+    # the end, ___") come out of pdftotext scrambled, so each part between
+    # blanks is matched on its own.
+    parts = [norm(x) for x in re.split(r"_{2,}|…|\.{3}", q)]
+    return all(x in src_norm for x in parts if x)
+
+
 def _quotes_ok(text: str, src_norm: str) -> list:
     return ["quoted words are not in the pages: “%s”" % q for q in _QUOTE.findall(text)
-            if norm(q) and norm(q) not in src_norm]
+            if norm(q) and not _quote_in(q, src_norm)]
 
 
 def _pages_ok(text: str, L: dict, src: str) -> list:
@@ -454,6 +462,10 @@ def _pages_ok(text: str, L: dict, src: str) -> list:
                 continue
             # The book cites "p. 75", "page 53" and "pages 54–57".
             if re.search(r"\b(?:pages?|pp?\.)\s*(?:\d+\s*(?:[-–,]|and)\s*)*%d\b" % n, src):
+                continue
+            # ...and "the following pages in The Circulatory Story: 10 (heart),
+            # 14 (veins), 26 (cuts)" (S632, Module 1 Lesson 14).
+            if re.search(r"\bpages\b[^.]{0,80}?\b%d\b" % n, src):
                 continue
             bad.append("page %d is outside the lesson and not a page the pages cite" % n)
     return bad
@@ -721,6 +733,8 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                 try:
                     provider, d = cloud_draft(prompt, schema, ctx["creds"])
                 except ValueError:      # a reply that is not JSON gets one retry (Lesson 34)
+                    if ctx["cloud_calls"] >= MAX_CLOUD_CALLS_PER_JOB:   # S633 probe: the retry passed the cap
+                        raise
                     ctx["cloud_calls"] += 1
                     provider, d = cloud_draft(prompt, schema, ctx["creds"])
                 stage = "cloud:" + provider
@@ -1517,6 +1531,15 @@ def selftest() -> bool:
               "What does the myth Achilles' Heel explain?",
               "Which detail describes the pose of Winged Victory?",
               "Why does Pandora open the box, and what lands in the world?")))
+    # quotes and pages: book forms that pdftotext scrambles (S632, Module 1 Lessons 32 and 14)
+    pg = "frame: In the beginning, Jack end, 346 , but in the . Key Ideas: but in the end, he writes"
+    check("quotes: a sentence frame with blanks is found part by part",
+          not _quotes_ok("Use the frame “In the beginning, Jack ___, but in the end, ___.”", norm(pg))
+          and _quotes_ok("Use the frame “In the beginning, Jill ___.”", norm(pg)))
+    Lx = {"printed": (162, 173)}
+    pg2 = "direct attention to the following pages in The Circulatory Story: 10 (heart), 14 (veins), 26 (cuts)."
+    check("pages: a cited list of a trade book's pages is accepted, others are not",
+          not _pages_ok("See pp. 10 and 26.", Lx, pg2) and _pages_ok("See p. 40.", Lx, pg2))
     # cloud JSON: a string closed with a stray ] is repaired (S632, Module 1 Lesson 5)
     bad = '{"plan": "Launch (2 minutes). Land: rather than recalling details."], "next_steps": "x"}'
     check("cloud JSON: a stray ] after a string is dropped",
