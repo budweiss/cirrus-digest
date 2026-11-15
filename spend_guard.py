@@ -114,6 +114,16 @@ def pause(provider, note="", now=None):
                f"{provider} billing dashboard.\n`{(note or '')[:160]}`")
 
 
+def resume(provider) -> bool:
+    """Drop a pause early. S629: brave_plan.py calls this after moving Brave to
+    its Prepaid key, so searches carry on instead of waiting for the 1st."""
+    d = _load()
+    if d.pop(provider, None) is None:
+        return False
+    _save(d)
+    return True
+
+
 def status(now=None) -> dict:
     """Current pause ledger (for the morning brief / cirrus-health), with expired
     entries pruned. Empty dict = nothing paused."""
@@ -184,6 +194,9 @@ def selftest():
     ck("still paused later same month", is_paused("brave", now=datetime(2026, 8, 31, 23, 59)))
     ck("auto-resume on the 1st next month", not is_paused("brave", now=datetime(2026, 9, 1)))
     ck("status() empty after resume", status(now=datetime(2026, 9, 1)) == {})
+    pause("brave", "limit", now=datetime(2026, 11, 20))
+    ck("resume() drops a live pause", resume("brave") and not is_paused("brave", now=datetime(2026, 11, 21)))
+    ck("resume() with nothing paused is False", resume("brave") is False)
     print("PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 

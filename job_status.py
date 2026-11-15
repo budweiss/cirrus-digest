@@ -203,6 +203,8 @@ CADENCE_H = {
     # ok=False only when a source has been unreadable for over an hour.
     "telewarden":           1,
     "telewardenfix":        22,  # S614: CIRRUS 13:15/17:00, independent of desktop
+    # S629: Brave Postpaid -> Prepaid switch (brave_plan.py), every 30 min on CIRRUS.
+    "braveplan":            2,
 }
 
 # S57 cutover: these client jobs now RUN ON CUMULUS. When summarize() runs on
