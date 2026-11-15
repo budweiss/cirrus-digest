@@ -802,10 +802,18 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
                     except Hold as e:
                         cache.with_suffix(".held.json").write_text(json.dumps(
                             getattr(e, "record", {}), indent=1, ensure_ascii=False))
-                        raise
+                        if not ctx.get("keep_going"):
+                            raise
+                        # Qualification only: note it and test the rest.
+                        stats.setdefault("held", []).append(str(e))
+                        stats["lessons"]["%s-%d" % (kind, L["n"])] = {
+                            "stage": "held", "tries": e.record["tries"]}
+                        continue
                     cache.write_text(json.dumps(got, indent=1, ensure_ascii=False))
                 drafts[L["n"]] = got["draft"]
                 stats["lessons"]["%s-%d" % (kind, L["n"])] = {"stage": got["stage"], "tries": got["tries"]}
+            if len(drafts) < len(lessons):
+                continue
             body = assemble(kind, arc, lessons, drafts, codes, book["module"], name, box,
                             seed="%s-%s" % (out_dir.name, arc),
                             other_thread=(len(kinds) > 1) if other_thread is None else other_thread)
@@ -813,6 +821,7 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
             path.write_text(body)
             ready[kind] = (path, body)
         stats["arcs"].append(arc)
+        (out_dir / "stats.json").write_text(json.dumps(stats, indent=1, default=str))
         if on_arc:
             on_arc(arc, lessons, ready)
     stats["seconds"] = round(time.time() - stats.pop("started"), 1)
@@ -840,10 +849,12 @@ def main(argv: list) -> int:
     sh.add_argument("--kinds", default="lessons,checks")
     sh.add_argument("--lessons", default="")
     sh.add_argument("--no-cloud", action="store_true")
+    sh.add_argument("--keep-going", action="store_true",
+                    help="qualification: record a held lesson and carry on")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     if a.cmd == "shadow":
-        ctx = {"no_cloud": a.no_cloud}
+        ctx = {"no_cloud": a.no_cloud, "keep_going": a.keep_going}
         if not a.no_cloud:
             ctx["creds"] = json.loads((PROJECT_DIR / "config/credentials.json").read_text())
         try:
