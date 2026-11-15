@@ -15,6 +15,48 @@ DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported 
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
 
 class ScheduleChecks(unittest.TestCase):
+    def test_scorecard_quotes_original_fields_without_inventing_dates_or_causes(self):
+        row={'ticker':'EXAMPLE','action':'HOLD','decided_at':'2026-10-01T12:00:00Z',
+             'reason':'Recorded expectation only: an unverified catalyst.',
+             'scheduled_review':'2026-10-22','observed_on':'2026-11-14',
+             'observed_late':True,'price_return_percent':'123.45',
+             'evidence':[{'quote':'private original source excluded from narrative'}]}
+        data={'due_21_28_day_reviews':[row],'prior_fixed_reviews':[]}
+        before=copy.deepcopy(data);text=S.scorecard_recorded_text(data)
+        quoted=json.loads(text.split('Due observations (recorded fields):\n\n')[1])
+        self.assertEqual(quoted,[{k:v for k,v in row.items() if k not in ('price_return_percent','evidence')}])
+        self.assertEqual(data,before)
+        self.assertNotIn('123.45',text);self.assertNotIn('private original source',text)
+        self.assertIn('not new business findings',text)
+
+    def test_scorecard_preserves_review_gate_and_never_retries_identical_draft(self):
+        from contextlib import nullcontext
+        for passed in (False,True):
+            with self.subTest(passed=passed),patch.object(S.media,'lease',return_value=nullcontext()), \
+                    patch.object(S.media,'complete') as generate, \
+                    patch.object(S.research,'structured_review',return_value=json.dumps(
+                        {'passed':passed,'issues':[] if passed else ['Unsupported fixture claim.']})) as reviewer:
+                audit=unittest.mock.Mock()
+                if passed:
+                    self.assertEqual(S.checked_prose('system',{},'stock-scorecard',audit),S.scorecard_recorded_text({}))
+                else:
+                    with self.assertRaisesRegex(ValueError,'weekly_review_failed'):
+                        S.checked_prose('system',{},'stock-scorecard',audit)
+                generate.assert_not_called();self.assertEqual(reviewer.call_count,1)
+                self.assertEqual(audit.call_args.args[0]['passed'],passed)
+
+    def test_scorecard_rejection_keeps_failure_summary_on_its_single_attempt(self):
+        from pathlib import Path
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()), \
+                patch.object(S.research,'structured_review',return_value=json.dumps(
+                    {'passed':False,'issues':['Unsupported fixture claim.']})):
+            folder=Path(td)
+            with self.assertRaisesRegex(ValueError,'weekly_review_failed'):
+                S.checked_prose('system',{},'stock-scorecard',S.prose_audit(folder,'checks.json','stockscorecard'))
+            self.assertTrue((folder/'prose-failure-summary.json').exists())
+            self.assertFalse(json.loads((folder/'checks.json').read_text())['passed'])
+
     def test_decision_waits_for_busy_worker_but_has_a_deadline(self):
         import json
         from pathlib import Path

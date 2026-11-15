@@ -502,7 +502,7 @@ def prose_audit(folder,name,job):
     def audit(check):
         attempts.append(check)
         atomic(folder/name,dict(check,earlier=attempts[:-1]))
-        if not check['passed'] and check['attempt']==PROSE_ATTEMPTS-1:
+        if not check['passed'] and (check.get('terminal') is True or check['attempt']==PROSE_ATTEMPTS-1):
             import failure_summary
             # A separate file: discovery's adoption review may already have left one.
             failure_summary.write(folder/'prose-failure-summary.json',failure_summary.build(
@@ -510,11 +510,33 @@ def prose_audit(folder,name,job):
     return audit
 
 
+def scorecard_recorded_text(data):
+    """Quote recorded decisions; price pairs cannot support new causal prose."""
+    fields=('ticker','action','decided_at','reason','valuation','counterargument',
+            'scheduled_review','observed_on','observed_late')
+    parts=[('These are recorded idea decisions and their original reasoning, not '
+            'new business findings or evidence that an account trade occurred. '
+            'The records below are quoted verbatim as data. The separate fixed-window '
+            'table gives the measured price comparisons. An observation after its '
+            'scheduled review date does not reconstruct the return on that date. '
+            'Price pairs alone do not establish causation, skill, or whether the '
+            'original reasoning was correct.')]
+    for key,label in (('due_21_28_day_reviews','Due observations'),
+                      ('prior_fixed_reviews','Prior observations')):
+        rows=data.get(key,[])
+        if rows:
+            parts.append(label+' (recorded fields):\n\n'+json.dumps(
+                [{k:row[k] for k in fields if k in row} for row in rows],
+                ensure_ascii=True,indent=2))
+    return '\n\n'.join(parts)
+
+
 def checked_prose(system,data,task,audit=None):
     with media.lease(ROOT/'logs/media/worker.lock',timeout=45):
         correction=''
-        for attempt in range(PROSE_ATTEMPTS):
-            text=media.complete(system,json.dumps(data)+correction,task)
+        recorded = task == 'stock-scorecard'
+        for attempt in range(1 if recorded else PROSE_ATTEMPTS):
+            text=scorecard_recorded_text(data) if recorded else media.complete(system,json.dumps(data)+correction,task)
             reviewed=parse(research.structured_review(
                 'Independently check every factual assertion, date and inference against the supplied evidence. '
                 'Reject invented observations, financial outcomes, unsupported causal claims or certainty from small samples. '
@@ -523,7 +545,7 @@ def checked_prose(system,data,task,audit=None):
                 json.dumps({'evidence':data,'draft':text}),task+'-review'))
             if reviewed.get('passed') is True and reviewed.get('issues'):reviewed['passed']=False
             review=research.review_verdict(json.dumps(reviewed))
-            if audit:audit(dict(review,attempt=attempt))
+            if audit:audit(dict(review,attempt=attempt,terminal=recorded or attempt==PROSE_ATTEMPTS-1))
             if review['passed']:return text
             correction='\nPrevious draft:\n'+text+'\nCorrect each issue, omitting any claim that cannot be supported: '+json.dumps(review['issues'])
         raise ValueError('weekly_review_failed')
