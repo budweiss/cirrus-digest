@@ -36,7 +36,8 @@ def matches(raw, sender, recipients, cc, subject, filename, after):
             and bool(addresses('To') & {r.lower() for r in recipients})
             and cc.lower() in addresses('Cc')
             and intake.decode_hdr(msg.get('Subject', '')) == subject
-            and any(part.get_filename() == filename for part in msg.walk()))
+            # S629: lesson-build emails carry no attachment (filename None).
+            and (filename is None or any(part.get_filename() == filename for part in msg.walk())))
 
 
 def verify(root, run_id, client, creds, connect=imaplib.IMAP4_SSL):

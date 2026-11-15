@@ -1,0 +1,8 @@
+{
+ "version": 1,
+ "note": "S629 lesson_build.py. host: the only box that starts these jobs (the models it needs are there). auto_send starts false: shadow mode writes the emails and sends nothing until qualification passes (docs/LESSON-BUILD-WORKER-PLAN.md).",
+ "host": "cumulus1",
+ "clients": {
+  "alyssa": {"auto_send": false}
+ }
+}

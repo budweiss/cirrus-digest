@@ -110,7 +110,7 @@ def update(root, row, state, owner, next_action, evidence=None):
 
 
 def finish(root, row, rec):
-    evidence = {k: rec[k] for k in ('ticket_id', 'contact_list_run') if rec.get(k)}
+    evidence = {k: rec[k] for k in ('ticket_id', 'contact_list_run', 'lesson_build_run') if rec.get(k)}
     evidence['client'] = rec.get('requester', 'unknown')
     solved = rec.get('solved') or {}
     if solved.get('request_id'):
@@ -142,6 +142,9 @@ def finish(root, row, rec):
     elif rec.get('kind') == 'clarify':
         # S621: we asked for the file the request names; nothing is owed yet.
         state, owner, action = 'waiting_on_client', 'client', 'asked for the file the request names; resume on reply'
+    elif rec.get('lesson_build_run'):
+        # S629: the lesson job owns it from here and records its own outcome.
+        state, owner, action = 'working', 'lesson_build', 'lesson job builds, checks and sends each arc; see its state.json'
     elif rec.get('document_build'):
         # Text preparation reads only the body, never the attached file.
         state, owner, action = 'blocked_no_worker', 'cowork', 'build from the attached file needs a session; assign'

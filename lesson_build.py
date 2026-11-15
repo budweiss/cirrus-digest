@@ -588,6 +588,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     for k in ("draft", "check"):
         cfg[k].update(data.get(k) or {})
     cfg["clients"] = data.get("clients") or {}
+    cfg["host"] = data.get("host")
     return cfg
 
 
@@ -830,6 +831,318 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
     return {"book": book, "stats": stats}
 
 
+# ── a client's job: start (from intake), run, deliver ────────────────────────
+
+class DailyCap(Exception):
+    pass
+
+
+_LESSONS_RX = re.compile(r"(?i)\blesson plans?\b|\bi can statements?\b|\bsuccess criteria\b|\bsix[- ]part\b")
+_CHECKS_RX = re.compile(r"(?i)\bmultiple[- ]choice\b|\bchecks? for understanding\b|\banswer keys?\b|\bmcqs?\b")
+_TEACH_RX = re.compile(r"Level (\d+) Module (\d+) Teach")
+
+
+def kinds_in(text: str) -> list:
+    return [k for k, rx in (("lessons", _LESSONS_RX), ("checks", _CHECKS_RX)) if rx.search(text or "")]
+
+
+def _bare(subject: str) -> str:
+    return re.sub(r"(?i)^\s*((re|fwd?|fw)\s*:\s*)+", "", subject or "").strip()
+
+
+def supported(subject: str, own_words: str, attachments: list, guide_path: Path = GUIDE_PATH,
+              config_path: Path = CONFIG_PATH, host: str = None):
+    """What the job can build for this email, or None, which leaves it for a
+    session as before (S621). Needs an attached Teach Book PDF of a level we
+    hold a guide for, and a deliverable this job knows: lesson plans, checks."""
+    import socket
+    try:
+        if json.loads(Path(config_path).read_text()).get("host") != (host or socket.gethostname()):
+            return None     # only the box with the drafting and checking models
+    except (OSError, ValueError):
+        return None
+    book = None
+    for a in attachments or []:
+        m = _TEACH_RX.search(a.get("title") or "")
+        if m and (a.get("name") or "").lower().endswith(".pdf"):
+            book = {"name": a["name"], "level": int(m.group(1)), "module": int(m.group(2))}
+            break
+    if not book:
+        return None
+    try:
+        if json.loads(Path(guide_path).read_text())["level"] != book["level"]:
+            return None
+    except (OSError, ValueError, KeyError):
+        return None
+    kinds = kinds_in(own_words) or kinds_in(_bare(subject))
+    return dict(book, kinds=kinds) if kinds else None
+
+
+def _waiting_requests(project_dir: Path, client: str, module: int) -> list:
+    """Her other requests for this module that are waiting on a file (the
+    S621 case: two requests, one corrected file sent on one thread)."""
+    import intake_lifecycle
+    out = []
+    with intake_lifecycle.connect(project_dir) as db:
+        for r in db.execute("SELECT payload, evidence FROM requests WHERE state='waiting_on_client'"):
+            row, ev = json.loads(r["payload"]), json.loads(r["evidence"])
+            subject, body = row[2] or "", row[3] or ""
+            if ev.get("client") != client or not re.search(
+                    r"(?i)\bmodule\s*%d\b" % module, subject + "\n" + body[:4000]):
+                continue
+            kinds = kinds_in(_bare(subject) + "\n" + body[:4000])
+            if kinds:
+                out.append({"subject": subject, "from_addr": row[1], "mid": row[4], "kinds": kinds})
+    return out
+
+
+def _new_run_id(client: str, now: datetime) -> str:
+    who = re.sub(r"[^a-z0-9]", "", (client or "").lower())[:12] or "client"
+    return "lb-%s-%s" % (who, now.strftime("%Y%m%d-%H%M%S"))
+
+
+def start_job(client: str, from_addr: str, mid: str, subject: str, found: dict,
+              project_dir: Path = PROJECT_DIR, popen=None, now=None) -> str:
+    """One job per original client message; launches `run` detached through
+    job_runner and returns the run id. Raises DailyCap past the cap."""
+    import fcntl
+    import intake_lifecycle
+    if not client or not mid or not found or not found.get("kinds"):
+        raise ValueError("client, Message-ID and a supported request are required")
+    now = now or datetime.now()
+    req_dir = Path(project_dir) / REQUESTS_REL
+    req_dir.mkdir(parents=True, exist_ok=True)
+    with (req_dir / ".launch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        today = 0
+        for p in req_dir.glob("lb-*.json"):
+            meta = json.loads(p.read_text())
+            if meta.get("client") == client and any(t["mid"] == mid for t in meta["threads"]):
+                return p.stem
+            if meta.get("client") == client and meta.get("requested", "")[:10] == now.date().isoformat():
+                today += 1
+        if today >= MAX_JOBS_PER_CLIENT_PER_DAY:
+            raise DailyCap("%s already has %d lesson build(s) today" % (client, today))
+        threads = [{"subject": subject, "from_addr": from_addr, "mid": mid,
+                    "kinds": list(found["kinds"]), "book": True}]
+        for w in _waiting_requests(project_dir, client, found["module"]):
+            if w["mid"] != mid:
+                covered = {k for t in threads for k in t["kinds"]}
+                threads.append(dict(w, kinds=[k for k in w["kinds"] if k not in covered]))
+        cfg = load_config(Path(project_dir) / "config/lesson_build.json")
+        run_id = _new_run_id(client, now)
+        meta = {"client": client, "threads": threads, "book": found, "from_intake": True,
+                "auto_send": bool((cfg["clients"].get(client) or {}).get("auto_send")),
+                "requested": now.isoformat(timespec="seconds")}
+        (req_dir / (run_id + ".json")).write_text(json.dumps(meta, indent=1))
+    for t in threads[1:]:
+        try:
+            intake_lifecycle.update(project_dir, [None, t["from_addr"], None, None, t["mid"]],
+                                    "working", "lesson_build",
+                                    "answered by lesson build %s" % run_id, {"lesson_build_run": run_id})
+        except ValueError:
+            pass
+    venv = Path(project_dir) / ".venv/bin/python"
+    py = str(venv) if venv.exists() else sys.executable
+    (popen or subprocess.Popen)(
+        [py, "-u", "job_runner.py", run_id, "lesson_build.py", "run", run_id],
+        cwd=str(project_dir), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    return run_id
+
+
+def _ledger(runs: Path) -> Path:
+    return runs / "deliveries.jsonl"
+
+
+def delivered(runs: Path, run_id: str, arc: str, kind: str):
+    try:
+        for line in _ledger(runs).read_text().splitlines():
+            row = json.loads(line)
+            if (row.get("run_id"), row.get("arc"), row.get("kind")) == (run_id, arc, kind):
+                return row
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def extract_book(project_dir: Path, meta: dict, out: Path) -> Path:
+    """The Teach Book from intake's raw capture of the email that carried it."""
+    import email
+    import intake_lifecycle
+    t = next(t for t in meta["threads"] if t.get("book"))
+    raw = (Path(project_dir) / "data/intake-lifecycle" /
+           (intake_lifecycle.identity(t["from_addr"], t["mid"]) + ".eml")).read_bytes()
+    for part in email.message_from_bytes(raw).walk():
+        if part.get_filename() == meta["book"]["name"]:
+            out.write_bytes(part.get_payload(decode=True))
+            out.chmod(0o600)
+            return out
+    raise Hold("the attached book is not in intake's copy of the email")
+
+
+def verify_sent(project_dir: Path, rows: list, recipients: list, creds: dict,
+                connect=None) -> list:
+    """Read-only: one Sent Mail copy per delivered email (From this box, To the
+    client, Cc Buddy, exact subject). Returns the rows that were found."""
+    import imaplib
+    import contact_delivery_evidence
+    import intake
+    from runtime_config import load_sources
+    from client_mail_review import quoted
+    account = intake.find_account(load_sources(intake.CONFIG_PATH))
+    if not account or not rows:
+        return []
+    from list_delivery import CC_ADDR
+    since = (datetime.fromisoformat(rows[0]["ts"])).strftime("%d-%b-%Y")
+    found = []
+    with (connect or imaplib.IMAP4_SSL)(account["imap_server"], account.get("imap_port", 993),
+                                         timeout=15) as mail:
+        mail.login(account["address"], creds[account["credential_key"]])
+        if mail.select('"[Gmail]/Sent Mail"', readonly=True)[0] != "OK":
+            return []
+        uids = []
+        for r in recipients:
+            status, ids = mail.uid("search", None, "SINCE", since, "TO", quoted(r))
+            if status == "OK":
+                uids += [u for u in ids[0].split() if u not in uids]
+        raws = []
+        for uid in uids[-100:]:
+            status, parts = mail.uid("fetch", uid, "(BODY.PEEK[])")
+            if status == "OK":
+                raws.append(b"".join(x[1] for x in parts if isinstance(x, tuple)))
+        for row in rows:
+            after = datetime.fromisoformat(row["ts"]).timestamp() - 600
+            hits = [x for x in raws if contact_delivery_evidence.matches(
+                x, account["address"], recipients, CC_ADDR, row["subject"], None, after)]
+            if len(hits) == 1:
+                found.append(row)
+    return found
+
+
+def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, notify=None,
+        verify=None, cfg=None, wait: int = 60) -> int:
+    """The job intake launched. Exit 0 delivered (or built, in shadow), 3 held."""
+    import intake_lifecycle
+    project_dir = Path(project_dir)
+    runs = project_dir / "logs/lesson_builds"
+    run_dir = runs / run_id
+    meta = json.loads((project_dir / REQUESTS_REL / (run_id + ".json")).read_text())
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if meta.get("from_intake") and wait:
+        time.sleep(wait)        # let intake's poll record the request first
+    creds = creds if creds is not None else json.loads((project_dir / "config/credentials.json").read_text())
+    cfg = cfg or load_config(project_dir / "config/lesson_build.json")
+    rows = [[None, t["from_addr"], None, None, t["mid"]] for t in meta["threads"]]
+    # Every email this run has sent, including earlier invocations (the ledger).
+    try:
+        prior = [json.loads(x) for x in _ledger(runs).read_text().splitlines()]
+    except (OSError, ValueError):
+        prior = []
+    state = {"run_id": run_id, "client": meta["client"], "auto_send": meta["auto_send"],
+             "sent": [r for r in prior if r.get("run_id") == run_id]}
+
+    def save(**kw):
+        state.update(kw)
+        (run_dir / "state.json").write_text(json.dumps(state, indent=1))
+
+    def lifecycle(st, owner, action, evidence=None):
+        for row in rows:
+            try:
+                intake_lifecycle.update(project_dir, row, st, owner, action,
+                                        dict({"lesson_build_run": run_id}, **(evidence or {})))
+            except ValueError:
+                pass
+
+    def tell(text):
+        try:
+            if notify:
+                notify(text)
+            else:
+                import intake
+                intake.telegram(text, creds)
+        except Exception:
+            pass
+
+    kinds = [k for k in KINDS if any(k in t["kinds"] for t in meta["threads"])]
+    thread_for = {k: next(t for t in meta["threads"] if k in t["kinds"]) for k in kinds}
+    other = len(kinds) > 1 and thread_for["lessons"] is not thread_for["checks"]
+    save(status="building", kinds=kinds)
+    try:
+        senders = json.loads((project_dir / "config/intake_senders.json").read_text())
+        entry = senders.get(meta["client"])
+        if not isinstance(entry, dict) or not entry.get("emails"):
+            raise Hold("client %r is not in intake_senders.json" % meta["client"])
+        import mailer
+        from list_delivery import CC_ADDR
+        from_email = creds.get("outlook_email", "")
+        box = mailer.sender_name(from_email, creds)
+        pdf = run_dir / "book.pdf"
+        if not pdf.exists():
+            extract_book(project_dir, meta, pdf)
+
+        def on_arc(arc, lessons, ready):
+            for kind in kinds:
+                path, body = ready[kind]
+                subject = "Re: %s — %s" % (_bare(thread_for[kind]["subject"]), arc_label(arc, lessons))
+                if not meta["auto_send"] or delivered(runs, run_id, arc, kind):
+                    continue
+                (send or mailer.send)(from_email, creds.get("outlook_password", ""), entry["emails"][0],
+                                      subject, body, cc=CC_ADDR, creds=creds, client=meta["client"],
+                                      project=(entry.get("projects") or ["general"])[0])
+                row = {"event": "delivered", "run_id": run_id, "arc": arc, "kind": kind,
+                       "subject": subject, "client": meta["client"],
+                       "ts": datetime.now().isoformat(timespec="seconds")}
+                with _ledger(runs).open("a") as f:
+                    f.write(json.dumps(row) + "\n")
+                state["sent"].append(row)
+                save()
+                try:
+                    import client_mail
+                    client_mail._record_sent(meta["client"], subject,
+                                             str(path.relative_to(project_dir)), project_dir)
+                except Exception:
+                    pass
+
+        ctx = {"creds": creds}
+        res = build_book(pdf, kinds, run_dir, cfg, ctx, name=meta["client"].capitalize(), box=box,
+                         other_thread=other, on_arc=on_arc)
+    except Hold as e:
+        save(status="held", reason=str(e))
+        lifecycle("blocked_on_evidence", "cowork",
+                  "lesson build held: %s; a session finishes it from logs/lesson_builds/%s" % (str(e)[:200], run_id))
+        tell("\U0001F4C4 Lesson build %s for %s is HELD: %s\n%d email(s) already sent. "
+             "A session finishes it from logs/lesson_builds/%s." % (
+                 run_id, meta["client"], str(e)[:300], len(state["sent"]), run_id))
+        return 3
+    if not meta["auto_send"]:
+        save(status="built", stats=res["stats"])
+        lifecycle("ready_for_send", "cowork", "shadow build: review the emails, then send",
+                  {"artifact": str(run_dir / "mail")})
+        tell("\U0001F4C4 Lesson build %s for %s is built (shadow mode, nothing sent). Review "
+             "logs/lesson_builds/%s/mail and send." % (run_id, meta["client"], run_id))
+        return 0
+    time.sleep(20 if wait else 0)
+    try:
+        found = (verify or verify_sent)(project_dir, state["sent"], entry["emails"], creds)
+    except Exception:
+        found = []
+    if state["sent"] and len(found) == len(state["sent"]):
+        receipt = run_dir / "sent-receipt.json"
+        receipt.write_text(json.dumps({"verified": True, "emails": found}, indent=1))
+        save(status="delivered", stats=res["stats"])
+        lifecycle("sent_verified", "delivery-review", "completed with actual Sent Mail proof",
+                  {"sent_receipt": str(receipt)})
+    else:
+        save(status="sent_unverified", stats=res["stats"])
+        lifecycle("sent_unverified", "delivery-review",
+                  "verify actual Sent Mail for lesson build %s; never resend" % run_id)
+        tell("\U0001F4C4 Lesson build %s for %s: %d email(s) sent, but only %d found in Sent "
+             "Mail. Check before anything is resent." % (run_id, meta["client"], len(state["sent"]),
+                                                       len(found)))
+    return 0
+
+
 # ── command line ─────────────────────────────────────────────────────────────
 
 def _range(s: str):
@@ -851,8 +1164,12 @@ def main(argv: list) -> int:
     sh.add_argument("--no-cloud", action="store_true")
     sh.add_argument("--keep-going", action="store_true",
                     help="qualification: record a held lesson and carry on")
+    rn = sub.add_parser("run", help="the job intake launches")
+    rn.add_argument("run_id")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
+    if a.cmd == "run":
+        return run(a.run_id)
     if a.cmd == "shadow":
         ctx = {"no_cloud": a.no_cloud, "keep_going": a.keep_going}
         if not a.no_cloud:
@@ -872,7 +1189,232 @@ def main(argv: list) -> int:
 
 
 def selftest() -> bool:
-    return True
+    """Offline: temp folders, fake models and a fake send; no live files (T32)."""
+    import tempfile
+    ok = [True]
+
+    def check(name, cond):
+        print(("  ok   " if cond else "  FAIL ") + name)
+        ok[0] = ok[0] and bool(cond)
+
+    # guide: a page number that sits apart from its footer is not a lesson (S621/S629 trap)
+    guide_txt = "\n".join([
+        "4| Pennsylvania Core Standards English Language Arts Correlation to Arts & Letters",
+        "Pennsylvania Standards", "CC.1.4.4.L", "Demonstrate a command of", "standard English.",
+        "© 2025 Great Minds PBC | greatminds.org", "Aligned Components of Arts & Letters",
+        "Level 4, Module 3, Lessons 8, 10, 12,", "38, 39", "", "14", "",
+        "4| Pennsylvania Core Standards English Language Arts Correlation to Arts & Letters",
+        "CC.1.4.4.N", "Aligned Components of Arts & Letters", "Level 4, Module 2, Lessons 10, 13",
+        "Orient the reader by establishing a situation.", "•", "A bullet that is not the standard.",
+        "Level 4, Module 2, Lessons 99"])
+    g = parse_guide(guide_txt)
+    check("guide: page number 14 is not read as a lesson",
+          g["codes"][0]["modules"] == {"3": [8, 10, 12, 38, 39]})
+    check("guide: text after the lesson list is the standard; bullets are not",
+          g["codes"][1]["text"] == "Orient the reader by establishing a situation."
+          and g["codes"][1]["modules"] == {"2": [10, 13]})
+    check("guide: codes by lesson", codes_by_lesson(g, 2) == {
+        10: [("CC.1.4.4.N", "Orient the reader by establishing a situation.")],
+        13: [("CC.1.4.4.N", "Orient the reader by establishing a situation.")]})
+
+    # book: contents, openers, running heads, Launch/Land, descriptor pages
+    def head(n, arc="Arc A"):
+        return "4 | Module 2 | %s | Lesson %d" % (arc, n)
+    toc = "\n".join(["Arc A | Gifts", "L1 | Opening Bookend .... 3", "L2 | Wonder .... 6",
+                     "Module Finale", "L3 | Know .... 9", "Achievement Descriptors  12"])
+    pages = ["cover", toc,
+             "Lesson 1\nEssential Question | Q?\nOVERVIEW\nAgenda\nLAUNCH\nLAN D",
+             head(1) + "\nLAUNCH 2 minutes\nRead (10 minutes)", head(1) + "\nLAND 5 minutes",
+             "Lesson 2\nEssential Question | Q?\nOVERVIEW", head(2) + "\nLAUNCH 2 minutes\nLAND 5 minutes",
+             head(2) + "\nACHIEVEMENT DESCRIPTORS\nMM\nMake Meaning",
+             "Lesson 3\nEssential Question | Q?", head(3, "Module Finale") + "\nLAUNCH 2 minutes",
+             head(3, "Module Finale") + "\nLAND 5 minutes\nSee Learn book, p. 75.",
+             head(3, "Module Finale") + "\nCP\nCompose\nCP.1.4"]
+    b = split_book(pages, "Level 4 Module 2 Teach")
+    Ls = b["lessons"]
+    check("book: three lessons, printed pages from the contents",
+          [(L["n"], L["printed"]) for L in Ls] == [(1, (3, 5)), (2, (6, 8)), (3, (9, 11))])
+    check("book: plan runs Launch head (not the agenda) to the end of Land",
+          [L["plan"] for L in Ls] == [(4, 5), (7, 7), (10, 11)])
+    check("book: arcs and Finale titles",
+          b["arcs"] == ["Arc A", "Module Finale"] and Ls[2]["title"] == "Module Finale, Know")
+    try:
+        split_book(pages[:5] + pages[8:], "Level 4 Module 2 Teach")
+        check("book: a missing lesson holds", False)
+    except Hold:
+        check("book: a missing lesson holds", True)
+    try:
+        split_book(pages, "Some Other Book")
+        check("book: a non-Teach-Book holds", False)
+    except Hold:
+        check("book: a non-Teach-Book holds", True)
+    src = lesson_text(pages, b, Ls[2])
+    check("book: descriptor pages are left out of the model's text", "CP.1.4" not in src)
+
+    # checks
+    L = Ls[0]
+    src1 = "Students read “Gifts from the Gods”.\nRead (10 minutes)\nLAUNCH 2 minutes\nLearn book, p. 75"
+    good = {"i_can": ["I can read a myth."], "why_it_matters": "x" * 50,
+            "student_considerations": "y" * 160,
+            "plan": "Launch (2 min): read. Read (10 min): students read “Gifts from the Gods”. " + "z" * 300,
+            "success_criteria": ["Students will read.", "Students will write."],
+            "next_steps": "w" * 50, "standards_note": ""}
+    check("review: a good draft passes", check_review(good, L, [], src1) == [])
+    bad = dict(good, plan=good["plan"].replace("(10 min)", "(15 min)") + " See “Hugo nearly gets hit by a train” on p. 40. **Bold**",
+               i_can=["Read a myth."], standards_note="Covers CC.1.4.4.M.")
+    f = check_review(bad, L, [("CC.1.4.4.N", "t")], src1)
+    for want in ("15 minutes", "quoted words", "page 40", "markdown", "I can", "CC.1.4.4.M"):
+        check("review: catches %s" % want, any(want in x for x in f))
+    check("review: a cited Learn book page is allowed",
+          check_review(dict(good, next_steps=good["next_steps"] + " (Learn book, p. 75)"), L, [], src1) == [])
+    q = {"tag": "vocab", "stem": "Endure means:", "correct": "to last", "wrong": ["to end", "to eat", "to run"]}
+    m = {"focus": "f", "questions": [q, dict(q, stem="A?"), dict(q, stem="B?")]}
+    check("questions: a good set passes", check_mcq(m, L, src1) == [])
+    m2 = {"focus": "f", "questions": [q, dict(q, wrong=["to last", "x", "y"]),
+                                       dict(q, correct="a very long answer that is clearly the right one here")]}
+    f = check_mcq(m2, L, src1)
+    check("questions: duplicate option and length giveaway caught",
+          any("four different" in x for x in f) and any("by length" in x for x in f))
+
+    # one lesson: local fails, the repair passes; with no cloud, a second failure holds
+    orig = dict(local_draft=globals()["local_draft"], claim_check=globals()["claim_check"])
+    calls = []
+    try:
+        globals()["claim_check"] = lambda text, src, cfg: []
+        drafts = [dict(good, i_can=["Read."]), good]
+        globals()["local_draft"] = lambda user, schema, cfg, timeout=0: (calls.append(user), drafts.pop(0))[1]
+        got = build_lesson("lessons", b, L, [], src1, DEFAULTS, {"no_cloud": True})
+        check("lesson: repair stage fixes a failed draft and names the failure",
+              got["stage"] == "local-repair" and "I can" in calls[1])
+        drafts[:] = [dict(good, i_can=["Read."]), dict(good, i_can=["Read."])]
+        try:
+            build_lesson("lessons", b, L, [], src1, DEFAULTS, {"no_cloud": True})
+            check("lesson: holds when every stage fails", False)
+        except Hold as e:
+            check("lesson: holds when every stage fails", "Lesson 1" in str(e) and e.record["tries"])
+    finally:
+        globals().update(orig)
+
+    # assembly: the key points at the intended answers, no letter more than twice
+    drafts = {1: {"focus": "f", "questions": [dict(q, correct="to last %d" % i) for i in range(4)]}}
+    body = assemble("checks", "Arc A", [L], drafts, {}, 2, "Alyssa", "CUMULUS", "seed", True)
+    key = re.search(r"(?m)^Lesson 1: (.+)$", body).group(1)
+    check("assembly: key verified and letters spread",
+          max(collections.Counter(k.split("-")[1] for k in key.split(", ")).values()) <= 2)
+    rb = assemble("lessons", "Arc A", [L], {1: good}, {}, 2, "Alyssa", "CUMULUS", "s", True)
+    check("assembly: six labels in order, no codes line says none assigned",
+          all(lab in rb for lab in LABELS) and "None assigned" in rb
+          and rb.index(LABELS[0]) < rb.index(LABELS[5]) and FIT_CHECK in rb)
+
+    # request detection and the host guard
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "g.json").write_text(json.dumps({"level": 4}))
+        (td / "c.json").write_text(json.dumps({"host": "box1"}))
+        att = [{"name": "AL_L4_M2_Module2TeachBook.pdf", "type": "application/pdf",
+                "title": "Level 4 Module 2 Teach"}]
+        sup = lambda subj, own, a=att, host="box1": supported(subj, own, a, td / "g.json", td / "c.json", host)
+        check("detect: her lesson-plans email",
+              (sup("Arts and Letters Module 2 Lesson Plans", "For each lesson...") or {}).get("kinds") == ["lessons"])
+        check("detect: her checks email", (sup("Arts and Letters Grade 4 Module 2 Checks for Understanding",
+                                                "3-4 multiple choice questions with an answer key") or {}).get("kinds") == ["checks"])
+        check("detect: a corrected file on the reply thread uses the thread subject",
+              (sup("Re: Arts and Letters Module 2 Lesson Plans", "Here is module 2.") or {}).get("module") == 2)
+        check("detect: another box does not start jobs", sup("Lesson Plans", "x", host="other") is None)
+        check("detect: an unknown deliverable stays for a session", sup("Module 2", "a rubric please") is None)
+        check("detect: a Level 5 book stays for a session", sup("Lesson Plans", "x", [dict(att[0], title="Level 5 Module 1 Teach")]) is None)
+
+    # start_job and run: identity, cap, the waiting thread, shadow and live delivery, holds
+    import intake_lifecycle
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "config").mkdir()
+        (root / "config/lesson_build.json").write_text(json.dumps({"host": "x", "clients": {"alyssa": {"auto_send": False}}}))
+        (root / "config/intake_senders.json").write_text(json.dumps({"alyssa": {"emails": ["client@example.com"], "projects": ["pedagogy"]}}))
+        waiting = (None, "client@example.com", "Arts and Letters Grade 4 Module 2 Checks for Understanding",
+                   "3-4 multiple choice questions per lesson", "<m-checks>")
+        intake_lifecycle.capture(root, waiting)
+        intake_lifecycle.update(root, waiting, "waiting_on_client", "client", "asked for file", {"client": "alyssa"})
+        launched = []
+        found = {"name": "b.pdf", "level": 4, "module": 2, "kinds": ["lessons"]}
+        now = datetime(2026, 11, 13, 23, 20, 0)
+        rid = start_job("alyssa", "client@example.com", "<m-reply>", "Re: Arts and Letters Module 2 Lesson Plans",
+                        found, root, popen=lambda *a, **k: launched.append(a[0]), now=now)
+        meta = json.loads((root / REQUESTS_REL / (rid + ".json")).read_text())
+        check("start: the waiting checks request joins the job",
+              [t["kinds"] for t in meta["threads"]] == [["lessons"], ["checks"]])
+        check("start: launched through job_runner with the run id",
+              launched and launched[0][2:6] == ["job_runner.py", rid, "lesson_build.py", "run"])
+        again = start_job("alyssa", "client@example.com", "<m-reply>", "x", found, root,
+                          popen=lambda *a, **k: launched.append(1), now=now)
+        check("start: the same message never starts a second job", again == rid and len(launched) == 1)
+        start_job("alyssa", "client@example.com", "<m-2>", "x", found, root, popen=lambda *a, **k: None,
+                  now=datetime(2026, 11, 13, 23, 21, 0))
+        try:
+            start_job("alyssa", "client@example.com", "<m-3>", "x", found, root, popen=lambda *a, **k: None,
+                      now=datetime(2026, 11, 13, 23, 22, 0))
+            check("start: daily cap", False)
+        except DailyCap:
+            check("start: daily cap", True)
+        reply = (None, "client@example.com", "Re: Arts and Letters Module 2 Lesson Plans", "", "<m-reply>")
+        intake_lifecycle.capture(root, reply)
+        orig_build = globals()["build_book"]
+        sent, told = [], []
+
+        def fake_build(pdf, kinds, out_dir, cfg, ctx, name, box, other_thread, on_arc, **kw):
+            for arc in ("Arc A", "Arc B"):
+                ready = {k: (out_dir / ("%s-%s.txt" % (arc, k)), "body %s %s" % (arc, k)) for k in kinds}
+                on_arc(arc, [{"n": 1}, {"n": 2}], ready)
+                if ctx.get("hold_after") == arc:
+                    raise Hold("Lesson 9 questions failed its checks: test")
+            return {"stats": {"ok": 1}}
+        try:
+            globals()["build_book"] = fake_build
+            rd = root / "logs/lesson_builds" / rid
+            rd.mkdir(parents=True)
+            (rd / "book.pdf").write_bytes(b"%PDF")
+            creds = {"outlook_email": "cumulus@example.com"}
+            fake_send = lambda *a, **k: sent.append(a[3])
+            rc = run(rid, root, send=fake_send, creds=creds, notify=told.append, wait=0)
+            def row(r):
+                with intake_lifecycle.connect(root) as db:
+                    return db.execute("SELECT state FROM requests WHERE id=?",
+                                      (intake_lifecycle.identity(r[1], r[4]),)).fetchone()[0]
+            check("run (shadow): builds, sends nothing, both requests ready for review",
+                  rc == 0 and not sent and row(reply) == "ready_for_send" and row(waiting) == "ready_for_send"
+                  and told)
+            meta["auto_send"] = True
+            (root / REQUESTS_REL / (rid + ".json")).write_text(json.dumps(meta))
+            verified = lambda pd, rows, rcp, cr: list(rows)
+            rc = run(rid, root, send=fake_send, creds=creds, notify=told.append, verify=verified, wait=0)
+            check("run (live): one email per arc and deliverable, each on its own thread",
+                  rc == 0 and sent == [
+                      "Re: Arts and Letters Module 2 Lesson Plans — Arc A (Lessons 1-2)",
+                      "Re: Arts and Letters Grade 4 Module 2 Checks for Understanding — Arc A (Lessons 1-2)",
+                      "Re: Arts and Letters Module 2 Lesson Plans — Arc B (Lessons 1-2)",
+                      "Re: Arts and Letters Grade 4 Module 2 Checks for Understanding — Arc B (Lessons 1-2)"])
+            check("run (live): Sent Mail proof closes both requests",
+                  row(reply) == "sent_verified" and row(waiting) == "sent_verified")
+            n = len(sent)
+            run(rid, root, send=fake_send, creds=creds, notify=told.append, verify=verified, wait=0)
+            check("run (live): a rerun never sends twice and stays verified",
+                  len(sent) == n and row(reply) == "sent_verified")
+            rid2 = "lb-alyssa-20261113-232100"
+            (root / "logs/lesson_builds" / rid2).mkdir(parents=True)
+            (root / "logs/lesson_builds" / rid2 / "book.pdf").write_bytes(b"%PDF")
+            m2 = json.loads((root / REQUESTS_REL / (rid2 + ".json")).read_text())
+            m2["auto_send"] = True
+            (root / REQUESTS_REL / (rid2 + ".json")).write_text(json.dumps(m2))
+            globals()["build_book"] = lambda *a, **k: fake_build(*a[:4], dict(a[4], hold_after="Arc A"), **k)
+            told.clear()
+            rc = run(rid2, root, send=fake_send, creds=creds, notify=told.append, verify=verified, wait=0)
+            st = json.loads((root / "logs/lesson_builds" / rid2 / "state.json").read_text())
+            check("run: a hold stops later arcs, keeps sent ones, and tells Buddy which lesson",
+                  rc == 3 and st["status"] == "held" and len(st["sent"]) == 1
+                  and told and "Lesson 9" in told[0])
+        finally:
+            globals()["build_book"] = orig_build
+    return ok[0]
 
 
 if __name__ == "__main__":

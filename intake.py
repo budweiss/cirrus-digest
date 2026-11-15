@@ -50,6 +50,7 @@ from pathlib import Path
 import client_promises
 import dev_loop
 import held_label
+import lesson_build
 import list_delivery
 import mailer
 import task_solver
@@ -1411,7 +1412,21 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     ask_subject = "" if task_solver.is_reply_subject(subject) else subject
                     same_list = rec.get("same_list")
                     if rec.get("document_build"):
-                        pass  # S621: built from the attached file by a session, not the list job
+                        # S629: lesson plans or checks from an attached Teach
+                        # Book are built by the lesson job; anything else it
+                        # cannot build stays for a session (S621).
+                        found = (lesson_build.supported(subject, own, ATTACHMENT_INFO.get(mid, []))
+                                 if rec["status"] != "refused" else None)
+                        if found:
+                            try:
+                                rec["lesson_build_run"] = lesson_build.start_job(
+                                    entry["name"], from_addr, mid, subject, found)
+                                log(f"  → lesson build {rec['lesson_build_run']} started "
+                                    f"({', '.join(found['kinds'])}, Module {found['module']})")
+                            except lesson_build.DailyCap as e:
+                                log(f"  → lesson build NOT started ({e}); needs a session")
+                            except Exception as e:
+                                log(f"  ⚠️ lesson build did not start ({e}); needs a session")
                     elif same_list or list_delivery.wants_contact_list(ask_subject, own):
                         try:
                             rec["contact_list_run"] = list_delivery.start_job(
@@ -1556,6 +1571,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 flag = (f"📎 Asked the client for the right file: the email asks for "
                         f"Module {mm.get('asked')}, the attachment is Module "
                         f"{', '.join(map(str, mm.get('attached', [])))}")
+            elif r.get("kind") == "deliverable" and r.get("lesson_build_run"):
+                flag = (f"📄 BUILD — lesson job {r['lesson_build_run']} started; each arc is "
+                        f"checked before it goes, and a held lesson is reported to you")
             elif r.get("kind") == "deliverable" and r.get("document_build"):
                 flag = (f"📄 BUILD request ({r['document_build']}) — needs a session, "
                         f"ticket {r.get('ticket_id') or '⚠️ NOT created'}")

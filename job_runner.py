@@ -61,6 +61,7 @@ ALLOWED_SCRIPTS = {
     "hoa_daily_research.py",
     "entity_kb.py",
     "contact_list.py",   # S264: unattended contact-list research (S592: intake runs go to the client)
+    "lesson_build.py",   # S629: per-lesson curriculum work from a client's Teach Book
 }
 
 _ID_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
