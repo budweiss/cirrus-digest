@@ -1,0 +1,51 @@
+{
+ "module": 2,
+ "lesson": 37,
+ "note": "Approved format (Alyssa, Module 2, sent 2026-11-13). Excluded from Module 2 qualification samples.",
+ "review": "LESSON 37 — Module Finale, Know (pp. 384-391)\n\n1. PA Core Standards\n\n- CC.1.3.4.A — Determine a theme of a text from details in the text; summarize the text.\n- CC.1.3.4.B — Cite relevant details from text to support what the text says explicitly and make inferences.\n- CC.1.3.4.I — Determine or clarify the meaning of unknown and multiple-meaning words and phrases based on grade-level reading and content, choosing flexibly from a range of strategies and tools.\n- CC.1.3.4.K — Read and comprehend literary fiction on grade level, reading independently and proficiently.\n- CC.1.4.4.M — Write narratives to develop real or imagined experiences or events.\n- CC.1.4.4.N — Orient the reader by establishing a situation and introducing a narrator and/or characters.\n- CC.1.4.4.O — Use dialogue and descriptions to develop experiences and events or show the responses of characters to situations; use concrete words and phrases and sensory details to convey experiences and events precisely.\n- CC.1.4.4.P — Organize an event sequence that unfolds naturally, using a variety of transitional words and phrases to manage the sequence of events; provide a conclusion that follows from the narrated experiences and events.\n- CC.1.4.4.Q — Choose words and phrases to convey ideas precisely.\n- CC.1.4.4.R — Demonstrate a grade-appropriate command of the conventions of standard English grammar, usage, capitalization, punctuation, and spelling.\n- CC.1.4.4.X — Write routinely over extended time frames (time for research, reflection, and revision) and shorter time frames (a single sitting or a day or two) for a range of discipline-specific tasks, purposes, and audiences.\n- CC.1.5.4.A — Engage effectively in a range of collaborative discussions on grade-level topics and texts, building on others’ ideas and expressing their own clearly.\n- CC.1.5.4.D — Report on a topic or text, tell a story, or recount an experience in an organized manner, using appropriate facts and relevant, descriptive details to support main ideas or themes; speaking clearly with adequate volume, appropriate pacing, and clear pronunciation.\n- CC.1.5.4.E — Differentiate between contexts that require formal English versus informal situations.\n\nCC.1.5.4.A (collaborative discussion) carries the Socratic seminar, and the narrative writing codes (CC.1.4.4.M-R) cover finishing the End-of-Module Task draft.\n\n2. Learning Goals / I can statements\n\n- I can apply what I know about what makes a story endure.\n- I can draft a narrative using a planner and checklist for the End-of-Module Task.\n\nWhy it matters: The finale brings the module back to its first word, endure. Students build criteria for a story that lasts from the myths, then argue in a Socratic seminar whether The Invention of Hugo Cabret is one.\n\n3. Student considerations\n\nSmall groups write \"Five Requirements for a Story to Endure,\" and students who need support can use the excerpts from Understanding Greek Myths and the What Are Myths? list from Lesson 2. The Socratic seminar uses all three of the module's speaking and listening goals (ask questions to deepen understanding; review and build on others' ideas; elaborate on evidence); have students annotate the Talking Tool frames they plan to use, and use the Speaking and Listening Goal Tracker to focus on students who have not yet met the goals. Writing a position before the seminar gives quieter students something to say. Students arrive at different stages of the End-of-Module Task draft, so help those who are behind decide which remaining element to write first.\n\n4. Learning Progress / Instructional Plan (pp. 386-390)\n\nLaunch (2 min): explain the finale and choral-read the Essential Question. Learn (53 min): Read (15 min), revisit Gifts from the Gods and the endure Knowledge Card; groups create Five Requirements for a Story to Endure (for example, it entertains, teaches life lessons, explains how things came to be, has relatable characters and problems, stays relevant); students write an evidence-based answer to \"Is The Invention of Hugo Cabret an enduring story?\" Respond (20 min), review the three speaking and listening goals and the Talking Tool; Socratic seminar on the question, with extension questions (Why would one entertaining story endure and not another? Can we predict which stories will endure?); learning task: add to or revise the journal response based on the discussion. Write (18 min), partners tell the beginning, middle and end of their narratives; students mark the Checklist for the End-of-Module Task (Learn book p. 75) for what is already in the draft; learning task: complete the draft by adding the remaining elements from the planner and checklist; journal: one part they want people to notice and one part that was hard to write. Land (5 min): Synthesize Learning (what students learned from discussing which stories endure). Rigor comes from building criteria and applying them to a new text, and from revising one's own thinking after hearing others.\n\n5. Success Criteria / Evidence of learning\n\n- Students will write and support a position on whether The Invention of Hugo Cabret is an enduring story, using the class criteria.\n- Students will contribute to the Socratic seminar using at least one of the module's speaking and listening goals.\n- Students will revise their written response based on the discussion.\n- Students will complete a full End-of-Module Task draft that includes every planner and checklist element.\n\n6. Next steps\n\nLesson 38 uses the checklist for peer feedback and has students record a fluent audio reading of their narrative. Socratic seminars return at the end of every module this year, so note who needs more support with the speaking and listening goals before Module 3.",
+ "mcq": {
+  "focus": "what makes a story endure, the Socratic seminar, and finishing the End-of-Module Task draft",
+  "questions": [
+   {
+    "tag": "vocab",
+    "stem": "When a story endures, it:",
+    "correct": "continues to exist and be shared for a long time",
+    "wrong": [
+     "is forgotten right away",
+     "is read only once",
+     "has no ending"
+    ]
+   },
+   {
+    "tag": "target",
+    "stem": "Which is a reason a story might endure?",
+    "correct": "It teaches life lessons that still matter to people.",
+    "wrong": [
+     "It is very hard to understand.",
+     "It has no characters.",
+     "It was written very quickly."
+    ]
+   },
+   {
+    "tag": "target",
+    "stem": "Which is a reason The Invention of Hugo Cabret might be an enduring story?",
+    "correct": "It entertains readers and teaches that people can find their purpose.",
+    "wrong": [
+     "It is the shortest book ever written.",
+     "It has no pictures.",
+     "It is only about trains."
+    ]
+   },
+   {
+    "tag": "target",
+    "stem": "In a Socratic seminar, a good speaker:",
+    "correct": "builds on others' ideas and explains the evidence for their own",
+    "wrong": [
+     "talks only to the teacher",
+     "stays silent the whole time",
+     "changes the topic often"
+    ]
+   }
+  ]
+ }
+}

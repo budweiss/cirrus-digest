@@ -124,6 +124,7 @@
     "halftime:catalogue:variety": "research",
     "halftime:catalogue:for_hire_music": "research",
     "halftime:catalogue:program": "research",
-    "alopecia-agent:brainstorm": "research_ideas"
+    "alopecia-agent:brainstorm": "research_ideas",
+    "pedagogy-lesson-build": "research"
   }
 }
