@@ -464,7 +464,8 @@ def check_review(d: dict, L: dict, codes: list, src: str) -> list:
     if not all(s.strip().startswith("Students will ") for s in d.get("success_criteria", [])):
         f.append('every success criterion must start "Students will"')
     text = review_text_fields(d)
-    if re.search(r"\*\*|__|`|^\s*#|^\s*[-*•]\s", text, re.M):
+    # "___" is a sentence-frame blank (Module 2 Lesson 27), not bold markup.
+    if re.search(r"\*\*|(?<!_)__(?=[A-Za-z])|`|^\s*#|^\s*[-*•]\s", text, re.M):
         f.append("markdown or bullet characters in the text")
     named = set(_CODE_REF.findall(text))
     extra = named - {c for c, _ in codes}
@@ -1303,6 +1304,9 @@ def selftest() -> bool:
     f = check_review(bad, L, [("CC.1.4.4.N", "t")], src1)
     for want in ("15 minutes", "quoted words", "page 40", "markdown", "I can", "CC.1.4.4.M"):
         check("review: catches %s" % want, any(want in x for x in f))
+    check("review: a sentence-frame blank is not markdown",
+          check_review(dict(good, student_considerations=good["student_considerations"]
+                            + " A frame (Hugo ___, but now he ___.) helps."), L, [], src1) == [])
     check("review: a cited Learn book page is allowed",
           check_review(dict(good, next_steps=good["next_steps"] + " (Learn book, p. 75)"), L, [], src1) == [])
     q = {"tag": "vocab", "stem": "Endure means:", "correct": "to last", "wrong": ["to end", "to eat", "to run"]}
