@@ -1118,6 +1118,8 @@ def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, not
             for kind in kinds:
                 path, body = ready[kind]
                 subject = "Re: %s — %s" % (_bare(thread_for[kind]["subject"]), arc_label(arc, lessons))
+                # Send-ready copy: a session can send it as is (cumulus-client-mail).
+                path.with_suffix(".md").write_text("Subject: %s\n\n%s" % (subject, body))
                 if not meta["auto_send"] or delivered(runs, run_id, arc, kind):
                     continue
                 (send or mailer.send)(from_email, creds.get("outlook_password", ""), entry["emails"][0],
@@ -1152,8 +1154,9 @@ def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, not
         save(status="built", stats=res["stats"])
         lifecycle("ready_for_send", "cowork", "shadow build: review the emails, then send",
                   {"artifact": str(run_dir / "mail")})
-        tell("\U0001F4C4 Lesson build %s for %s is built (shadow mode, nothing sent). Review "
-             "logs/lesson_builds/%s/mail and send." % (run_id, meta["client"], run_id))
+        tell("\U0001F4C4 Lesson build %s for %s is built (shadow mode, nothing sent). A session "
+             "reviews logs/lesson_builds/%s/mail/*.md and sends them in arc order." % (
+                 run_id, meta["client"], run_id))
         return 0
     time.sleep(20 if wait else 0)
     try:
@@ -1416,6 +1419,9 @@ def selftest() -> bool:
             check("run (shadow): builds, sends nothing, both requests ready for review",
                   rc == 0 and not sent and row(reply) == "ready_for_send" and row(waiting) == "ready_for_send"
                   and told)
+            check("run (shadow): a send-ready copy carries the thread subject",
+                  (rd / "Arc A-checks.md").read_text().startswith(
+                      "Subject: Re: Arts and Letters Grade 4 Module 2 Checks"))
             meta["auto_send"] = True
             (root / REQUESTS_REL / (rid + ".json")).write_text(json.dumps(meta))
             verified = lambda pd, rows, rcp, cr: list(rows)
