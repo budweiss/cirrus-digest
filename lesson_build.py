@@ -440,7 +440,8 @@ def _pages_ok(text: str, L: dict, src: str) -> list:
             n = int(g)
             if L["printed"][0] <= n <= L["printed"][1]:
                 continue
-            if re.search(r"\bpp?\.\s*(?:\d+\s*[-–]\s*)?%d\b" % n, src):
+            # The book cites "p. 75", "page 53" and "pages 54–57".
+            if re.search(r"\b(?:pages?|pp?\.)\s*(?:\d+\s*(?:[-–,]|and)\s*)*%d\b" % n, src):
                 continue
             bad.append("page %d is outside the lesson and not a page the pages cite" % n)
     return bad
@@ -507,10 +508,10 @@ CLAIM_SYSTEM = ("You check teaching material against the Teach Book pages it was
 CLAIM_TASK = """Below are a lesson's Teach Book pages and a draft written from them for the teacher.
 
 List each statement in the draft that states a specific fact the pages do not support, with its kind:
-- "contradicted": the pages say something different (a wrong event, character, definition, timing, page or activity).
-- "invented": a specific detail that appears nowhere in the pages, such as a story event, a character's action, a definition, an activity, a material, a quotation or a page number.
+- "contradicted": the pages say something different (a wrong event, character, definition or activity). Give in "evidence" the exact words from the pages that show what they really say.
+- "invented": a specific detail that appears nowhere in the pages, such as a story event, a character's action, a definition, an activity or a material. Leave "evidence" empty.
 
-Do not list interpretation or judgment, which the teacher asked for: why the lesson matters, where its rigor comes from, likely difficulties for students, suggestions for supporting students, or how the lesson's parts connect. Do not check PA Core codes; they come from a separate alignment guide.
+Do not list interpretation or judgment, which the teacher asked for: why the lesson matters, where its rigor comes from, likely difficulties for students, suggestions for supporting students, or how the lesson's parts connect. Do not check minutes, page numbers or PA Core codes; those are checked separately.
 If every specific fact is supported, return an empty list.
 
 TEACH BOOK PAGES:
@@ -520,8 +521,21 @@ DRAFT:
 {draft}"""
 CLAIM_SCHEMA = {"type": "object", "properties": {"unsupported": {"type": "array", "items": {
     "type": "object", "properties": {"statement": {"type": "string"}, "reason": {"type": "string"},
-                                     "kind": {"type": "string", "enum": ["contradicted", "invented"]}},
-    "required": ["statement", "reason", "kind"]}}}, "required": ["unsupported"]}
+                                     "kind": {"type": "string", "enum": ["contradicted", "invented"]},
+                                     "evidence": {"type": "string"}},
+    "required": ["statement", "reason", "kind", "evidence"]}}}, "required": ["unsupported"]}
+
+SUPPORT_TASK = """Here are a lesson's Teach Book pages and one statement from a teacher's summary of the lesson.
+
+Is the statement supported by the pages? A fair paraphrase counts as supported. If it is supported, give in "quote" the exact words from the pages that support it (one passage, copied exactly). If it is not supported, leave "quote" empty.
+
+TEACH BOOK PAGES:
+{pages}
+
+STATEMENT:
+{statement}"""
+SUPPORT_SCHEMA = {"type": "object", "properties": {"supported": {"type": "boolean"}, "quote": {"type": "string"}},
+                  "required": ["supported", "quote"]}
 
 ANSWER_SYSTEM = "You answer grade 4 multiple-choice questions using only the Teach Book pages given."
 ANSWER_TASK = """Answer each question using only these Teach Book pages. For each, give the letter of the best answer, and list any OTHER letter that would also be a correct answer according to the pages (usually none).
@@ -540,9 +554,28 @@ ANSWER_SCHEMA = {"type": "object", "properties": {"answers": {"type": "array", "
 
 
 def claim_check(draft_text: str, src: str, cfg: dict) -> list:
+    """The checker's flags count only when they hold up: a "contradicted" flag
+    must quote the pages (S629: it once called six correct timings wrong), and
+    an "invented" flag gets a second look asking for supporting words."""
     r = local_check(CLAIM_SYSTEM, CLAIM_TASK.format(pages=src, draft=draft_text), CLAIM_SCHEMA, cfg)
-    return ["%s: %s (%s)" % (u["kind"], u["statement"][:160], u["reason"][:120])
-            for u in r.get("unsupported", [])]
+    s, out = norm(src), []
+    for u in r.get("unsupported", [])[:8]:
+        if u["kind"] == "contradicted":
+            ev = norm(u.get("evidence", ""))
+            if len(ev.split()) < 3 or ev not in s:
+                continue    # no real passage behind it
+        # Second look for every flag: S629 Lesson 5, the checker called two
+        # correct statements "contradicted" and quoted passages that support them.
+        try:
+            back = local_check(CLAIM_SYSTEM, SUPPORT_TASK.format(pages=src, statement=u["statement"]),
+                               SUPPORT_SCHEMA, cfg, max_tokens=400)
+        except Exception:
+            back = {}
+        q = norm(back.get("quote", ""))
+        if back.get("supported") and len(q.split()) >= 3 and q in s:
+            continue    # the pages do say it
+        out.append("%s: %s (%s)" % (u["kind"], u["statement"][:160], u["reason"][:120]))
+    return out
 
 
 def blind_answer(d: dict, src: str, cfg: dict, seed: str) -> list:
