@@ -383,7 +383,18 @@ def _post(url: str, body: dict, timeout: int) -> dict:
 def _json(raw: str) -> dict:
     raw = (raw or "").strip()
     m = re.search(r"\{.*\}", raw, re.S)
-    return json.loads(m.group(0) if m else raw)
+    text = m.group(0) if m else raw
+    for _ in range(3):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            # S632: cloud replies sometimes close a string with a stray ] or }
+            # ("plan": "...details."]), about 1 in 5 on Module 1 Lesson 5.
+            # Drop that one closer; any other damage still fails.
+            if not (e.msg == "Expecting ',' delimiter" and text[e.pos:e.pos + 1] in ("]", "}")):
+                raise
+            text = text[:e.pos] + text[e.pos + 1:]
+    return json.loads(text)
 
 
 def local_draft(user: str, schema: dict, cfg: dict, timeout: int = 1800) -> dict:
@@ -707,7 +718,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
         except Hold:
             raise
         except Exception as e:      # an outage or bad JSON is a failed try, not a crash
-            d, failures = prev, ["%s did not complete (%s)" % (stage, type(e).__name__)]
+            d, failures = prev, ["%s did not complete (%s: %s)" % (stage, type(e).__name__, str(e)[:120])]
         tries.append({"stage": stage, "seconds": round(time.time() - t0, 1), "failures": failures})
         if d is not None and not failures:
             return {"draft": d, "stage": stage, "tries": tries}
@@ -1482,6 +1493,19 @@ def selftest() -> bool:
                   and told and "Lesson 9" in told[0])
         finally:
             globals()["build_book"] = orig_build
+
+    # cloud JSON: a string closed with a stray ] is repaired (S632, Module 1 Lesson 5)
+    bad = '{"plan": "Launch (2 minutes). Land: rather than recalling details."], "next_steps": "x"}'
+    check("cloud JSON: a stray ] after a string is dropped",
+          _json("Here it is:\n" + bad) == {"plan": "Launch (2 minutes). Land: rather than "
+                                           "recalling details.", "next_steps": "x"})
+    check("cloud JSON: a quoted ] inside a string is kept",
+          _json('{"a": "x]", "b": ["y"]}') == {"a": "x]", "b": ["y"]})
+    try:
+        _json('{"plan": "a" "next_steps": "b"}')
+        check("cloud JSON: other damage still fails", False)
+    except ValueError:
+        check("cloud JSON: other damage still fails", True)
     return ok[0]
 
 
