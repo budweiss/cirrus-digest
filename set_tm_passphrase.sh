@@ -27,7 +27,7 @@
 set -uo pipefail
 
 PASSFILE="/etc/cirrus-tm-passphrase"
-VOL="${1:-disk5s2}"
+VOL="${1:-B98DC866-AC87-4988-A3AC-12F7813EA3BF}"
 
 if [ "$(id -u)" != "0" ]; then
     echo "Run with sudo:  sudo bash $0 ${VOL}"

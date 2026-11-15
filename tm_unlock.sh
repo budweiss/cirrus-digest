@@ -24,7 +24,8 @@
 # nothing. Runs at boot and every 15 min, so a drive attached later still unlocks.
 set -uo pipefail
 
-VOLUME="disk5s2"
+# S626: BSD disk numbers change after reboot; the APFS volume UUID is stable.
+VOLUME="B98DC866-AC87-4988-A3AC-12F7813EA3BF"
 CRYPTO_USER="B98DC866-AC87-4988-A3AC-12F7813EA3BF"
 VOLUME_NAME="OWC Envoy Pro FX"
 PASSFILE="/etc/cirrus-tm-passphrase"
