@@ -356,6 +356,7 @@ MCQ_TASK = """Teach Book: Level {level}, Module {module}. Lesson {n} ({title}).
 
 Write 3 or 4 multiple-choice questions a grade 4 student can answer after this lesson, drawn from its learning targets, vocabulary or word study. Tag each "target", "vocab" or "word study".
 - Ask about what students learn, read or do in the lesson (ideas, events, words, skills), not about the Teach Book's own wording or instructions to the teacher.
+- Do not ask about the lesson itself: its segments (Launch, Land), page numbers, materials, resources, or which activity comes when. Ask what a text, a work of art or a word means, or why something happens.
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
@@ -507,6 +508,12 @@ def check_review(d: dict, L: dict, codes: list, src: str) -> list:
     return f + _quotes_ok(text, s) + _pages_ok(text, L, src)
 
 
+# S632 review: some questions tested the lesson's logistics ("Which pages are
+# suggested...", "During the LAND portion...", "What resource do students use...").
+_LOGISTICS = re.compile(r"\b(launch|land|learn book|which pages?|what pages?|p\.\s*\d|which activity|"
+                        r"what resource|what materials?|the teacher|portion of the lesson)\b", re.I)
+
+
 def check_mcq(d: dict, L: dict, src: str) -> list:
     f = []
     qs = d.get("questions") or []
@@ -517,6 +524,9 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
     s = norm(src)
     for i, q in enumerate(qs, 1):
         opts = [q.get("correct", "")] + list(q.get("wrong") or [])
+        if _LOGISTICS.search(q.get("stem", "")):
+            f.append("question %d asks about the lesson's logistics (segments, pages, materials or "
+                     "activities); ask what students learned instead" % i)
         if len(opts) != 4 or len({norm(o) for o in opts}) != 4 or not all(norm(o) for o in opts):
             f.append("question %d: needs four different options" % i)
         if any(re.search(r"\b(all|none) of the above\b", o, re.I) for o in opts):
@@ -1494,6 +1504,19 @@ def selftest() -> bool:
         finally:
             globals()["build_book"] = orig_build
 
+    # questions: lesson logistics fail, content passes (S632 review)
+    check("questions: a logistics stem fails",
+          all(_LOGISTICS.search(x) for x in (
+              "Which pages are suggested for students to review?",
+              "During the LAND portion of the lesson, what are students asked to do?",
+              "What resource do students use to learn the meaning of the word fortune?",
+              "Which activity lets students see how an artist tells a story?")))
+    check("questions: a content stem passes",
+          not any(_LOGISTICS.search(x) for x in (
+              "In the lesson, what does the toy booth represent for Hugo?",
+              "What does the myth Achilles' Heel explain?",
+              "Which detail describes the pose of Winged Victory?",
+              "Why does Pandora open the box, and what lands in the world?")))
     # cloud JSON: a string closed with a stray ] is repaired (S632, Module 1 Lesson 5)
     bad = '{"plan": "Launch (2 minutes). Land: rather than recalling details."], "next_steps": "x"}'
     check("cloud JSON: a stray ] after a string is dropped",
