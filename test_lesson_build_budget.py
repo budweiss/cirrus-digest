@@ -191,12 +191,42 @@ class Budget(unittest.TestCase):
         d = {'focus': 'test', 'questions': [q, q, q]}
         with patch.object(lb, 'blind_answer', return_value=['wrong key']), \
              patch.object(lb, 'claim_check', return_value=['unsupported claim']), \
+             patch.object(lb, 'option_quality', return_value=['answer revealed']), \
              patch.object(lb, 'teaching_quality', return_value=['weak distractors']):
             errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], '', {})
         self.assertTrue(any('logistics' in x for x in errors))
         self.assertIn('wrong key', errors)
         self.assertIn('unsupported claim', errors)
         self.assertIn('weak distractors', errors)
+        self.assertIn('answer revealed', errors)
+
+    def test_option_review_checks_every_choice_without_writer_rationales(self):
+        q = {'stem': 'Question?', 'correct': 'answer', 'wrong': ['a', 'b', 'c'],
+             'distractor_misconceptions': ['PRIVATE-RATIONALE']*3}
+        verdict = {'answer_revealed': False, 'stem_reason': 'context only', 'distractors': [
+            {'option': i, 'plausible': True, 'reason': 'same concept'} for i in (1, 2, 3)]}
+        with patch.object(lb, 'local_check', return_value=verdict) as checker:
+            self.assertFalse(lb.option_quality({'questions': [q]}, {}))
+            self.assertNotIn('PRIVATE-RATIONALE', checker.call_args.args[1])
+            verdict['distractors'][2]['plausible'] = False
+            self.assertTrue(any('weak distractor 3' in x for x in lb.option_quality({'questions': [q]}, {})))
+            verdict['distractors'][2]['option'] = 2
+            self.assertTrue(any('malformed' in x for x in lb.option_quality({'questions': [q]}, {})))
+
+    def test_qualified_failure_can_skip_local_without_resetting_cloud_count(self):
+        q = {'stem': 'Question?', 'correct': 'answer', 'wrong': ['a', 'b', 'c']}
+        draft = {'focus': 'topic', 'questions': [q]*3}
+        with patch.object(lb, 'task_prompt', return_value='source'), \
+             patch.object(lb, 'question_knowledge', return_value={'claims': []}), \
+             patch.object(lb, 'local_draft') as local, \
+             patch.object(lb, 'cloud_draft', return_value=('fixture', draft)), \
+             patch.object(lb, 'lesson_failures', return_value=[]):
+            ctx = {'qualification': True, 'failed_local_mcq_evidence': 'saved false pass',
+                   'cloud_calls': 7, 'creds': {}}
+            result = lb.build_lesson('checks', {}, {'n': 1, 'printed': [1, 2]}, [], '', {}, ctx)
+            local.assert_not_called()
+            self.assertEqual(ctx['cloud_calls'], 8)
+            self.assertEqual(result['tries'][0]['stage'], 'local-skipped-after-verified-failure')
 
     def test_assessment_review_gets_prior_vocabulary_but_never_future_pages(self):
         pages = ['Definitions\nendure: to last for a long time', 'Assessment administration instructions',

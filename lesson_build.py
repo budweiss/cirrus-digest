@@ -389,8 +389,9 @@ MCQ_SCHEMA = {
                 "stem": {"type": "string"},
                 "correct": {"type": "string"},
                 "wrong": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 3},
+                "distractor_misconceptions": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 3},
             },
-            "required": ["tag", "stem", "correct", "wrong"]}},
+            "required": ["tag", "stem", "correct", "wrong", "distractor_misconceptions"]}},
     },
     "required": ["focus", "questions"],
 }
@@ -439,6 +440,7 @@ Write 3 or 4 multiple-choice questions a grade 4 student can answer after this l
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
 - For each wrong option, identify the specific confusion it represents before selecting it: a reversed cause/effect, a neighboring word meaning, a mistaken motivation, a sequence reversal, or a partial reading. Keep every option in the same conceptual category. A random activity or unrelated subject is never a distractor. Wrong options are deliberately false; the source-only rule applies to the correct answer, not to requiring the source to assert a false option.
 - Never put the correct answer or full definition in the question stem. For a word with multiple meanings, give only a short context cue that distinguishes the senses (duration versus coping with difficulty, for example). For a reading skill, all options should be competing explanations of how that same skill works, not unrelated reading behaviors.
+- In distractor_misconceptions, briefly name the specific misconception for each wrong option, in order. Derive each wrong option from that misconception. These notes are for checking and will not appear in the student's questions.
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
 - focus: a short phrase saying what the questions cover.
@@ -842,6 +844,40 @@ def teaching_quality(kind: str, d: dict, src: str, cfg: dict) -> list:
 
 # ── one lesson: local, one local repair, cloud, then hold ────────────────────
 
+OPTION_SCHEMA = {"type": "object", "properties": {
+    "answer_revealed": {"type": "boolean"}, "stem_reason": {"type": "string", "maxLength": 300},
+    "distractors": {"type": "array", "minItems": 3, "maxItems": 3, "items": {
+        "type": "object", "properties": {"option": {"type": "integer", "enum": [1, 2, 3]},
+            "plausible": {"type": "boolean"}, "reason": {"type": "string", "maxLength": 300}},
+        "required": ["option", "plausible", "reason"]}}},
+    "required": ["answer_revealed", "stem_reason", "distractors"]}
+OPTION_TASK = """Review only the design of ONE grade-4 multiple-choice question. Do not check source facts in this task.
+1. Does the stem itself state the meaning/answer being tested? A short context cue is allowed, but repeating the definition is not a knowledge check.
+2. For EACH incorrect option, is it a plausible misunderstanding of the SAME concept as the keyed answer? Name the concrete confusion. Cause/effect reversal, confusing related motivations, opposite duration, partial comprehension, or over-applying a reading strategy can be plausible. Random verbs, unrelated activities, and different school subjects are not. Do not invent a justification to approve a weak option.
+Number the three wrong options 1, 2, 3, in order. Be concise. QUESTION:
+"""
+
+
+def option_quality(d: dict, cfg: dict) -> list:
+    failures = []
+    for i, question in enumerate(d["questions"], 1):
+        # Do not show the drafter's rationales to this independent review.
+        q = {k: question[k] for k in ("stem", "correct", "wrong")}
+        r = local_check("You check whether a question actually measures learning instead of giving away its answer.",
+                        OPTION_TASK + json.dumps(q, ensure_ascii=False), OPTION_SCHEMA, cfg,
+                        max_tokens=1000, timeout=120)
+        options = r.get("distractors")
+        if type(r.get("answer_revealed")) is not bool or not isinstance(r.get("stem_reason"), str) or not isinstance(options, list) or len(options) != 3 or any(
+                not isinstance(o, dict) or type(o.get("option")) is not int or type(o.get("plausible")) is not bool
+                or not isinstance(o.get("reason"), str) or not o["reason"].strip() for o in options) or {o["option"] for o in options} != {1, 2, 3}:
+            failures.append("question %d: option review is incomplete or malformed" % i)
+            continue
+        if r["answer_revealed"]:
+            failures.append("question %d reveals its answer: %s" % (i, r["stem_reason"]))
+        failures.extend("question %d has a weak distractor %d: %s" % (i, o["option"], o["reason"])
+                        for o in options if not o["plausible"])
+    return failures
+
 def load_config(path: Path = CONFIG_PATH) -> dict:
     cfg = json.loads(json.dumps(DEFAULTS))
     try:
@@ -928,6 +964,7 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
         if model_checks:
             f += blind_answer(d, src, cfg, "%s-%d" % (book["module"], L["n"]))
             f += claim_check(mcq_text(d), src, cfg)
+            f += option_quality(d, cfg)
     if model_checks:
         f += teaching_quality(kind, d, src, cfg)
     return f
@@ -945,7 +982,12 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                    "correct answer.\n" + json.dumps(knowledge, ensure_ascii=False))
     schema = REVIEW_SCHEMA if kind == "lessons" else MCQ_SCHEMA
     tries, prev = [], None
-    for stage in ("local", "local-repair", "cloud"):
+    stages = ("local", "local-repair", "cloud")
+    if kind == "checks" and ctx.get("qualification") and ctx.get("failed_local_mcq_evidence") and not ctx.get("no_cloud"):
+        stages = ("cloud",)
+        tries.append({"stage": "local-skipped-after-verified-failure", "failures": [
+            "The local question writer failed prior qualification: " + str(ctx["failed_local_mcq_evidence"])]})
+    for stage in stages:
         t0 = time.time()
         removed = []
         try:
