@@ -39,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 
 import entity_kb
+import hoa_lead_gate
 
 KB_PROJECT = "hoa_leads_bill"
 DEFAULT_CHUNK_SIZE = 5  # ~180 communities / 5 per day ≈ one full cycle every 36 days
@@ -279,9 +280,34 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
              and screened.get(c["url"], [0])[0] < SCREEN_LIMIT]
     batch = fresh[:screen_cap]
     leads = hoa_monitor.council_filter(batch, creds) if batch else []
+    council_kept = len(leads)
+
+    # S635: the screen's judgement is not the last word. It called two state
+    # snow-removal documents (an award notice and a 2014 RFP) an HOA "RFP",
+    # once while admitting the PDF was "garbled binary", and Bill asked about
+    # it as a live bid. Same rules the Monday digest applies (hoa_lead_gate).
+    gated, withheld = [], []
+    for lead in leads:
+        lead["resolved_url"] = hoa_monitor._resolve_url(lead.get("url"))
+        reason = hoa_lead_gate.withhold_reason(
+            lead["resolved_url"], lead.get("community", ""), lead.get("type", ""),
+            lead.get("why", ""), lead.get("doc_text", ""), today)
+        if reason:
+            withheld.append({"community": lead.get("community", ""),
+                             "url": lead["resolved_url"], "reason": reason})
+            continue
+        if hoa_lead_gate.is_solicitation(lead.get("type", ""), lead.get("why", "")):
+            # Open, or it would have been withheld. Say until when, so the
+            # digest can re-check it on Monday and a lapsed one drops out.
+            _status, detail = hoa_lead_gate.solicitation_status(
+                lead["resolved_url"], lead.get("why", "") + " " + lead.get("doc_text", ""), today)
+            lead["why"] = f"{lead.get('why', '').strip().rstrip('.')}. Open solicitation, {detail}."
+        gated.append(lead)
+    leads = gated
 
     result = {"candidates": len(cands), "fresh_candidates": len(fresh),
-               "council_kept": len(leads), "new_entities": [], "updated_entities": [],
+               "council_kept": council_kept, "withheld": withheld,
+               "new_entities": [], "updated_entities": [],
                "resting_articles": sum(1 for c in cands if screened.get(c["url"], [0])[0] >= SCREEN_LIMIT)}
     if not dry_run and batch:
         kept = {l.get("url") for l in leads}
@@ -305,7 +331,7 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
         # daily and filled Bill's Monday digest for weeks. Compare the REAL
         # article URL against what this community already has on record.
         if not is_new:
-            resolved_url = hoa_monitor._resolve_url(lead.get("url"))
+            resolved_url = lead["resolved_url"]
             known = {e.get("source_url") for e in
                      entity_kb.get_events(KB_PROJECT, slug, db_path=db_path)}
             if resolved_url in known:
@@ -324,8 +350,12 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
             # main() does this before composing Bill's email: an opaque
             # vertexaisearch.cloud.google.com redirect link is useless to a
             # human reader and the redirect can expire.
-            resolved_url = hoa_monitor._resolve_url(lead.get("url"))
-            entity_kb.upsert_entity(KB_PROJECT, slug, name, entity_type="hoa", db_path=db_path)
+            resolved_url = lead["resolved_url"]
+            # S635: a word-overlap match must not rename the record it matched.
+            # "State of Delaware (GSS)" matched "Delaware State Housing
+            # Authority" and overwrote its name, filing GSS papers under DSHA.
+            entity_kb.upsert_entity(KB_PROJECT, slug, matches[0]["name"] if matches else name,
+                                    entity_type="hoa", db_path=db_path)
             if is_new:
                 summary = (f"First seen {datetime.now():%Y-%m-%d} via automated search — "
                            f"not previously in our records. {lead.get('why', '')}").strip()

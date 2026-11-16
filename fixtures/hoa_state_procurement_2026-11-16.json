@@ -1,0 +1,44 @@
+{
+  "_about": "S635 sanitized fixture: the State of Delaware (GSS) item in the 2026-11-16 HOA report. URLs, kinds and summaries are copied from the live entity_kb rows; document text is a short paraphrase of the public documents' dates with every name, phone and address removed.",
+  "report_date": "2026-11-16",
+  "kb_entity": {"slug": "delaware-state-housing-authority", "original_name": "Delaware State Housing Authority", "renamed_to": "State of Delaware (GSS)"},
+  "report_signals": [
+    {"signal_kind": "RFP", "summary": "Delaware state snow removal RFP document.",
+     "source_url": "https://bidcondocs.delaware.gov/GSS/GSS_14729SnowRemove_rfp.pdf", "occurred_at": "2026-11-13 08:01:45"},
+    {"signal_kind": "RFP", "summary": "Delaware state snow removal RFP document (garbled binary but clearly a snow removal bid).",
+     "source_url": "https://bidcondocs.delaware.gov/GSS/GSS25270-SNOW_REMOVAL_ANrev.pdf", "occurred_at": "2026-11-13 08:01:45"}
+  ],
+  "earlier_signals": [
+    {"signal_kind": "new-discovery", "summary": "First seen 2026-09-29 via automated search — not previously in our records. PDF is a snow/ice removal specification indicating an active procurement request",
+     "source_url": "https://bidcondocs.delaware.gov/DSHA/DSHA_16-8415-19SnowIceRemoval_SPEC.pdf"},
+    {"signal_kind": "new-discovery", "summary": "First seen 2026-11-06 via automated search — not previously in our records. PDF appears to be a snow removal RFP, indicating an active request",
+     "source_url": "https://bidcondocs.delaware.gov/GSS/GSS_10270SnowRem_rfp.pdf"}
+  ],
+  "screen_candidates": [
+    {"source": "web", "url": "https://bidcondocs.delaware.gov/GSS/GSS_14729SnowRemove_rfp.pdf",
+     "text": "(no snippet retrieved)", "doc_text": ""},
+    {"source": "web", "url": "https://bidcondocs.delaware.gov/GSS/GSS25270-SNOW_REMOVAL_ANrev.pdf",
+     "text": "%PDF-1.6 \u0000\u0001 stream x\u009c��", "doc_text": ""}
+  ],
+  "screen_rows": [
+    {"idx": 0, "lead": true, "type": "RFP", "community": "State of Delaware (GSS)", "why": "Delaware state snow removal RFP document."},
+    {"idx": 1, "lead": true, "type": "RFP", "community": "State of Delaware (GSS)", "why": "Delaware state snow removal RFP document (garbled binary but clearly a snow removal bid)."}
+  ],
+  "document_text": {
+    "award_notice": "NOTICE OF AWARD. Contract GSS25270-SNOW_REMOVE, Snow and Ice Removal. Award date June 23, 2025. Contract term July 1, 2025 through June 30, 2027.",
+    "rfp_2025": "REQUEST FOR PROPOSALS GSS25270-SNOW_REMOVE. Issued March 18, 2025. Proposals due April 22, 2025 at 1:00 PM local time.",
+    "rfp_2014": "REQUEST FOR PROPOSAL GSS14729 Snow Removal. Deadline for receipt of proposals: September 30, 2014."
+  },
+  "controls": {
+    "hoa_complaint": {"community": "Fixture Meadows", "type": "complaint", "url": "https://news.example/fixture-meadows-unplowed",
+                      "why": "Residents of a Kent County, Delaware community report unplowed roads and an unresponsive manager."},
+    "hoa_rfp_open": {"community": "Fixture Landing", "type": "RFP", "url": "https://fixture-landing.example/snow-rfp",
+                     "why": "Delaware HOA is seeking bids for snow removal.",
+                     "doc_text": "Fixture Landing Homeowners Association, Delaware. Request for proposals: snow removal 2026-27 season. Bids due December 1, 2026."},
+    "hoa_rfp_lapsed": {"community": "Fixture Landing", "type": "RFP", "url": "https://fixture-landing.example/snow-rfp-2024",
+                       "why": "Delaware HOA is seeking bids for snow removal.",
+                       "doc_text": "Fixture Landing Homeowners Association. Request for proposals: snow removal. Bids due October 15, 2024."},
+    "hoa_rfp_no_date": {"community": "Fixture Landing", "type": "RFP", "url": "https://fixture-landing.example/snow-rfp-undated",
+                        "why": "Delaware HOA is seeking bids for snow removal.", "doc_text": ""}
+  }
+}

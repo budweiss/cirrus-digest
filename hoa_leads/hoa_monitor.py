@@ -48,6 +48,7 @@ CREDS_PATH = DIGEST_DIR / "config/credentials.json"
 
 sys.path.insert(0, str(DIGEST_DIR))               # cirrus_daily, ensemble, node_info
 import node_info                                   # sign as the running node
+import hoa_lead_gate                               # S635: readable snippets only
 NODE = node_info.node_name()
 try:
     import ensemble                                # 4-LLM council for the lead judgement
@@ -203,15 +204,20 @@ def gather_web():
             if u in seen:
                 continue
             seen.add(u)
-            snippet = ""
+            snippet, doc_text = "", ""
             try:
                 if is_article_url(u):
                     content, _paywalled = fetch_article_content(u)
-                    snippet = (content or "")[:600]
+                    # S635: raw PDF bytes reached the screen as text and came
+                    # back as a "garbled binary" finding in Bill's report.
+                    snippet = hoa_lead_gate.readable_snippet(content)
+                    if not snippet.startswith("(no readable text"):
+                        doc_text = (content or "")[:20000]   # deadline check
             except Exception:
                 pass
             out.append({"source": "web", "url": u,
-                        "text": snippet.replace("\n", " ") or "(no snippet retrieved)"})
+                        "text": snippet.replace("\n", " ") or "(no snippet retrieved)",
+                        "doc_text": doc_text})
             if len(out) >= MAX_CANDIDATES:
                 break
         if len(out) >= MAX_CANDIDATES:

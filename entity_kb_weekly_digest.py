@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import entity_kb
+import hoa_lead_gate
 
 PROJECT_DIR = Path.home() / "projects/cirrus-digest"
 CREDS_PATH = PROJECT_DIR / "config/credentials.json"
@@ -247,7 +248,7 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
     """
     lines = []
     total_events = 0
-    n_field, n_info, n_offstate = 0, 0, 0
+    n_field, n_info, n_offstate, n_notopp = 0, 0, 0, 0
     unclassified = {}
 
     for kb_project in kb_projects:
@@ -307,6 +308,15 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
                                                e.get("summary")):
                         n_offstate += 1
                         continue
+                    # S635: the same rules discovery applies, re-checked on the
+                    # day of the send -- an RFP open on Thursday may have
+                    # closed by Monday.
+                    if hoa_lead_gate.withhold_reason(
+                            e.get("source_url") or "", group["name"],
+                            e.get("signal_kind"), e.get("summary"),
+                            today=datetime.now()):
+                        n_notopp += 1
+                        continue
                     keep.append(e)
                 evs = keep
 
@@ -348,6 +358,9 @@ def compose_digest(kb_projects: list, since: str, db_path: str = None,
             held.append(f"{n_info} informational finding(s)")
         if n_offstate:
             held.append(f"{n_offstate} finding(s) not confirmed as Delaware")
+        if n_notopp:
+            held.append(f"{n_notopp} public-agency bid(s), unreadable document(s) "
+                        f"or solicitation(s) not confirmed open")
         if unclassified:
             held.append(f"{sum(unclassified.values())} of an unrecognised type "
                         f"({', '.join(sorted(unclassified))})")
