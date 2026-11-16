@@ -411,7 +411,7 @@ Write 3 or 4 multiple-choice questions a grade 4 student can answer after this l
 - Ask about what students learn, read or do in the lesson (ideas, events, words, skills), not about the Teach Book's own wording or instructions to the teacher.
 - Do not ask about the lesson itself: its segments (Launch, Land), page numbers, materials, resources, or which activity comes when. Ask what a text, a work of art or a word means, or why something happens.
 - Do not ask what students might do, which class activity they perform, why they revisit an Essential Question, or what an assessment section demonstrates. Even on assessment days, test an idea or skill the student learned, not the assessment instructions.
-- Anchor each correct answer to the pages' Key Ideas or explicit text evidence. A date next to a passage does not date every event mentioned nearby: verify the exact date-to-event relationship. Avoid date-recall questions when they are not the learning target.
+- Anchor each correct answer to the pages' Key Ideas or explicit text evidence. Do not write calendar-date recall questions or put calendar dates in options: these require manual review and are outside this automatic builder's scope. Ask about the meaning, motivation, sequence or skill instead.
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
@@ -599,7 +599,9 @@ def check_review(d: dict, L: dict, codes: list, src: str) -> list:
 # S632 review: some questions tested the lesson's logistics ("Which pages are
 # suggested...", "During the LAND portion...", "What resource do students use...").
 _LOGISTICS = re.compile(r"\b(launch|land|learn book|which pages?|what pages?|p\.\s*\d|which activity|"
-                        r"what resource|what materials?|the teacher|portion of the lesson)\b", re.I)
+                        r"what resource|what materials?|the teacher|portion of the lesson|"
+                        r"activity students|assessment section|part of the assessment|revisit.{0,30}essential question)\b", re.I)
+_CALENDAR_DATE = re.compile(r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\b", re.I)
 
 
 def check_mcq(d: dict, L: dict, src: str) -> list:
@@ -612,6 +614,8 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
     s = norm(src)
     for i, q in enumerate(qs, 1):
         opts = [q.get("correct", "")] + list(q.get("wrong") or [])
+        if _CALENDAR_DATE.search(" ".join([q.get("stem", "")] + opts)):
+            f.append("question %d: calendar-date recall needs manual review; use an idea, motivation or skill instead" % i)
         if _LOGISTICS.search(q.get("stem", "")):
             f.append("question %d asks about the lesson's logistics (segments, pages, materials or "
                      "activities); ask what students learned instead" % i)

@@ -79,5 +79,17 @@ class Budget(unittest.TestCase):
         with patch.object(lb, 'local_check', return_value={'issues': [], 'evidence': ['The poet describes a red wheelbarrow']*3}):
             self.assertEqual(lb.teaching_quality('checks', draft, src, {}), [])
 
+    def test_known_wrong_date_key_and_logistics_are_rejected_without_a_model(self):
+        q = {'tag': 'target', 'stem': 'What is Jack writing about on April 26?',
+             'correct': 'His letter to Walter Dean Myers',
+             'wrong': ['A poem about his dog Sky', 'A story about his school day', 'A report on the weather']}
+        d = {'focus': 'poetry', 'questions': [q, q, q]}
+        errors = lb.check_mcq(d, {'printed': [1, 2]}, '')
+        self.assertTrue(any('calendar-date' in x for x in errors))
+        q['stem'] = 'Which of the following is an activity students might do to experience storytelling?'
+        self.assertTrue(any('logistics' in x for x in lb.check_mcq(d, {'printed': [1, 2]}, '')))
+        q['stem'] = 'Why does Jack decide to write to the poet?'
+        self.assertFalse(any('calendar-date' in x or 'logistics' in x for x in lb.check_mcq(d, {'printed': [1, 2]}, '')))
+
 
 if __name__ == '__main__': unittest.main()
