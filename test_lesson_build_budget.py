@@ -191,9 +191,10 @@ class Budget(unittest.TestCase):
         d = {'focus': 'test', 'questions': [q, q, q]}
         with patch.object(lb, 'blind_answer', return_value=['wrong key']), \
              patch.object(lb, 'claim_check', return_value=['unsupported claim']), \
-             patch.object(lb, 'option_quality', return_value=['answer revealed']), \
+             patch.object(lb, 'option_quality', return_value=['answer revealed']) as option_check, \
              patch.object(lb, 'teaching_quality', return_value=['weak distractors']):
-            errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], '', {})
+            errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], 'source context', {})
+        self.assertEqual(option_check.call_args.args[2], 'source context')
         self.assertTrue(any('logistics' in x for x in errors))
         self.assertIn('wrong key', errors)
         self.assertIn('unsupported claim', errors)
