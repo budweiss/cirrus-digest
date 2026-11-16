@@ -228,6 +228,22 @@ class Budget(unittest.TestCase):
             self.assertEqual(ctx['cloud_calls'], 8)
             self.assertEqual(result['tries'][0]['stage'], 'local-skipped-after-verified-failure')
 
+    def test_cloud_gets_one_bounded_quality_repair_with_its_actual_feedback(self):
+        q = {'stem': 'Question?', 'correct': 'answer', 'wrong': ['a', 'b', 'c']}
+        draft = {'focus': 'topic', 'questions': [q]*3}
+        with patch.object(lb, 'task_prompt', return_value='source'), \
+             patch.object(lb, 'question_knowledge', return_value={'claims': []}), \
+             patch.object(lb, 'cloud_draft', return_value=('fixture', draft)) as cloud, \
+             patch.object(lb, 'lesson_failures', return_value=['answer revealed']):
+            ctx = {'qualification': True, 'failed_local_mcq_evidence': 'saved failure',
+                   'cloud_calls': 7, 'creds': {}}
+            with self.assertRaises(lb.Hold):
+                lb.build_lesson('checks', {}, {'n': 1, 'printed': [1, 2]}, [], '', {}, ctx)
+            self.assertEqual(cloud.call_count, 2)
+            self.assertEqual(ctx['cloud_calls'], 9)
+            self.assertIn('answer revealed', cloud.call_args_list[1].args[0])
+            self.assertIn('Most recent draft to correct', cloud.call_args_list[1].args[0])
+
     def test_assessment_review_gets_prior_vocabulary_but_never_future_pages(self):
         pages = ['Definitions\nendure: to last for a long time', 'Assessment administration instructions',
                  'Definitions\nfuture-only word']

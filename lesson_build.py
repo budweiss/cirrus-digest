@@ -440,6 +440,7 @@ Write 3 or 4 multiple-choice questions a grade 4 student can answer after this l
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
 - For each wrong option, identify the specific confusion it represents before selecting it: a reversed cause/effect, a neighboring word meaning, a mistaken motivation, a sequence reversal, or a partial reading. Keep every option in the same conceptual category. A random activity or unrelated subject is never a distractor. Wrong options are deliberately false; the source-only rule applies to the correct answer, not to requiring the source to assert a false option.
 - Never put the correct answer or full definition in the question stem. For a word with multiple meanings, give only a short context cue that distinguishes the senses (duration versus coping with difficulty, for example). For a reading skill, all options should be competing explanations of how that same skill works, not unrelated reading behaviors.
+- Ask a vocabulary meaning directly. Do not introduce it with a sentence explaining what the word means or saying what students learned about it. A short context noun phrase may distinguish senses; a restatement of the definition may not.
 - In distractor_misconceptions, briefly name the specific misconception for each wrong option, in order. Derive each wrong option from that misconception. These notes are for checking and will not appear in the student's questions.
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
@@ -983,9 +984,9 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                    "correct answer.\n" + json.dumps(knowledge, ensure_ascii=False))
     schema = REVIEW_SCHEMA if kind == "lessons" else MCQ_SCHEMA
     tries, prev = [], None
-    stages = ("local", "local-repair", "cloud")
+    stages = ("local", "local-repair", "cloud", "cloud-repair")
     if kind == "checks" and ctx.get("qualification") and ctx.get("failed_local_mcq_evidence") and not ctx.get("no_cloud"):
-        stages = ("cloud",)
+        stages = ("cloud", "cloud-repair")
         tries.append({"stage": "local-skipped-after-verified-failure", "failures": [
             "The local question writer failed prior qualification: " + str(ctx["failed_local_mcq_evidence"])]})
     for stage in stages:
@@ -1006,7 +1007,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                     tries.append({"stage": stage, "failures": ["this job's cloud allowance is used up"]})
                     break
                 reserve_cloud(ctx)
-                cloud_prompt = prompt + "\n\nThe local drafts failed these checks. Fix ALL of them, " \
+                cloud_prompt = prompt + "\n\nThe previous drafts failed these checks. Fix ALL of them, " \
                     "including earlier failures that must not regress:\n- " + "\n- ".join(
                         dict.fromkeys(f for t in tries for f in t["failures"]))
                 if prev is not None:
@@ -1018,7 +1019,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                         raise
                     reserve_cloud(ctx)
                     provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)
-                stage = "cloud:" + provider
+                stage = ("cloud-repair:" if stage == "cloud-repair" else "cloud:") + provider
             if kind == "checks":
                 d, removed = prune_invalid_extra(d, L, src)
             failures = lesson_failures(kind, d, book, L, codes, src, cfg)
