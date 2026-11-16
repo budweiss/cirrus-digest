@@ -15,7 +15,7 @@ checks after one local repair and one cloud attempt holds that arc and every
 later one, and Buddy is told on Telegram which lesson and which check.
 
 What this module guarantees, because a client email cannot be unsent:
-  * ONE send per run, arc and deliverable (ledger checked before, written after).
+  * Send intent is durable before SMTP; uncertain delivery holds for review.
   * Nothing goes out unless every lesson in that arc passed every check.
   * auto_send is per client in config/lesson_build.json and starts false
     (shadow: the job writes the emails and sends nothing).
@@ -24,7 +24,11 @@ What this module guarantees, because a client email cannot be unsent:
 from __future__ import annotations
 
 import collections
+import functools
+import fcntl
+import hashlib
 import json
+import os
 import random
 import re
 import subprocess
@@ -59,6 +63,55 @@ KINDS = ("lessons", "checks")
 
 class Hold(Exception):
     """Stop here; the reason is said to Buddy and kept with the run."""
+
+
+def durable_json(path: Path, value: dict) -> None:
+    """Replace only after the new state reaches disk, then sync its directory."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w") as f:
+        json.dump(value, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def reserve_cloud(ctx: dict) -> None:
+    if ctx.setdefault("cloud_calls", 0) >= MAX_CLOUD_CALLS_PER_JOB:
+        raise Hold("this job's cloud allowance is used up")
+    ctx["cloud_calls"] += 1
+    if ctx.get("budget_path"):
+        durable_json(Path(ctx["budget_path"]), {"cloud_calls": ctx["cloud_calls"]})
+
+
+def acceptance_fingerprint(pdf: Path, cfg: dict) -> str:
+    h = hashlib.sha256()
+    for path in (pdf, GUIDE_PATH, EXAMPLE_PATH, Path(__file__)):
+        h.update(path.read_bytes())
+    h.update(json.dumps(cfg, sort_keys=True).encode())
+    return h.hexdigest()
+
+
+def draft_digest(draft: dict) -> str:
+    return hashlib.sha256(json.dumps(draft, sort_keys=True).encode()).hexdigest()
+
+
+def exclusive_run(fn):
+    @functools.wraps(fn)
+    def locked(run_id, project_dir=PROJECT_DIR, *args, **kwargs):
+        folder = Path(project_dir) / "logs/lesson_builds" / run_id
+        folder.mkdir(parents=True, exist_ok=True)
+        with (folder / "run.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 3
+            return fn(run_id, project_dir, *args, **kwargs)
+    return locked
 
 
 # ── text helpers ─────────────────────────────────────────────────────────────
@@ -729,13 +782,13 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                 if ctx.setdefault("cloud_calls", 0) >= MAX_CLOUD_CALLS_PER_JOB:
                     tries.append({"stage": stage, "failures": ["this job's cloud allowance is used up"]})
                     break
-                ctx["cloud_calls"] += 1
+                reserve_cloud(ctx)
                 try:
                     provider, d = cloud_draft(prompt, schema, ctx["creds"])
                 except ValueError:      # a reply that is not JSON gets one retry (Lesson 34)
                     if ctx["cloud_calls"] >= MAX_CLOUD_CALLS_PER_JOB:   # S633 probe: the retry passed the cap
                         raise
-                    ctx["cloud_calls"] += 1
+                    reserve_cloud(ctx)
                     provider, d = cloud_draft(prompt, schema, ctx["creds"])
                 stage = "cloud:" + provider
             failures = lesson_failures(kind, d, book, L, codes, src, cfg)
@@ -873,6 +926,7 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
     if guide["level"] != book["level"]:
         raise Hold("no alignment guide for Level %d (we hold Level %d)" % (book["level"], guide["level"]))
     codes = codes_by_lesson(guide, book["module"])
+    fingerprint = acceptance_fingerprint(pdf, cfg)
     stats = {"module": book["module"], "lessons": {}, "arcs": [], "started": time.time()}
     for arc in book["arcs"]:
         lessons = [L for L in book["lessons"] if L["arc"] == arc
@@ -886,6 +940,9 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
                 cache = out_dir / "drafts" / ("%s-%02d.json" % (kind, L["n"]))
                 if cache.exists():
                     got = json.loads(cache.read_text())
+                    if (got.get("acceptance_fingerprint") != fingerprint or
+                            got.get("draft_digest") != draft_digest(got["draft"])):
+                        raise Hold("cached lesson acceptance is stale or changed; review/requalify before resuming")
                 else:
                     src = lesson_text(pages, book, L)
                     try:
@@ -900,7 +957,8 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
                         stats["lessons"]["%s-%d" % (kind, L["n"])] = {
                             "stage": "held", "tries": e.record["tries"]}
                         continue
-                    cache.write_text(json.dumps(got, indent=1, ensure_ascii=False))
+                    got.update(acceptance_fingerprint=fingerprint, draft_digest=draft_digest(got["draft"]))
+                    durable_json(cache, got)
                 drafts[L["n"]] = got["draft"]
                 stats["lessons"]["%s-%d" % (kind, L["n"])] = {"stage": got["stage"], "tries": got["tries"]}
             if len(drafts) < len(lessons):
@@ -1051,8 +1109,10 @@ def delivered(runs: Path, run_id: str, arc: str, kind: str):
             row = json.loads(line)
             if (row.get("run_id"), row.get("arc"), row.get("kind")) == (run_id, arc, kind):
                 return row
-    except (OSError, ValueError):
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError) as e:
+        raise Hold("delivery ledger is unreadable; reconcile before retry") from e
     return None
 
 
@@ -1069,6 +1129,20 @@ def extract_book(project_dir: Path, meta: dict, out: Path) -> Path:
             out.chmod(0o600)
             return out
     raise Hold("the attached book is not in intake's copy of the email")
+
+
+def exact_message(raw: bytes, row: dict, recipient: str, cc: str) -> bool:
+    import email
+    from email.utils import getaddresses
+    msg = email.message_from_bytes(raw)
+    addresses = lambda field: {a.lower() for _, a in getaddresses(msg.get_all(field, []))}
+    if addresses("To") != {recipient.lower()} or addresses("Cc") != {cc.lower()}:
+        return False
+    parts = [p for p in msg.walk() if p.get_content_type() == "text/plain" and not p.get_filename()]
+    if len(parts) != 1 or not row.get("body_sha256"):
+        return False
+    body = (parts[0].get_payload(decode=True) or b"").decode(parts[0].get_content_charset() or "utf-8")
+    return hashlib.sha256(body.replace("\r\n", "\n").strip().encode()).hexdigest() == row["body_sha256"]
 
 
 def verify_sent(project_dir: Path, rows: list, recipients: list, creds: dict,
@@ -1104,12 +1178,14 @@ def verify_sent(project_dir: Path, rows: list, recipients: list, creds: dict,
         for row in rows:
             after = datetime.fromisoformat(row["ts"]).timestamp() - 600
             hits = [x for x in raws if contact_delivery_evidence.matches(
-                x, account["address"], recipients, CC_ADDR, row["subject"], None, after)]
+                x, account["address"], recipients, CC_ADDR, row["subject"], None, after)
+                and exact_message(x, row, recipients[0], CC_ADDR)]
             if len(hits) == 1:
                 found.append(row)
     return found
 
 
+@exclusive_run
 def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, notify=None,
         verify=None, cfg=None, wait: int = 60) -> int:
     """The job intake launched. Exit 0 delivered (or built, in shadow), 3 held."""
@@ -1134,7 +1210,7 @@ def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, not
 
     def save(**kw):
         state.update(kw)
-        (run_dir / "state.json").write_text(json.dumps(state, indent=1))
+        durable_json(run_dir / "state.json", state)
 
     def lifecycle(st, owner, action, evidence=None):
         for row in rows:
@@ -1177,18 +1253,35 @@ def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, not
                 subject = "Re: %s — %s" % (_bare(thread_for[kind]["subject"]), arc_label(arc, lessons))
                 # Send-ready copy: a session can send it as is (cumulus-client-mail).
                 path.with_suffix(".md").write_text("Subject: %s\n\n%s" % (subject, body))
-                if not meta["auto_send"] or delivered(runs, run_id, arc, kind):
+                live_cfg = load_config(project_dir / "config/lesson_build.json")
+                if not state["auto_send"] or not live_cfg["clients"].get(meta["client"], {}).get("auto_send"):
+                    state["auto_send"] = False
                     continue
+                previous = delivered(runs, run_id, arc, kind)
+                if previous:
+                    if (verify or verify_sent)(project_dir, [previous], entry["emails"], creds) != [previous]:
+                        raise Hold("previous delivery lacks Sent Mail proof; reconcile before later arcs")
+                    continue
+                intent_path = run_dir / ("send-intent-%s-%s.json" % (re.sub(r"\W", "", arc), kind))
+                if intent_path.exists():
+                    raise Hold("previous delivery attempt needs reconciliation; never resend automatically")
+                row = {"event": "delivered", "run_id": run_id, "arc": arc, "kind": kind,
+                       "subject": subject, "client": meta["client"],
+                       "body_sha256": hashlib.sha256(body.replace("\r\n", "\n").strip().encode()).hexdigest(),
+                       "ts": datetime.now().isoformat(timespec="seconds")}
+                durable_json(intent_path, dict(row, event="send_intent"))
                 (send or mailer.send)(from_email, creds.get("outlook_password", ""), entry["emails"][0],
                                       subject, body, cc=CC_ADDR, creds=creds, client=meta["client"],
                                       project=(entry.get("projects") or ["general"])[0])
-                row = {"event": "delivered", "run_id": run_id, "arc": arc, "kind": kind,
-                       "subject": subject, "client": meta["client"],
-                       "ts": datetime.now().isoformat(timespec="seconds")}
                 with _ledger(runs).open("a") as f:
                     f.write(json.dumps(row) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
                 state["sent"].append(row)
                 save()
+                found = (verify or verify_sent)(project_dir, [row], entry["emails"], creds)
+                if found != [row]:
+                    raise Hold("delivery accepted but Sent Mail proof is missing; never resend automatically")
                 try:
                     import client_mail
                     client_mail._record_sent(meta["client"], subject,
@@ -1196,22 +1289,34 @@ def run(run_id: str, project_dir: Path = PROJECT_DIR, send=None, creds=None, not
                 except Exception:
                     pass
 
-        ctx = {"creds": creds}
+        budget_path = run_dir / "budget.json"
+        if budget_path.exists():
+            budget = json.loads(budget_path.read_text())
+            calls = budget["cloud_calls"]
+            if type(calls) is not int or calls < 0:
+                raise Hold("invalid saved cloud allowance; review before resuming")
+        elif (run_dir / "drafts").exists():
+            raise Hold("legacy run has no durable cloud allowance; reconcile before resuming")
+        else:
+            calls = 0
+            durable_json(budget_path, {"cloud_calls": calls})
+        ctx = {"creds": creds, "cloud_calls": calls, "budget_path": str(budget_path)}
         res = build_book(pdf, kinds, run_dir, cfg, ctx, name=meta["client"].capitalize(), box=box,
                          other_thread=other, on_arc=on_arc)
-    except Hold as e:
-        save(status="held", reason=str(e))
+    except Exception as e:
+        reason = str(e) if isinstance(e, Hold) else "worker failed (%s); inspect locally before retry" % type(e).__name__
+        save(status="held", reason=reason)
         lifecycle("blocked_on_evidence", "cowork",
-                  "lesson build held: %s; a session finishes it from logs/lesson_builds/%s" % (str(e)[:200], run_id))
+                  "lesson build held: %s; a session finishes it from logs/lesson_builds/%s" % (reason[:200], run_id))
         tell("\U0001F4C4 Lesson build %s for %s is HELD: %s\n%d email(s) already sent. "
              "A session finishes it from logs/lesson_builds/%s." % (
-                 run_id, meta["client"], str(e)[:300], len(state["sent"]), run_id))
+                 run_id, meta["client"], reason[:300], len(state["sent"]), run_id))
         return 3
-    if not meta["auto_send"]:
+    if not state["auto_send"]:
         save(status="built", stats=res["stats"])
         lifecycle("ready_for_send", "cowork", "shadow build: review the emails, then send",
                   {"artifact": str(run_dir / "mail")})
-        tell("\U0001F4C4 Lesson build %s for %s is built (shadow mode, nothing sent). A session "
+        tell("\U0001F4C4 Lesson build %s for %s is built with automatic delivery off. A session "
              "reviews logs/lesson_builds/%s/mail/*.md and sends them in arc order." % (
                  run_id, meta["client"], run_id))
         return 0
@@ -1487,6 +1592,7 @@ def selftest() -> bool:
                   (rd / "Arc A-checks.md").read_text().startswith(
                       "Subject: Re: Arts and Letters Grade 4 Module 2 Checks"))
             meta["auto_send"] = True
+            (root / "config/lesson_build.json").write_text(json.dumps({"clients": {"alyssa": {"auto_send": True}}}))
             (root / REQUESTS_REL / (rid + ".json")).write_text(json.dumps(meta))
             verified = lambda pd, rows, rcp, cr: list(rows)
             rc = run(rid, root, send=fake_send, creds=creds, notify=told.append, verify=verified, wait=0)
