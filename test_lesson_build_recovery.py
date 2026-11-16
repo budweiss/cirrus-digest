@@ -110,7 +110,7 @@ class Recovery(unittest.TestCase):
             cloud.assert_not_called()
 
     def test_cloud_retry_obeys_limit(self):
-        ctx = {'cloud_calls': 29, 'creds': {}}
+        ctx = {'cloud_calls': lb.MAX_CLOUD_CALLS_PER_JOB - 1, 'creds': {}}
         with patch.object(lb, 'task_prompt', return_value='fixture'), \
              patch.object(lb, 'local_draft', return_value={}), \
              patch.object(lb, 'lesson_failures', return_value=['failed']), \
@@ -118,7 +118,7 @@ class Recovery(unittest.TestCase):
             with self.assertRaises(lb.Hold):
                 lb.build_lesson('lessons', {}, {'n': 1}, [], '', {}, ctx)
             self.assertEqual(cloud.call_count, 1)
-            self.assertEqual(ctx['cloud_calls'], 30)
+            self.assertEqual(ctx['cloud_calls'], lb.MAX_CLOUD_CALLS_PER_JOB)
 
     def test_legacy_budget_holds_before_build(self):
         (self.rd / 'drafts').mkdir()

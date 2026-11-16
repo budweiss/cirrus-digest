@@ -49,7 +49,9 @@ FIT_CHECK = "Is this what you were looking for?"
 SEP = "-" * 40
 ROUTE_TASK = "pedagogy-lesson-build"
 MAX_JOBS_PER_CLIENT_PER_DAY = 2
-MAX_CLOUD_CALLS_PER_JOB = 30
+# Includes mandatory independent reviews as well as fallback drafts. Durable
+# USD reservations remain the tighter spending boundary; counters never reset.
+MAX_CLOUD_CALLS_PER_JOB = 100
 LABELS = ("1. PA Core Standards", "2. Learning Goals / I can statements",
           "3. Student considerations", "4. Learning Progress / Instructional Plan",
           "5. Success Criteria / Evidence of learning", "6. Next steps")
@@ -511,12 +513,12 @@ def local_check(system: str, user: str, schema: dict, cfg: dict, max_tokens: int
     return json.loads(r["choices"][0]["message"]["content"])
 
 
-def cloud_draft(user: str, schema: dict, creds: dict, ctx=None) -> tuple:
+def cloud_draft(user: str, schema: dict, creds: dict, ctx=None, *, system: str = SYSTEM) -> tuple:
     import llm_providers
     import llm_budget
     import llm_routing
     import lesson_build_budget
-    system = (SYSTEM + "\nReply with exactly one JSON object that matches this JSON schema, "
+    system = (system + "\nReply with exactly one JSON object that matches this JSON schema, "
               "and nothing else:\n" + json.dumps(schema))
     if not ctx or not ctx.get("dollar_job"):
         raise Hold("missing durable dollar-budget context")
@@ -835,6 +837,62 @@ def mcq_text(d: dict) -> str:
                      for i, q in enumerate(d.get("questions", []), 1))
 
 
+AMBIGUITY_SCHEMA = {"type": "object", "properties": {"reviews": {"type": "array", "items": {
+    "type": "object", "properties": {
+        "id": {"type": "integer"},
+        "supported_options": {"type": "array", "items": {"type": "integer"}},
+        "ambiguous": {"type": "boolean"}, "reason": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}}},
+    "required": ["id", "supported_options", "ambiguous", "reason", "evidence"]}}},
+    "required": ["reviews"]}
+
+
+def independent_answers(d: dict, src: str, ctx: dict, seed: str) -> list:
+    """S635: both owned local models missed demonstrated overlapping answers.
+    Use the qualified budgeted fallback for this gate; never accept a local
+    false pass or silently downgrade when the fallback is unavailable.
+    """
+    if not ctx or ctx.get("no_cloud") or not ctx.get("dollar_job"):
+        raise Hold("independent answer review needs its authorized budget context")
+    rng = random.Random(seed)
+    questions, keys = [], {}
+    for i, q in enumerate(d["questions"], 1):
+        options = [q["correct"]] + list(q["wrong"])
+        rng.shuffle(options)
+        keys[i] = options.index(q["correct"])
+        questions.append({"id": i, "stem": q["stem"], "options": options})
+    prompt = (
+        "Audit these assessment questions. Do not write new questions. The intended keys are hidden. "
+        "For each question first work out what the source says the actual answer is, then independently "
+        "consider all proposed options, numbered 0 to 3. Return ALL source-defensible options, not just "
+        "the best. Set ambiguous=true if wording admits several reasonable interpretations, if two "
+        "options can be defended, or if none actually answers what is asked. A less complete answer "
+        "can still be defensible; chart labels do not make overlapping skills exclusive. A definition "
+        "does not answer a purpose question. In a hypothetical application assess the principle, not "
+        "whether the invented example appears verbatim. Include short exact source quotes for the "
+        "reasoning.\nSOURCE:\n" + src + "\nQUESTIONS:\n" + json.dumps(questions))
+    reserve_cloud(ctx)
+    _, result = cloud_draft(prompt, AMBIGUITY_SCHEMA, ctx["creds"], ctx,
+                           system="You independently audit assessment validity against the supplied source.")
+    rows = result.get("reviews")
+    if (not isinstance(rows, list) or len(rows) != len(keys)
+            or any(not isinstance(row, dict) or type(row.get("id")) is not int for row in rows)
+            or {row["id"] for row in rows} != set(keys)):
+        return ["independent answer review is incomplete or malformed"]
+    failures = []
+    for row in rows:
+        i, supported, quotes = row["id"], row.get("supported_options"), row.get("evidence")
+        if (not isinstance(supported, list) or any(type(x) is not int or x not in range(4) for x in supported)
+                or len(set(supported)) != len(supported) or type(row.get("ambiguous")) is not bool
+                or not isinstance(row.get("reason"), str) or not row["reason"].strip()
+                or not isinstance(quotes, list) or not quotes
+                or any(not isinstance(x, str) or len(norm(x).split()) < 3 or norm(x) not in norm(src) for x in quotes)):
+            failures.append("question %d: independent answer review lacks a complete grounded verdict" % i)
+        elif row["ambiguous"] or supported != [keys[i]]:
+            failures.append("question %d: independent answer review rejected the key or uniqueness (%s)" % (i, row["reason"]))
+    return failures
+
+
 QUALITY_SCHEMA = {"type": "object", "properties": {
     "defects": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 400}},
     "evidence": {"type": "array", "items": {"type": "string", "maxLength": 400}}},
@@ -984,7 +1042,7 @@ def question_knowledge(src: str, cfg: dict) -> dict:
 
 
 def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: str, cfg: dict,
-                    model_checks: bool = True) -> list:
+                    model_checks: bool = True, ctx=None) -> list:
     if kind == "lessons":
         if not all(isinstance(d.get(k), str) for k in ("why_it_matters", "student_considerations", "plan", "next_steps")) or not all(
                 isinstance(d.get(k), list) and d[k] and all(isinstance(x, str) for x in d[k])
@@ -1004,11 +1062,12 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
             return ["question draft has missing or malformed required fields"]
         f = check_mcq(d, L, src)
         if model_checks:
-            f += blind_answer(d, src, cfg, "%s-%d" % (book["module"], L["n"]))
             f += claim_check(mcq_text(d), src, cfg)
             f += option_quality(d, cfg, src)
     if model_checks:
         f += teaching_quality(kind, d, src, cfg)
+        if kind == "checks" and not f:
+            f += independent_answers(d, src, ctx, "%s-%d" % (book["module"], L["n"]))
     return f
 
 
@@ -1062,7 +1121,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                 stage = ("cloud-repair:" if stage == "cloud-repair" else "cloud:") + provider
             if kind == "checks":
                 d, removed = prune_invalid_extra(d, L, src)
-            failures = lesson_failures(kind, d, book, L, codes, src, cfg)
+            failures = lesson_failures(kind, d, book, L, codes, src, cfg, True, ctx)
         except Hold:
             raise
         except Exception as e:      # an outage or bad JSON is a failed try, not a crash

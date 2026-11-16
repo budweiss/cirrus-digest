@@ -189,14 +189,14 @@ class Budget(unittest.TestCase):
     def test_repair_receives_later_quality_feedback_even_when_earlier_checks_fail(self):
         q = {'stem': 'According to Land?', 'correct': 'one', 'wrong': ['two', 'three', 'four'], 'tag': 'target'}
         d = {'focus': 'test', 'questions': [q, q, q]}
-        with patch.object(lb, 'blind_answer', return_value=['wrong key']), \
+        with patch.object(lb, 'independent_answers') as paid_review, \
              patch.object(lb, 'claim_check', return_value=['unsupported claim']), \
              patch.object(lb, 'option_quality', return_value=['answer revealed']) as option_check, \
              patch.object(lb, 'teaching_quality', return_value=['weak distractors']):
             errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], 'source context', {})
         self.assertEqual(option_check.call_args.args[2], 'source context')
         self.assertTrue(any('logistics' in x for x in errors))
-        self.assertIn('wrong key', errors)
+        paid_review.assert_not_called()  # Already rejected; no paid attempt needed.
         self.assertIn('unsupported claim', errors)
         self.assertIn('weak distractors', errors)
         self.assertIn('answer revealed', errors)
