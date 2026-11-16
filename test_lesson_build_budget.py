@@ -105,5 +105,33 @@ class Budget(unittest.TestCase):
             self.assertIn('second', prompt)
             self.assertEqual(got['stage'], 'cloud:fake')
 
+    def test_only_one_invalid_optional_question_can_be_removed(self):
+        q = {'tag': 'vocab', 'stem': 'What does endure mean?', 'correct': 'to last',
+             'wrong': ['to start', 'to fade', 'to end']}
+        bad = dict(q, stem='According to the Land section, what will students do?')
+        L = {'printed': [1, 2]}
+        draft = {'focus': 'vocabulary', 'questions': [q, q, q, bad]}
+        fixed, removed = lb.prune_invalid_extra(draft, L, '')
+        self.assertEqual(len(fixed['questions']), 3)
+        self.assertEqual(removed, [bad])
+        for questions in ([q, q, bad], [q, q, bad, bad]):
+            d = dict(draft, questions=questions)
+            self.assertEqual(lb.prune_invalid_extra(d, L, ''), (d, []))
+
+    def test_pruned_questions_still_require_model_review(self):
+        q = {'tag': 'vocab', 'stem': 'What does endure mean?', 'correct': 'to last',
+             'wrong': ['to start', 'to fade', 'to end']}
+        d = {'focus': 'vocabulary', 'questions': [q, q, q, dict(q, stem='According to the Land section?')]}
+        seen = []
+        def reject(kind, draft, *args):
+            seen.append(len(draft['questions']))
+            return ['independent model rejects this set']
+        with patch.object(lb, 'task_prompt', return_value='source'), \
+             patch.object(lb, 'local_draft', return_value=d), \
+             patch.object(lb, 'lesson_failures', side_effect=reject):
+            with self.assertRaises(lb.Hold):
+                lb.build_lesson('checks', {}, {'n': 1, 'printed': [1, 2]}, [], '', {}, {'no_cloud': True})
+        self.assertEqual(seen, [3, 3])
+
 
 if __name__ == '__main__': unittest.main()

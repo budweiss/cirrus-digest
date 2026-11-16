@@ -630,6 +630,26 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
     return f
 
 
+def prune_invalid_extra(d: dict, L: dict, src: str) -> tuple:
+    """A request permits 3–4 questions. Drop one invalid optional item only
+    when the other three pass the structural/source checks; model checks still
+    run on the entire remaining set. Retain the removed item in attempt evidence."""
+    if len(d.get("questions", [])) != 4:
+        return d, []
+    failures = check_mcq(d, L, src)
+    matches = [re.match(r"question (\d+)\b", f) for f in failures]
+    if not failures or not all(matches):
+        return d, []
+    indices = {int(m.group(1)) - 1 for m in matches}
+    if len(indices) != 1:
+        return d, []
+    i = indices.pop()
+    candidate = dict(d, questions=[q for j, q in enumerate(d["questions"]) if j != i])
+    if check_mcq(candidate, L, src):
+        return d, []
+    return candidate, [d["questions"][i]]
+
+
 CLAIM_SYSTEM = ("You check teaching material against the Teach Book pages it was written from. "
                 "You are strict about facts and relaxed about wording.")
 CLAIM_TASK = """Below are a lesson's Teach Book pages and a draft written from them for the teacher.
@@ -835,6 +855,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
     tries, prev = [], None
     for stage in ("local", "local-repair", "cloud"):
         t0 = time.time()
+        removed = []
         try:
             if stage == "local":
                 d = local_draft(prompt, schema, cfg)
@@ -863,12 +884,15 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                     reserve_cloud(ctx)
                     provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)
                 stage = "cloud:" + provider
+            if kind == "checks":
+                d, removed = prune_invalid_extra(d, L, src)
             failures = lesson_failures(kind, d, book, L, codes, src, cfg)
         except Hold:
             raise
         except Exception as e:      # an outage or bad JSON is a failed try, not a crash
             d, failures = prev, ["%s did not complete (%s: %s)" % (stage, type(e).__name__, str(e)[:120])]
-        tries.append({"stage": stage, "seconds": round(time.time() - t0, 1), "failures": failures})
+        tries.append({"stage": stage, "seconds": round(time.time() - t0, 1), "failures": failures,
+                      "removed_optional_questions": removed})
         if d is not None and not failures:
             return {"draft": d, "stage": stage, "tries": tries}
         prev = d if d is not None else prev
