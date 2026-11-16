@@ -39,6 +39,28 @@ class Budget(unittest.TestCase):
         self.reserve(4, 'c', False)
         with self.assertRaises(ValueError): self.reserve(1, 'd', False)
 
+    def test_authorized_qualification_increase_preserves_spend_and_scope(self):
+        self.reserve()
+        p = self.root / 'dollar-budget.json'
+        state = json.loads(p.read_text())
+        state['qualification_authorization'] = {'reference': 'Buddy S633 explicit $25 ceiling',
+                                               'total_usd': 25, 'per_module_usd': 12.5}
+        p.write_text(json.dumps(state))
+        self.reserve(8)
+        self.assertEqual(json.loads(p.read_text())['baseline'], 2.41)
+        with self.assertRaises(ValueError): self.reserve(2)
+        with self.assertRaises(ValueError): self.reserve(6, 'client-job', False)
+        with self.assertRaises(ValueError): self.reserve(6, 'qualification-module-3', True)
+        self.reserve(10, 'qualification-module-2')
+        with self.assertRaises(ValueError): self.reserve(4, 'other-job', False)
+
+    def test_logistics_rejects_the_actual_cloud_failures(self):
+        q = {'tag': 'target', 'correct': 'one', 'wrong': ['two', 'three', 'four']}
+        for stem in ('What is the Essential Question students will explore?',
+                     'Which of these is one way students could engage with the module topic?'):
+            draft = {'focus': 'topic', 'questions': [dict(q, stem=stem)] * 3}
+            self.assertTrue(any('logistics' in x for x in lb.check_mcq(draft, {'printed': [1, 2]}, '')))
+
     def test_settle_only_exact_provider_record(self):
         rid = self.reserve()
         with self.ledger.open('a') as f:

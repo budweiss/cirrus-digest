@@ -42,7 +42,16 @@ def reserve(root, ledger, job, ceiling, qualification=False):
         if job not in state['jobs']:
             state['jobs'][job] = baseline if qualification else 0.0
         job_total = amount(state['jobs'][job]) + sum(amount(r['charge']) for r in reservations.values() if r['job'] == job)
-        if baseline + sum(totals) + ceiling > 15.0 or job_total + ceiling > 5.0:
+        total_limit, job_limit = 15.0, 5.0
+        # Explicit session authorization is retained with the ledger, never
+        # inferred from a fresh run directory or applied to client jobs.
+        authorization = state.get('qualification_authorization')
+        if qualification and job in ('qualification-module-1', 'qualification-module-2') and authorization:
+            if not isinstance(authorization.get('reference'), str) or not authorization['reference'].strip():
+                raise ValueError('qualification authorization lacks evidence')
+            total_limit = amount(authorization['total_usd'])
+            job_limit = amount(authorization['per_module_usd'])
+        if baseline + sum(totals) + ceiling > total_limit or job_total + ceiling > job_limit:
             raise ValueError('lesson dollar allowance exhausted')
         rid = 'lesson-' + uuid.uuid4().hex
         reservations[rid] = {'job': job, 'charge': ceiling, 'ceiling': ceiling, 'status': 'reserved'}

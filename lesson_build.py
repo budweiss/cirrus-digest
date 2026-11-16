@@ -431,11 +431,13 @@ Teach Book pages for Lesson {n}:
 MCQ_TASK = """Teach Book: Level {level}, Module {module}. Lesson {n} ({title}).
 
 Write 3 or 4 multiple-choice questions a grade 4 student can answer after this lesson, drawn from its learning targets, vocabulary or word study. Tag each "target", "vocab" or "word study".
+- Prefer exactly three strong questions. Before drafting, select three distinct claims with explicit supporting words in the supplied pages. Discussion questions without supplied answers are NOT evidence for an invented answer. On an opening lesson with little story content, use taught vocabulary meanings and an explicitly explained reading skill; do not fill space with lesson activities or the Essential Question's wording.
 - Ask about what students learn, read or do in the lesson (ideas, events, words, skills), not about the Teach Book's own wording or instructions to the teacher.
 - Do not ask about the lesson itself: its segments (Launch, Land), page numbers, materials, resources, or which activity comes when. Ask what a text, a work of art or a word means, or why something happens.
 - Do not ask what students might do, which class activity they perform, why they revisit an Essential Question, or what an assessment section demonstrates. Even on assessment days, test an idea or skill the student learned, not the assessment instructions.
 - Anchor each correct answer to the pages' Key Ideas or explicit text evidence. A nearby date is not evidence of an event: distinguish writing ABOUT a letter from writing or mailing the letter. Prefer questions about meaning, motivation, sequence and skill to isolated date recall.
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
+- For each wrong option, identify the specific confusion it represents before selecting it: a reversed cause/effect, a neighboring word meaning, a mistaken motivation, a sequence reversal, or a partial reading. Keep every option in the same conceptual category. A random activity or unrelated subject is never a distractor. Wrong options are deliberately false; the source-only rule applies to the correct answer, not to requiring the source to assert a false option.
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
 - focus: a short phrase saying what the questions cover.
@@ -625,7 +627,8 @@ def check_review(d: dict, L: dict, codes: list, src: str) -> list:
 # suggested...", "During the LAND portion...", "What resource do students use...").
 _LOGISTICS = re.compile(r"\b(launch|land|learn book|which pages?|what pages?|p\.\s*\d|which activity|"
                         r"what resource|what materials?|the teacher|portion of the lesson|"
-                        r"activity students|assessment section|part of the assessment|revisit.{0,30}essential question)\b", re.I)
+                        r"activity students|assessment section|part of the assessment|revisit.{0,30}essential question|"
+                        r"what is the essential question|engage options|students could engage)\b", re.I)
 
 
 def check_mcq(d: dict, L: dict, src: str) -> list:
