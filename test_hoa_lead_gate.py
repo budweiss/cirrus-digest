@@ -101,12 +101,15 @@ class GateRules(unittest.TestCase):
 
 class Discovery(Isolated):
     def fake_monitor(self, cands, rows):
+        self.screened_texts = []
+        def council(batch, creds):
+            self.screened_texts.extend(c["text"] for c in batch)
+            return [{**batch[r["idx"]], "type": r["type"], "community": r["community"], "why": r["why"]}
+                    for r in rows if r["lead"]]
         return types.SimpleNamespace(
-            MAX_CANDIDATES=60, gather_x=lambda: [], gather_web=lambda: list(cands),
+            MAX_CANDIDATES=60, gather_x=lambda: [], gather_web=lambda: [dict(c) for c in cands],
             load_seen=set, save_seen=lambda s: None, _resolve_url=lambda u: u,
-            council_filter=lambda batch, creds: [
-                {**batch[r["idx"]], "type": r["type"], "community": r["community"], "why": r["why"]}
-                for r in rows if r["lead"]])
+            council_filter=council)
 
     def run_discovery(self, cands, rows, screened=None):
         saved = sys.modules.get("hoa_monitor")
@@ -124,6 +127,8 @@ class Discovery(Isolated):
         ent = FIXTURE["kb_entity"]
         kb.upsert_entity(P, ent["slug"], ent["original_name"], db_path=self.db)
         res = self.run_discovery(FIXTURE["screen_candidates"], FIXTURE["screen_rows"])
+        # The screen never sees raw PDF bytes as a snippet.
+        self.assertEqual(self.screened_texts[1], "(no readable text: binary document)")
         self.assertEqual(res["council_kept"], 2)
         self.assertEqual(len(res["withheld"]), 2)
         self.assertEqual(res["new_entities"] + res["updated_entities"], [])
@@ -157,6 +162,21 @@ class Discovery(Isolated):
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["source_url"], items[0]["url"])
         self.assertIn("Open solicitation, responses due 2026-12-01.", sigs[0]["summary"])
+
+    def test_live_candidates_fetch_the_document_for_its_deadline(self):
+        # gather_web candidates carry no doc_text; discovery reads the page itself.
+        c = FIXTURE["controls"]["hoa_rfp_open"]
+        with patch.object(research, "_document_text", return_value=c["doc_text"]) as fetch:
+            self.run_discovery([{"source": "web", "url": c["url"], "text": c["why"]}],
+                               [{"idx": 0, "lead": True, "type": "RFP", "community": c["community"],
+                                 "why": c["why"]}])
+        fetch.assert_called_once_with(c["url"])
+        self.assertEqual(len(kb.get_events(P, event_type="signal", db_path=self.db)), 1)
+        # Agency documents are never fetched at all.
+        with patch.object(research, "_document_text", return_value="") as fetch:
+            gss = {k: v for k, v in FIXTURE["screen_candidates"][0].items() if k != "doc_text"}
+            self.run_discovery([gss], FIXTURE["screen_rows"][:1], screened=self.root / "s2.json")
+        fetch.assert_not_called()
 
 
 class MondayDigest(Isolated):

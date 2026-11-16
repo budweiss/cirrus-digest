@@ -256,6 +256,21 @@ def _save_screened(path, data):
     tmp.replace(path)
 
 
+def _document_text(url: str) -> str:
+    """Readable text of a page, for finding a solicitation's deadline. "" when
+    it cannot be read, which leaves the solicitation unverified (withheld)."""
+    try:
+        from cirrus_daily import fetch_article_content, is_article_url
+        if not is_article_url(url):
+            return ""
+        content, _paywalled = fetch_article_content(url)
+    except Exception:
+        return ""
+    if hoa_lead_gate.readable_snippet(content).startswith("(no readable text"):
+        return ""
+    return (content or "")[:20000]
+
+
 def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None,
                   screened_path=None, today: str = None) -> dict:
     """Search for community mentions via hoa_monitor's existing gather+
@@ -274,6 +289,11 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
         cands = hoa_monitor.gather_x() + hoa_monitor.gather_web()
     finally:
         hoa_monitor.MAX_CANDIDATES = screen_cap
+    # S635: raw PDF bytes reached the screen as a "snippet" and came back as a
+    # "garbled binary" finding. Done here, not in hoa_monitor.py: that file is
+    # pinned by the reviewed foundation:hoa-leads route (contract_drift).
+    for c in cands:
+        c["text"] = hoa_lead_gate.readable_snippet(c.get("text")) or c.get("text", "")
     seen = hoa_monitor.load_seen()
     screened = _load_screened(screened_path, today)
     fresh = [c for c in cands if c["url"] not in seen
@@ -289,6 +309,11 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
     gated, withheld = [], []
     for lead in leads:
         lead["resolved_url"] = hoa_monitor._resolve_url(lead.get("url"))
+        if ("doc_text" not in lead
+                and hoa_lead_gate.is_solicitation(lead.get("type", ""), lead.get("why", ""))
+                and not hoa_lead_gate.agency_procurement_reason(lead["resolved_url"],
+                                                                lead.get("community", ""))):
+            lead["doc_text"] = _document_text(lead["resolved_url"])   # for its deadline
         reason = hoa_lead_gate.withhold_reason(
             lead["resolved_url"], lead.get("community", ""), lead.get("type", ""),
             lead.get("why", ""), lead.get("doc_text", ""), today)
