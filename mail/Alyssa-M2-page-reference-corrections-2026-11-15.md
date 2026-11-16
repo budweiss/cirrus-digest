@@ -1,8 +1,20 @@
-Subject: Re: Arts and Letters Module 2 Lesson Plans — corrected page references
+Subject: Re: Arts and Letters lesson plans — corrections for Modules 1 and 2
 
 Hi Alyssa,
 
-I found nine page-reference errors while checking the Module 2 lesson plans I sent on November 13. In section 4, Learning Progress / Instructional Plan, I ended these ranges one page too early. The final Land/reflection instructions, or their continuation, should be included. I'm sorry for the error.
+While checking the lesson plans I sent you, I found an incorrect next-steps statement in Module 1 and nine page-reference errors in Module 2. I'm sorry for these errors. Here are the corrections and the replacement text.
+
+Module 1, Lesson 33 — replace section 6, Next steps
+
+I previously said Lesson 33 was the last evidence-collection lesson and that Lesson 34 focused entirely on the assessment. That was incorrect. The Teach Book explicitly continues evidence collection in Lesson 34, alongside Reading Comprehension Assessment 2.
+
+Corrected next steps: Continue using the Evidence Organizer in Lesson 34. That lesson includes Reading Comprehension Assessment 2 and a 15-minute Write: Collect Evidence segment, during which students continue adding evidence about individuals with figurative great hearts. The organizer does not need to be treated as finished at the end of Lesson 33; students have another opportunity to add evidence before the End-of-Module Task.
+
+Source: Module 1 Teach Book, Lesson 33's Plan Future Practice on printed p. 361, and Lesson 34's agenda and Write: Collect Evidence segment.
+
+Module 2 — corrected section 4 page references
+
+In the November 13 lesson plans, I ended the following Learning Progress / Instructional Plan ranges one page too early. The final Land/reflection instructions, or their continuation, should be included.
 
 Please use these corrected printed Teach Book page ranges:
 
@@ -16,6 +28,6 @@ Lesson 32: pp. 342-348 (previously 342-347)
 Lesson 33: pp. 352-358 (previously 352-357)
 Lesson 38: pp. 394-398 (previously 394-397)
 
-These corrections update the page references in the lesson plans; they do not change any answer-key letters. I've also corrected the saved lesson-plan sources so the same errors will not carry into future copies.
+These changes correct the lesson plans, not the answer-key letters. I've corrected the saved source versions as well, so these errors will not carry into future copies.
 
 — CUMULUS
