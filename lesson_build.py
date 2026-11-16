@@ -813,8 +813,8 @@ def teaching_quality(kind: str, d: dict, src: str, cfg: dict) -> list:
         "check date/event links carefully. A nearby date is not evidence of that event. "
         "Reject classroom logistics, teacher instructions, assessment-section descriptions, "
         "activities students might do, or revisiting an Essential Question. These are not "
-        "student learning targets. Reject distractors that are unrelated subjects or obviously "
-        "silly. All options must test a plausible misconception about the same idea. "
+        "student learning targets. Assess the source-supported keyed claim and question topic "
+        "here; a separate per-question review checks answer disclosure and every distractor. "
         "Return one short supporting source quote per question in evidence."
         if kind == "checks" else
         "Verify student_considerations identifies a specific cognitive challenge/misreading "
@@ -854,6 +854,7 @@ OPTION_SCHEMA = {"type": "object", "properties": {
 OPTION_TASK = """Review only the design of ONE grade-4 multiple-choice question. Do not check source facts in this task.
 1. Does the stem itself state the meaning/answer being tested? A short context cue is allowed, but repeating the definition is not a knowledge check.
 2. For EACH incorrect option, is it a plausible misunderstanding of the SAME concept as the keyed answer? Name the concrete confusion. Cause/effect reversal, confusing related motivations, opposite duration, partial comprehension, or over-applying a reading strategy can be plausible. Random verbs, unrelated activities, and different school subjects are not. Do not invent a justification to approve a weak option.
+A distractor is false by design. Do not reject it just because it is an opposite or a different action within the SAME conceptual category. For example, accepting versus refusing, or tolerating versus removing a difficulty, are meaningful contrasting responses to a difficulty. These are not unrelated just because the actions differ. Judge the conceptual relationship, not whether the wrong option matches the keyed definition.
 Number the three wrong options 1, 2, 3, in order. Be concise. QUESTION:
 """
 
