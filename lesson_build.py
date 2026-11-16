@@ -1232,18 +1232,18 @@ def verify_sent(project_dir: Path, rows: list, recipients: list, creds: dict,
     client, Cc Buddy, exact subject). Returns the rows that were found."""
     import imaplib
     import contact_delivery_evidence
-    import intake
-    from runtime_config import load_sources
     from client_mail_review import quoted
-    account = intake.find_account(load_sources(intake.CONFIG_PATH))
-    if not account or not rows:
+    # Outbound mailer.send uses these aliases for the Gmail sender. Intake's
+    # Research account may be a different mailbox or have no active password.
+    sender = creds.get("outlook_email")
+    password = creds.get("outlook_password")
+    if not sender or not password or not rows:
         return []
     from list_delivery import CC_ADDR
     since = (datetime.fromisoformat(rows[0]["ts"])).strftime("%d-%b-%Y")
     found = []
-    with (connect or imaplib.IMAP4_SSL)(account["imap_server"], account.get("imap_port", 993),
-                                         timeout=15) as mail:
-        mail.login(account["address"], creds[account["credential_key"]])
+    with (connect or imaplib.IMAP4_SSL)("imap.gmail.com", 993, timeout=15) as mail:
+        mail.login(sender, password)
         if mail.select('"[Gmail]/Sent Mail"', readonly=True)[0] != "OK":
             return []
         uids = []
@@ -1259,7 +1259,7 @@ def verify_sent(project_dir: Path, rows: list, recipients: list, creds: dict,
         for row in rows:
             after = datetime.fromisoformat(row["ts"]).timestamp() - 600
             hits = [x for x in raws if contact_delivery_evidence.matches(
-                x, account["address"], recipients, CC_ADDR, row["subject"], None, after)
+                x, sender, recipients, CC_ADDR, row["subject"], None, after)
                 and exact_message(x, row, recipients[0], CC_ADDR)]
             if len(hits) == 1:
                 found.append(row)

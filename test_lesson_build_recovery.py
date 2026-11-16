@@ -145,6 +145,20 @@ class Recovery(unittest.TestCase):
         msg.replace_header('To', 'client@example.test, extra@example.test')
         self.assertFalse(lb.exact_message(msg.as_bytes(), row, 'client@example.test', 'owner@example.test'))
 
+    def test_sent_verifier_uses_outbound_sender_not_intake_research_account(self):
+        from unittest.mock import MagicMock
+        connection = MagicMock()
+        mail = connection.return_value.__enter__.return_value
+        mail.select.return_value = ('OK', [])
+        mail.uid.return_value = ('OK', [b''])
+        row = {'ts': '2026-11-15T12:00:00', 'subject': 'fixture'}
+        result = lb.verify_sent(self.root, [row], ['client@example.test'],
+                                {'outlook_email': 'sender@example.test', 'outlook_password': 'fake-test-only'},
+                                connect=connection)
+        mail.login.assert_called_once_with('sender@example.test', 'fake-test-only')
+        mail.select.assert_called_once_with('"[Gmail]/Sent Mail"', readonly=True)
+        self.assertEqual(result, [])
+
     def test_successful_run_does_not_resend(self):
         self.assertEqual(self.run_job(), 0)
         self.assertEqual(self.run_job(), 0)
