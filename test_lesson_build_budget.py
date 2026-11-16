@@ -133,5 +133,17 @@ class Budget(unittest.TestCase):
                 lb.build_lesson('checks', {}, {'n': 1, 'printed': [1, 2]}, [], '', {}, {'no_cloud': True})
         self.assertEqual(seen, [3, 3])
 
+    def test_repair_receives_later_quality_feedback_even_when_earlier_checks_fail(self):
+        q = {'stem': 'According to Land?', 'correct': 'one', 'wrong': ['two', 'three', 'four'], 'tag': 'target'}
+        d = {'focus': 'test', 'questions': [q, q, q]}
+        with patch.object(lb, 'blind_answer', return_value=['wrong key']), \
+             patch.object(lb, 'claim_check', return_value=['unsupported claim']), \
+             patch.object(lb, 'teaching_quality', return_value=['weak distractors']):
+            errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], '', {})
+        self.assertTrue(any('logistics' in x for x in errors))
+        self.assertIn('wrong key', errors)
+        self.assertIn('unsupported claim', errors)
+        self.assertIn('weak distractors', errors)
+
 
 if __name__ == '__main__': unittest.main()

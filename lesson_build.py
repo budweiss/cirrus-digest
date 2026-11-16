@@ -793,10 +793,11 @@ def teaching_quality(kind: str, d: dict, src: str, cfg: dict) -> list:
     if not isinstance(r.get("issues"), list) or any(not isinstance(x, str) for x in r["issues"]):
         return ["teaching review returned malformed issues"]
     evidence = r.get("evidence")
+    issues = ["teaching quality: " + x for x in r["issues"]]
     if not isinstance(evidence, list) or len(evidence) != count or any(
             not isinstance(q, str) or len(norm(q).split()) < 3 or norm(q) not in norm(src) for q in evidence):
-        return ["teaching review lacks exact source evidence"]
-    return ["teaching quality: " + x for x in r["issues"]]
+        return issues + ["teaching review lacks exact source evidence"]
+    return issues
 
 
 # ── one lesson: local, one local repair, cloud, then hold ────────────────────
@@ -832,19 +833,28 @@ def task_prompt(kind: str, book: dict, L: dict, codes: list, src: str) -> str:
 def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: str, cfg: dict,
                     model_checks: bool = True) -> list:
     if kind == "lessons":
+        if not all(isinstance(d.get(k), str) for k in ("why_it_matters", "student_considerations", "plan", "next_steps")) or not all(
+                isinstance(d.get(k), list) and d[k] and all(isinstance(x, str) for x in d[k])
+                for k in ("i_can", "success_criteria")):
+            return ["lesson draft has missing or malformed required fields"]
         f = check_review(d, L, codes, src)
-        if not f and model_checks:
+        if model_checks:
             # The note links guide codes to activities; the checker cannot see
             # the guide and calls every code "invented". Codes are checked above.
-            f = claim_check(checkable_text(d), src, cfg)
+            f += claim_check(checkable_text(d), src, cfg)
     else:
+        qs = d.get("questions")
+        if not isinstance(qs, list) or not 3 <= len(qs) <= 4 or not all(
+                isinstance(q, dict) and isinstance(q.get("stem"), str) and isinstance(q.get("correct"), str)
+                and isinstance(q.get("wrong"), list) and len(q["wrong"]) == 3
+                and all(isinstance(x, str) for x in q["wrong"]) for q in qs):
+            return ["question draft has missing or malformed required fields"]
         f = check_mcq(d, L, src)
-        if not f and model_checks:
-            f = blind_answer(d, src, cfg, "%s-%d" % (book["module"], L["n"]))
-            if not f:
-                f = claim_check(mcq_text(d), src, cfg)
-    if not f and model_checks:
-        f = teaching_quality(kind, d, src, cfg)
+        if model_checks:
+            f += blind_answer(d, src, cfg, "%s-%d" % (book["module"], L["n"]))
+            f += claim_check(mcq_text(d), src, cfg)
+    if model_checks:
+        f += teaching_quality(kind, d, src, cfg)
     return f
 
 
