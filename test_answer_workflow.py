@@ -452,6 +452,98 @@ class IntakeTests(MemoryTests):
             aw.solve_and_answer(rec, {}, "fixture@example.invalid", "Meeting")
             self.assertEqual(send.call_count, 1)
 
+    @staticmethod
+    def _report_thread():
+        """Synthetic shape of the S635 hold: our weekly report carrying an .xlsx,
+        then the client's reply asking a question. No real mail or workbook."""
+        from email.message import EmailMessage
+        report = EmailMessage()
+        report["From"], report["Message-ID"] = "box@example.test", "<report@example.test>"
+        report["Date"], report["Subject"] = "Mon, 16 Nov 2026 03:00:00 -0500", "Weekly research update"
+        report.set_content("Weekly research update. The contacts workbook is attached.")
+        report.add_attachment(b"PK\x03\x04 synthetic workbook", maintype="application",
+                              subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                              filename="Contacts.xlsx")
+        reply = EmailMessage()
+        reply["From"], reply["Message-ID"] = "client@example.test", "<reply@example.test>"
+        reply["Date"], reply["Subject"] = "Mon, 16 Nov 2026 06:50:00 -0500", "Re: Weekly research update"
+        reply.set_content("Where is the snow removal RFP posted, and who is the contact?")
+        return [report.as_bytes(), reply.as_bytes()]
+
+    @staticmethod
+    def _readonly_thread(raws):
+        """Fake IMAP holding one thread; uid N is raws[N-1], the last is the request."""
+        from unittest.mock import MagicMock
+        mail = MagicMock()
+        mail.__enter__.return_value = mail
+        mail.select.return_value = ("OK", [])
+        def uid(command, *args):
+            if command == "search":
+                return "OK", [str(len(raws)).encode() if "Message-ID" in args
+                              else " ".join(str(n + 1) for n in range(len(raws))).encode()]
+            raw = raws[int(args[0]) - 1]
+            if args[-1] == "(X-GM-THRID RFC822.SIZE)":
+                return "OK", [b"1 (X-GM-THRID 7 RFC822.SIZE 1)"]
+            if args[-1] == "(RFC822.SIZE)":
+                return "OK", [b"1 (RFC822.SIZE %d)" % len(raw)]
+            if args[-1] == "(BODY.PEEK[])":
+                return "OK", [(b"meta", raw)]
+            raise AssertionError("unexpected mail operation")
+        mail.uid.side_effect = uid
+        return mail
+
+    def test_unsupported_thread_attachment_is_named_as_an_evidence_hold(self):
+        # S635: this shape read "Answer workflow interrupted: ValueError".
+        import intake
+        import runtime_config
+        import task_solver as ts
+        question = "Where is the snow removal RFP posted, and who is the contact?"
+        rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "<reply@example.test>",
+               "from_email": "client@example.test", "kind": "answer",
+               "title": "Re: Weekly research update", "body_head": question}
+        account = {"credential_key": "fixture", "address": "box@example.test", "imap_server": "invalid.test"}
+        model = FakeModels([])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "_fallback_to_ticket") as ticket, \
+             patch.object(ts, "try_entity_kb_answer", return_value=None), \
+             patch.object(ts, "_send_mail") as send, \
+             patch("workflow_mail_sources.imaplib.IMAP4_SSL",
+                   return_value=self._readonly_thread(self._report_thread())), \
+             patch.object(intake, "find_account", return_value=account), \
+             patch.object(runtime_config, "load_sources", return_value={}), \
+             patch.object(intake, "load_allowlist",
+                          return_value={"client@example.test": {"name": "fixture-client"}}), \
+             patch.object(aw, "Models", return_value=model):
+            result = aw.solve_and_answer(rec, {"fixture": "synthetic"}, "client@example.test",
+                                         "Re: Weekly research update")
+        row = self.m.get(result["request_id"])
+        reason = row["meta"]["reason"]
+        self.assertFalse(result["answered"])
+        self.assertEqual((row["state"], model.calls, send.call_count, ticket.call_count),
+                         ("needs_review", [], 0, 1))
+        self.assertIn("Held before any model ran: the mail evidence check refused this thread", reason)
+        self.assertIn("Attachment needs a supported local extractor; workflow_mail_sources.py:", reason)
+        self.assertIn("Deliberate hold, not a code error.", reason)
+        self.assertEqual(result["reason"], reason)
+        packet = json.loads((self.m.directory / (row["id"] + "-review.json")).read_text())
+        self.assertEqual(packet["request"]["meta"]["reason"], reason)
+        for private in ("snow removal", "example.test", "Contacts.xlsx"):
+            self.assertNotIn(private, reason)
+
+    def test_unexpected_interruption_names_location_not_contents(self):
+        try:
+            {}["private fixture detail"]
+        except KeyError as exc:
+            reason = aw.interrupted_reason(exc)
+        self.assertIn("unexpected KeyError at test_answer_workflow.py:", reason)
+        self.assertIn("(code error)", reason)
+        self.assertNotIn("private fixture", reason)
+        # A refusal string raised outside the mail evidence check is not presumed deliberate.
+        try:
+            raise ValueError("Attachment needs a supported local extractor")
+        except ValueError as exc:
+            self.assertIn("unexpected ValueError", aw.interrupted_reason(exc))
+
     def test_full_original_question_retained_for_local_review(self):
         question = "Explain this supplied material: " + "detail " * 2000
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "long",

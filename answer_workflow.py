@@ -8,6 +8,7 @@ import json
 import fcntl
 import re
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 import conversation_memory as cm
@@ -63,6 +64,38 @@ KNOWN_STAGE_ERRORS = frozenset({
     'answer workflow not qualified',
     'foundation contract changed; review required',
 })
+
+
+# S635: Bill's 11-16 reply held as "Answer workflow interrupted: ValueError".
+# The mail evidence check had refused the thread's .xlsx attachment before any
+# model ran, but the record read like a crash. These are that check's fixed,
+# content-free refusals; any other text stays out of the record.
+EVIDENCE_REFUSALS = frozenset({
+    'Missing mailbox evidence credential',
+    'Thread exceeds evidence limit',
+    'Message exceeds evidence limit',
+    'Incomplete message fetch',
+    'Body could not be decoded',
+    'Malformed MIME evidence',
+    'Attachment exceeds evidence limit',
+    'Expanded attachment exceeds limit',
+    'PDF exceeds evidence limit',
+    'Attachment needs a supported local extractor',
+    'Attachment yielded no text',
+    'Full correspondence exceeds evidence limit; review required',
+})
+
+
+def interrupted_reason(exc):
+    """Name a deliberate evidence refusal plainly; locate any other fault."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    last = frames[-1] if frames else None
+    where = '%s:%d %s' % (Path(last.filename).name, last.lineno, last.name) if last else 'unknown location'
+    if (type(exc) is ValueError and str(exc) in EVIDENCE_REFUSALS
+            and last and Path(last.filename).name == 'workflow_mail_sources.py'):
+        return ('Held before any model ran: the mail evidence check refused this thread '
+                '(%s; %s). Deliberate hold, not a code error.' % (exc, where))
+    return 'Answer workflow interrupted by an unexpected %s at %s (code error).' % (type(exc).__name__, where)
 
 
 def stage_error(exc):
@@ -347,8 +380,7 @@ def solve_and_answer(rec, creds, to_addr, subject):
                 return {"answered": True, "request_id": row["id"],
                         "reason": "Delivered; follow-up recording needs review: " + type(exc).__name__}
             state = "delivery_unknown" if row["state"] == "sending" else "needs_review"
-            row = memory.update(row["id"], state=state,
-                                meta={"reason": "Answer workflow interrupted: " + type(exc).__name__})
+            row = memory.update(row["id"], state=state, meta={"reason": interrupted_reason(exc)})
             memory.review_packet(row)
             ts._fallback_to_ticket(dict(rec, privacy=row["privacy"]))
             return {"answered": False, "request_id": row["id"], "reason": row["meta"]["reason"]}
