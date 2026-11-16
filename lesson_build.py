@@ -438,6 +438,7 @@ Write 3 or 4 multiple-choice questions a grade 4 student can answer after this l
 - Anchor each correct answer to the pages' Key Ideas or explicit text evidence. A nearby date is not evidence of an event: distinguish writing ABOUT a letter from writing or mailing the letter. Prefer questions about meaning, motivation, sequence and skill to isolated date recall.
 - Each question has one correct answer and three wrong answers. All four options are different and similar in length and style. Wrong answers should be plausible to a student who did not learn the lesson (a common mix-up, a detail from another part of the text), yet clearly wrong to one who did. No silly options, and no "all of the above" or "none of the above".
 - For each wrong option, identify the specific confusion it represents before selecting it: a reversed cause/effect, a neighboring word meaning, a mistaken motivation, a sequence reversal, or a partial reading. Keep every option in the same conceptual category. A random activity or unrelated subject is never a distractor. Wrong options are deliberately false; the source-only rule applies to the correct answer, not to requiring the source to assert a false option.
+- Never put the correct answer or full definition in the question stem. For a word with multiple meanings, give only a short context cue that distinguishes the senses (duration versus coping with difficulty, for example). For a reading skill, all options should be competing explanations of how that same skill works, not unrelated reading behaviors.
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
 - focus: a short phrase saying what the questions cover.
@@ -628,7 +629,8 @@ def check_review(d: dict, L: dict, codes: list, src: str) -> list:
 _LOGISTICS = re.compile(r"\b(launch|land|learn book|which pages?|what pages?|p\.\s*\d|which activity|"
                         r"what resource|what materials?|the teacher|portion of the lesson|"
                         r"activity students|assessment section|part of the assessment|revisit.{0,30}essential question|"
-                        r"what is the essential question|engage options|students could engage)\b", re.I)
+                        r"what is the essential question|engage options|students could engage|"
+                        r"stated as a learning goal|which.{0,30}learning goal)\b", re.I)
 
 
 def check_mcq(d: dict, L: dict, src: str) -> list:
@@ -641,6 +643,9 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
     s = norm(src)
     for i, q in enumerate(qs, 1):
         opts = [q.get("correct", "")] + list(q.get("wrong") or [])
+        answer = norm(q.get("correct", ""))
+        if len(answer.split()) >= 4 and answer in norm(q.get("stem", "")):
+            f.append("question %d gives the correct answer in its stem" % i)
         if _LOGISTICS.search(q.get("stem", "")):
             f.append("question %d asks about the lesson's logistics (segments, pages, materials or "
                      "activities); ask what students learned instead" % i)
@@ -858,6 +863,41 @@ def task_prompt(kind: str, book: dict, L: dict, codes: list, src: str) -> str:
     return MCQ_TASK.format(assessment=ASSESSMENT_NOTE if "Assessment" in L["label"] else "", **base)
 
 
+KNOWLEDGE_SCHEMA = {"type": "object", "properties": {"claims": {
+    "type": "array", "minItems": 3, "maxItems": 3, "items": {
+        "type": "object", "properties": {
+            "tag": {"type": "string", "enum": ["vocab", "target", "word study"]},
+            "claim": {"type": "string"}, "quote": {"type": "string"}},
+        "required": ["tag", "claim", "quote"]}}}, "required": ["claims"]}
+
+
+def question_knowledge(src: str, cfg: dict) -> dict:
+    """Select what a student learns before asking a model to invent options.
+    Exact spans establish source identity; final fact/answer/quality checks
+    still determine whether each generated question is actually supported."""
+    prompt = ("Select exactly three distinct pieces of KNOWLEDGE taught by these pages for "
+              "student quiz questions. Do not write questions yet. Give each claim and an exact "
+              "supporting quote of at least three words copied from the source. Select word meanings, "
+              "explicitly explained reading skills, or supported story ideas. Separate meanings of "
+              "the same vocabulary word count as distinct knowledge. On opening lessons, prefer "
+              "vocabulary meanings and an explicitly explained reading skill. Tag a reading skill "
+              "as target, not vocab. NEVER select a stated Learning Goal, Essential Question, "
+              "classroom activity, materials, or an unanswered discussion prompt. Never invent an "
+              "answer to a discussion prompt. SOURCE:\n" + src)
+    r = local_check("You select source-grounded student knowledge, not lesson logistics.",
+                    prompt, KNOWLEDGE_SCHEMA, cfg, max_tokens=1800, timeout=180)
+    claims = r.get("claims")
+    if not isinstance(claims, list) or len(claims) != 3 or any(
+            not isinstance(c, dict) or c.get("tag") not in ("vocab", "target", "word study")
+            or not isinstance(c.get("claim"), str) or not c["claim"].strip()
+            or not isinstance(c.get("quote"), str) or len(norm(c["quote"]).split()) < 3
+            or norm(c["quote"]) not in norm(src) for c in claims):
+        raise Hold("question knowledge selection lacks three exact source-supported claims")
+    if len({norm(c["claim"]) for c in claims}) != 3:
+        raise Hold("question knowledge selection repeats a claim")
+    return r
+
+
 def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: str, cfg: dict,
                     model_checks: bool = True) -> list:
     if kind == "lessons":
@@ -889,6 +929,13 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
 def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dict, ctx: dict) -> dict:
     """Returns {"draft", "stage", "tries"}; raises Hold after the last stage."""
     prompt = task_prompt(kind, book, L, codes, src)
+    knowledge = None
+    if kind == "checks":
+        knowledge = question_knowledge(src, cfg)
+        prompt += ("\n\nREQUIRED QUESTION CONTENT: Write exactly one question for each of these "
+                   "three claims, in order. Do not substitute a lesson goal or activity. Use the "
+                   "assigned tag. Keep incorrect options in the same conceptual category as the "
+                   "correct answer.\n" + json.dumps(knowledge, ensure_ascii=False))
     schema = REVIEW_SCHEMA if kind == "lessons" else MCQ_SCHEMA
     tries, prev = [], None
     for stage in ("local", "local-repair", "cloud"):
@@ -932,12 +979,12 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
         tries.append({"stage": stage, "seconds": round(time.time() - t0, 1), "failures": failures,
                       "removed_optional_questions": removed})
         if d is not None and not failures:
-            return {"draft": d, "stage": stage, "tries": tries}
+            return {"draft": d, "stage": stage, "tries": tries, "question_knowledge": knowledge}
         prev = d if d is not None else prev
     held = Hold("Lesson %d %s failed its checks: %s" % (
         L["n"], "lesson plan" if kind == "lessons" else "questions",
         "; ".join(f for t in tries[-2:] for f in t["failures"][:2]) or "no draft"))
-    held.record = {"tries": tries, "last_draft": prev}
+    held.record = {"tries": tries, "last_draft": prev, "question_knowledge": knowledge}
     raise held
 
 

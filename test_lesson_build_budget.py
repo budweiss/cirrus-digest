@@ -57,7 +57,8 @@ class Budget(unittest.TestCase):
     def test_logistics_rejects_the_actual_cloud_failures(self):
         q = {'tag': 'target', 'correct': 'one', 'wrong': ['two', 'three', 'four']}
         for stem in ('What is the Essential Question students will explore?',
-                     'Which of these is one way students could engage with the module topic?'):
+                     'Which of these is one way students could engage with the module topic?',
+                     'Which of these is stated as a Learning Goal for this lesson?'):
             draft = {'focus': 'topic', 'questions': [dict(q, stem=stem)] * 3}
             self.assertTrue(any('logistics' in x for x in lb.check_mcq(draft, {'printed': [1, 2]}, '')))
 
@@ -149,11 +150,34 @@ class Budget(unittest.TestCase):
             seen.append(len(draft['questions']))
             return ['independent model rejects this set']
         with patch.object(lb, 'task_prompt', return_value='source'), \
+             patch.object(lb, 'question_knowledge', return_value={'claims': []}), \
              patch.object(lb, 'local_draft', return_value=d), \
              patch.object(lb, 'lesson_failures', side_effect=reject):
             with self.assertRaises(lb.Hold):
                 lb.build_lesson('checks', {}, {'n': 1, 'printed': [1, 2]}, [], '', {}, {'no_cloud': True})
         self.assertEqual(seen, [3, 3])
+
+    def test_knowledge_selection_requires_real_distinct_source_claims(self):
+        claims = [{'tag': 'vocab', 'claim': word, 'quote': quote} for word, quote in
+                  [('last', 'continue to exist'), ('tolerate', 'accept something unpleasant'),
+                   ('knowledge', 'understand new texts')]]
+        source = 'continue to exist; accept something unpleasant; understand new texts'
+        with patch.object(lb, 'local_check', return_value={'claims': claims}):
+            self.assertEqual(lb.question_knowledge(source, {}), {'claims': claims})
+            with self.assertRaises(lb.Hold): lb.question_knowledge('unrelated source', {})
+        with patch.object(lb, 'local_check', return_value={'claims': [claims[0]]*3}):
+            with self.assertRaises(lb.Hold): lb.question_knowledge(source, {})
+        with patch.object(lb, 'local_check', return_value={'claims': claims[:2]}):
+            with self.assertRaises(lb.Hold): lb.question_knowledge(source, {})
+
+    def test_question_cannot_repeat_its_answer_in_the_stem(self):
+        q = {'tag': 'vocab', 'stem': 'When endure means to continue to exist for a long time, what does it mean?',
+             'correct': 'to continue to exist for a long time',
+             'wrong': ['to begin for the first time', 'to stop after a short time', 'to keep only its earliest form']}
+        draft = {'focus': 'endure', 'questions': [q]*3}
+        self.assertTrue(any('answer in its stem' in x for x in lb.check_mcq(draft, {'printed': [1, 2]}, '')))
+        q['stem'] = 'Which meaning of endure concerns duration?'
+        self.assertFalse(lb.check_mcq(draft, {'printed': [1, 2]}, ''))
 
     def test_repair_receives_later_quality_feedback_even_when_earlier_checks_fail(self):
         q = {'stem': 'According to Land?', 'correct': 'one', 'wrong': ['two', 'three', 'four'], 'tag': 'target'}
