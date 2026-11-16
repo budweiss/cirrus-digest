@@ -95,11 +95,11 @@ class Budget(unittest.TestCase):
     def test_teaching_review_requires_complete_grounding(self):
         draft = {'questions': [{}, {}, {}]}
         src = 'The poet describes a red wheelbarrow. Rain water makes it shine.'
-        with patch.object(lb, 'local_check', return_value={'issues': [], 'evidence': []}):
+        with patch.object(lb, 'local_check', return_value={'defects': [], 'evidence': []}):
             self.assertTrue(lb.teaching_quality('checks', draft, src, {}))
-        with patch.object(lb, 'local_check', return_value={'issues': ['date does not match event'], 'evidence': ['The poet describes a red wheelbarrow']*3}):
+        with patch.object(lb, 'local_check', return_value={'defects': ['date does not match event'], 'evidence': ['The poet describes a red wheelbarrow']*3}):
             self.assertIn('date does not match event', lb.teaching_quality('checks', draft, src, {})[0])
-        with patch.object(lb, 'local_check', return_value={'issues': [], 'evidence': ['The poet describes a red wheelbarrow']*3}):
+        with patch.object(lb, 'local_check', return_value={'defects': [], 'evidence': ['The poet describes a red wheelbarrow']*3}):
             self.assertEqual(lb.teaching_quality('checks', draft, src, {}), [])
 
     def test_supported_date_answer_is_not_banned_but_logistics_are(self):
