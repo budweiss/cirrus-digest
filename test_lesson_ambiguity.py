@@ -95,6 +95,23 @@ class Ambiguity(unittest.TestCase):
                     lb.independent_answers({'questions': [self.q]}, self.source, ctx, 'fixture')
                 cloud.assert_not_called()
 
+    def test_full_acceptance_cannot_bypass_independent_gate(self):
+        draft = {'questions': [copy.deepcopy(self.q) for _ in range(3)]}
+        ctx = {'dollar_job': 'fixture'}
+        with patch.object(lb, 'check_mcq', side_effect=lambda *args: []), \
+             patch.object(lb, 'claim_check', return_value=[]), \
+             patch.object(lb, 'option_quality', return_value=[]), \
+             patch.object(lb, 'teaching_quality', return_value=[]), \
+             patch.object(lb, 'independent_answers', return_value=['ambiguous']) as audit:
+            failures = lb.lesson_failures('checks', draft, {'module': 2}, {'n': 4},
+                                         [], self.source, {}, True, ctx)
+            self.assertEqual(failures, ['ambiguous'])
+            self.assertIs(audit.call_args.args[2], ctx)
+            audit.side_effect = lb.Hold('budget exhausted')
+            with self.assertRaises(lb.Hold):
+                lb.lesson_failures('checks', draft, {'module': 2}, {'n': 4},
+                                  [], self.source, {}, True, ctx)
+
 
 if __name__ == '__main__':
     unittest.main()
