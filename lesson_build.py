@@ -869,11 +869,18 @@ def independent_answers(d: dict, src: str, ctx: dict, seed: str) -> list:
         "options can be defended, or if none actually answers what is asked. A less complete answer "
         "can still be defensible; chart labels do not make overlapping skills exclusive. A definition "
         "does not answer a purpose question. In a hypothetical application assess the principle, not "
-        "whether the invented example appears verbatim. Include short exact source quotes for the "
-        "reasoning.\nSOURCE:\n" + src + "\nQUESTIONS:\n" + json.dumps(questions))
+        "whether the invented example appears verbatim. Every evidence quote must contain at least "
+        "three consecutive words copied exactly from the source, without joining separate spans "
+        "or paraphrasing.\nSOURCE:\n" + src + "\nQUESTIONS:\n" + json.dumps(questions))
     reserve_cloud(ctx)
     _, result = cloud_draft(prompt, AMBIGUITY_SCHEMA, ctx["creds"], ctx,
                            system="You independently audit assessment validity against the supplied source.")
+    if ctx.get("budget_path"):
+        audit_dir = Path(ctx["budget_path"]).parent / "answer-audits"
+        audit_dir.mkdir(exist_ok=True)
+        durable_json(audit_dir / ("call-%03d.json" % ctx["cloud_calls"]), {
+            "draft_digest": draft_digest(d), "source_digest": hashlib.sha256(src.encode()).hexdigest(),
+            "review": result})
     rows = result.get("reviews")
     if (not isinstance(rows, list) or len(rows) != len(keys)
             or any(not isinstance(row, dict) or type(row.get("id")) is not int for row in rows)
@@ -1014,7 +1021,7 @@ KNOWLEDGE_SCHEMA = {"type": "object", "properties": {"claims": {
         "required": ["tag", "claim", "quote"]}}}, "required": ["claims"]}
 
 
-def question_knowledge(src: str, cfg: dict) -> dict:
+def question_knowledge(src: str, cfg: dict, ctx=None) -> dict:
     """Select what a student learns before asking a model to invent options.
     Exact spans establish source identity; final fact/answer/quality checks
     still determine whether each generated question is actually supported."""
@@ -1027,8 +1034,26 @@ def question_knowledge(src: str, cfg: dict) -> dict:
               "as target, not vocab. NEVER select a stated Learning Goal, Essential Question, "
               "classroom activity, materials, or an unanswered discussion prompt. Never invent an "
               "answer to a discussion prompt. SOURCE:\n" + src)
-    r = local_check("You select source-grounded student knowledge, not lesson logistics.",
-                    prompt, KNOWLEDGE_SCHEMA, cfg, max_tokens=1800, timeout=180)
+    system = "You select source-grounded student knowledge, not lesson logistics."
+    try:
+        r = local_check(system, prompt, KNOWLEDGE_SCHEMA, cfg, max_tokens=1800, timeout=180)
+        return validate_knowledge(r, src)
+    except (Hold, ValueError, KeyError, TypeError, OSError) as error:
+        if not ctx or ctx.get("no_cloud"):
+            raise
+        # A failed preliminary selector must not bypass the authorized bounded
+        # fallback before the drafting loop even starts. Keep its budget context.
+        reserve_cloud(ctx)
+        _, r = cloud_draft(prompt + "\nThe local selection failed validation: " + str(error)[:200] +
+                           "\nChoose three substantive claims and copy at least three consecutive "
+                           "source words for EACH quote. A single syllabified word is insufficient.",
+                           KNOWLEDGE_SCHEMA, ctx["creds"], ctx, system=system)
+        return validate_knowledge(r, src)
+
+
+def validate_knowledge(r: dict, src: str) -> dict:
+    if not isinstance(r, dict):
+        raise Hold("question knowledge selection is not an object")
     claims = r.get("claims")
     if not isinstance(claims, list) or len(claims) != 3 or any(
             not isinstance(c, dict) or c.get("tag") not in ("vocab", "target", "word study")
@@ -1076,7 +1101,13 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
     prompt = task_prompt(kind, book, L, codes, src)
     knowledge = None
     if kind == "checks":
-        knowledge = question_knowledge(src, cfg)
+        try:
+            knowledge = question_knowledge(src, cfg, ctx)
+        except Hold as error:
+            if str(error).startswith("question knowledge selection"):
+                error.record = {"tries": [{"stage": "knowledge-selection", "failures": [str(error)]}],
+                                "last_draft": None}
+            raise
         prompt += ("\n\nREQUIRED QUESTION CONTENT: Write exactly one question for each of these "
                    "three claims, in order. Do not substitute a lesson goal or activity. Use the "
                    "assigned tag. Keep incorrect options in the same conceptual category as the "

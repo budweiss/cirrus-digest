@@ -112,6 +112,26 @@ class Ambiguity(unittest.TestCase):
                 lb.lesson_failures('checks', draft, {'module': 2}, {'n': 4},
                                   [], self.source, {}, True, ctx)
 
+    def test_knowledge_fallback_is_bounded_budgeted_and_still_validated(self):
+        source = 'continue to exist; accept something unpleasant; understand new texts'
+        claims = [{'tag': 'vocab', 'claim': str(i), 'quote': q} for i, q in enumerate(
+            ['continue to exist', 'accept something unpleasant', 'understand new texts'])]
+        ctx = {'creds': {}, 'cloud_calls': 7, 'dollar_job': 'fixture'}
+        with patch.object(lb, 'local_check', return_value={'claims': []}), \
+             patch.object(lb, 'cloud_draft', return_value=('fixture', {'claims': claims})) as cloud:
+            self.assertEqual(lb.question_knowledge(source, {}, ctx), {'claims': claims})
+            self.assertEqual(ctx['cloud_calls'], 8)
+            cloud.assert_called_once()
+            cloud.return_value = ('fixture', {'claims': []})
+            with self.assertRaises(lb.Hold):
+                lb.question_knowledge(source, {}, ctx)
+            self.assertEqual(cloud.call_count, 2)  # one call per attempt, no retry loop
+        with patch.object(lb, 'local_check', return_value={'claims': []}), \
+             patch.object(lb, 'cloud_draft') as cloud:
+            with self.assertRaises(lb.Hold):
+                lb.question_knowledge(source, {}, {'no_cloud': True})
+            cloud.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
