@@ -15,6 +15,10 @@ Environment=TARGET_ENV=beta
 # their independent parallelism. This moves batch waiting before model dispatch
 # and does not claim a faster batch or change output/qualification budgets.
 Environment=HALFTIME_ROUTING_EXTRACT_WORKERS=1
+# S637: the itinerary phase uses the same single-slot local gateway. Its
+# worker includes search/fetch as well as extraction, so this serializes that
+# whole phase; it does not promise lower total elapsed time.
+Environment=HALFTIME_ITINERARY_WORKERS=1
 # 8 games x 7 metros, each a search + fetches + a model call: the first full
 # sweep took about two hours. Set EXPLICITLY rather than trusting the oneshot
 # default, because a start timeout that kills the job at 90 seconds would leave
