@@ -101,7 +101,7 @@ def readable_snippet(content, limit=600):
     odd = sum(1 for ch in head if ch == "�" or (ord(ch) < 32 and ch not in "\n\r\t"))
     if odd / len(head) > 0.05:
         return "(no readable text: binary document)"
-    return content[:limit]
+    return content[:limit]  # T40-OK: gather_web already cuts to 600 in pinned hoa_monitor.py:210; a screen input, not an operator view; a marker would change the reviewed screen's input
 
 
 # ── 3. open solicitation ─────────────────────────────────────────────────────
