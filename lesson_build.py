@@ -856,17 +856,18 @@ OPTION_TASK = """Review only the design of ONE grade-4 multiple-choice question.
 1. Does the stem itself state the meaning/answer being tested? A short context cue is allowed, but repeating the definition is not a knowledge check.
 2. For EACH incorrect option, is it a plausible misunderstanding of the SAME concept as the keyed answer? Name the concrete confusion. Cause/effect reversal, confusing related motivations, opposite duration, partial comprehension, or over-applying a reading strategy can be plausible. Random verbs, unrelated activities, and different school subjects are not. Do not invent a justification to approve a weak option.
 A distractor is false by design. Do not reject it just because it is an opposite or a different action within the SAME conceptual category. For example, accepting versus refusing, or tolerating versus removing a difficulty, are meaningful contrasting responses to a difficulty. These are not unrelated just because the actions differ. Judge the conceptual relationship, not whether the wrong option matches the keyed definition.
+A salient detail from another part of the supplied text, another taught word meaning, or a swapped role/event from texts being compared can also be a plausible mix-up. Use the supplied source to distinguish these from unrelated choices. Do not require a deliberately wrong option to be factually true or reject it merely because it belongs to the other character.
 Number the three wrong options 1, 2, 3, in order. Be concise. QUESTION:
 """
 
 
-def option_quality(d: dict, cfg: dict) -> list:
+def option_quality(d: dict, cfg: dict, src: str = "") -> list:
     failures = []
     for i, question in enumerate(d["questions"], 1):
         # Do not show the drafter's rationales to this independent review.
         q = {k: question[k] for k in ("stem", "correct", "wrong")}
         r = local_check("You check whether a question actually measures learning instead of giving away its answer.",
-                        OPTION_TASK + json.dumps(q, ensure_ascii=False), OPTION_SCHEMA, cfg,
+                        OPTION_TASK + json.dumps(q, ensure_ascii=False) + "\nSOURCE:\n" + src, OPTION_SCHEMA, cfg,
                         max_tokens=1000, timeout=120)
         options = r.get("distractors")
         if type(r.get("answer_revealed")) is not bool or not isinstance(r.get("stem_reason"), str) or not isinstance(options, list) or len(options) != 3 or any(
@@ -966,7 +967,7 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
         if model_checks:
             f += blind_answer(d, src, cfg, "%s-%d" % (book["module"], L["n"]))
             f += claim_check(mcq_text(d), src, cfg)
-            f += option_quality(d, cfg)
+            f += option_quality(d, cfg, src)
     if model_checks:
         f += teaching_quality(kind, d, src, cfg)
     return f

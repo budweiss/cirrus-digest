@@ -206,8 +206,9 @@ class Budget(unittest.TestCase):
         verdict = {'answer_revealed': False, 'stem_reason': 'context only', 'distractors': [
             {'option': i, 'plausible': True, 'reason': 'same concept'} for i in (1, 2, 3)]}
         with patch.object(lb, 'local_check', return_value=verdict) as checker:
-            self.assertFalse(lb.option_quality({'questions': [q]}, {}))
+            self.assertFalse(lb.option_quality({'questions': [q]}, {}, 'SOURCE-ONLY-CONTEXT'))
             self.assertNotIn('PRIVATE-RATIONALE', checker.call_args.args[1])
+            self.assertIn('SOURCE-ONLY-CONTEXT', checker.call_args.args[1])
             verdict['distractors'][2]['plausible'] = False
             self.assertTrue(any('weak distractor 3' in x for x in lb.option_quality({'questions': [q]}, {})))
             verdict['distractors'][2]['option'] = 2
