@@ -83,11 +83,17 @@ def durable_json(path: Path, value: dict) -> None:
 
 
 def reserve_cloud(ctx: dict) -> None:
-    if ctx.setdefault("cloud_calls", 0) >= MAX_CLOUD_CALLS_PER_JOB:
+    if ctx.setdefault("cloud_calls", 0) >= cloud_call_limit(ctx):
         raise Hold("this job's cloud allowance is used up")
     ctx["cloud_calls"] += 1
     if ctx.get("budget_path"):
         durable_json(Path(ctx["budget_path"]), {"cloud_calls": ctx["cloud_calls"]})
+
+
+def cloud_call_limit(ctx: dict) -> int:
+    # Qualification retains all historical calls across repairs. USD limits
+    # are still enforced on every wire attempt by the existing shared ledger.
+    return 200 if ctx.get("qualification") else MAX_CLOUD_CALLS_PER_JOB
 
 
 def acceptance_fingerprint(pdf: Path, cfg: dict) -> str:
@@ -842,8 +848,9 @@ AMBIGUITY_SCHEMA = {"type": "object", "properties": {"reviews": {"type": "array"
         "id": {"type": "integer"},
         "supported_options": {"type": "array", "items": {"type": "integer"}},
         "ambiguous": {"type": "boolean"}, "reason": {"type": "string"},
+        "quality_defects": {"type": "array", "items": {"type": "string"}},
         "evidence": {"type": "array", "items": {"type": "string"}}},
-    "required": ["id", "supported_options", "ambiguous", "reason", "evidence"]}}},
+    "required": ["id", "supported_options", "ambiguous", "reason", "quality_defects", "evidence"]}}},
     "required": ["reviews"]}
 
 
@@ -869,35 +876,82 @@ def independent_answers(d: dict, src: str, ctx: dict, seed: str) -> list:
         "options can be defended, or if none actually answers what is asked. A less complete answer "
         "can still be defensible; chart labels do not make overlapping skills exclusive. A definition "
         "does not answer a purpose question. In a hypothetical application assess the principle, not "
-        "whether the invented example appears verbatim. Every evidence quote must contain at least "
-        "three consecutive words copied exactly from the source, without joining separate spans "
-        "or paraphrasing.\nSOURCE:\n" + src + "\nQUESTIONS:\n" + json.dumps(questions))
-    reserve_cloud(ctx)
-    _, result = cloud_draft(prompt, AMBIGUITY_SCHEMA, ctx["creds"], ctx,
-                           system="You independently audit assessment validity against the supplied source.")
-    if ctx.get("budget_path"):
-        audit_dir = Path(ctx["budget_path"]).parent / "answer-audits"
-        audit_dir.mkdir(exist_ok=True)
-        durable_json(audit_dir / ("call-%03d.json" % ctx["cloud_calls"]), {
-            "draft_digest": draft_digest(d), "source_digest": hashlib.sha256(src.encode()).hexdigest(),
-            "review": result})
+        "whether the invented example appears verbatim. Also independently audit every question's "
+        "FACTS AND DESIGN. In quality_defects list only actual defects: an unsupported or changed "
+        "source meaning/date/event; an answer revealed by the stem; testing classroom logistics, "
+        "teacher actions, assessment-section descriptions or unanswered discussion prompts rather "
+        "than student knowledge; or a nonsensical/unrelated distractor. Every wrong option must "
+        "represent a plausible misconception at grade 4. Opposite meanings, ally versus adversary, "
+        "related character-role swaps, near-neighbor grammar categories, or confused stages of a "
+        "writing process CAN be valid misconceptions. Do not reject a distractor just because it "
+        "is false, the opposite, or a different related category. Conversely random objects and "
+        "unrelated activities are not useful distractors. Accept accurate paraphrases; one meaning "
+        "of a multi-meaning word is sufficient when the stem clearly selects that meaning. "
+        "A taught strategy a student can apply is knowledge; merely recalling what the class or "
+        "teacher did is logistics. quality_defects must be empty when there is no defect. "
+        "For each question provide at least one quote of three consecutive source words. "
+        "A supplementary two-word literal definition is allowed alongside that context quote. "
+        "Every quote must match one consecutive source span exactly; never join spans or paraphrase. "
+        "\nSOURCE:\n" + src + "\nQUESTIONS:\n" + json.dumps(questions))
+    for attempt in range(2):
+        reserve_cloud(ctx)
+        # Sonnet 5 also missed a repeated overlapping-methods control. Use the
+        # stronger, explicitly priced reviewer only here; drafting is unchanged.
+        review_creds = dict(ctx["creds"], claude_dev_model="claude-opus-5")
+        _, result = cloud_draft(prompt, AMBIGUITY_SCHEMA, review_creds, ctx,
+                               system="You independently audit assessment validity against the supplied source.")
+        if ctx.get("budget_path"):
+            audit_dir = Path(ctx["budget_path"]).parent / "answer-audits"
+            audit_dir.mkdir(exist_ok=True)
+            durable_json(audit_dir / ("call-%03d.json" % ctx["cloud_calls"]), {
+                "draft_digest": draft_digest(d), "source_digest": hashlib.sha256(src.encode()).hexdigest(),
+                "review": result})
+        failures, malformed, substantive = answer_review_failures(result, keys, src)
+        if not malformed or substantive or attempt:
+            return failures
+        prompt += ("\nYour REVIEW (not the student questions) failed the evidence/format contract: " +
+                   json.dumps(failures) + "\nPrevious review: " + json.dumps(result) +
+                   "\nReturn a complete corrected review. Provide at least one consecutive exact "
+                   "source quote of three words per question. Extra quotes must be exact and at "
+                   "least two words. Source columns can be interleaved: prefer the intact Key Ideas "
+                   "or definitions over reconstructing a broken narrative sentence. Do not rewrite "
+                   "the questions or invent evidence.")
+
+
+def answer_review_failures(result: dict, keys: dict, src: str) -> tuple:
+    if not isinstance(result, dict):
+        return ["independent answer review is not an object"], True, False
     rows = result.get("reviews")
     if (not isinstance(rows, list) or len(rows) != len(keys)
             or any(not isinstance(row, dict) or type(row.get("id")) is not int for row in rows)
             or {row["id"] for row in rows} != set(keys)):
-        return ["independent answer review is incomplete or malformed"]
-    failures = []
+        return ["independent answer review is incomplete or malformed"], True, False
+    failures, malformed, substantive = [], False, False
     for row in rows:
         i, supported, quotes = row["id"], row.get("supported_options"), row.get("evidence")
-        if (not isinstance(supported, list) or any(type(x) is not int or x not in range(4) for x in supported)
-                or len(set(supported)) != len(supported) or type(row.get("ambiguous")) is not bool
+        defects = row.get("quality_defects")
+        valid_supported = (isinstance(supported, list)
+                           and all(type(x) is int and x in range(4) for x in supported)
+                           and len(set(supported)) == len(supported))
+        if (not valid_supported or type(row.get("ambiguous")) is not bool
                 or not isinstance(row.get("reason"), str) or not row["reason"].strip()
+                or not isinstance(defects, list) or any(not isinstance(x, str) or not x.strip() for x in defects)
                 or not isinstance(quotes, list) or not quotes
-                or any(not isinstance(x, str) or len(norm(x).split()) < 3 or norm(x) not in norm(src) for x in quotes)):
-            failures.append("question %d: independent answer review lacks a complete grounded verdict" % i)
-        elif row["ambiguous"] or supported != [keys[i]]:
-            failures.append("question %d: independent answer review rejected the key or uniqueness (%s)" % (i, row["reason"]))
-    return failures
+                or any(not isinstance(x, str) or len(norm(x).split()) < 2 or norm(x) not in norm(src) for x in quotes)
+                or not any(isinstance(x, str) and len(norm(x).split()) >= 3 for x in quotes)):
+            bad_quotes = ([x for x in quotes if not isinstance(x, str) or len(norm(x).split()) < 2
+                           or norm(x) not in norm(src)] if isinstance(quotes, list) else [])
+            detail = ("; invalid source quotes: " + json.dumps(bad_quotes)[:600]) if bad_quotes else ""
+            failures.append("question %d: independent answer review lacks a complete grounded verdict%s" % (i, detail))
+            malformed = True
+        if row.get("ambiguous") is True or (isinstance(defects, list) and defects):
+            substantive = True
+        if row.get("ambiguous") is True or (valid_supported and supported != [keys[i]]):
+            substantive = True
+            failures.append("question %d: independent answer review rejected the key or uniqueness (%s)" % (i, row.get("reason", "missing reason")))
+        if isinstance(defects, list) and all(isinstance(x, str) for x in defects):
+            failures.extend("question %d: quality defect: %s" % (i, x) for x in defects)
+    return failures, malformed, substantive
 
 
 QUALITY_SCHEMA = {"type": "object", "properties": {
@@ -1086,12 +1140,13 @@ def lesson_failures(kind: str, d: dict, book: dict, L: dict, codes: list, src: s
                 and all(isinstance(x, str) for x in q["wrong"]) for q in qs):
             return ["question draft has missing or malformed required fields"]
         f = check_mcq(d, L, src)
-        if model_checks:
-            f += claim_check(mcq_text(d), src, cfg)
-            f += option_quality(d, cfg, src)
     if model_checks:
-        f += teaching_quality(kind, d, src, cfg)
-        if kind == "checks" and not f:
+        if kind == "lessons":
+            f += teaching_quality(kind, d, src, cfg)
+        elif not f:
+            # Saved S635 controls show the local design reviewer repeatedly
+            # rejects legitimate contrasts. The qualified independent review
+            # covers facts, learning targets, each distractor and uniqueness.
             f += independent_answers(d, src, ctx, "%s-%d" % (book["module"], L["n"]))
     return f
 
@@ -1133,7 +1188,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                 if ctx.get("no_cloud"):
                     tries.append({"stage": stage, "failures": ["cloud fallback is off for this run"]})
                     break
-                if ctx.setdefault("cloud_calls", 0) >= MAX_CLOUD_CALLS_PER_JOB:
+                if ctx.setdefault("cloud_calls", 0) >= cloud_call_limit(ctx):
                     tries.append({"stage": stage, "failures": ["this job's cloud allowance is used up"]})
                     break
                 reserve_cloud(ctx)
@@ -1145,7 +1200,7 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                 try:
                     provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)
                 except ValueError:      # a reply that is not JSON gets one retry (Lesson 34)
-                    if ctx["cloud_calls"] >= MAX_CLOUD_CALLS_PER_JOB:   # S633 probe: the retry passed the cap
+                    if ctx["cloud_calls"] >= cloud_call_limit(ctx):   # S633 probe: the retry passed the cap
                         raise
                     reserve_cloud(ctx)
                     provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)

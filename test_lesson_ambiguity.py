@@ -59,10 +59,12 @@ class Ambiguity(unittest.TestCase):
         ctx = context if context is not None else {'creds': {}, 'dollar_job': 'fixture', 'cloud_calls': 7}
         def reply(prompt, schema, creds, context, **kwargs):
             self.assertNotIn('"correct"', prompt)
-            question = json.loads(prompt.split('\nQUESTIONS:\n')[1])[0]
+            self.assertEqual(creds['claude_dev_model'], 'claude-opus-5')
+            question = json.loads(prompt.split('\nQUESTIONS:\n')[1].split('\nYour REVIEW')[0])[0]
             key = question['options'].index(self.q['correct'])
             rows = [{'id': 1, 'supported_options': [key], 'ambiguous': False,
-                     'reason': 'Supported by source', 'evidence': ['Use voice to show feeling']}]
+                     'reason': 'Supported by source', 'quality_defects': [],
+                     'evidence': ['Use voice to show feeling']}]
             if mutate: mutate(rows, key)
             return 'fixture', {'reviews': rows}
         with patch.object(lb, 'cloud_draft', side_effect=reply):
@@ -73,6 +75,7 @@ class Ambiguity(unittest.TestCase):
         failures, ctx = self.paid_review()
         self.assertEqual(failures, [])
         self.assertEqual(ctx['cloud_calls'], 8)
+        self.assertNotIn('claude_dev_model', ctx['creds'])
         self.assertTrue(self.paid_review(lambda rows, key: rows[0].update(
             supported_options=[key, (key+1) % 4]))[0])
 
@@ -94,6 +97,39 @@ class Ambiguity(unittest.TestCase):
                 with self.assertRaises(lb.Hold):
                     lb.independent_answers({'questions': [self.q]}, self.source, ctx, 'fixture')
                 cloud.assert_not_called()
+
+    def test_review_format_gets_one_retry_without_rewriting_questions(self):
+        calls = []
+        def malformed_once(rows, key):
+            calls.append(key)
+            if len(calls) == 1: rows[0]['evidence'] = ['show feeling']
+        failures, ctx = self.paid_review(malformed_once)
+        self.assertEqual(failures, [])
+        self.assertEqual(ctx['cloud_calls'], 9)
+        self.assertEqual(len(calls), 2)
+
+    def test_short_literal_gloss_requires_longer_exact_context_quote(self):
+        self.assertEqual(self.paid_review(lambda r, k: r[0].update(
+            evidence=['Use voice to show feeling', 'show feeling']))[0], [])
+        self.assertTrue(self.paid_review(lambda r, k: r[0].update(evidence=['show feeling']))[0])
+        self.assertTrue(self.paid_review(lambda r, k: r[0].update(
+            evidence=['Use voice to show feeling', 'invented meaning']))[0])
+
+    def test_substantive_quality_rejection_never_disappears_in_format_retry(self):
+        def defect(rows, key):
+            rows[0].update(quality_defects=['stem discloses the answer'], evidence=[])
+        failures, ctx = self.paid_review(defect)
+        self.assertTrue(any('stem discloses' in x for x in failures))
+        self.assertEqual(ctx['cloud_calls'], 8)
+        self.assertTrue(self.paid_review(lambda r, k: r[0].pop('quality_defects'))[0])
+
+    def test_qualification_extension_retains_all_calls_and_remains_bounded(self):
+        ctx = {'qualification': True, 'cloud_calls': 199}
+        lb.reserve_cloud(ctx)
+        self.assertEqual(ctx['cloud_calls'], 200)
+        with self.assertRaises(lb.Hold): lb.reserve_cloud(ctx)
+        self.assertEqual(ctx['cloud_calls'], 200)
+        self.assertEqual(lb.cloud_call_limit({}), 100)
 
     def test_full_acceptance_cannot_bypass_independent_gate(self):
         draft = {'questions': [copy.deepcopy(self.q) for _ in range(3)]}

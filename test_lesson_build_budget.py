@@ -186,20 +186,16 @@ class Budget(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'truncated'):
                 lb.local_check('system', 'source', {}, {'check': {'model': 'fixture', 'endpoint': 'unused'}})
 
-    def test_repair_receives_later_quality_feedback_even_when_earlier_checks_fail(self):
+    def test_deterministic_rejection_skips_paid_review_and_failed_local_quality_route(self):
         q = {'stem': 'According to Land?', 'correct': 'one', 'wrong': ['two', 'three', 'four'], 'tag': 'target'}
         d = {'focus': 'test', 'questions': [q, q, q]}
         with patch.object(lb, 'independent_answers') as paid_review, \
-             patch.object(lb, 'claim_check', return_value=['unsupported claim']), \
-             patch.object(lb, 'option_quality', return_value=['answer revealed']) as option_check, \
-             patch.object(lb, 'teaching_quality', return_value=['weak distractors']):
+             patch.object(lb, 'claim_check', side_effect=AssertionError('unqualified local route')), \
+             patch.object(lb, 'option_quality', side_effect=AssertionError('unqualified local route')), \
+             patch.object(lb, 'teaching_quality', side_effect=AssertionError('unqualified local route')):
             errors = lb.lesson_failures('checks', d, {'module': 2}, {'n': 1, 'printed': [1, 2]}, [], 'source context', {})
-        self.assertEqual(option_check.call_args.args[2], 'source context')
         self.assertTrue(any('logistics' in x for x in errors))
         paid_review.assert_not_called()  # Already rejected; no paid attempt needed.
-        self.assertIn('unsupported claim', errors)
-        self.assertIn('weak distractors', errors)
-        self.assertIn('answer revealed', errors)
 
     def test_option_review_checks_every_choice_without_writer_rationales(self):
         q = {'stem': 'Question?', 'correct': 'answer', 'wrong': ['a', 'b', 'c'],
