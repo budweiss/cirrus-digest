@@ -339,6 +339,29 @@ def lesson_text(pages: list, book: dict, L: dict) -> str:
     return "\n".join(out)
 
 
+def source_for_kind(pages: list, book: dict, L: dict, kind: str) -> str:
+    source = lesson_text(pages, book, L)
+    if kind != "checks" or "Assessment" not in L.get("label", ""):
+        return source
+    # Assessment administration pages do not contain the unseen assessment
+    # text. Supply bounded, attributed prior vocabulary for cumulative review,
+    # as the approved manual question bank does. Never retrieve future lessons.
+    candidates = []
+    for prior in book["lessons"]:
+        if prior["n"] >= L["n"]:
+            continue
+        for i in range(prior["first"], prior["last"] + 1):
+            lines = _lines(pages[i])
+            if "Definitions" in lines:
+                candidates.append("=== prior lesson %d, printed p. %d ===\n%s" % (
+                    prior["n"], i - book["offset"] + 1, "\n".join(lines)))
+    if len(candidates) > 12:
+        candidates = [candidates[round(i * (len(candidates) - 1) / 11)] for i in range(12)]
+    if not candidates:
+        raise Hold("assessment-day review lacks prior vocabulary evidence; needs a session")
+    return source + "\n\nCUMULATIVE REVIEW CONTEXT: prior lesson vocabulary, NOT the assessment text.\n" + "\n".join(candidates)
+
+
 # ── drafting (local first) ───────────────────────────────────────────────────
 
 REVIEW_SCHEMA = {
@@ -426,7 +449,9 @@ Teach Book pages for Lesson {n}:
 {pages}"""
 
 ASSESSMENT_NOTE = ("\n- This is an assessment day. Write review questions on module ideas and vocabulary "
-                   "named in these pages, not on the assessment text itself.")
+                   "in the attributed CUMULATIVE REVIEW CONTEXT from earlier lessons. These are "
+                   "review questions, not questions on the unavailable assessment text. Do not "
+                   "test assessment administration or claim to reproduce the assessment.")
 
 
 def _post(url: str, body: dict, timeout: int) -> dict:
@@ -1064,7 +1089,7 @@ def build_book(pdf: Path, kinds: list, out_dir: Path, cfg: dict, ctx: dict, *, n
                             got.get("draft_digest") != draft_digest(got["draft"])):
                         raise Hold("cached lesson acceptance is stale or changed; review/requalify before resuming")
                 else:
-                    src = lesson_text(pages, book, L)
+                    src = source_for_kind(pages, book, L, kind)
                     try:
                         got = build_lesson(kind, book, L, codes.get(L["n"], []), src, cfg, ctx)
                     except Hold as e:

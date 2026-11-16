@@ -145,5 +145,17 @@ class Budget(unittest.TestCase):
         self.assertIn('unsupported claim', errors)
         self.assertIn('weak distractors', errors)
 
+    def test_assessment_review_gets_prior_vocabulary_but_never_future_pages(self):
+        pages = ['Definitions\nendure: to last for a long time', 'Assessment administration instructions',
+                 'Definitions\nfuture-only word']
+        lessons = [{'n': n+1, 'first': n, 'last': n, 'label': 'Assessment' if n==1 else 'Lesson'} for n in range(3)]
+        book = {'offset': 0, 'lessons': lessons}
+        source = lb.source_for_kind(pages, book, lessons[1], 'checks')
+        self.assertIn('endure: to last', source)
+        self.assertIn('NOT the assessment text', source)
+        self.assertNotIn('future-only', source)
+        self.assertNotIn('endure: to last', lb.source_for_kind(pages, book, lessons[1], 'lessons'))
+        self.assertNotIn('CUMULATIVE', lb.source_for_kind(pages, book, lessons[0], 'checks'))
+
 
 if __name__ == '__main__': unittest.main()
