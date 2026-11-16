@@ -51,6 +51,9 @@ RECHECK_DAYS = 7
 FRESH_DAYS = 14
 MAX_PER_RUN = 60
 SEARCH_RESULTS = 4
+# S637: blocked top results must not hide a readable alternate. One search
+# supplies eight candidates; extraction still reads at most four sources.
+SEARCH_CANDIDATES = 8
 MAX_EVENTS_KEPT = 120
 # Each source is read on its own, up to this much. The first version joined
 # the sources and the extractor read only the first 24,000 characters of the
@@ -286,7 +289,9 @@ def check_artist(artist: Dict, searcher, fetcher, extractor,
         rec["error"] = "search failed: {}".format(type(e).__name__)
         return rec
     found, usable = [], False
-    for url in urls[:SEARCH_RESULTS]:
+    for url in dict.fromkeys(urls[:SEARCH_CANDIDATES]):
+        if len(rec["urls"]) >= SEARCH_RESULTS:
+            break
         try:
             text = fetcher(url)
         except Exception:
@@ -392,7 +397,7 @@ def run(creds: Optional[Dict] = None, out_path: Optional[Path] = None,
     if searcher is None or fetcher is None:
         import cirrus_daily
         searcher = searcher or (lambda q: cirrus_daily.search_web(
-            q, max_results=SEARCH_RESULTS, caller="halftime_itinerary"))
+            q, max_results=SEARCH_CANDIDATES, caller="halftime_itinerary"))
         fetcher = fetcher or (lambda u: cirrus_daily.fetch_article_content(
             u, max_chars=SOURCE_CHARS)[0])
     stats = {}
@@ -431,7 +436,7 @@ def probe(name: str) -> Dict:
     prompt = extraction_prompt()
     rec = check_artist(
         {"name": name, "key": _key(name), "aka": []},
-        lambda q: cirrus_daily.search_web(q, max_results=SEARCH_RESULTS,
+        lambda q: cirrus_daily.search_web(q, max_results=SEARCH_CANDIDATES,
                                           caller="halftime_itinerary"),
         lambda u: cirrus_daily.fetch_article_content(
             u, max_chars=SOURCE_CHARS)[0],
@@ -539,6 +544,25 @@ def selftest() -> int:
     check("no source is an error, not an empty itinerary",
           check_artist(tso, lambda q: [], lambda u: "", fx)["error"]
           == "no fetchable source")
+    fetched, extracted = [], []
+    def alternate_fetch(u):
+        fetched.append(u)
+        if u == "u1":
+            raise ValueError("blocked fixture")
+        return "" if u in ("u2", "u3", "u4") else "tour page"
+    alt = check_artist(tso, lambda q: ["u" + str(i) for i in range(1, 10)],
+                       alternate_fetch, lambda b: extracted.append(b) or fx(b),
+                       today="2026-09-23")
+    check("blocked top four sources use alternates without a second search",
+          alt["error"] is None and alt["urls"] == ["u5", "u6", "u7", "u8"]
+          and len(fetched) == SEARCH_CANDIDATES and len(extracted) == SEARCH_RESULTS)
+    fetched, extracted = [], []
+    check_artist(tso, lambda q: ["same", "same"] + ["u" + str(i) for i in range(9)],
+                 lambda u: fetched.append(u) or "tour page",
+                 lambda b: extracted.append(b) or [], today="2026-09-23")
+    check("readable sources retain the four-call cap and skip duplicate URLs",
+          len(fetched) == SEARCH_RESULTS and len(set(fetched)) == SEARCH_RESULTS
+          and len(extracted) == SEARCH_RESULTS)
     check("an unusable model answer is an error, not 'no shows'",
           check_artist(tso, lambda q: ["u"], lambda u: "x",
                        lambda b: None)["error"] == "extraction unusable")
