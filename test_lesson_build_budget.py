@@ -93,5 +93,17 @@ class Budget(unittest.TestCase):
         q['stem'] = 'Why does Jack decide to write to the poet?'
         self.assertFalse(any('calendar-date' in x or 'logistics' in x for x in lb.check_mcq(d, {'printed': [1, 2]}, '')))
 
+    def test_cloud_receives_all_local_failures_and_latest_draft(self):
+        with patch.object(lb, 'task_prompt', return_value='source prompt'), \
+             patch.object(lb, 'local_draft', side_effect=[{'draft': 'first'}, {'draft': 'second'}]), \
+             patch.object(lb, 'lesson_failures', side_effect=[['missing module connection'], ['missing follow-up'], []]), \
+             patch.object(lb, 'cloud_draft', return_value=('fake', {'draft': 'fixed'})) as cloud:
+            got = lb.build_lesson('lessons', {}, {'n': 1}, [], '', {}, {'creds': {}})
+            prompt = cloud.call_args.args[0]
+            self.assertIn('missing module connection', prompt)
+            self.assertIn('missing follow-up', prompt)
+            self.assertIn('second', prompt)
+            self.assertEqual(got['stage'], 'cloud:fake')
+
 
 if __name__ == '__main__': unittest.main()

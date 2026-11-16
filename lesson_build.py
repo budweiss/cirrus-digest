@@ -850,13 +850,18 @@ def build_lesson(kind: str, book: dict, L: dict, codes: list, src: str, cfg: dic
                     tries.append({"stage": stage, "failures": ["this job's cloud allowance is used up"]})
                     break
                 reserve_cloud(ctx)
+                cloud_prompt = prompt + "\n\nThe local drafts failed these checks. Fix ALL of them, " \
+                    "including earlier failures that must not regress:\n- " + "\n- ".join(
+                        dict.fromkeys(f for t in tries for f in t["failures"]))
+                if prev is not None:
+                    cloud_prompt += "\n\nMost recent draft to correct:\n" + json.dumps(prev, ensure_ascii=False)
                 try:
-                    provider, d = cloud_draft(prompt, schema, ctx["creds"], ctx)
+                    provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)
                 except ValueError:      # a reply that is not JSON gets one retry (Lesson 34)
                     if ctx["cloud_calls"] >= MAX_CLOUD_CALLS_PER_JOB:   # S633 probe: the retry passed the cap
                         raise
                     reserve_cloud(ctx)
-                    provider, d = cloud_draft(prompt, schema, ctx["creds"], ctx)
+                    provider, d = cloud_draft(cloud_prompt, schema, ctx["creds"], ctx)
                 stage = "cloud:" + provider
             failures = lesson_failures(kind, d, book, L, codes, src, cfg)
         except Hold:
