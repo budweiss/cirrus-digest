@@ -770,6 +770,10 @@ QUESTION:
 OPTIONS:
 {options}"""
 
+OPEN_ANSWER_SCHEMA = {"type": "object", "properties": {
+    "answer": {"type": "string"}, "evidence": {"type": "string"}},
+    "required": ["answer", "evidence"]}
+
 
 def blind_answer(d: dict, src: str, cfg: dict, seed: str) -> list:
     """Judge all options without the key; only one independently supported
@@ -777,11 +781,29 @@ def blind_answer(d: dict, src: str, cfg: dict, seed: str) -> list:
     rng = random.Random(seed)
     f = []
     for i, q in enumerate(d["questions"], 1):
+        # Get the expected meaning before choices can anchor the reviewer to
+        # the closest option in a fundamentally invalid question (S634).
+        answer = local_check("Answer the exact question from the source before seeing answer choices.",
+            "SOURCE:\n" + src + "\nQUESTION: " + q["stem"] +
+            "\nGive the direct answer and an exact source quote. If the source asks this question, "
+            "use its stated responses. Preserve what is being asked: definition, method, purpose, "
+            "result, and example are different.", OPEN_ANSWER_SCHEMA, cfg, max_tokens=600, timeout=120)
+        if (not isinstance(answer.get("answer"), str) or not answer["answer"].strip()
+                or not isinstance(answer.get("evidence"), str)
+                or len(norm(answer["evidence"]).split()) < 3
+                or norm(answer["evidence"]) not in norm(src)):
+            f.append("question %d: independent open answer lacks exact source evidence" % i)
+            continue
         opts = [q["correct"]] + list(q["wrong"])
         rng.shuffle(opts)
         key = "ABCD"[opts.index(q["correct"])]
-        r = local_check(ANSWER_SYSTEM, OPTION_ANSWER_TASK.format(pages=src, question=q["stem"],
-                        options="\n".join("%s. %s" % ("ABCD"[j], o) for j, o in enumerate(opts))),
+        r = local_check("You audit assessment validity; do not rescue flawed questions by selecting the nearest answer.",
+                        OPTION_ANSWER_TASK.format(pages=src, question=q["stem"],
+                        options="\n".join("%s. %s" % ("ABCD"[j], o) for j, o in enumerate(opts))) +
+                        "\nINDEPENDENT OPEN ANSWER (generated before seeing choices): " + json.dumps(answer) +
+                        "\nCheck each option against this answer and the source. If the question asks a purpose "
+                        "or benefit, a skill definition alone is not an answer. It is possible that NONE of the "
+                        "options answers the actual question. Do not pick the closest choice.",
                         OPTION_ANSWER_SCHEMA, cfg, max_tokens=1400, timeout=180)
         rows = r.get("options")
         if not isinstance(rows, list) or len(rows) != 4 or any(

@@ -14,7 +14,12 @@ class Ambiguity(unittest.TestCase):
         def review(system, prompt, schema, cfg, **kw):
             self.assertNotIn('Correct answer:', prompt)
             self.assertNotIn('usually none', prompt)
-            options = prompt.split('OPTIONS:\n', 1)[1].splitlines()
+            if schema == lb.OPEN_ANSWER_SCHEMA:
+                self.assertNotIn('OPTIONS:', prompt)
+                self.assertNotIn('vary speed', prompt)
+                return {'answer': 'show feeling', 'evidence': 'Use voice to show feeling'}
+            self.assertIn('INDEPENDENT OPEN ANSWER', prompt)
+            options = prompt.split('OPTIONS:\n', 1)[1].split('\nINDEPENDENT OPEN ANSWER', 1)[0].splitlines()
             rows = [{'letter': line[0], 'answers_stem': 'yes' if line[3:] == self.q['correct'] else 'no',
                      'reason': 'Matches the exact question' if line[3:] == self.q['correct'] else 'Does not answer the stem',
                      'evidence': 'Use voice to show feeling' if line[3:] == self.q['correct'] else ''} for line in options]
@@ -25,6 +30,13 @@ class Ambiguity(unittest.TestCase):
 
     def test_only_supported_key_passes(self):
         self.assertEqual(self.evaluate(), [])
+
+    def test_ungrounded_open_answer_cannot_accept_options(self):
+        for answer in ({}, {'answer': '', 'evidence': self.source},
+                       {'answer': 'guess', 'evidence': 'made up evidence'}):
+            with patch.object(lb, 'local_check', return_value=answer) as checker:
+                self.assertTrue(lb.blind_answer({'questions': [self.q]}, self.source, {}, 'fixture'))
+                self.assertEqual(checker.call_count, 1)
 
     def test_second_supported_option_is_rejected_even_if_key_is_best(self):
         def extra(rows, options):
