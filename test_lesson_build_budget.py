@@ -179,6 +179,13 @@ class Budget(unittest.TestCase):
         q['stem'] = 'Which meaning of endure concerns duration?'
         self.assertFalse(lb.check_mcq(draft, {'printed': [1, 2]}, ''))
 
+    def test_truncated_review_never_counts_as_acceptance(self):
+        response = {'model': 'fixture', 'choices': [{'finish_reason': 'length',
+                    'message': {'content': '{"issues": [], "evidence": []}'}}]}
+        with patch.object(lb, '_post', return_value=response):
+            with self.assertRaisesRegex(ValueError, 'truncated'):
+                lb.local_check('system', 'source', {}, {'check': {'model': 'fixture', 'endpoint': 'unused'}})
+
     def test_repair_receives_later_quality_feedback_even_when_earlier_checks_fail(self):
         q = {'stem': 'According to Land?', 'correct': 'one', 'wrong': ['two', 'three', 'four'], 'tag': 'target'}
         d = {'focus': 'test', 'questions': [q, q, q]}
