@@ -441,6 +441,7 @@ Write 3 or 4 multiple-choice questions a grade 4 student can answer after this l
 - For each wrong option, identify the specific confusion it represents before selecting it: a reversed cause/effect, a neighboring word meaning, a mistaken motivation, a sequence reversal, or a partial reading. Keep every option in the same conceptual category. A random activity or unrelated subject is never a distractor. Wrong options are deliberately false; the source-only rule applies to the correct answer, not to requiring the source to assert a false option.
 - Never put the correct answer or full definition in the question stem. For a word with multiple meanings, give only a short context cue that distinguishes the senses (duration versus coping with difficulty, for example). For a reading skill, all options should be competing explanations of how that same skill works, not unrelated reading behaviors.
 - Ask a vocabulary meaning directly. Do not introduce it with a sentence explaining what the word means or saying what students learned about it. A short context noun phrase may distinguish senses; a restatement of the definition may not.
+- Every wrong option must be false for the precise question, not merely less complete than the key. Related skills may overlap: changing pace or loudness can also add expression. Distinguish a purpose from a method, and use a precise scenario or explicit contrast when categories overlap. Do not treat separate chart labels as proof that the skills cannot occur together.
 - In distractor_misconceptions, briefly name the specific misconception for each wrong option, in order. Derive each wrong option from that misconception. These notes are for checking and will not appear in the student's questions.
 - When the lesson teaches vocabulary or word study, include one question on it.
 - The correct answer must be stated or shown in these pages. A definition must be the one these pages give.{assessment}
@@ -723,19 +724,6 @@ SUPPORT_SCHEMA = {"type": "object", "properties": {"supported": {"type": "boolea
                   "required": ["supported", "quote"]}
 
 ANSWER_SYSTEM = "You answer grade 4 multiple-choice questions using only the Teach Book pages given."
-ANSWER_TASK = """Answer each question using only these Teach Book pages. For each, give the letter of the best answer, and list any OTHER letter that would also be a correct answer according to the pages (usually none).
-
-TEACH BOOK PAGES:
-{pages}
-
-QUESTIONS:
-{questions}"""
-ANSWER_SCHEMA = {"type": "object", "properties": {"answers": {"type": "array", "items": {
-    "type": "object", "properties": {
-        "question": {"type": "integer"},
-        "answer": {"type": "string", "enum": ["A", "B", "C", "D"]},
-        "also_correct": {"type": "array", "items": {"type": "string", "enum": ["A", "B", "C", "D"]}}},
-    "required": ["question", "answer", "also_correct"]}}}, "required": ["answers"]}
 
 
 def claim_check(draft_text: str, src: str, cfg: dict) -> list:
@@ -763,29 +751,58 @@ def claim_check(draft_text: str, src: str, cfg: dict) -> list:
     return out
 
 
+OPTION_ANSWER_SCHEMA = {"type": "object", "properties": {"options": {
+    "type": "array", "minItems": 4, "maxItems": 4, "items": {
+        "type": "object", "properties": {
+            "letter": {"type": "string", "enum": ["A", "B", "C", "D"]},
+            "answers_stem": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+            "reason": {"type": "string", "maxLength": 240},
+            "evidence": {"type": "string", "maxLength": 300}},
+        "required": ["letter", "answers_stem", "reason", "evidence"]}}}, "required": ["options"]}
+OPTION_ANSWER_TASK = """Evaluate EACH option independently against the exact question and source. There may be zero, one, or several defensible answers. Do not select a 'best' answer or assume the author wrote a valid single-answer question. The intended key is hidden.
+Mark yes when the source supports the option as an answer to this wording, including a valid example or method, even if another option is more complete. Mark no only when it does not answer this particular question or is contradicted. Mark uncertain when the wording leaves more than one reasonable interpretation.
+Separate labels in a skills chart do not make skills mutually exclusive. Look for source examples showing overlap. For instance, a method may also achieve a purpose. For a hypothetical application, judge the taught principle; do not require the invented example itself to appear verbatim in the source.
+For every yes, copy a short exact supporting source passage (at least three consecutive words) into evidence. For no/uncertain, explain the precise mismatch or ambiguity; evidence may be empty. Report all four letters exactly once.
+SOURCE:
+{pages}
+QUESTION:
+{question}
+OPTIONS:
+{options}"""
+
+
 def blind_answer(d: dict, src: str, cfg: dict, seed: str) -> list:
-    """A second model answers without the key; it must pick the keyed answer
-    and see no other correct option."""
+    """Judge all options without the key; only one independently supported
+    answer is acceptable. Missing, ambiguous or ungrounded verdicts hold."""
     rng = random.Random(seed)
-    blocks, keys = [], []
+    f = []
     for i, q in enumerate(d["questions"], 1):
         opts = [q["correct"]] + list(q["wrong"])
         rng.shuffle(opts)
-        keys.append("ABCD"[opts.index(q["correct"])])
-        blocks.append("%d. %s\n%s" % (i, q["stem"], "\n".join(
-            "%s. %s" % ("ABCD"[j], o) for j, o in enumerate(opts))))
-    r = local_check(ANSWER_SYSTEM, ANSWER_TASK.format(pages=src, questions="\n\n".join(blocks)),
-                    ANSWER_SCHEMA, cfg, max_tokens=800)
-    got = {a["question"]: a for a in r.get("answers", [])}
-    f = []
-    for i, k in enumerate(keys, 1):
-        a = got.get(i)
-        if not a:
-            f.append("question %d: the checker gave no answer" % i)
-        elif a["answer"] != k:
-            f.append("question %d: the checker chose a different answer from the key" % i)
-        elif [x for x in a.get("also_correct", []) if x != k]:
-            f.append("question %d: the checker found a second correct option" % i)
+        key = "ABCD"[opts.index(q["correct"])]
+        r = local_check(ANSWER_SYSTEM, OPTION_ANSWER_TASK.format(pages=src, question=q["stem"],
+                        options="\n".join("%s. %s" % ("ABCD"[j], o) for j, o in enumerate(opts))),
+                        OPTION_ANSWER_SCHEMA, cfg, max_tokens=1400, timeout=180)
+        rows = r.get("options")
+        if not isinstance(rows, list) or len(rows) != 4 or any(
+                not isinstance(a, dict) or a.get("letter") not in ("A", "B", "C", "D")
+                or a.get("answers_stem") not in ("yes", "no", "uncertain")
+                or not isinstance(a.get("reason"), str) or not a["reason"].strip()
+                or not isinstance(a.get("evidence"), str) for a in rows) or {a["letter"] for a in rows} != set("ABCD"):
+            f.append("question %d: option-by-option answer review is incomplete or malformed" % i)
+            continue
+        supported = []
+        for a in rows:
+            if a["answers_stem"] == "uncertain":
+                f.append("question %d: ambiguous option %s (%s)" % (i, a["letter"], a["reason"]))
+            if a["answers_stem"] == "yes":
+                quote = norm(a["evidence"])
+                if len(quote.split()) < 3 or quote not in norm(src):
+                    f.append("question %d: supported option %s lacks exact source evidence" % (i, a["letter"]))
+                supported.append(a["letter"])
+        if supported != [key]:
+            f.append("question %d: expected only keyed option %s, but independently supported options are %s" %
+                     (i, key, ",".join(supported) or "none"))
     return f
 
 
