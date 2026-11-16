@@ -132,6 +132,18 @@ def attachment_text(part):
     raise ValueError('Attachment needs a supported local extractor')
 
 
+ATTACHMENT_REQUEST=re.compile(r'(?i)\b(attach(?:ed|ments?)?|enclosed|spreadsheets?|workbooks?|excel|xlsx|sheets?|tabs?|rows?|columns?|files?)\b')
+
+
+def omit_own_attachment(exc, from_mailbox, question):
+    """S635: our weekly report's .xlsx held every reply on its thread before a
+    model ran. An attachment this mailbox itself sent, of a type with no local
+    extractor, is recorded as omitted instead, unless the client's own words ask
+    about an attachment. A client's attachments still fail closed."""
+    return (from_mailbox and str(exc)=='Attachment needs a supported local extractor'
+            and not ATTACHMENT_REQUEST.search(question))
+
+
 def select_sources(documents, question, budget=5000):
     terms=set(re.findall(r'[a-z]{4,}',question.lower()))
     options=[]
@@ -158,6 +170,7 @@ def select_sources(documents, question, budget=5000):
 def collect(root, rec, creds):
     import intake
     from runtime_config import load_sources
+    from task_solver import strip_quoted_reply
     account=intake.find_account(load_sources(intake.CONFIG_PATH))
     password=creds.get(account['credential_key'])
     if not password:raise ValueError('Missing mailbox evidence credential')
@@ -180,6 +193,7 @@ def collect(root, rec, creds):
         uids=ids[0].split()
         if len(uids)>MAX_THREAD_MESSAGES:raise ValueError('Thread exceeds evidence limit')
         original_seen=False
+        own_words=strip_quoted_reply(rec.get('conversation_body') or rec.get('body_head',''))
         sender=(rec.get('from_email') or parseaddr(rec.get('from',''))[1]).lower()
         assert sender and intake.load_allowlist().get(sender,{}).get('name','').lower()==rec['requester'].lower()
         for uid in uids:
@@ -204,19 +218,32 @@ def collect(root, rec, creds):
                 if body.strip():documents['historical-correspondence-'+stamp.isoformat()+'-mail-'+docid+'-'+part_id]=body
             signature_ids=signature_image_ids(msg,rec.get('conversation_body') or rec.get('body_head',''))
             skipped_signatures=0
+            skipped_own=[]
             for n,part in enumerate(msg.walk()):
                 if is_signature_image(part,signature_ids):
                     skipped_signatures+=1
                     continue
                 if (part.get_filename() or part.get_content_disposition()=='attachment'
                         or (not part.is_multipart() and part.get_content_type() not in ('text/plain','text/html'))):
-                    text=attachment_text(part)
+                    try:
+                        text=attachment_text(part)
+                    except ValueError as exc:
+                        if not omit_own_attachment(exc,author==account['address'].lower(),own_words):raise
+                        name=part.get_filename() or ''
+                        ext=re.sub(r'[^a-z0-9]','',name.lower().rpartition('.')[2]) if '.' in name else ''
+                        skipped_own.append('.'+ext if ext else part.get_content_type())
+                        continue
                     if not text.strip():raise ValueError('Attachment yielded no text')
                     documents['historical-correspondence-'+stamp.isoformat()+'-attachment-'+docid+'-'+str(n)]=text
             if skipped_signatures:
                 documents['mail-processing-'+docid]=(f'{skipped_signatures} inline signature image(s) omitted. '
                     'Only images referenced exclusively inside explicit mail-client signature containers were omitted; '
                     'their visual contents were not interpreted.')
+            if skipped_own:
+                documents['mail-processing-'+docid+'-own-attachments']=(
+                    f'{len(skipped_own)} attachment(s) sent from this mailbox on {stamp.date().isoformat()} were not read '
+                    f'({", ".join(skipped_own)}): no local extractor for that type. Their contents are unavailable; '
+                    'do not infer what they contain.')
         assert original_seen
     # A ranked excerpt cannot establish that a deliverable is absent. Keep the
     # complete thread; the normal model admission budget holds oversized input.

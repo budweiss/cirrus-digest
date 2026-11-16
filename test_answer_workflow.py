@@ -492,12 +492,92 @@ class IntakeTests(MemoryTests):
         mail.uid.side_effect = uid
         return mail
 
-    def test_unsupported_thread_attachment_is_named_as_an_evidence_hold(self):
-        # S635: this shape read "Answer workflow interrupted: ValueError".
+    def _collect(self, raws, rec):
+        """The real collector over a fake read-only thread; mailbox is box@example.test."""
+        import intake
+        import runtime_config
+        import workflow_mail_sources as sources
+        account = {"credential_key": "fixture", "address": "box@example.test", "imap_server": "invalid.test"}
+        with patch("workflow_mail_sources.imaplib.IMAP4_SSL", return_value=self._readonly_thread(raws)), \
+             patch.object(intake, "find_account", return_value=account), \
+             patch.object(runtime_config, "load_sources", return_value={}), \
+             patch.object(intake, "load_allowlist",
+                          return_value={"client@example.test": {"name": "fixture-client"}}):
+            return sources.collect(self.root, rec, {"fixture": "synthetic"})
+
+    @staticmethod
+    def _client_rec(question, body=None):
+        return {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "<reply@example.test>",
+                "from_email": "client@example.test", "kind": "answer",
+                "title": "Re: Weekly research update", "body_head": question,
+                "conversation_body": body or question}
+
+    def test_own_report_attachment_is_omitted_with_a_note(self):
+        # S635: the 11-16 shape. Our report's .xlsx no longer holds the thread.
+        docs = self._collect(self._report_thread(), self._client_rec(
+            "Where is the snow removal RFP posted, and who is the contact?"))
+        notes = [v for k, v in docs.items() if k.endswith("-own-attachments")]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("1 attachment(s) sent from this mailbox on 2026-11-16 were not read (.xlsx)", notes[0])
+        self.assertIn("do not infer what they contain", notes[0])
+        self.assertTrue(any("contacts workbook is attached" in v for v in docs.values()))
+        self.assertFalse(any("synthetic workbook" in v for v in docs.values()))
+        # Quoted report text is not the client's own words.
+        quoted = ("Who is the contact for the state RFP?\n\nOn Mon, Nov 16, 2026 at 3:00 AM "
+                  "<box@example.test> wrote:\n> The contacts workbook is attached.\n")
+        docs = self._collect(self._report_thread(), self._client_rec("Who is the contact for the state RFP?", quoted))
+        self.assertTrue(any(k.endswith("-own-attachments") for k in docs))
+
+    def test_attachment_questions_and_client_attachments_still_fail_closed(self):
+        for question in ("Which row of the attached workbook has the RFP contact?",
+                         "Can you resend the spreadsheet?", "What is on the second tab?"):
+            with self.assertRaisesRegex(ValueError, "supported local extractor"):
+                self._collect(self._report_thread(), self._client_rec(question))
+        from email.message import EmailMessage
+        report, _ = self._report_thread()
+        reply = EmailMessage()
+        reply["From"], reply["Message-ID"] = "client@example.test", "<reply@example.test>"
+        reply["Date"] = "Mon, 16 Nov 2026 06:50:00 -0500"
+        reply.set_content("Where is the snow removal RFP posted?")
+        reply.add_attachment(b"PK\x03\x04 client workbook", maintype="application",
+                             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="mine.xlsx")
+        with self.assertRaisesRegex(ValueError, "supported local extractor"):
+            self._collect([report, reply.as_bytes()], self._client_rec("Where is the snow removal RFP posted?"))
+
+    def test_own_report_reply_reaches_the_local_model(self):
         import intake
         import runtime_config
         import task_solver as ts
-        question = "Where is the snow removal RFP posted, and who is the contact?"
+        rec = self._client_rec("Where is the snow removal RFP posted, and who is the contact?")
+        account = {"credential_key": "fixture", "address": "box@example.test", "imap_server": "invalid.test"}
+        model = FakeModels([("ollama", output(False)), ("ollama", output(False))])
+        with patch.object(ts, "PROJECT_DIR", self.root), \
+             patch.object(ts, "_fallback_to_ticket"), \
+             patch.object(ts, "try_entity_kb_answer", return_value=None), \
+             patch.object(ts, "_send_mail") as send, \
+             patch("workflow_mail_sources.imaplib.IMAP4_SSL",
+                   return_value=self._readonly_thread(self._report_thread())), \
+             patch.object(intake, "find_account", return_value=account), \
+             patch.object(runtime_config, "load_sources", return_value={}), \
+             patch.object(intake, "load_allowlist",
+                          return_value={"client@example.test": {"name": "fixture-client"}}), \
+             patch.object(aw, "Models", return_value=model):
+            result = aw.solve_and_answer(rec, {"fixture": "synthetic"}, "client@example.test",
+                                         "Re: Weekly research update")
+        row = self.m.get(result["request_id"])
+        self.assertEqual((row["state"], len(model.calls), send.call_count), ("needs_review", 2, 0))
+        self.assertEqual(row["meta"]["reason"], "Local attempts exhausted; private work stays local.")
+        first = model.calls[0][0]["sources"]
+        self.assertTrue(any(k.endswith("-own-attachments") for k in first))
+        self.assertEqual(model.calls[0][1]["privacy"], "LOCAL_ONLY")
+
+    def test_unsupported_thread_attachment_is_named_as_an_evidence_hold(self):
+        # S635: this shape read "Answer workflow interrupted: ValueError". The
+        # question names the attachment, so the refusal still applies.
+        import intake
+        import runtime_config
+        import task_solver as ts
+        question = "Which row of the attached workbook has the snow removal RFP contact?"
         rec = {"requester": "fixture-client", "projects": ["synthetic"], "message_id": "<reply@example.test>",
                "from_email": "client@example.test", "kind": "answer",
                "title": "Re: Weekly research update", "body_head": question}
