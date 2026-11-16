@@ -131,6 +131,29 @@ RESEARCH_PROJECTS = {"pedagogy"}
 OWNER = "buddy"
 
 
+# S636: a short courtesy reply ("Thank you" and a signature) asks for nothing.
+# Bill's 11-11 Veterans Day "Thank you" got "researching your question now",
+# went to the answer engine and sat held for five days.
+_COURTESY = re.compile(
+    r"(?:(?:ok|okay|great|perfect|awesome|excellent|wonderful)[\s,.!]*)?"
+    r"(?:(?:thanks|thank you|thx|much appreciated|appreciate it|got it|received)"
+    r"(?:[\s,.!]*(?:so much|very much|again|a lot|for (?:this|that|the update|the info|"
+    r"the information|everything)))*[\s,.!]*)+", re.I)
+_ASKS = re.compile(r"\b(?:please|can|could|would|will|send|need|want|also|find|look|add|"
+                   r"check|update|let me know|what|when|where|how|why|who)\b", re.I)
+
+
+def is_courtesy_reply(own_words: str) -> bool:
+    """The client's own words (quoted reply already stripped) are a thank-you
+    and, at most, a short signature: no question and no ask."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", (own_words or "").strip()) if p.strip()]
+    if not paras or not _COURTESY.fullmatch(paras[0]):
+        return False
+    rest = "\n".join(paras[1:])
+    return ("?" not in rest and len(rest) <= 200 and len(rest.splitlines()) <= 6
+            and not _ASKS.search(rest))
+
+
 def reply_is_feedback(kind: str, projects, subject: str) -> bool:
     """A REPLY (Re:) from a research sender is feedback, not a focus topic.
     A sender on a RESEARCH_PROJECTS project counts as a research sender
@@ -1270,6 +1293,13 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         if confirms and rec["kind"] not in ("feedback", "resend"):
             rec["kind"] = "confirmation"
             rec["confirms"] = [p["id"] for p in confirms]
+        if (not inventory_reply and not confirms and rec["status"] != "refused"
+                and rec["kind"] != "resend" and task_solver.is_reply_subject(subject)
+                and is_courtesy_reply(task_solver.strip_quoted_reply(body or ""))):
+            rec["kind"] = "confirmation"
+            rec["confirmation_scope"] = "courtesy"
+            rec["confirms"] = []
+            rec["dev_spec"]["auto_eligible"] = False
         # Safety net: a sender on a research-only project (e.g. pedagogy)
         # ALWAYS routes as research, even if their request_kind is mis-set to
         # 'build'. Guarantees literacy requests reach the topic queue instead
@@ -1367,6 +1397,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 elif rec["kind"] == "confirmation":
                     if rec.get("confirmation_scope") == "existing_reports":
                         log("  → existing report list confirmed; no delivery work")
+                    elif rec.get("confirmation_scope") == "courtesy":
+                        log("  → courtesy reply (thanks); nothing owed, no ack")
                     # Only actual outstanding promises create delivery tickets.
                     for p in confirms:
                         client_promises.confirm_promise(
@@ -1465,7 +1497,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                             rec["ticket_id"] = ticket["id"]
                         except Exception as e:
                             log(f"  ticket enqueue failed (backlog still recorded): {e}")
-            rec["ack_sent"] = send_ack(from_addr, rec, creds, subject)
+            rec["ack_sent"] = (None if rec.get("confirmation_scope") == "courtesy"
+                               else send_ack(from_addr, rec, creds, subject))
             try:
                 mark = len(dev_loop.ticket_load(PROJECT_DIR))   # S541: see _settle_tickets
             except Exception:
@@ -1571,6 +1604,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                 flag = (f"📎 Asked the client for the right file: the email asks for "
                         f"Module {mm.get('asked')}, the attachment is Module "
                         f"{', '.join(map(str, mm.get('attached', [])))}")
+            elif r.get("confirmation_scope") == "courtesy":
+                flag = "🙏 courtesy reply (thanks) — nothing owed, no ack sent"
             elif r.get("kind") == "deliverable" and r.get("lesson_build_run"):
                 flag = (f"📄 BUILD — lesson job {r['lesson_build_run']} started; each arc is "
                         f"checked before it goes, and a held lesson is reported to you")
@@ -1585,7 +1620,7 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         f"{r.get('ticket_id') or '⚠️ NOT created'}")
             else:
                 flag = f"tier {r['tier']} ({r['tier_name']})"
-            ack = "" if r.get("ack_sent", True) else " — ⚠️ ack FAILED"
+            ack = "" if r.get("ack_sent", True) is not False else " — ⚠️ ack FAILED"
             lines.append(f"• {r['requester']}: _{r['title']}_ — {flag}{ack}")
         for name, subj in limited:
             lines.append(f"• ⚠️ {name} hit the daily rate limit (skipped: _{subj}_)")
@@ -2076,6 +2111,22 @@ def selftest() -> int:
     # S63: answer-kind + Tier-0 auto-apply ack copy
     rec_a = classify("aggie", ["realestate"], "REQUEST: what's the average closing time?", "")
     rec_a["kind"] = "answer"
+    # S636: courtesy replies ask for nothing (Bill's 11-11 "Thank you")
+    _ty = ("Thank you \r\n\r\nPat Example\r\nPresident\r\nExample Property Services\r\n"
+           "555-010-0000\r\n\r\n> On Nov 11, 2026, at 12:31 PM, CUMULUS <box@example.com> wrote:"
+           "\r\n> Hi Pat,\r\n> Happy Veterans Day")
+    check("courtesy: a thank-you with a signature asks for nothing",
+          is_courtesy_reply(task_solver.strip_quoted_reply(_ty))
+          and is_courtesy_reply("Got it, thanks.")
+          and is_courtesy_reply("Thank you for the update.\n\nSent from my iPhone"))
+    check("courtesy: a thank-you with a request or question is real work",
+          not any(is_courtesy_reply(x) for x in (
+              "Thank you\n\nCan you also send the Sussex list.",
+              "Thanks! What about Kent county?", "Thanks, please add Dover too.",
+              "Find additional information on this rfp. I need to know where this is.")))
+    check("courtesy: no ack goes out and no FAILED flag is shown",
+          'None if rec.get("confirmation_scope") == "courtesy"' in open(__file__).read()
+          and 'r.get("ack_sent", True) is not False' in open(__file__).read())
     check("answer ack mentions researching now", "researching your question" in ack_body(rec_a))
     # S264: a list/file request's ack is honest about the human review and
     # promises no time we cannot keep (a person builds it until the job does).

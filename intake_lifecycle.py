@@ -128,6 +128,11 @@ def finish(root, row, rec):
         evidence['confirmation_scope'] = 'existing_reports'
         # This closes the intake task, not a claim that a report was delivered.
         state, owner, action = 'noted', 'intake', 'existing report list confirmed; no delivery work'
+    elif (rec.get('kind') == 'confirmation' and rec.get('confirmation_scope') == 'courtesy'
+          and not rec.get('confirms') and not rec.get('ticket_id')):
+        # S636: a thank-you asks for nothing; no ack went out.
+        evidence['confirmation_scope'] = 'courtesy'
+        state, owner, action = 'noted', 'intake', 'courtesy reply (thanks); no request, no reply owed'
     elif rec.get('contact_list_run'):
         state, owner, action = 'working', 'contact_list', 'check job artifact and automatic delivery status; honor explicit holds'
     elif rec.get('kind') == 'research' and rec.get('topic_queued'):
@@ -314,6 +319,49 @@ def coordinate(root, row):
     return True
 
 
+SESSION_STATES = ('blocked_on_evidence', 'blocked_no_worker')
+
+
+def held_for_session(root):
+    """S636: requests intake handed to a Cowork session, metadata only (no
+    body). Read-only, like summary(). The MacBook's held-request task reads
+    this to decide whether a session should start."""
+    path = Path(root) / 'data/intake-lifecycle/requests.sqlite3'
+    if not path.exists():
+        return []
+    out = []
+    with closing(sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        for r in db.execute("SELECT id,payload,state,owner,next_action,created,evidence FROM requests "
+                            "WHERE owner='cowork' AND state IN (?,?) ORDER BY created", SESSION_STATES):
+            payload = json.loads(r['payload'])
+            out.append({'id': r['id'][:16], 'client': json.loads(r['evidence']).get('client', 'unknown'),
+                        'state': r['state'], 'next_action': r['next_action'],
+                        'subject': payload[2] if len(payload) > 2 else '',
+                        'safety_hold': 'safety hold' in r['next_action'], 'created': r['created']})
+    return out
+
+
+def claim_for_session(root, id_prefix, note):
+    """S636: hand one held request to a session. True only if it was still
+    held for Cowork and is now 'working' under 'cowork-session'; a second
+    claim, or a claim on anything else, is False. The existing summary flags
+    a 'working' row that stays an hour, so a stalled session is still seen."""
+    if len(id_prefix or '') < 12:
+        raise ValueError('id prefix too short')
+    with connect(root) as db:
+        rows = db.execute("SELECT id,evidence FROM requests WHERE id LIKE ?", (id_prefix + '%',)).fetchall()
+        if len(rows) != 1:
+            return False
+        now = time.time()
+        evidence = dict(json.loads(rows[0]['evidence']), session_claim={'at': now, 'note': note})
+        return bool(db.execute(
+            "UPDATE requests SET state='working',owner='cowork-session',next_action=?,updated=?,evidence=? "
+            "WHERE id=? AND owner='cowork' AND state IN (?,?)",
+            ('session working on it: ' + note, now, json.dumps(evidence), rows[0]['id'])
+            + SESSION_STATES).rowcount)
+
+
 def selftest():
     """Run the existing intake suites through the builder's supported gate."""
     import unittest
@@ -332,7 +380,18 @@ if __name__=='__main__':
         raise SystemExit(selftest())
     import argparse
     parser=argparse.ArgumentParser(description='Hash-only cross-mailbox claim; no sends')
-    parser.add_argument('--claim',required=True)
-    parser.add_argument('--owner',required=True,choices=['cirrus','cumulus1'])
+    parser.add_argument('--claim')
+    parser.add_argument('--owner',choices=['cirrus','cumulus1'])
+    parser.add_argument('--held',action='store_true',help='JSON: requests held for a Cowork session (metadata only)')
+    parser.add_argument('--claim-session',metavar='ID_PREFIX',help='claim one held request for a session; prints true/false')
+    parser.add_argument('--note',default='')
     args=parser.parse_args()
-    print(claim(Path(__file__).resolve().parent,args.claim,args.owner))
+    here=Path(__file__).resolve().parent
+    if args.held:
+        print(json.dumps(held_for_session(here)))
+    elif args.claim_session:
+        print(json.dumps(claim_for_session(here,args.claim_session,args.note)))
+    elif args.claim and args.owner:
+        print(claim(here,args.claim,args.owner))
+    else:
+        parser.error('give --held, --claim-session, or --claim with --owner')

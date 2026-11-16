@@ -66,6 +66,28 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(life.recover(self.root),0)
         life.update(self.root,self.row,'waiting_on_client','cowork','await reply')
         self.assertEqual(life.summary(self.root,time.time()+86400)['attention'],[])
+    def test_courtesy_reply_is_noted(self):
+        life.capture(self.root,self.row)
+        life.finish(self.root,self.row,{'kind':'confirmation','confirmation_scope':'courtesy','confirms':[]})
+        s=life.summary(self.root)
+        self.assertEqual(s['counts'],{'noted':1});self.assertEqual(s['attention'],[])
+        self.assertEqual(life.held_for_session(self.root),[])
+    def test_session_claim_once_and_only_when_held(self):
+        life.capture(self.root,self.row)
+        life.finish(self.root,self.row,{'kind':'answer','solved':{'request_id':'r1'}})
+        held=life.held_for_session(self.root)
+        self.assertEqual([(h['state'],h['subject'],h['safety_hold']) for h in held],
+                         [('blocked_on_evidence','Question',False)])
+        self.assertTrue(life.claim_for_session(self.root,held[0]['id'],'s1'))
+        self.assertFalse(life.claim_for_session(self.root,held[0]['id'],'s2'))
+        self.assertEqual(life.held_for_session(self.root),[])
+        self.assertEqual(life.summary(self.root,time.time()+3601)['attention'][0]['owner'],'cowork-session')
+        other=(2,'other@example.test','Thanks','Thank you','<other@example.test>')
+        life.capture(self.root,other)
+        life.finish(self.root,other,{'kind':'confirmation','confirmation_scope':'courtesy','confirms':[]})
+        self.assertFalse(life.claim_for_session(self.root,life.identity(other[1],other[4])[:16],'s3'))
+        with self.assertRaises(ValueError):
+            life.claim_for_session(self.root,'ab','s4')
     def test_corruption_not_healthy(self):
         life.capture(self.root,self.row)
         (self.root/'data/intake-lifecycle/requests.sqlite3').write_text('broken')
