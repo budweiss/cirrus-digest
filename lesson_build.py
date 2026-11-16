@@ -802,7 +802,10 @@ def teaching_quality(kind: str, d: dict, src: str, cfg: dict) -> list:
     schema = json.loads(json.dumps(QUALITY_SCHEMA))
     schema["properties"]["evidence"].update(minItems=count, maxItems=count)
     rubric = (
-        "For EVERY question, verify the exact keyed claim against Key Ideas and the text; "
+        "For EVERY question, verify the meaning of the keyed claim against Key Ideas and the text; "
+        "accurate paraphrases and equivalent wording are allowed. Do not require answer options "
+        "to reproduce source punctuation, pronouns, or the complete wording of a definition. "
+        "Only the evidence quotes must be verbatim. Reject changed meanings and unsupported claims. "
         "check date/event links carefully. A nearby date is not evidence of that event. "
         "Reject classroom logistics, teacher instructions, assessment-section descriptions, "
         "activities students might do, or revisiting an Essential Question. These are not "
