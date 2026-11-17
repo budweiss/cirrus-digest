@@ -2449,9 +2449,6 @@ def handle_message(message, chat_id):
 def run_bot():
     log("=== CIRRUS Telegram Bot Starting ===")
     log(f"Allowed user ID: {ALLOWED_ID}")
-    import telegram_voice
-    threading.Thread(target=lambda: log("Voice: " + telegram_voice.engines() + "; "
-                                        + telegram_voice.probe()), daemon=True).start()
 
     offset = 0
     import bot_workflow
@@ -2761,4 +2758,10 @@ if __name__ == "__main__":
               "it any other way starts the LIVE Telegram bot, and a second "
               "instance will 409-Conflict the real one. Refusing: %s" % " ".join(_sys.argv[1:]))
         raise SystemExit(2)
+    # S653: one log line per start naming this host's voice engines, plus a
+    # one-word speech probe in the service's own context. Kept out of run_bot
+    # so tests that extract run_bot neither need threading nor run a voice.
+    import telegram_voice
+    threading.Thread(target=lambda: log("Voice: " + telegram_voice.engines() + "; "
+                                        + telegram_voice.probe()), daemon=True).start()
     run_bot()
