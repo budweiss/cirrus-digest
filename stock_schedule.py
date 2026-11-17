@@ -3,6 +3,7 @@
 Preview never applies a decision or sends mail. The actual ledger and sender
 remain authoritative; no personal-holdings inputs or real brokerage APIs exist.
 """
+import knowledge_freshness
 import argparse
 import contextlib
 import email
@@ -208,6 +209,7 @@ def qualify_decisions(data, evidence, account, date, slot):
 
 def decision_complete(system,text,slot,companies,secondary_ids=None):
     from media_pipeline import MODEL
+    system=knowledge_freshness.apply(system,MODEL)
     if media.token_count(system+'\n'+text)+2300>32768:raise ValueError('decision_context_budget')
     tickers=[c['ticker'] for c in companies]
     ids=list(dict.fromkeys(d['id'] for c in companies for d in c['documents']))

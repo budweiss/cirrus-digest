@@ -2,6 +2,7 @@
 
 No broker APIs or trade actions. Only aggregate execution results leave C1.
 """
+import knowledge_freshness
 import argparse
 import contextlib
 import csv
@@ -147,6 +148,7 @@ def export_notice(age):
 def c1_draft(system,text):
     """Use C1's existing larger local model after repeated small-model QA failures."""
     model='gpt-oss:120b'
+    system=knowledge_freshness.apply(system,model)
     if media.token_count(system+text)+6144>32768:
         raise ValueError('personal_draft_context_budget_exceeded')
     payload={'model':model,'stream':False,'think':'medium','format':'json',
@@ -270,10 +272,11 @@ ARBITER_SYSTEM=(
 def arbiter_call(model,think,evidence,draft,issue,timeout):
     """One local judge on C1's loopback Ollama; wrong model or cut-off output is an error."""
     text=json.dumps({'evidence':evidence,'draft':draft,'reviewer_finding':issue})
-    if media.token_count(ARBITER_SYSTEM+text)+4096>32768:raise ValueError('arbiter_context_budget_exceeded')
+    system=knowledge_freshness.apply(ARBITER_SYSTEM,model)
+    if media.token_count(system+text)+4096>32768:raise ValueError('arbiter_context_budget_exceeded')
     context=65536 if model=='gpt-oss:120b' else 32768
     payload={'model':model,'stream':False,'think':think,'format':ARBITER_SCHEMA,
-             'messages':[{'role':'system','content':ARBITER_SYSTEM},{'role':'user','content':text}],
+             'messages':[{'role':'system','content':system},{'role':'user','content':text}],
              'options':{'temperature':0,'num_ctx':context,'num_predict':4096}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})

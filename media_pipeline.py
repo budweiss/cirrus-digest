@@ -136,6 +136,8 @@ def split_text(text, count=token_count, limit=6000, overlap=300):
 
 
 def complete(system, text, task, attempts=3):
+    import knowledge_freshness
+    system = knowledge_freshness.apply(system, MODEL)
     # Include instructions, framing and output reserve; never rely on truncation.
     input_tokens = token_count(system + '\n' + text)
     if input_tokens + 2300 > 32768:

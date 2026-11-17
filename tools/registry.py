@@ -191,6 +191,8 @@ def ask_with_tools(question: str, context: str = "") -> tuple[str, str]:
     if context:
         system_prompt += f"\n\nBackground knowledge from past digests:\n{context}"
 
+    import knowledge_freshness
+    system_prompt = knowledge_freshness.apply(system_prompt, CLAUDE_MODEL)
     messages = [{"role": "user", "content": question}]
     headers = {
         "x-api-key": CLAUDE_API_KEY,

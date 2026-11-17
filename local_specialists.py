@@ -5,6 +5,7 @@ memory; Ollama loads on first inference and releases with keep_alive=0. A
 cross-process lock serializes all specialists managed here. Other callers must
 use this controller too to share that guarantee.
 """
+import knowledge_freshness
 import fcntl
 import json
 import socket
@@ -87,6 +88,7 @@ def generate(name, messages, *, root=ROOT, creds=None, output_schema=None):
             raise Unavailable(state['reason'])
         spec = cfg['specialists'][name]
         model = spec['model']
+        messages = knowledge_freshness.messages(messages, model)
         protected_before = {r['name'] for r in request(cfg['endpoint'], '/api/ps')['models']} & set(cfg['protected_models'])
         started = time.monotonic()
         outcome = 'failed'

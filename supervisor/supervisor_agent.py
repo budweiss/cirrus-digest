@@ -30,6 +30,7 @@ describes future capabilities (local-model routing, general sudo, CIRRUS
 access) this v1 skeleton does not have.
 """
 import asyncio
+import knowledge_freshness
 import json
 import time
 from datetime import datetime
@@ -229,7 +230,7 @@ async def run_reasoning_pass(reason: str) -> float:
         mcp_servers={"supervisor": server},
         allowed_tools=allowed,
         permission_mode="bypassPermissions",
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=knowledge_freshness.apply(SYSTEM_PROMPT, model),
         model=model,
         max_turns=12,
         max_budget_usd=3.00 if upgraded else 1.00,

@@ -47,8 +47,9 @@ RULES = (
 
 
 def _post(url, model, user_prompt):
+    import knowledge_freshness
     body = json.dumps({"model": model, "max_tokens": 512, "temperature": 0.2,
-                       "messages": [{"role": "system", "content": RULES},
+                       "messages": [{"role": "system", "content": knowledge_freshness.apply(RULES, model)},
                                     {"role": "user", "content": user_prompt}]}).encode()
     req = urllib.request.Request(url, data=body,
                                  headers={"Content-Type": "application/json"},

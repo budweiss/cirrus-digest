@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent
 CONTRACT = ("answer_workflow.py", "conversation_memory.py", "bot_workflow.py",
             "capability_dispatch.py", "capability_admission.py", "answer_workflow_eval.py",
             "inbox_evidence.py", "answer_attempts.py", "llm_providers.py", "answer_workflow_cli.py", "workflow_mail_sources.py",
-            "approval_grace.py")
+            "approval_grace.py", "knowledge_freshness.py")
 MAX_TOKENS = 1800
 
 

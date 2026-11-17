@@ -7,6 +7,7 @@ import math
 import sys
 import llm_providers as lp
 import llm_routing as routing
+import knowledge_freshness
 from capability_selection import select, NoEligibleModel
 
 
@@ -29,6 +30,8 @@ def plan(system, user, creds, *, candidates, capability, task, max_cost_usd,
             output_limit = max_tokens
             if provider not in allowed:
                 continue
+            wire_system = knowledge_freshness.apply(system, lp.configured_model(provider, creds))
+            input_size = len(wire_system.encode()) + len(user.encode()) + 1024
             if provider in routing.LOCAL:
                 if not creds.get(provider + '_url'):
                     continue
@@ -43,7 +46,7 @@ def plan(system, user, creds, *, candidates, capability, task, max_cost_usd,
                 cfg, box, ledger = llm_budget.resolve(creds, app_dir=str(routing.ROOT))
                 output_limit = max(max_tokens, lp._EFFORT_MIN_MAX_TOKENS) if provider == 'anthropic' and lp._anthropic_extra(creds) else max_tokens
                 try:
-                    estimated = llm_budget.cost_usd(configured, len(system.encode()) + len(user.encode()) + 1024,
+                    estimated = llm_budget.cost_usd(configured, input_size,
                                                     output_limit, cfg)
                 except (ValueError, TypeError, KeyError):
                     continue  # one unpriced model must not veto qualified peers
@@ -54,13 +57,15 @@ def plan(system, user, creds, *, candidates, capability, task, max_cost_usd,
             if not configured or row.get('model') != configured:
                 continue
             capacity = row.get('usable_input_tokens')
-            if type(capacity) is not int or capacity < len(system.encode()) + len(user.encode()) + 1024 + output_limit:
+            if type(capacity) is not int or capacity < input_size + output_limit:
                 continue
             if not math.isfinite(estimated) or estimated < 0:
                 continue
             prepared.append(dict(row, estimated_request_cost_usd=estimated))
         chosen = select(prepared, capability=capability, privacy=policy['privacy'], pool=pool,
-                        input_tokens=len(system.encode())+len(user.encode())+1024+max_tokens,
+                        # Capacity was checked per candidate above, including its
+                        # policy and output floor. A cloud floor cannot veto local.
+                        input_tokens=0,
                         max_cost_usd=max_cost_usd, allowed_ids=allowed, min_quality=min_quality, now=now)
         return chosen, policy
     except (routing.RoutingError, NoEligibleModel, OSError, ValueError, TypeError, KeyError) as exc:

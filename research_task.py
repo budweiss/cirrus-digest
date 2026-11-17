@@ -41,6 +41,7 @@ USAGE
     research_task.py --question "..." --requirement "..." --requirement "..."
     research_task.py --brief b.md --dry-run     # plan only, no searches, no spend
 """
+import knowledge_freshness
 import argparse
 import re
 import json
@@ -178,7 +179,7 @@ def gather(subq, creds):
             url = opportunity_scout.PRIMARY_SOURCES[key]
             body, _paywalled = cirrus_daily.fetch_article_content(url)
             if body:
-                out.append({"url": url, "text": body[:6000], "paywalled": False})
+                out.append(dict(knowledge_freshness.fetched_source(url, body[:6000]), paywalled=False))
                 print(f"    primary source [{key}] opened directly: {url}")
     except Exception as e:
         print(f"    primary-source step skipped ({type(e).__name__}: {e})")
@@ -198,8 +199,7 @@ def gather(subq, creds):
             # nothing on this" (2026-08-25, found on Bill's Back Creek lookup).
             body, paywalled = cirrus_daily.fetch_article_content(u)
             if body:
-                out.append({"url": u, "text": body[:6000],
-                            "paywalled": bool(paywalled)})
+                out.append(dict(knowledge_freshness.fetched_source(u, body[:6000]), paywalled=bool(paywalled)))
         except Exception:
             continue
     return out, None

@@ -5,6 +5,7 @@ No broker, mailer, credentials, paid-model fallback, or scheduler imports.
 The existing twice-daily sessions can call this before composing their letters.
 Runtime files belong under private/stock-research (never in Git).
 """
+import knowledge_freshness
 import argparse
 import csv
 import hashlib
@@ -492,6 +493,7 @@ each under 300 characters. Do not propose new facts from your own knowledge.'''
 def structured_review(system, text, task, issue_pattern=None):
     """Constrain the local review's shape so rambling output cannot truncate JSON."""
     from media_pipeline import request, token_count, MODEL
+    system=knowledge_freshness.apply(system,MODEL)
     if token_count(system + text) + 1800 > 32768:
         raise ValueError('review_context_budget_exceeded')
     schema = {'type': 'object', 'additionalProperties': False,

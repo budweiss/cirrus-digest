@@ -107,6 +107,8 @@ def _local_draft(system, user, local, timeout=60):
         _DRAFT.error = "local hint carried no model name"
         return ""
     timeout = int(local.get("timeout", timeout))
+    import knowledge_freshness
+    system = knowledge_freshness.apply(system, model)
     try:
         body = json.dumps({
             "model": model,
@@ -156,7 +158,10 @@ def _estimate_cost(providers, judge, in_chars, max_tokens, cfg, creds):
     (e.g. a name the model-health self-heal swapped in) is estimated at the
     CONSERVATIVE unknown-model rate rather than aborting — a pricing gap must
     never silently disable the council. Raises only if a provider has NO model."""
-    in_tok = max(1, in_chars // 4)
+    import knowledge_freshness
+    policy_chars = max((len(knowledge_freshness.instruction(_model_for(p, creds)))
+                        for p in set(providers) | {judge}), default=0)
+    in_tok = max(1, (in_chars + policy_chars) // 4)
     unknown = float((cfg or {}).get("unknown_model_out_per_m", 25.0))
     total = 0.0
     for p in list(providers) + [judge]:

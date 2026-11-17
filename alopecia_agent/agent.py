@@ -32,6 +32,7 @@ from claude_agent_sdk import (
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
+import knowledge_freshness
 
 from alopecia_agent import budget, tools, research, notebook           # noqa: E402
 from alopecia_agent.ledger import ledger_append, STATE_DIR  # noqa: E402
@@ -232,7 +233,7 @@ async def run_reasoning_pass(reason: str, dry_run: bool = False, no_send: bool =
         mcp_servers={"alopecia": server},
         allowed_tools=allowed,
         permission_mode="bypassPermissions",
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=knowledge_freshness.apply(SYSTEM_PROMPT, "sonnet"),
         model="sonnet",
         # S366, measured: the Oct 4 run died with error_max_turns AT CLOSE-OUT
         # ("about to append the progress note to the brief draft") — the work

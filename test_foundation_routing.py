@@ -235,7 +235,8 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
 
     def test_recovery_cannot_exceed_route_aggregate_cap(self):
-        route=self.route(max_recovery_attempts=1,max_cost_usd=.0015)
+        # Fits one request including freshness policy, but never two attempts.
+        route=self.route(max_recovery_attempts=1,max_cost_usd=.003)
         def failed(*a):self.calls.append('failed');raise L.ProviderError('offline')
         with patch.dict(L._PROVIDERS,{'gemini':failed}):
             with self.assertRaises(L.ProviderError):self.invoke(route)

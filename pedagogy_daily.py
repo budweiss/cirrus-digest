@@ -23,6 +23,7 @@ Modes:
                                        no telegram, no state writes
   python3 pedagogy_daily.py selftest   offline tests, no network
 """
+import knowledge_freshness
 
 import json
 import os
@@ -142,7 +143,7 @@ def ollama(prompt, cfg, timeout=180, model=None):
     started = time.monotonic()
     try:
         resp = requests.post(f"{host}/api/generate",
-                             json={"model": mdl, "prompt": prompt,
+                             json={"model": mdl, "system": knowledge_freshness.instruction(mdl), "prompt": prompt,
                                    "stream": False,
                                    "options": {"num_ctx": 8192}},
                              timeout=timeout)

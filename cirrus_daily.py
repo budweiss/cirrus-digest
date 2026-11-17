@@ -4,6 +4,7 @@ CIRRUS Daily Web Digest
 Fetches Medium and Substack RSS feeds from the past 24 hours,
 summarizes with a local Ollama model, saves a daily digest.
 """
+import knowledge_freshness
 
 import imaplib
 import email
@@ -489,6 +490,7 @@ def gemini_search(query: str, max_results: int = 3,
                f"{_GEMINI_MODEL}:generateContent?key={key}")
         with hard_deadline(45, "gemini_search"):
             resp = requests.post(url, json={
+                "system_instruction": {"parts": [{"text": knowledge_freshness.instruction(_GEMINI_MODEL)}]},
                 "contents": [{"parts": [{"text":
                     f"Search the web for: {query}\nBriefly say what the top results are."}]}],
                 "tools": [{"google_search": {}}],
@@ -596,6 +598,7 @@ def claude_search(query: str, max_results: int = 3,
                          "content-type": "application/json"},
                 json={
                     "model": _CLAUDE_SEARCH_MODEL,
+                    "system": knowledge_freshness.instruction(_CLAUDE_SEARCH_MODEL),
                     "max_tokens": 1024,
                     # max_uses bounds cost: one search per call, not a research
                     # session. We want URLs, not an essay -- the local model
@@ -1311,7 +1314,7 @@ def ollama_summarize(prompt, timeout=120):
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False,
+            json={"model": MODEL, "system": knowledge_freshness.instruction(MODEL), "prompt": prompt, "stream": False,
                   "options": {"num_ctx": NUM_CTX}},
             timeout=timeout
         )

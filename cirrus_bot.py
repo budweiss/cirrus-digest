@@ -17,6 +17,7 @@ Commands:
   /omit       - add a sender to the email omit list
   /omitlist   - show the current email omit list
 """
+import knowledge_freshness
 
 import warnings
 warnings.filterwarnings("ignore", category=Warning, module="urllib3")
@@ -361,6 +362,7 @@ def call_gemini(prompt: str, timeout: int = 60):
     # iPhone Gemini app) — required for real-time questions like sports
     # scores, current news, etc. Works with gemini-2.x models.
     resp = requests.post(url, json={
+        "system_instruction": {"parts": [{"text": knowledge_freshness.instruction(GEMINI_MODEL)}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
     }, timeout=timeout)
@@ -408,7 +410,7 @@ def call_grok(prompt: str, timeout: int = 60):
     resp = requests.post(
         "https://api.x.ai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROK_API_KEY}"},
-        json={"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]},
+        json={"model": GROK_MODEL, "messages": knowledge_freshness.messages([{"role": "user", "content": prompt}], GROK_MODEL)},
         timeout=timeout
     )
     resp.raise_for_status()
@@ -427,7 +429,7 @@ def call_claude(prompt: str, timeout: int = 60):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        json={"model": CLAUDE_MODEL, "max_tokens": 1024,
+        json={"model": CLAUDE_MODEL, "system": knowledge_freshness.instruction(CLAUDE_MODEL), "max_tokens": 1024,
               "messages": [{"role": "user", "content": prompt}]},
         timeout=timeout
     )
@@ -1199,7 +1201,7 @@ Write the research brief now:"""
         if not body:
             resp = requests.post(
                 f"{OLLAMA_HOST}/api/generate",
-                json={"model": MODEL, "prompt": prompt, "stream": False,
+                json={"model": MODEL, "system": knowledge_freshness.instruction(MODEL), "prompt": prompt, "stream": False,
                       "options": {"num_ctx": 16384}},
                 timeout=600
             )
@@ -1888,7 +1890,7 @@ Respond in markdown with these headings: ## Analysis, ## Proposed Change, ## Ris
         try:
             resp = requests.post(
                 f"{OLLAMA_HOST}/api/generate",
-                json={"model": MODEL, "prompt": prompt, "stream": False,
+                json={"model": MODEL, "system": knowledge_freshness.instruction(MODEL), "prompt": prompt, "stream": False,
                       "options": {"num_ctx": 8192}},
                 timeout=300
             )
@@ -2163,7 +2165,7 @@ Answer:"""
         try:
             resp = requests.post(
                 f"{OLLAMA_HOST}/api/generate",
-                json={"model": MODEL, "prompt": prompt, "stream": False,
+                json={"model": MODEL, "system": knowledge_freshness.instruction(MODEL), "prompt": prompt, "stream": False,
                       "options": {"num_ctx": 8192}},
                 timeout=120
             )
@@ -2180,11 +2182,10 @@ Answer:"""
             f"Background context from past digests (may or may not be relevant "
             f"to the question):\n\n{context}\n\n"
             f"Question: {question}\n\n"
-            f"Answer the question directly and concisely using your own knowledge. "
-            f"Do not mention or comment on the background context, or whether it "
-            f"is relevant or sufficient - just answer the question."
+            f"Answer directly and concisely from relevant evidence. State when current "
+            f"facts cannot be verified; older background is not current evidence."
             if context else
-            f"Question: {question}\n\nAnswer directly and concisely using your own knowledge."
+            f"Question: {question}\n\nAnswer directly and concisely. State when current facts cannot be verified."
         )
         fb_answer, fb_name = ask_with_fallback(fallback_prompt)
         if fb_answer:

@@ -44,6 +44,7 @@ import time
 import uuid
 import urllib.request
 import urllib.error
+import knowledge_freshness
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -752,6 +753,7 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
     and judge rows) -- without it those calls would be counted twice.
     """
     _LAST.model = None  # blocked calls must not expose the previous model
+    system = knowledge_freshness.apply(system, configured_model(provider, creds))
     import llm_routing
     try:
         route_policy = llm_routing.authorize(
@@ -805,6 +807,13 @@ def call(provider, system, user, creds, max_tokens=16384, retries=1, *,
         if reply.strip():
             break
     return reply
+
+
+def configured_model(provider, creds):
+    """Same request identity used by the adapters; never resolve a UI label."""
+    if provider == 'anthropic':
+        return creds.get('claude_dev_model') or creds.get('claude_model') or 'claude-sonnet-5'
+    return creds.get(provider + '_model')
 
 
 def escalate(system, user, creds, max_tokens=16384, mode=None, order=None, *,

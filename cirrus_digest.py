@@ -8,6 +8,7 @@ Email newsletter fetching moved to cirrus_daily.py (runs daily instead of
 weekly). CONFIG["email"]["days_back"] is still used below by
 fetch_podcasts() for its own lookback window.
 """
+import knowledge_freshness
 
 import json
 import os
@@ -89,7 +90,7 @@ def ollama_summarize(prompt, timeout=120, model=None):
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": model or MODEL, "prompt": prompt, "stream": False,
+            json={"model": model or MODEL, "system": knowledge_freshness.instruction(model or MODEL), "prompt": prompt, "stream": False,
                   "options": {"num_ctx": NUM_CTX}},
             timeout=timeout
         )
@@ -129,7 +130,7 @@ def _remote_ollama(prompt, model, host, timeout=PODCAST_REMOTE_TIMEOUT):
     NEVER raises: every failure returns None so the caller falls back to the
     local model. A digest item must never be blanked by a cross-box hop.
     """
-    payload = json.dumps({"model": model, "prompt": prompt, "stream": False,
+    payload = json.dumps({"model": model, "system": knowledge_freshness.instruction(model), "prompt": prompt, "stream": False,
                           "options": {"num_ctx": 8192}})
     remote_cmd = (
         f"curl -s -m {timeout} -X POST http://127.0.0.1:11434/api/generate "
@@ -257,6 +258,7 @@ def gemini_search(query: str, max_results: int = 3) -> list[str]:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{_GEMINI_MODEL}:generateContent?key={key}")
         resp = requests.post(url, json={
+            "system_instruction": {"parts": [{"text": knowledge_freshness.instruction(_GEMINI_MODEL)}]},
             "contents": [{"parts": [{"text":
                 f"Search the web for: {query}\nBriefly say what the top results are."}]}],
             "tools": [{"google_search": {}}],

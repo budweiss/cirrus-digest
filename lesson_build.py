@@ -22,6 +22,7 @@ What this module guarantees, because a client email cannot be unsent:
   * The recipient comes from intake_senders.json by client key, never from mail.
 """
 from __future__ import annotations
+import knowledge_freshness
 
 import collections
 import functools
@@ -498,7 +499,7 @@ def local_draft(user: str, schema: dict, cfg: dict, timeout: int = 1800) -> dict
     r = _post(d["endpoint"] + "/api/chat", {
         "model": d["model"], "stream": False, "think": d.get("think", "medium"), "format": schema,
         "options": {"temperature": 0.3},
-        "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]}, timeout)
+        "messages": [{"role": "system", "content": knowledge_freshness.apply(SYSTEM, d["model"])}, {"role": "user", "content": user}]}, timeout)
     if r.get("model") != d["model"]:
         raise RuntimeError("draft answered by %r, not %r" % (r.get("model"), d["model"]))
     return json.loads(r["message"]["content"])
@@ -511,7 +512,7 @@ def local_check(system: str, user: str, schema: dict, cfg: dict, max_tokens: int
         "model": c["model"], "temperature": 0, "max_tokens": max_tokens,
         "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {"type": "json_schema", "json_schema": {"name": "check", "schema": schema}},
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout)
+        "messages": [{"role": "system", "content": knowledge_freshness.apply(system, c["model"])}, {"role": "user", "content": user}]}, timeout)
     if r.get("model") != c["model"]:
         raise RuntimeError("check answered by %r, not %r" % (r.get("model"), c["model"]))
     if r["choices"][0].get("finish_reason") == "length":

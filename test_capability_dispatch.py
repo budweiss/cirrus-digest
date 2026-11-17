@@ -94,6 +94,6 @@ class DispatchTests(unittest.TestCase):
     def test_other_provider_effort_floor_does_not_eliminate_valid_local(self):
         self.creds.update(anthropic_effort='high',vllm_url='http://localhost:8000',vllm_model='m')
         rows=self.records()
-        local=dict(rows[1],id='vllm',location='local',usable_input_tokens=3000)
+        local=dict(rows[1],id='vllm',location='local',usable_input_tokens=5000)
         provider,_=self.invoke(candidates=rows+[local],pool='auto',privacy='LOCAL_ONLY',max_cost_usd=0)
         self.assertEqual(provider,'vllm')

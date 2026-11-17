@@ -39,6 +39,7 @@ On cumulus1 "python3" means ~/.venvs/alopecia-agent/bin/python (the tick's
 AGENT_PY). The repo's .venv has no claude_agent_sdk: a run under it fails
 with ModuleNotFoundError (T114).
 """
+import knowledge_freshness
 import asyncio
 import json
 import re
@@ -253,7 +254,7 @@ async def run_pass(mode, dry_run, followup=False):
         strict_mcp_config=True,
         allowed_tools=allowed_tools(mode, dry_run),
         permission_mode="dontAsk",
-        system_prompt=(PROMPTS / f"{mode}.md").read_text(),
+        system_prompt=knowledge_freshness.apply((PROMPTS / f"{mode}.md").read_text(), "sonnet"),
         model="sonnet",
         max_turns=max_turns,
         max_budget_usd=budget_usd,

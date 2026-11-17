@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "policy_version": "2026-11-17-v1",
+  "models": {
+    "gpt-6-sol": {
+      "cutoff": "2026-04-20",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-sol"
+    },
+    "gpt-6-astra": {
+      "cutoff": "2026-04-30",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    },
+    "gpt-6-luna": {
+      "cutoff": "2026-05-18",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-luna.md"
+    },
+    "gpt-5.5": {
+      "cutoff": "2025-12-01",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.5.md"
+    },
+    "gpt-5.6-sol": {
+      "cutoff": "2026-02-16",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol.md"
+    },
+    "gpt-5.6-terra": {
+      "cutoff": "2026-02-16",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra.md"
+    },
+    "gpt-5.6-luna": {
+      "cutoff": "2026-02-16",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna.md"
+    },
+    "gpt-4.1": {
+      "cutoff": "2024-06-01",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-4.1"
+    },
+    "gpt-4o-mini": {
+      "cutoff": "2023-10-01",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-4o-mini"
+    },
+    "gpt-oss:120b": {
+      "cutoff": "2024-06-01",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-oss-120b"
+    },
+    "gpt-oss-120b": {
+      "cutoff": "2024-06-01",
+      "checked": "2026-11-17",
+      "source": "https://developers.openai.com/api/docs/models/gpt-oss-120b"
+    },
+    "claude-sonnet-5": {
+      "cutoff": "2026-01",
+      "checked": "2026-11-17",
+      "source": "https://platform.claude.com/docs/en/models/sonnet-5/overview"
+    },
+    "claude-opus-5": {
+      "cutoff": "2026-05",
+      "checked": "2026-11-17",
+      "source": "https://platform.claude.com/docs/en/models/opus-5/overview"
+    },
+    "claude-fable-5-1": {
+      "cutoff": "2026-06",
+      "checked": "2026-11-17",
+      "source": "https://platform.claude.com/docs/en/models/fable-5-1/overview"
+    },
+    "qwen3.5:35b": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B"
+    },
+    "qwen3.5:9b": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/Qwen/Qwen3.5-9B"
+    },
+    "qwen3.8:27b": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/Qwen/Qwen3.8-27B"
+    },
+    "qwen3.8-27b-fp8": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/Qwen/Qwen3.8-27B"
+    },
+    "kimi-k3": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://github.com/MoonshotAI/Kimi-K3"
+    },
+    "kimi-k3:cloud": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://github.com/MoonshotAI/Kimi-K3"
+    },
+    "gemini-3.1-pro-preview": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro"
+    },
+    "grok-4.20-0309-non-reasoning": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://docs.x.ai/developers/models/grok-4.20"
+    },
+    "deepseek-flash": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://api-docs.deepseek.com/updates/"
+    },
+    "deepseek-v4.1-flash:cloud": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    "glm-5.3-flash:cloud": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": "https://huggingface.co/zai-org/GLM-5.3-Flash"
+    },
+    "gpt-reserve": {
+      "cutoff": null,
+      "checked": "2026-11-17",
+      "source": null
+    }
+  }
+}

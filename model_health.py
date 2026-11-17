@@ -1830,8 +1830,12 @@ def check_cloud_model_releases(creds):
 
 def main():
     creds = load()
+    import knowledge_freshness
+    knowledge = knowledge_freshness.audit()
     providers = L.available(creds)
     healthy, healed, broken, errored, needs_funding = [], [], [], [], []
+    if knowledge.get('error') or knowledge.get('overdue_or_invalid'):
+        errored.append('knowledge-date registry overdue or invalid; current facts require verified sources')
 
     for p in providers:
         field = MODEL_FIELD.get(p)
@@ -1901,6 +1905,7 @@ def main():
 
     stamp = f"{node_name()} {datetime.now():%Y-%m-%d %H:%M}"
     print(f"[{stamp}] model-health {'(dry-run)' if DRY else ''}")
+    print('  knowledge: ' + json.dumps(knowledge, sort_keys=True))
     print(f"  local:   {local_line}")
     print(f"  spend:   {fb_line}")
     print(f"  cutoff:  {tr_line}")
