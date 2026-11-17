@@ -54,6 +54,25 @@ class Budget(unittest.TestCase):
         self.reserve(10, 'qualification-module-2')
         with self.assertRaises(ValueError): self.reserve(4, 'other-job', False)
 
+    def test_explicit_activation_uses_only_remaining_aggregate_and_keeps_job_cap(self):
+        self.reserve()
+        p = self.root / 'dollar-budget.json'
+        state = json.loads(p.read_text())
+        state['qualification_authorization'] = {'reference': 'qualification ask', 'total_usd': 25, 'per_module_usd': 12.5}
+        state['production_authorization'] = {'reference': 'activate after qualification', 'total_usd': 25}
+        p.write_text(json.dumps(state))
+        self.reserve(8)
+        self.reserve(7, 'qualification-module-2')
+        self.reserve(4, 'production-job', False)
+        with self.assertRaises(ValueError): self.reserve(2, 'production-job', False)
+        with self.assertRaises(ValueError): self.reserve(4, 'different-production-job', False)
+        state = json.loads(p.read_text())
+        self.assertEqual(state['baseline'], 2.41)
+        self.assertEqual(len(state['reservations']), 4)
+        state['production_authorization']['total_usd'] = 30
+        p.write_text(json.dumps(state))
+        with self.assertRaises(ValueError): self.reserve(.01, 'another-job', False)
+
     def test_logistics_rejects_the_actual_cloud_failures(self):
         q = {'tag': 'target', 'correct': 'one', 'wrong': ['two', 'three', 'four']}
         for stem in ('What is the Essential Question students will explore?',

@@ -51,6 +51,16 @@ def reserve(root, ledger, job, ceiling, qualification=False):
                 raise ValueError('qualification authorization lacks evidence')
             total_limit = amount(authorization['total_usd'])
             job_limit = amount(authorization['per_module_usd'])
+        # Activation may use the remainder of the same authorized aggregate,
+        # without resetting historical qualification spending or the $5 job cap.
+        production = state.get('production_authorization')
+        if not qualification and production:
+            if not isinstance(production.get('reference'), str) or not production['reference'].strip():
+                raise ValueError('production authorization lacks evidence')
+            approved = amount(production['total_usd'])
+            if not authorization or approved > amount(authorization['total_usd']):
+                raise ValueError('production authorization exceeds aggregate authorization')
+            total_limit = approved
         if baseline + sum(totals) + ceiling > total_limit or job_total + ceiling > job_limit:
             raise ValueError('lesson dollar allowance exhausted')
         rid = 'lesson-' + uuid.uuid4().hex
