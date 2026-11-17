@@ -6,6 +6,7 @@ Each function takes keyword args (matching its tool schema) and returns a plain 
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -240,49 +241,110 @@ def list_ollama_models(**kwargs) -> str:
 
 # ── Service Status ─────────────────────────────────────────────────────────────
 
+_NOT_RUNNING_NOTE = "A scheduled job looks like this between runs."
+
+
+def _run(argv: list) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=5)
+
+
+def _launchd_fields(output: str) -> dict:
+    """Top-level 'key = value' lines of `launchctl print <domain>/<label>`."""
+    fields = {}
+    for line in output.splitlines():
+        m = re.match(r"\t(\w[\w ]*?) = (.+)$", line)
+        if m:
+            fields.setdefault(m.group(1), m.group(2).strip())
+    return fields
+
+
+def _launchd_services(output: str, prefix: str = "com.cirrus.") -> list:
+    """(pid, last_exit, label) rows from the services block of `launchctl print system`."""
+    rows, inside = [], False
+    for line in output.splitlines():
+        if line == "\tservices = {":
+            inside = True
+        elif inside and line == "\t}":
+            break
+        elif inside:
+            parts = line.split()
+            if len(parts) == 3 and parts[2].startswith(prefix):
+                rows.append(tuple(parts))
+    return rows
+
+
+def _launchd_status(name: str) -> str:
+    # S654: `launchctl list <label>` asks the CALLER's domain, so from a shell it
+    # called every com.cirrus.* LaunchDaemon "not loaded" (T33). Name the domain.
+    targets = [f"system/{name}", f"gui/{os.getuid()}/{name}"]
+    for target in targets:
+        result = _run(["launchctl", "print", target])
+        if result.returncode == 0:
+            f = _launchd_fields(result.stdout)
+            if f.get("state") == "running":
+                return f"Service '{name}' ({target}): running (PID: {f.get('pid', '?')})"
+            return (f"Service '{name}' ({target}): loaded, not running right now "
+                    f"(state = {f.get('state', '?')}; last exit code = "
+                    f"{f.get('last exit code', '?')}). {_NOT_RUNNING_NOTE}")
+    return (f"Service '{name}' is not loaded in the system or "
+            f"gui/{os.getuid()} launchd domain (or doesn't exist).")
+
+
+def _launchd_list() -> str:
+    result = _run(["launchctl", "print", "system"])
+    rows = _launchd_services(result.stdout)
+    if not rows:
+        return ("No com.cirrus.* services found in `launchctl print system` "
+                f"(exit {result.returncode}).")
+    rows.sort(key=lambda r: (r[0] == "0", r[2]))
+    lines = [f"{'-' if pid == '0' else pid}\t{code}\t{label}" for pid, code, label in rows]
+    return ("CIRRUS services (launchd system domain; PID '-' = not running now. "
+            f"{_NOT_RUNNING_NOTE}):\nPID\tLastExit\tLabel\n" + "\n".join(lines))
+
+
+def _systemd_status(name: str) -> str:
+    # The tool schema names launchd labels, so map com.cirrus.bot -> cirrus-bot.service.
+    unit = "cirrus-" + name[len("com.cirrus."):] if name.startswith("com.cirrus.") else name
+    if "." not in unit:
+        unit += ".service"
+    asked = f" (asked as '{name}')" if unit != name else ""
+    result = _run(["systemctl", "show", unit, "--no-pager",
+                   "-p", "LoadState,ActiveState,SubState,MainPID,Result"])
+    f = dict(l.split("=", 1) for l in result.stdout.splitlines() if "=" in l)
+    if result.returncode != 0 or f.get("LoadState", "not-found") == "not-found":
+        return f"Service '{unit}'{asked} is not loaded in systemd (or doesn't exist)."
+    active, sub = f.get("ActiveState", "?"), f.get("SubState", "?")
+    if active == "active":
+        state = f"running (PID: {f.get('MainPID', '?')})" if sub == "running" else f"active ({sub})"
+        return f"Service '{unit}'{asked}: {state}"
+    return (f"Service '{unit}'{asked}: loaded, not running right now ({active} ({sub}), "
+            f"last result = {f.get('Result', '?')}). {_NOT_RUNNING_NOTE}")
+
+
+def _systemd_list() -> str:
+    result = _run(["systemctl", "list-units", "--all", "--no-legend", "--plain",
+                   "--no-pager", "cirrus-*", "cumulus-*"])
+    rows = ["\t".join(l.split(None, 4)[:4]) for l in result.stdout.splitlines()
+            if len(l.split()) >= 4]
+    if not rows:
+        return f"No cirrus-*/cumulus-* systemd units found (exit {result.returncode})."
+    return ("systemd units cirrus-*/cumulus-* ('inactive dead' = not running now. "
+            f"{_NOT_RUNNING_NOTE}):\nUnit\tLoad\tActive\tSub\n" + "\n".join(rows))
+
+
 def check_service_status(service_name: str = "", **kwargs) -> str:
     """
-    Check whether a launchd service is running on CIRRUS.
-    service_name: e.g. 'com.cirrus.bot', 'com.cirrus.daily', 'com.cirrus.offer'
-    Omit to list all com.cirrus.* services.
+    Check whether a service is running: launchd on CIRRUS, systemd on CUMULUS.
+    service_name: e.g. 'com.cirrus.bot' (CIRRUS) or 'cirrus-bot' (CUMULUS).
+    Omit to list all com.cirrus.* daemons / cirrus-*, cumulus-* units.
     """
+    name = (service_name or "").strip()
     try:
-        if service_name:
-            # T33-OK: called as a BOT TOOL, and the bot is launchd-spawned, so
-            # it inherits the system bootstrap namespace where these daemons are
-            # visible. Verified S104: the identical call over ssh returns
-            # "NOT loaded" for every com.cirrus.* job, so if this module is ever
-            # driven from a shell instead of from the bot, it will lie quietly.
-            result = subprocess.run(
-                ["launchctl", "list", service_name],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode != 0:
-                return f"Service '{service_name}' is NOT loaded (or doesn't exist)."
-            # PID is first field on first data line; "-" means not running
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 3 and parts[0] != "PID":
-                    pid = parts[0]
-                    status = "running" if pid != "-" else "loaded but NOT running"
-                    return f"Service '{service_name}': {status} (PID: {pid})"
-            return f"Service '{service_name}': loaded\n{result.stdout.strip()}"
-        else:
-            # List all cirrus services
-            # T33-OK: same reasoning as the branch above — bot-spawned, system
-            # namespace. Over ssh this one returns "No com.cirrus.* services".
-            result = subprocess.run(
-                ["launchctl", "list"],
-                capture_output=True, text=True, timeout=5
-            )
-            cirrus_lines = [
-                l for l in result.stdout.splitlines()
-                if "cirrus" in l.lower()
-            ]
-            if not cirrus_lines:
-                return "No com.cirrus.* services found in launchctl list."
-            header = "PID\tStatus\tLabel"
-            return "CIRRUS services:\n" + header + "\n" + "\n".join(cirrus_lines)
+        if shutil.which("launchctl"):
+            return _launchd_status(name) if name else _launchd_list()
+        if shutil.which("systemctl"):
+            return _systemd_status(name) if name else _systemd_list()
+        return "Cannot check services: neither launchctl nor systemctl is on this host."
     except Exception as e:
         return f"Error checking service status: {e}"
 
