@@ -222,6 +222,27 @@ def complete_cases(path, item, visible):
                             "No prose, fields or items were removed.")
                 except (ValueError, TypeError):
                     pass
+        # S647: validate structured provenance, then review the exact report
+        # the research caller delivers under its unchanged content requirements.
+        if (item['route'] == 'foundation:research:synthesise'
+                and '\nTransport schema (mandatory):' in row['system']):
+            from research_task import render_synthesis
+            delivered = render_synthesis(row['response'], row['user'])
+            if 'rendered_response' in row and row['rendered_response'] != delivered:
+                raise ValueError('research rendered evidence mismatch')
+            content_system = row['system'].split('\nTransport schema (mandatory):', 1)[0]
+            content_system = content_system.replace(
+                'Every factual claim lists its supplied source URLs in its sources array. An empty sources array explicitly means UNSOURCED.',
+                'Every factual claim carries its source URL inline. No URL, mark it    UNSOURCED.')
+            content_system = content_system.replace('JSON only, following the transport schema below. No preamble.', 'Markdown. No preamble.')
+            content_system = content_system.replace('List the supplied URL again when repeating a sourced fact in the counterargument;', 'Cite the supplied URL again when repeating a sourced fact in the counterargument;')
+            evidence['SYSTEM_INSTRUCTIONS'] = content_system
+            evidence['NEW'] = delivered
+            evidence['TRANSPORT_PRESENTATION'] = (
+                'Structured provenance was validated by the live research renderer. '
+                'NEW is the exact delivered Markdown report. Judge all original '
+                'content requirements, including factual support and citations. '
+                'No claim was removed; empty source lists render as UNSOURCED.')
         # Outer evidence JSON necessarily encodes NEW as a string. Describe the
         # decoded response's own syntax so reviewers do not confuse the layers.
         try:
@@ -337,6 +358,35 @@ def constrained_review_schema(fields):
     return schema
 
 
+def _parse_review_answer(answer):
+    """Normalize raw line-break whitespace in a bounded rationale, never votes.
+
+    The constrained local backend can emit an unescaped rationale newline.
+    All other control characters and all existing verdict/schema/reference checks
+    remain fail-closed. No explanation is truncated or selectively discarded.
+    """
+    normalize_raw_whitespace = False
+    try:
+        data = json.loads(answer or 'null')
+    except json.JSONDecodeError as exc:
+        if not exc.msg.startswith('Invalid control character'):
+            raise
+        data = json.loads(answer or 'null', strict=False)
+        normalize_raw_whitespace = True
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if not isinstance(value, str):
+                continue
+            if key != 'reason' and any(ord(c) < 32 for c in value):
+                raise ValueError('control character outside review rationale')
+            if key == 'reason':
+                if len(value) > REVIEW_REASON_MAX or any(ord(c) < 32 and c not in '\n\r\t' for c in value):
+                    raise ValueError('invalid review rationale transport')
+                if normalize_raw_whitespace:
+                    data[key] = re.sub(r'[\t\r\n]', ' ', value)
+    return data
+
+
 def model_review(rule, case, *, local=False):
     fields = new_evidence_fields(case)
     case = current_review_case(case)
@@ -392,7 +442,7 @@ def model_review(rule, case, *, local=False):
                 raise ValueError(message)
             raise RuntimeError("CUMULUS local reviewer failed")
         answer = json.loads(proc.stdout)["answer"]
-    data = json.loads(answer or "null")
+    data = _parse_review_answer(answer)
     if not isinstance(data, dict) or data.get("verdict") not in ("pass", "fail", "unsure"):
         raise ValueError("local reviewer returned no valid verdict")
     if data.get("issue_type") not in ("none", "unsupported_claim", "missed_change",

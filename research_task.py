@@ -205,6 +205,77 @@ def gather(subq, creds):
     return out, None
 
 
+def render_synthesis(raw, supplied_input):
+    """Fail closed on malformed provenance; render every claim with its label.
+
+    URL membership proves provenance identity, not entailment. The independent
+    quality review still judges whether each source supports the associated text.
+    """
+    import html
+    allowed = set(re.findall(r'https?://[^\s<>\[\]()"\']+', supplied_input))
+    allowed = {url.rstrip('.,;:') for url in allowed}
+    def reject():
+        raise ValueError('invalid research synthesis citation structure')
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                reject()
+            result[key] = value
+        return result
+    if isinstance(raw, str):
+        fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', raw, re.DOTALL)
+        if fenced:
+            raw = fenced.group(1)
+    try:
+        data = json.loads(raw, object_pairs_hook=pairs)
+    except (TypeError, ValueError):
+        reject()
+    def text(value):
+        if (not isinstance(value, str) or not value.strip() or len(value) > 6000
+                or '\n' in value or '\r' in value or re.search(r'https?://|www\.', value)):
+            reject()
+        # Model text must not introduce markup, tables, or executable HTML.
+        return html.escape(value.strip()).replace('\\', '\\\\').replace('|', '\\|').replace('*', '\\*').replace('_', '\\_').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+    def claims(values):
+        if not isinstance(values, list) or not 1 <= len(values) <= 40:
+            reject()
+        rendered = []
+        for claim in values:
+            if not isinstance(claim, dict) or set(claim) != {'text', 'sources'}:
+                reject()
+            body = text(claim['text'])
+            sources = claim['sources']
+            if (not isinstance(sources, list) or len(sources) > 20
+                    or any(not isinstance(url, str) or url not in allowed for url in sources)):
+                reject()
+            label = ' '.join('<' + url + '>' for url in dict.fromkeys(sources)) if sources else 'UNSOURCED'
+            rendered.append(' '.join(part + ' ' + label for part in re.split(r'(?<=[.!?])\s+', body)))
+        return rendered
+    keys = {'comparison', 'recommendation', 'counterargument', 'WHAT I DID NOT CHECK'}
+    if not isinstance(data, dict) or set(data) != keys:
+        reject()
+    for section in ('recommendation', 'counterargument'):
+        if not isinstance(data[section], list) or len(data[section]) != 1:
+            reject()
+    rows = data['comparison']
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 100:
+        reject()
+    out = ['## Comparison', '', '| Requirement | Option | Status | Evidence |', '|---|---|---|---|']
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {'requirement', 'option', 'status', 'evidence'}:
+            reject()
+        if row['status'] not in ('supported', 'contradicted', 'UNCHECKED'):
+            reject()
+        requirement, option = text(row['requirement']), text(row['option'])
+        evidence = ' '.join(claims(row['evidence']))
+        out.append(f'| {requirement} | {option} | {row["status"]} | {evidence} |')
+    for key, title in [('recommendation', 'Recommendation'), ('counterargument', 'Strongest argument against'), ('WHAT I DID NOT CHECK', 'WHAT I DID NOT CHECK')]:
+        out.extend(['', '## ' + title, ''])
+        out.extend('- ' + claim for claim in claims(data[key]))
+    return '\n'.join(out) + '\n'
+
+
 def synthesise(question, requirements, findings, creds):
     """Compare the options and recommend one — with disagreements preserved."""
     ev = []
@@ -220,7 +291,7 @@ def synthesise(question, requirements, findings, creds):
     sys_p = (
         (
             'You are advising someone who will ACT on this and cannot afford a flattering answer.\nRules, all '
-            'mandatory:\n1. Every factual claim carries its source URL inline. No URL, mark it    UNSOURCED.\n2. '
+            'mandatory:\n1. Every factual claim lists its supplied source URLs in its sources array. An empty sources array explicitly means UNSOURCED.\n2. '
             'Compare the real candidate options against the stated requirements.    Name supported failures or '
             'documented downsides. If none is documented, state the evidence gap as an uncertainty; never '
             'manufacture a flaw to fill this comparison.\n3. Recommend ONE, and give the single strongest '
@@ -229,7 +300,7 @@ def synthesise(question, requirements, findings, creds):
             'could not verify. Absence of a caveat must never be    mistaken for absence of risk.\n6. Missing '
             "retrieval means UNCHECKED, never that no evidence, study, or product exists. Say 'no evidence was "
             "supplied or retrieved', not 'no evidence exists'. Never infer undocumented product features or "
-            'limitations; distinguish source facts from your hypothetical risks.\nMarkdown. No preamble.\nFor '
+            'limitations; distinguish source facts from your hypothetical risks.\nJSON only, following the transport schema below. No preamble.\nFor '
             'every requirement report a status that is exactly one of these three words: supported, contradicted, '
             'or UNCHECKED. Never use any other status wording. Describe undocumented properties as '
             'unknown. A conditional risk must remain conditional and cannot introduce an undocumented product '
@@ -253,14 +324,15 @@ def synthesise(question, requirements, findings, creds):
             'UNCHECKED status everywhere, including tables and the recommendation. Do not infer no automatic '
             'backup from a manual-backup requirement. Preserve uncertainty instead of inventing a feature or '
             'limitation. Check the final answer for these contradictions before returning it.'
-            ' Keep each stated requirement separate and preserve its meaning. Distinguish instructions governing your answer from empirical claims about a candidate: audit a no-invented-evidence requirement by whether this answer invents evidence; do not merge it with whether effectiveness is established. Unknown effectiveness stays UNCHECKED in a separate entry. Cite the supplied URL again when repeating a sourced fact in the counterargument; keep conditional reasoning explicitly conditional.'
+            ' Keep each stated requirement separate and preserve its meaning. Distinguish instructions governing your answer from empirical claims about a candidate: audit a no-invented-evidence requirement by whether this answer invents evidence; do not merge it with whether effectiveness is established. Unknown effectiveness stays UNCHECKED in a separate entry. List the supplied URL again when repeating a sourced fact in the counterargument; keep conditional reasoning explicitly conditional.'
+            '\nTransport schema (mandatory): return one JSON object, optionally enclosed in a single json code fence, with exactly these keys: comparison, recommendation, counterargument, WHAT I DID NOT CHECK. comparison is a nonempty array of objects with exactly requirement (string), option (string), status (supported, contradicted or UNCHECKED), evidence (nonempty array of claims). recommendation and counterargument are arrays of EXACTLY ONE claim each: choose one option (or explicitly no good option found) and give only the single strongest argument against it, not a list of objections. WHAT I DID NOT CHECK is a nonempty array of claims. A claim has exactly text (nonempty plain text string, no URLs or newlines) and sources (array of exact source URLs supplied in INPUT, or [] when unsourced). Do not embed citations or Markdown in text. Every item in sources must be a supplied URL; never invent one. Put no prose outside this object. The application renders this into Markdown and attaches these sources, or the literal label UNSOURCED when sources is empty, to every sentence. Empty sources explicitly labels a claim UNSOURCED, including statements about the brief, your own method, missing retrieval and answer compliance. Use a separate comparison row for each requirement and option. Keep status free of explanation and put reasoning in evidence. Preserve uncertainty; source lists do not turn an inference into a source fact. For answer instructions, such as no invented evidence, compare the answer itself, not candidate effectiveness. When evidence is absent, mark empirical requirements UNCHECKED and state no good option found rather than invent facts. WHAT I DID NOT CHECK must be the final section in the rendered report.'
         )
     )
     usr = (f"BRIEF\n{question}\n\nREQUIREMENTS\n{reqs}\n\nEVIDENCE\n"
            + "\n".join(ev)[:90000])
     meta, text = _council(sys_p, usr, creds, task="research:synthesise",
                           max_tokens=8000)
-    return meta, text
+    return meta, render_synthesis(text, usr)
 
 
 def notify(msg, creds):
