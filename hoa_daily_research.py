@@ -271,6 +271,27 @@ def _document_text(url: str) -> str:
     return (content or "")[:20000]
 
 
+def _hoa_identity(name: str) -> str:
+    """Conservative write identity: only spelling and legal HOA suffix variants.
+
+    Keep direction, phase, numbers and all place-name words. Search ranking is
+    useful for a person reading results, but must never choose a write target.
+    """
+    name = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+    suffix = r"\s+(?:incorporated|inc|llc|hoa|homeowners association|home owners association|homeowners assoc|home owners assoc)$"
+    while True:
+        trimmed = re.sub(suffix, "", name).strip()
+        if trimmed == name:
+            return name
+        name = trimmed
+
+
+def _hoa_write_matches(name, db_path=None):
+    identity = _hoa_identity(name)
+    return [e for e in entity_kb.list_entities(KB_PROJECT, db_path=db_path)
+            if identity and _hoa_identity(e["name"]) == identity]
+
+
 def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None,
                   screened_path=None, today: str = None) -> dict:
     """Search for community mentions via hoa_monitor's existing gather+
@@ -347,7 +368,13 @@ def run_discovery(creds: dict = None, dry_run: bool = False, db_path: str = None
         name = (lead.get("community") or "").strip()
         if not name:
             continue
-        matches = entity_kb.search_entities(KB_PROJECT, name, db_path=db_path, limit=1)
+        matches = _hoa_write_matches(name, db_path=db_path)
+        slug_candidate = entity_kb.slugify(name)
+        collision = not matches and entity_kb.get_entity(KB_PROJECT, slug_candidate, db_path=db_path)
+        if len(matches) > 1 or collision:
+            result["withheld"].append({"community": name, "url": lead["resolved_url"],
+                                      "reason": "ambiguous HOA identity or occupied slug"})
+            continue
         is_new = len(matches) == 0
         slug = matches[0]["slug"] if matches else entity_kb.slugify(name)
 

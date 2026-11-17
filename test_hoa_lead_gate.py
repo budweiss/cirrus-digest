@@ -150,6 +150,45 @@ class Discovery(Isolated):
                          "Fixture Meadows Homeowners Association")
         self.assertEqual(len(kb.get_events(P, "fixture-meadows", db_path=self.db)), 1)
 
+    def discover_name(self, name):
+        return self.run_discovery(
+            [{"source": "web", "url": "https://fixture.example/complaint", "text": "Board complaints"}],
+            [{"idx": 0, "lead": True, "type": "complaint", "community": name,
+              "why": "Residents report unresolved grounds maintenance complaints."}])
+
+    def test_shared_words_do_not_attach_signal_to_another_hoa(self):
+        for name in ("Fixture Meadows East HOA", "Fixture Meadows Phase 2 HOA",
+                     "Fixture Meadows North HOA"):
+            with self.subTest(name=name):
+                slug = kb.slugify(name)
+                kb.upsert_entity(P, slug, name, db_path=self.db)
+        res = self.discover_name("Fixture Meadows West HOA")
+        self.assertEqual(res["updated_entities"], [])
+        self.assertEqual(res["new_entities"], ["Fixture Meadows West HOA"])
+        for name in ("Fixture Meadows East HOA", "Fixture Meadows Phase 2 HOA",
+                     "Fixture Meadows North HOA"):
+            self.assertEqual(kb.get_events(P, kb.slugify(name), db_path=self.db), [])
+
+    def test_duplicate_normalized_names_are_held(self):
+        for slug, name in (("first", "Fixture Meadows HOA"),
+                           ("second", "Fixture Meadows Homeowners Association, Inc.")):
+            kb.upsert_entity(P, slug, name, db_path=self.db)
+        res = self.discover_name("Fixture Meadows HOA")
+        self.assertEqual(len(res["withheld"]), 1)
+        self.assertEqual(kb.get_events(P, db_path=self.db), [])
+
+    def test_occupied_slug_cannot_bypass_identity_check(self):
+        kb.upsert_entity(P, "fixture-meadows-hoa", "Different Community HOA", db_path=self.db)
+        res = self.discover_name("Fixture Meadows HOA")
+        self.assertEqual(len(res["withheld"]), 1)
+        self.assertEqual(kb.get_events(P, db_path=self.db), [])
+        self.assertEqual(kb.get_entity(P, "fixture-meadows-hoa", db_path=self.db)["name"],
+                         "Different Community HOA")
+
+    def test_state_and_delaware_do_not_establish_identity(self):
+        kb.upsert_entity(P, "dsha", "Delaware State Housing Authority", db_path=self.db)
+        self.assertEqual(research._hoa_write_matches("State of Delaware (GSS)", self.db), [])
+
     def test_hoa_rfps_pass_only_while_open_and_say_until_when(self):
         c = FIXTURE["controls"]
         items = [c["hoa_rfp_open"], c["hoa_rfp_lapsed"], c["hoa_rfp_no_date"]]
