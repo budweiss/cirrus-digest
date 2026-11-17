@@ -30,6 +30,10 @@ SPOKEN_LIMIT = 3000               # characters; the full answer is always sent a
 PIPER_DIR = Path.home() / ".local/share/cowork-piper"
 PIPER_VOICE = "en_US-lessac-medium.onnx"
 TELEGRAM = "https://api.telegram.org"
+# A quick tap flips Telegram's microphone button to its round-video camera (S654).
+VIDEO_HINT = ("That was a video message, so nothing was asked. Telegram's button had "
+              "switched to the camera. Tap it once to switch back to the microphone, "
+              "then hold it and speak your question.")
 
 
 class Unavailable(Exception):

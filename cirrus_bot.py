@@ -2503,6 +2503,12 @@ def run_bot():
                         log=log, host=NODE_NAME)
                     offset = update["update_id"] + 1
                     continue
+                if message.get("video_note"):
+                    import telegram_voice
+                    log("Video message received; sent the microphone hint")
+                    offset = update["update_id"] + 1
+                    send_message(chat_id, telegram_voice.VIDEO_HINT)
+                    continue
 
                 if workflow_update:
                     log(f"Workflow command received ({len(text)} characters)")

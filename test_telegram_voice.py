@@ -199,5 +199,39 @@ class WiringTests(unittest.TestCase):
         self.assertIn('"text": "/ask " + q', loop)
 
 
+class VideoMessageTests(unittest.TestCase):
+    """The real run_bot loop, compiled alone with fakes (no Telegram, no config)."""
+
+    def run_loop(self, message):
+        import ast
+        tree = ast.parse((Path(__file__).resolve().parent / "cirrus_bot.py").read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_bot")
+        sent, handled, logs = [], [], []
+        with tempfile.TemporaryDirectory() as root:
+            scope = {"PROJECT_DIR": Path(root), "ALLOWED_ID": OWNER, "CREDS": {}, "log": logs.append,
+                     "api_call": mock.Mock(side_effect=[{"result": [{"update_id": 1, "message": message}]},
+                                                        KeyboardInterrupt()]),
+                     "handle_message": lambda *a: handled.append(a) or "unknown",
+                     "send_message": lambda chat, text: sent.append((chat, text)),
+                     "check_heartbeats": lambda: None}
+            exec(compile(ast.Module(body=[fn], type_ignores=[]), "cirrus_bot.py", "exec"), scope)
+            with mock.patch("bot_workflow.kick"), mock.patch.dict("os.environ", {"SKYWARDEN_TELEGRAM_INBOX": ""}):
+                scope["run_bot"]()
+        return sent, handled
+
+    def test_owner_video_message_gets_the_microphone_hint(self):
+        sent, handled = self.run_loop({"message_id": 3, "from": {"id": OWNER},
+                                       "chat": {"id": OWNER, "type": "private"},
+                                       "video_note": {"file_id": "v", "duration": 4}})
+        self.assertEqual(sent, [(OWNER, tv.VIDEO_HINT)])
+        self.assertEqual(handled, [])
+        self.assertIn("switch back to the microphone", tv.VIDEO_HINT)
+
+    def test_other_senders_video_is_ignored(self):
+        sent, handled = self.run_loop({"message_id": 3, "from": {"id": 99}, "chat": {"id": 99},
+                                       "video_note": {"file_id": "v", "duration": 4}})
+        self.assertEqual((sent, handled), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
