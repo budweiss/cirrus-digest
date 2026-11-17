@@ -360,7 +360,7 @@ def source_for_kind(pages: list, book: dict, L: dict, kind: str) -> str:
             continue
         for i in range(prior["first"], prior["last"] + 1):
             lines = _lines(pages[i])
-            if "Definitions" in lines:
+            if "Definitions" in lines or "Definition" in lines:
                 candidates.append("=== prior lesson %d, printed p. %d ===\n%s" % (
                     prior["n"], i - book["offset"] + 1, "\n".join(lines)))
     if len(candidates) > 12:

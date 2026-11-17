@@ -254,5 +254,18 @@ class Budget(unittest.TestCase):
         self.assertNotIn('endure: to last', lb.source_for_kind(pages, book, lessons[1], 'lessons'))
         self.assertNotIn('CUMULATIVE', lb.source_for_kind(pages, book, lessons[0], 'checks'))
 
+    def test_assessment_review_accepts_singular_definition_heading(self):
+        pages = ['Definition\nartery: a blood vessel carrying blood away',
+                 'Assessment administration instructions', 'Definition\nfuture-only word']
+        lessons = [{'n': n+1, 'first': n, 'last': n,
+                    'label': 'Assessment' if n == 1 else 'Lesson'} for n in range(3)]
+        book = {'offset': 0, 'lessons': lessons}
+        source = lb.source_for_kind(pages, book, lessons[1], 'checks')
+        self.assertIn('artery: a blood vessel', source)
+        self.assertIn('prior lesson 1, printed p. 1', source)
+        self.assertNotIn('future-only', source)
+        with self.assertRaises(lb.Hold):
+            lb.source_for_kind(['No definitions here', pages[1], pages[2]], book, lessons[1], 'checks')
+
 
 if __name__ == '__main__': unittest.main()
