@@ -490,6 +490,7 @@ def cmd_help():
 /reply <request ID> <correction> — continue a tracked conversation
 /workstatus [request ID] — view saved results and progress
 /ask <question> — ask CIRRUS a question using past digest memory (falls back to Gemini/Grok/Claude if the local model is unsure)
+🎙️ voice message — transcribed on this server, then answered like /ask, with a spoken reply
 /research <topic> — search the web, fetch ~5 sources, and reply with a research brief (runs in background)
 /todo <text> — add a new item to the work queue (shows up in /approve)
 /detail <keyword> :: <context> — add more detail to an existing pending item
@@ -2427,6 +2428,9 @@ def handle_message(message, chat_id):
 def run_bot():
     log("=== CIRRUS Telegram Bot Starting ===")
     log(f"Allowed user ID: {ALLOWED_ID}")
+    import telegram_voice
+    threading.Thread(target=lambda: log("Voice: " + telegram_voice.engines() + "; "
+                                        + telegram_voice.probe()), daemon=True).start()
 
     offset = 0
     import bot_workflow
@@ -2466,6 +2470,19 @@ def run_bot():
 
                 from telegram_handoff import forward as forward_supervisor
                 if forward_supervisor(update, ALLOWED_ID):
+                    offset = update["update_id"] + 1
+                    continue
+
+                # S653: a voice message is transcribed on this host and answered
+                # by the typed /ask handler; the words are never logged.
+                if message.get("voice"):
+                    import telegram_voice
+                    log("Voice message received")
+                    telegram_voice.handle(
+                        message, chat_id, allowed_id=ALLOWED_ID, token=BOT_TOKEN,
+                        api_call=api_call, send_text=lambda t: send_message(chat_id, t),
+                        ask=lambda q: handle_message({**message, "text": "/ask " + q}, chat_id),
+                        log=log, host=NODE_NAME)
                     offset = update["update_id"] + 1
                     continue
 
