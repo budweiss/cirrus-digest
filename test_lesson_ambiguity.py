@@ -131,6 +131,30 @@ class Ambiguity(unittest.TestCase):
         self.assertEqual(ctx['cloud_calls'], 200)
         self.assertEqual(lb.cloud_call_limit({}), 100)
 
+    def test_observed_off_topic_distractor_is_held_before_model_acceptance(self):
+        q = dict(self.q, tag='target', stem='How can poetry inspire writers?',
+                 correct='Share their feelings about another person.',
+                 wrong=['Solve math problems.', 'Forget their feelings.', 'Stop writing poems.'])
+        draft = {'focus': 'poetry', 'questions': [q, q, q]}
+        with patch.object(lb, 'independent_answers', return_value=[]) as audit:
+            failures = lb.lesson_failures('checks', draft, {'module': 1}, {'n': 33},
+                                         [], 'Poetry helps people share feelings.', {}, True, {})
+        self.assertTrue(any('unrelated topic' in x for x in failures))
+        audit.assert_not_called()
+        # A real cross-curricular source must not be excluded by keyword alone.
+        supported = lb.check_mcq(draft, {'n': 33}, 'Poetry and math can describe patterns.')
+        self.assertFalse(any('unrelated topic' in x for x in supported))
+
+    def test_definition_clue_is_held_but_contextual_usage_is_allowed(self):
+        q = dict(self.q, tag='vocab',
+                 stem='What does endure mean when it is used to describe something that lasts a long time?',
+                 correct='to continue to exist; to last for a period of time',
+                 wrong=['to accept something unpleasant', 'to survive hardship', 'to persist through pain'])
+        draft = {'focus': 'endure', 'questions': [q, q, q]}
+        self.assertTrue(any('definition clue' in x for x in lb.check_mcq(draft, {'n': 21}, self.source)))
+        q['stem'] = 'These stories endure across many generations. What does endure mean in this sentence?'
+        self.assertFalse(any('definition clue' in x for x in lb.check_mcq(draft, {'n': 21}, self.source)))
+
     def test_full_acceptance_cannot_bypass_independent_gate(self):
         draft = {'questions': [copy.deepcopy(self.q) for _ in range(3)]}
         ctx = {'dollar_job': 'fixture'}

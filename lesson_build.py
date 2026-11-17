@@ -660,6 +660,16 @@ def check_mcq(d: dict, L: dict, src: str) -> list:
         answer = norm(q.get("correct", ""))
         if len(answer.split()) >= 4 and answer in norm(q.get("stem", "")):
             f.append("question %d gives the correct answer in its stem" % i)
+        # These observed false accepts must not depend on a model's verdict.
+        # A source-supported cross-curricular contrast is still allowed.
+        for topic in (r"\bmath(?:ematics)?\b", r"\bvideo games?\b", r"\bcafeteria\b"):
+            if (any(re.search(topic, option, re.I) for option in q.get("wrong", []))
+                    and not re.search(topic, src, re.I)):
+                f.append("question %d: distractor introduces an unrelated topic absent from the source" % i)
+                break
+        if re.search(r"\bwhat does\b.{0,100}\bmean\b.{0,50}\bdescribe something that\b",
+                     q.get("stem", ""), re.I):
+            f.append("question %d: vocabulary stem supplies a definition clue; use a concrete context sentence" % i)
         if _LOGISTICS.search(q.get("stem", "")):
             f.append("question %d asks about the lesson's logistics (segments, pages, materials or "
                      "activities); ask what students learned instead" % i)
