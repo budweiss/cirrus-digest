@@ -45,7 +45,10 @@ class AskIntegration(unittest.TestCase):
         # Compile the actual handler, not a test implementation, without reading credentials.
         tree=ast.parse(Path(__file__).with_name('cirrus_bot.py').read_text())
         node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='cmd_ask')
-        self.ns={'Path':Path,'log':lambda *a:None,'is_uncertain':lambda answer:False}
+        # S654: cmd_ask also uses is_deflection, and since S650 knowledge_freshness.
+        import knowledge_freshness
+        self.ns={'Path':Path,'log':lambda *a:None,'is_uncertain':lambda answer:False,
+                 'is_deflection':lambda answer:False,'knowledge_freshness':knowledge_freshness}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'cirrus_bot.cmd_ask','exec'),self.ns)
     def test_real_handler_never_calls_retrieval_or_models_for_math(self):
         fake=types.ModuleType('cirrus_rag')

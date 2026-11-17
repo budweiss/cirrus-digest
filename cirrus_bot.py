@@ -323,7 +323,24 @@ def is_uncertain(answer: str) -> bool:
     the local model couldn't really answer the question."""
     if not answer or len(answer.strip()) < 10:
         return True
-    return bool(UNCERTAIN_RE.search(answer))
+    return bool(UNCERTAIN_RE.search(answer.replace("’", "'")))
+
+
+# S654: "I don't have a tool to look up sunrise times... check timeanddate.com"
+# passed is_uncertain, so /ask sent Buddy to websites and the search-grounded
+# Gemini fallback never ran. Applied ONLY to the tool-loop and local answers;
+# a fallback answer that cites a website is still accepted.
+DEFLECTION_RE = re.compile("|".join([
+    r"\b(?:don'?t|do not) have (?:a |any |the )?(?:tools?|ability|way|real-time|live)\b",
+    r"\b(?:can'?t|cannot|unable to|not able to)\b[^.\n]{0,30}\b(?:access|look (?:it )?up|browse|search\w*|retrieve)\b",
+    r"\bmy (?:available )?tools are limited\b",
+    r"\b(?:check|visit|use) (?:a |the )?(?:weather |search )?(?:website|site|search engine)\b",
+]), re.IGNORECASE)
+
+
+def is_deflection(answer: str) -> bool:
+    """True for an uncertain answer, or one that points elsewhere instead of answering."""
+    return is_uncertain(answer) or bool(DEFLECTION_RE.search(answer.replace("’", "'")))
 
 def _ledger(provider, model, data, task, prompt="", reply="", creds=None):
     """S135 (LOCAL-MODEL-PLAN.md step 6b): one spend-ledger row for a cloud call
@@ -2129,6 +2146,7 @@ def cmd_ask(question: str) -> str:
         results = retrieve(question, top_k=3)
         context = "\n\n".join([f"[{r['date']}]: {r['text']}" for r in results]) if results else ""
         sources_note = f"\n\n_Sources: {', '.join(sorted(set(r['date'] for r in results)))}_" if results else ""
+        deflected = ""  # kept as a last resort if every later tier fails
 
         try:
             import sys as _sys
@@ -2138,13 +2156,14 @@ def cmd_ask(question: str) -> str:
             from registry import ask_with_tools, CLAUDE_API_KEY
             if CLAUDE_API_KEY:
                 tool_answer, tool_model = ask_with_tools(question, context=context)
-                if tool_answer and not is_uncertain(tool_answer):
+                if tool_answer and not is_deflection(tool_answer):
                     log(f"/ask answered via Claude tool loop ({tool_model})")
                     return (
                         f"🛠️ *CIRRUS Agent Answer*\n\n{tool_answer}"
                         f"{sources_note}"
                     )
                 elif tool_answer:
+                    deflected = f"🛠️ *CIRRUS Agent Answer*\n\n{tool_answer}{sources_note}"
                     log(f"/ask tool loop uncertain, falling through to Gemini: {tool_answer[:80]!r}")
         except Exception as e:
             log(f"/ask tool loop unavailable: {e}")
@@ -2175,7 +2194,7 @@ Answer:"""
         except Exception as e:
             log(f"Ollama /ask error: {e}")
 
-        if not is_uncertain(answer):
+        if not is_deflection(answer):
             return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
 
         # ── 3. External fallback chain ────────────────────────────────────────
@@ -2193,6 +2212,8 @@ Answer:"""
             return (f"🧠 *CIRRUS Answer (via {fb_name} fallback)*\n\n{fb_answer}"
                     f"{sources_note}\n\n_Local model was uncertain — escalated to {fb_name}._")
 
+        if deflected:
+            return deflected
         if answer:
             return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
         if not results:
@@ -2552,6 +2573,50 @@ def selftest() -> bool:
           is_uncertain("I don't know the answer to that question.") is True)
     check("uncertain_confident",
           is_uncertain("The capital of France is Paris, a city in Europe.") is False)
+    check("uncertain_curly_apostrophe", is_uncertain("I don’t know that one, sorry.") is True)
+
+    # S654: real tool-loop replies from 2026-11-17 that sent Buddy to websites.
+    for _n, _t in enumerate([
+            "I don't have a tool available to look up sunrise times. However, you can:\n"
+            "1. **Check a weather website** like weather.gov or timeanddate.com",
+            "I don't have a tool to look up sunrise times, and this information isn't "
+            "something I can reliably retrieve from my background knowledge.",
+            "I don’t have a tool available to look up sunrise times or weather data.",
+            "I'm not able to make real-time web searches. Visit timeanddate.com.",
+            "My available tools are limited to checking the CIRRUS home server system."]):
+        check(f"deflection_{_n}", is_deflection(_t))
+    for _n, _t in enumerate([
+            "CIRRUS has **733 GB of free disk space** available.",
+            "The capital of France is **Paris**.",
+            "Download speed is 940 Mbps; you can check again later with /status.",
+            "Sunrise in Hatfield, PA tomorrow is 6:51 AM EST (timeanddate.com)."]):
+        check(f"not_deflection_{_n}", not is_deflection(_t))
+
+    # S654 wiring: a deflecting tool-loop reply reaches the search-grounded
+    # fallback; if every fallback fails, the tool reply is still returned.
+    import types as _types
+    _q = "When is sunrise tomorrow in Hatfield, PA?"
+    _mods = {k: sys.modules.get(k) for k in ("registry", "cirrus_rag")}
+    _fns = (globals()["ask_with_fallback"], requests.post)
+    try:
+        sys.modules["registry"] = _types.SimpleNamespace(
+            CLAUDE_API_KEY="selftest", ask_with_tools=lambda q, context="": (
+                "I don't have a tool available to look up sunrise times.", "selftest"))
+        sys.modules["cirrus_rag"] = _types.SimpleNamespace(retrieve=lambda q, top_k=3: [])
+        def _no_ollama(*a, **k):
+            raise OSError("no local model in selftest")
+        requests.post = _no_ollama
+        globals()["ask_with_fallback"] = lambda p: ("Sunrise is at 6:51 AM EST.", "Gemini")
+        check("deflected_tool_answer_escalates", "6:51 AM" in cmd_ask(_q))
+        globals()["ask_with_fallback"] = lambda p: (None, None)
+        check("deflected_tool_answer_kept_if_fallbacks_fail", "look up sunrise" in cmd_ask(_q))
+    finally:
+        globals()["ask_with_fallback"], requests.post = _fns
+        for _k, _m in _mods.items():
+            if _m is None:
+                sys.modules.pop(_k, None)
+            else:
+                sys.modules[_k] = _m
 
     # _already_installed: exact tag, bare family name, and a genuinely
     # different model.
