@@ -56,6 +56,11 @@ ALLOWED_ORIGIN = "https://halftime.cirrustask.com"
 IDENTITY_HEADER = "Cf-Access-Authenticated-User-Email"
 MAX_BODY = 4096
 _GAME_ID = re.compile(r"^wk\d{2}-[a-z]{1,20}$")
+# S657 -- a SECOND explicit route, per the rule above: one fixed URL, one fixed
+# file, served as a download. No directory, no name from the request. The file
+# is copied in by hand; until it exists the route is a plain 404.
+CONCEPT_URL = "/concept/pittsburgh-defense.mp4"
+CONCEPT_FILE = PROJECT_DIR / "out" / "halftime" / "concept-pittsburgh-defense.mp4"
 
 
 _DASH = {"mtime": None}
@@ -105,9 +110,12 @@ def render_live(saved=None):
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "halftime/1.0"
 
-    def _send(self, code, body: bytes, ctype="text/html; charset=utf-8"):
+    def _send(self, code, body: bytes, ctype="text/html; charset=utf-8",
+              extra=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         # The page carries client research. Never let a proxy or browser keep
         # a copy that outlives the Access session.
@@ -142,6 +150,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/healthz":
             self._send(200, b"ok", "text/plain; charset=utf-8")
+            return
+        if path == CONCEPT_URL:
+            try:
+                body = CONCEPT_FILE.read_bytes()
+            except OSError:
+                self._send(404, b"<h1>404</h1>")
+                return
+            self._send(200, body, "video/mp4", {
+                "Content-Disposition":
+                    'attachment; filename="pittsburgh-defense-concept.mp4"'})
             return
         self._send(404, b"<h1>404</h1>")
 
@@ -229,7 +247,7 @@ def selftest() -> int:
     import threading
     import urllib.request
     import urllib.error
-    global PAGE, SNAPSHOT, HISTORY, TODAY
+    global PAGE, SNAPSHOT, HISTORY, TODAY, CONCEPT_FILE
     failures = []
 
     def check(label, ok):
@@ -288,6 +306,25 @@ def selftest() -> int:
 
             check("a query string cannot select a different file",
                   get("/?file=credentials.json")[1] == b"<h1>dashboard</h1>")
+
+            # S657: the concept video route -- fixed URL, fixed file, download.
+            CONCEPT_FILE = Path(td) / "concept.mp4"
+            check("the video route is 404 until the file is copied in",
+                  get(CONCEPT_URL)[0] == 404)
+            CONCEPT_FILE.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+            code, body, hdrs = get(CONCEPT_URL)
+            check("the video downloads as video/mp4 with its own bytes",
+                  code == 200 and body == CONCEPT_FILE.read_bytes()
+                  and hdrs.get("Content-Type") == "video/mp4")
+            check("it is offered as a download, also no-store",
+                  hdrs.get("Content-Disposition", "").startswith("attachment")
+                  and "no-store" in hdrs.get("Cache-Control", ""))
+            for probe in ("/concept/", "/concept/credentials.json",
+                          CONCEPT_URL + "/../../credentials.json",
+                          "/concept/pittsburgh-defense.MP4"):
+                code, body, _ = get(probe)
+                check("near-miss %s is 404" % probe,
+                      code == 404 and b"should never be reachable" not in body)
             srv.shutdown()
 
         PAGE = Path(td) / "missing.html"

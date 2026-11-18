@@ -2410,6 +2410,23 @@ def _youth_panel(g: Dict) -> str:
     return "".join(parts)
 
 
+CONCEPT_FILE = PROJECT_DIR / "out" / "halftime" / "concept-pittsburgh-defense.mp4"
+
+
+def _concept_html() -> str:
+    """S657: a box linking the concept video, shown only once the file has
+    been copied in (halftime_serve serves it at one fixed URL)."""
+    if not CONCEPT_FILE.exists():
+        return ""
+    mb = CONCEPT_FILE.stat().st_size / 1e6
+    return ("<section class='targets'><h2>Video concept</h2><p>A 30-second "
+            "Pittsburgh defense hype video we made on our own server, as an "
+            "example of what AI video can do. Made-up players and no team "
+            "logos; marked AI-generated. <a href='/concept/pittsburgh-defense"
+            ".mp4' download>Download the video ({:.0f} MB)</a></p>"
+            "</section>".format(mb))
+
+
 def render_html(snap: Dict, history: Optional[List[Dict]] = None,
                 saved: Optional[str] = None) -> str:
     parts = [_HEAD.format(team=_e(snap["team"]), season=_e(snap["season"]))]
@@ -2419,6 +2436,7 @@ def render_html(snap: Dict, history: Optional[List[Dict]] = None,
         "Generated {}.</p></header>".format(
             _e(snap["team"]), _e(snap["season"]), _e(snap["venue"]),
             _e(snap["generated_at"])))
+    parts.append(_concept_html())
 
     live = [g for g in snap["games"] if not g.get("completed")]
     done = [g for g in snap["games"] if g.get("completed")]
