@@ -55,6 +55,7 @@ import list_delivery
 import mailer
 import task_solver
 import intake_information
+import video_intake
 
 # ── Paths & config ────────────────────────────────────────────────────────────
 
@@ -667,6 +668,13 @@ def ack_body(rec: dict) -> str:
         return (f"Hi {name},\n\nGot it. We're putting this list together for "
                 "you. Buddy reviews every list before it goes out, so you'll "
                 f"have it after that quick review.\n\n— {node}")
+    if rec.get("kind") == "video":
+        if not rec.get("video_run"):
+            return (f"Hi {name},\n\nGot your video request, but the video job could not "
+                    f"be started here, so it needs a look:\n\n    {rec['title']}\n\n— {node}")
+        return (f"Hi {name},\n\nGot it. Making your video on cumulus2 now:\n\n"
+                f"    {rec['title']}\n\nThe clip comes back to you by email when it is "
+                f"done, usually in about 3 minutes.\n\n— {node}")
     if rec.get("kind") == "answer":
         return (f"Hi {name},\n\nGot it — researching your question now:\n\n"
                 f"    {rec['title']}\n\n"
@@ -1329,6 +1337,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
         # checks a list of names and phones for invented entries before it goes.
         # Only 'answer' changes; a confirmation, resend or feedback is left be.
         intake_information.route(rec, subject, body)
+        # S660: Buddy's own "VIDEO:" mail renders a clip on cumulus2 and comes back
+        # by email. Host-gated by config/video-intake.json; clients never match.
+        video_intake.route(rec, subject, body)
         if rec["kind"] == "answer" and (task_solver.wants_deliverable(subject, body)
                 or list_delivery.wants_contact_list(
                     "" if task_solver.is_reply_subject(subject) else subject,
@@ -1477,6 +1488,14 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     log("  → answer request — solving live after ack (below)")
                 elif rec["kind"] == "resend":
                     log("  → resend request — solving live after ack (below)")
+                elif rec["kind"] == "video":
+                    try:
+                        rec["video_run"] = video_intake.start_job(rec, subject, body)
+                        log(f"  → video job {rec['video_run']} started; the clip goes back by email")
+                    except video_intake.DailyCap as e:
+                        log(f"  → video job NOT started ({e})")
+                    except Exception as e:
+                        log(f"  ⚠️ video job did not start ({type(e).__name__})")
                 else:
                     auto = None
                     try:
@@ -1606,6 +1625,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                         f"{', '.join(map(str, mm.get('attached', [])))}")
             elif r.get("confirmation_scope") == "courtesy":
                 flag = "🙏 courtesy reply (thanks) — nothing owed, no ack sent"
+            elif r.get("kind") == "video":
+                flag = (f"🎬 VIDEO — job {r['video_run']} rendering on cumulus2; the clip "
+                        f"goes back to you by email" if r.get("video_run")
+                        else "🎬 VIDEO — ⚠️ the job did NOT start; see the intake log")
             elif r.get("kind") == "deliverable" and r.get("lesson_build_run"):
                 flag = (f"📄 BUILD — lesson job {r['lesson_build_run']} started; each arc is "
                         f"checked before it goes, and a held lesson is reported to you")
@@ -1645,6 +1668,10 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                              cwd=PROJECT_DIR, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
+        try:  # S660: a deploy that restarts intake kills a waiting video worker
+            video_intake.resume()
+        except Exception as e:
+            log(f"video job resume check failed ({type(e).__name__})")
         notice = intake_lifecycle.notice(PROJECT_DIR)
         fingerprint_path = PROJECT_DIR / 'data/intake-lifecycle/notice.json'
         previous = json.loads(fingerprint_path.read_text()) if fingerprint_path.exists() else None
@@ -1846,9 +1873,27 @@ def selftest() -> int:
     rec_c = classify("bill", ["snow"], "Re: Your weekly reports from us", "Yes, that is everything")
     rec_c["kind"] = "confirmation"
     check("confirmation ack is a short thanks (S568)", "Thanks, noted." in ack_body(rec_c))
-    for _k in ("research", "feedback", "deliverable", "answer", "resend", "confirmation"):
+    for _k in ("research", "feedback", "deliverable", "answer", "resend", "confirmation", "video"):
         check(f"'{_k}' ack is not the build template (S568)",
               "when it ships" not in ack_body(dict(rec_c, kind=_k)))
+    # S660: Buddy's VIDEO: mail. The host flag is pointed at a temp file, never the live one.
+    import tempfile as _tfv
+    _saved_cfg = video_intake.CONFIG
+    with _tfv.TemporaryDirectory() as _tdv:
+        video_intake.CONFIG = Path(_tdv) / "video-intake.json"
+        _rv = classify("buddy", ["general"], "VIDEO: a kite over a beach", "A red kite.")
+        _rv["kind"] = "build"
+        check("VIDEO: is ignored on a host without the video config",
+              not video_intake.route(_rv, "VIDEO: a kite over a beach", "") and _rv["kind"] == "build")
+        video_intake.CONFIG.write_text("{}")
+        check("Buddy's VIDEO: mail routes to the video job (S660)",
+              video_intake.route(_rv, "VIDEO: a kite over a beach", "") and _rv["kind"] == "video")
+        _rb = classify("bill", ["snow"], "VIDEO: a plow", "x")
+        check("a client's VIDEO: mail does not (S660)", not video_intake.route(_rb, "VIDEO: a plow", ""))
+        check("video ack promises the clip by email",
+              "comes back to you by email" in ack_body(dict(_rv, video_run="v-20261118-000000-abcdef")))
+        check("video ack says so when the job did not start", "could not be started" in ack_body(_rv))
+    video_intake.CONFIG = _saved_cfg
 
     # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
     import tempfile as _tf
