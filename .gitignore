@@ -31,6 +31,7 @@ private/stock-paper/
 config/answer-workflow-capabilities.json
 config/answer-workflow-phone.enabled
 config/answer-workflow-intake.enabled
+config/video-intake.json
 
 # S66 business-idea pipeline runtime state (same reason as email_state.json /
 # intake_state.json above: per-box cursors and counters, never source).
