@@ -2841,6 +2841,20 @@ def selftest() -> int:
         if not ok:
             failures.append(label)
 
+    # S657: the concept-video box appears only while its file exists.
+    global CONCEPT_FILE
+    _real_concept = CONCEPT_FILE
+    with tempfile.TemporaryDirectory() as _cd:
+        CONCEPT_FILE = Path(_cd) / "concept.mp4"
+        check("no concept box while the video file is absent",
+              _concept_html() == "")
+        CONCEPT_FILE.write_bytes(b"x" * 2_000_000)
+        _box = _concept_html()
+        check("the concept box links the one fixed download URL",
+              "href='/concept/pittsburgh-defense.mp4'" in _box
+              and "Video concept" in _box and "(2 MB)" in _box)
+    CONCEPT_FILE = _real_concept
+
     # S270: every snapshot below is built as of a FIXED day before the season.
     # Played games now leave the main view (R28), so a suite on the real
     # calendar would lose its Week 8 checks on 2 November -- a time bomb.
