@@ -165,3 +165,6 @@ private/personal-schedule/
 
 # Per-worktree isolated digest verification output (S455)
 .dryrun-output/
+
+# S659: video attachments are copied to the host for one send, never committed
+mail/*.mp4
