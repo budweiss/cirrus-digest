@@ -460,8 +460,8 @@ def selftest():
             sent.append((a, k))
             return True
 
-        def fetch(pid, dest, expect):
-            dest.write_bytes(b"x" * expect)
+        def fetch(pid, dest, expect):  # relative_to() raises if a path outside the temp dir ever arrives (T32)
+            (tmp / Path(dest).relative_to(tmp)).write_bytes(b"x" * expect)
 
         done = {"state": "done", "detail": "clip: exit 0", "width": 1280, "height": 704, "bytes": 2048}
         res = worker(run_id, http=fake_page([{"state": "queued"}, {"state": "running"}, done]),
