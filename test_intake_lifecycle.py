@@ -66,6 +66,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(life.recover(self.root),0)
         life.update(self.root,self.row,'waiting_on_client','cowork','await reply')
         self.assertEqual(life.summary(self.root,time.time()+86400)['attention'],[])
+    def test_video_job_owns_its_request(self):
+        # S660/S661: a VIDEO: request belongs to its job, never the no-worker callback.
+        life.capture(self.root,self.row)
+        life.finish(self.root,self.row,{'kind':'video','video_run':'v-20261118-000000-abcdef','requester':'buddy'})
+        now=life.summary(self.root)
+        self.assertEqual(now['counts'],{'working':1});self.assertEqual(now['attention'],[])
+        late=life.summary(self.root,time.time()+7200)['attention']
+        self.assertEqual([(a['state'],a['owner']) for a in late],[('working','video_intake')])
     def test_courtesy_reply_is_noted(self):
         life.capture(self.root,self.row)
         life.finish(self.root,self.row,{'kind':'confirmation','confirmation_scope':'courtesy','confirms':[]})
