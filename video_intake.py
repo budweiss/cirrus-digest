@@ -98,8 +98,19 @@ def _buddy_emails():
     return [str(e).strip().lower() for e in entry.get("emails", [])]
 
 
+def load_now():
+    """cumulus2's load as its page sees it, for the first reply (Buddy, 2026-11-18: say whether the
+    clip runs now or is delayed by other work). {} when the page does not answer."""
+    try:
+        got = page("GET", "/api/load", timeout=8)
+        return {"free": bool(got.get("free")), "reason": str(got.get("reason") or "")[:200],
+                "queued": int(got.get("queued") or 0)}
+    except Exception:
+        return {}
+
+
 def start_job(rec, subject, body, popen=None, now=None):
-    """One job per original Message-ID; returns the run id. Raises DailyCap."""
+    """One job per original Message-ID; returns the run id and sets rec["video_load"]. Raises DailyCap."""
     import fcntl
     mid = rec.get("message_id") or ""
     if not mid:
@@ -124,6 +135,7 @@ def start_job(rec, subject, body, popen=None, now=None):
         (d / "meta.json").write_text(json.dumps({
             "message_id": mid, "subject": subject, "reply_to_index": idx,
             "requested": now.isoformat(timespec="seconds")}, indent=1))
+        rec["video_load"] = load_now()  # before the launch, so our own clip is not counted as ahead
         _launch(run_id, popen)
         return run_id
 
@@ -253,7 +265,7 @@ def sound_lines(s):
     return out
 
 
-def reply_body(box, prompt, st, mp4_bytes, attached, link, sound, wall, run_id):
+def reply_body(box, prompt, st, mp4_bytes, attached, link, sound, wall, run_id, waited=0):
     shown = prompt if len(prompt) <= 300 else prompt[:297] + "..."
     head = f"Hi Buddy,\n\n"
     if st["state"] != "done":
@@ -269,7 +281,11 @@ def reply_body(box, prompt, st, mp4_bytes, attached, link, sound, wall, run_id):
     else:
         where = (f"It is {mb}, too big to attach. Download it here:\n{link}\n"
                  "That page is private: it opens only for you, after you sign in.")
-    took = f"It took {wall // 60} min {wall % 60} s from your email to the finished clip." if wall else ""
+    took = ""
+    if wall:
+        took = f"It took {wall // 60} min {wall % 60} s from your email to the finished clip"
+        took += (f", {waited // 60} min of it waiting for cumulus2 to be free of other work."
+                 if waited >= 120 else ".")
     return (head + f"Here is your video from cumulus2:\n\n    {shown}\n\n{where}\n{took}\n\n"
             "Sound check (by machine, on CUMULUS):\n" + "\n".join(sound_lines(sound)) + "\n\n"
             "It is AI-generated. If you share it, label it as AI-generated (LTX-2 Community "
@@ -309,7 +325,7 @@ def worker(run_id, http=page, fetch=download, send=None, transcribe=None, verify
         meta["page_id"] = http("POST", "/api/submit", {"prompt": prompt, "size": SIZE, "mode": "now"})["id"]
         (d / "meta.json").write_text(json.dumps(meta, indent=1))
         log(f"{run_id}: submitted to cumulus2 as {meta['page_id']}")
-    deadline, misses = clock() + WAIT_HOURS * 3600, 0
+    deadline, misses, ran_at = clock() + WAIT_HOURS * 3600, 0, None
     while True:
         try:
             st = http("GET", f"/api/job/{meta['page_id']}")
@@ -320,6 +336,8 @@ def worker(run_id, http=page, fetch=download, send=None, transcribe=None, verify
             if misses >= 30:
                 st = {"state": "failed", "detail": "cumulus2's page stopped answering"}
                 break
+        if st["state"] == "running" and not ran_at:
+            ran_at = datetime.now()
         if st["state"] in ("done", "refused", "failed", "interrupted"):
             break
         if clock() > deadline:
@@ -347,7 +365,8 @@ def worker(run_id, http=page, fetch=download, send=None, transcribe=None, verify
     from_email = creds.get("outlook_email", "")
     box = mailer.sender_name(from_email, creds)
     wall = int((datetime.now() - started).total_seconds()) if st["state"] == "done" else 0
-    body = reply_body(box, prompt, st, size, attached, link, sound, wall, run_id)
+    waited = int((ran_at - started).total_seconds()) if ran_at and wall else 0
+    body = reply_body(box, prompt, st, size, attached, link, sound, wall, run_id, waited)
     subject = meta["subject"]
     subject = subject if subject.lower().startswith("re:") else "Re: " + subject
     result = {"state": st["state"], "detail": st.get("detail", ""), "bytes": size,
@@ -394,7 +413,9 @@ def selftest():
     def ok(name, cond):
         checks.append((name, bool(cond)))
 
-    saved = RUNS, CONFIG, SENDERS
+    global load_now
+    saved = RUNS, CONFIG, SENDERS, load_now
+    load_now = lambda: {"free": False, "reason": "another video is rendering", "queued": 1}  # never the live page
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         RUNS, CONFIG, SENDERS = tmp / "runs", tmp / "video-intake.json", tmp / "senders.json"
@@ -509,7 +530,13 @@ def selftest():
         gave = json.loads((RUNS / orphan / "result.json").read_text())
         ok("resume gives up after MAX_LAUNCHES without sending", gave["state"] == "gave_up"
            and gave["sent"] is False)
-    RUNS, CONFIG, SENDERS = saved
+        ok("start_job records cumulus2's load for the first reply",
+           r.get("video_load", {}).get("reason") == "another video is rendering")
+        long_wait = reply_body("CUMULUS", "p", done, 2048, True, "", {}, 400, "v-x", waited=310)
+        ok("a long wait is named in the reply", "5 min of it waiting for cumulus2" in long_wait)
+        ok("a short wait is not", "waiting" not in reply_body("CUMULUS", "p", done, 2048, True, "", {}, 200,
+                                                              "v-x", waited=40))
+    RUNS, CONFIG, SENDERS, load_now = saved
     for name, good in checks:
         print(("PASS " if good else "FAIL ") + name)
     print(f"{sum(g for _, g in checks)}/{len(checks)} checks passed")

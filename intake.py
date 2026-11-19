@@ -672,9 +672,22 @@ def ack_body(rec: dict) -> str:
         if not rec.get("video_run"):
             return (f"Hi {name},\n\nGot your video request, but the video job could not "
                     f"be started here, so it needs a look:\n\n    {rec['title']}\n\n— {node}")
-        return (f"Hi {name},\n\nGot it. Making your video on cumulus2 now:\n\n"
-                f"    {rec['title']}\n\nThe clip comes back to you by email when it is "
-                f"done, usually in about 3 minutes.\n\n— {node}")
+        # Buddy, 2026-11-18: a clip runs only when cumulus2 is free of other work; say which it is.
+        ld = rec.get("video_load") or {}
+        q = ld.get("queued") or 0
+        if ld.get("free") and not q:
+            when = ("cumulus2 is free, so it starts in about half a minute. The clip comes back "
+                    "to you by email when it is done, usually in about 3 minutes.")
+        elif ld:
+            why = (f"cumulus2 is busy right now ({ld['reason']}), so your video is waiting in line."
+                   if ld.get("reason") else
+                   f"{q} other video{'s are' if q > 1 else ' is'} ahead of yours, so it waits its turn.")
+            when = (f"{why} It starts by itself as soon as cumulus2 is free, and the clip comes "
+                    "back to you by email when it is done.")
+        else:
+            when = ("I could not check how busy cumulus2 is right now. The clip comes back to "
+                    "you by email when it is done.")
+        return (f"Hi {name},\n\nGot your video request:\n\n    {rec['title']}\n\n{when}\n\n— {node}")
     if rec.get("kind") == "answer":
         return (f"Hi {name},\n\nGot it — researching your question now:\n\n"
                 f"    {rec['title']}\n\n"
@@ -1626,8 +1639,9 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
             elif r.get("confirmation_scope") == "courtesy":
                 flag = "🙏 courtesy reply (thanks) — nothing owed, no ack sent"
             elif r.get("kind") == "video":
-                flag = (f"🎬 VIDEO — job {r['video_run']} rendering on cumulus2; the clip "
-                        f"goes back to you by email" if r.get("video_run")
+                flag = (f"🎬 VIDEO — job {r['video_run']} "
+                        f"{'delayed, cumulus2 busy' if (r.get('video_load') or {}).get('reason') else 'queued'}"
+                        f" on cumulus2; the clip goes back to you by email" if r.get("video_run")
                         else "🎬 VIDEO — ⚠️ the job did NOT start; see the intake log")
             elif r.get("kind") == "deliverable" and r.get("lesson_build_run"):
                 flag = (f"📄 BUILD — lesson job {r['lesson_build_run']} started; each arc is "
@@ -1893,6 +1907,15 @@ def selftest() -> int:
         check("video ack promises the clip by email",
               "comes back to you by email" in ack_body(dict(_rv, video_run="v-20261118-000000-abcdef")))
         check("video ack says so when the job did not start", "could not be started" in ack_body(_rv))
+        _vr = dict(_rv, video_run="v-20261118-000000-abcdef")
+        check("video ack says it starts now when cumulus2 is free",
+              "starts in about half a minute" in ack_body(dict(_vr, video_load={"free": True, "reason": "", "queued": 0})))
+        check("video ack says it is delayed, and why, when cumulus2 is busy",
+              "busy right now (the GPU is 60% busy with other work)" in ack_body(dict(_vr, video_load={
+                  "free": False, "reason": "the GPU is 60% busy with other work", "queued": 0})))
+        check("video ack counts the clips ahead of it",
+              "2 other videos are ahead" in ack_body(dict(_vr, video_load={"free": True, "reason": "", "queued": 2})))
+        check("video ack admits it could not check the load", "could not check" in ack_body(_vr))
     video_intake.CONFIG = _saved_cfg
 
     # topic append + dedupe (redirect PROJECT_DIR-relative path via monkeypatch)
