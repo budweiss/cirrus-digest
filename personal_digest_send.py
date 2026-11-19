@@ -52,7 +52,7 @@ MODES = ("dry-run", "live")
 # tree — this lane is not the paper lane and must not touch its locks.
 RECEIPTS = PROJECT_DIR / "private" / "personal-holdings" / "delivery"
 
-from stock_digest_send import report_html, check_weekdays  # noqa: E402
+from stock_digest_send import report_html, check_weekdays, delivery_failure  # noqa: E402
 
 
 def check_lane(md):
@@ -139,29 +139,6 @@ def deliver_once(md, creds, subject, date_str, send_fn=None):
         os.chmod(temporary, 0o600)
         temporary.replace(receipt)
         return True
-
-
-def delivery_failure(exc):
-    """Classify an SMTP failure without retaining arbitrary exception strings."""
-    kinds = ((smtplib.SMTPServerDisconnected, 'disconnected'),
-             (smtplib.SMTPAuthenticationError, 'authentication'),
-             (smtplib.SMTPRecipientsRefused, 'recipients_refused'),
-             (smtplib.SMTPDataError, 'data_rejected'),
-             (TimeoutError, 'timeout'), (OSError, 'transport'))
-    kind = next((label for cls, label in kinds if isinstance(exc, cls)), 'other')
-    phases = {'connect': 'connect', 'ehlo': 'ehlo', 'starttls': 'starttls',
-              'login': 'login', 'auth': 'login', 'sendmail': 'sendmail',
-              'mail': 'mail_from', 'rcpt': 'recipient', 'data': 'data',
-              '__exit__': 'quit', 'quit': 'quit'}
-    phase = 'unknown'
-    tb = exc.__traceback__
-    while tb is not None:
-        # Trust frames from the SMTP implementation, not names in callers.
-        frame = tb.tb_frame
-        if frame.f_globals.get('__name__') == 'smtplib':
-            phase = phases.get(frame.f_code.co_name, phase)
-        tb = tb.tb_next
-    return {'kind': kind, 'phase': phase}
 
 
 def datetime_utc_now():

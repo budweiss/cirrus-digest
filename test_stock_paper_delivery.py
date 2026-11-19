@@ -173,6 +173,31 @@ class PaperDeliveryTests(unittest.TestCase):
             self.send(sender)
         self.assertEqual(sender.call_count, 1)
 
+    def test_refused_data_keeps_slot_and_records_only_numeric_smtp_labels(self):
+        # S663: 11-19 am left only "SMTPDataError"; the reply code must survive, its text must not.
+        import smtplib
+        for error, want in ((smtplib.SMTPDataError(552, b"5.7.0 PRIVATE reply synthetic-sender@example.test"),
+                             {"kind": "data_rejected", "phase": "unknown", "code": 552, "status": "5.7.0"}),
+                            (smtplib.SMTPDataError(421, b"PRIVATE try again later"),
+                             {"kind": "data_rejected", "phase": "unknown", "code": 421}),
+                            (TimeoutError("PRIVATE"), {"kind": "timeout", "phase": "unknown"})):
+            with self.subTest(want=want):
+                receipt = self.home / "delivery" / "2026-10-08-pm.json"
+                receipt.unlink(missing_ok=True)
+                sender = Mock(side_effect=error)
+                with self.assertRaises(type(error)):
+                    self.send(sender)
+                raw = receipt.read_text()
+                record = json.loads(raw)
+                self.assertEqual(record["status"], "sending_outcome_unknown_until_confirmed")
+                self.assertEqual(record["failure"], want)
+                self.assertNotIn("PRIVATE", raw)
+                self.assertNotIn("synthetic-sender", raw)
+                self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+                with self.assertRaisesRegex(ValueError, "daily_slot_already_reserved"):
+                    self.send(sender)
+                self.assertEqual(sender.call_count, 1)
+
     def test_false_send_acknowledgment_does_not_become_sent(self):
         sender = Mock(return_value=False)
         with self.assertRaises(ValueError):

@@ -21,6 +21,7 @@ exits non-zero BEFORE any send path is touched (T118 shape).
 """
 import json
 import re
+import smtplib
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -142,16 +143,64 @@ def deliver_once(md, creds, subject, report, send_fn=None, home=None):
             out.write(json.dumps(record))
         os.chmod(receipt, 0o600)
         sender = send_fn or mailer.send
-        ok = sender(creds['outlook_email'], creds['outlook_password'], TO_EMAIL, subject, md,
-                    html=report_html(md), creds=creds, on_error='raise', log=print)
-        if not ok:
-            raise ValueError('send_unconfirmed_receipt_requires_review')
+        try:
+            ok = sender(creds['outlook_email'], creds['outlook_password'], TO_EMAIL, subject, md,
+                        html=report_html(md), creds=creds, on_error='raise', log=print)
+            if not ok:
+                raise ValueError('send_unconfirmed_receipt_requires_review')
+        except Exception as exc:
+            # S663: the 11-19 am refusal left only "SMTPDataError". Keep the
+            # reservation (no blind resend) and save fixed labels and the numeric
+            # SMTP code only, never the reply text, recipients or body.
+            record.update(failed_at=datetime.now(timezone.utc).isoformat(), failure=delivery_failure(exc))
+            try:
+                temporary = receipt.with_suffix('.tmp')
+                temporary.write_text(json.dumps(record))
+                os.chmod(temporary, 0o600)
+                temporary.replace(receipt)
+            except OSError:
+                pass
+            raise
         record.update(status='sent', sent_at=datetime.now(timezone.utc).isoformat())
         temporary = receipt.with_suffix('.tmp')
         temporary.write_text(json.dumps(record))
         os.chmod(temporary, 0o600)
         temporary.replace(receipt)
         return True
+
+
+def delivery_failure(exc):
+    """Classify an SMTP failure without retaining arbitrary exception strings."""
+    kinds = ((smtplib.SMTPServerDisconnected, 'disconnected'),
+             (smtplib.SMTPAuthenticationError, 'authentication'),
+             (smtplib.SMTPRecipientsRefused, 'recipients_refused'),
+             (smtplib.SMTPDataError, 'data_rejected'),
+             (TimeoutError, 'timeout'), (OSError, 'transport'))
+    kind = next((label for cls, label in kinds if isinstance(exc, cls)), 'other')
+    phases = {'connect': 'connect', 'ehlo': 'ehlo', 'starttls': 'starttls',
+              'login': 'login', 'auth': 'login', 'sendmail': 'sendmail',
+              'mail': 'mail_from', 'rcpt': 'recipient', 'data': 'data',
+              '__exit__': 'quit', 'quit': 'quit'}
+    phase = 'unknown'
+    tb = exc.__traceback__
+    while tb is not None:
+        # Trust frames from the SMTP implementation, not names in callers.
+        frame = tb.tb_frame
+        if frame.f_globals.get('__name__') == 'smtplib':
+            phase = phases.get(frame.f_code.co_name, phase)
+        tb = tb.tb_next
+    result = {'kind': kind, 'phase': phase}
+    # S663: the server's numeric reply and enhanced status (e.g. 552, 5.7.0)
+    # tell a temporary refusal from a content or quota block. Numbers only.
+    code = getattr(exc, 'smtp_code', None)
+    if type(code) is int and 200 <= code < 600:
+        result['code'] = code
+        reply = getattr(exc, 'smtp_error', b'')
+        reply = reply.decode('ascii', 'replace') if isinstance(reply, bytes) else str(reply)
+        status = re.match(r'\s*([245]\.\d{1,3}\.\d{1,3})\b', reply)
+        if status:
+            result['status'] = status.group(1)
+    return result
 
 
 def send_verified_once(md, creds, subject):

@@ -207,6 +207,45 @@ def qualify_decisions(data, evidence, account, date, slot):
     return {'request_id':'server-'+date+'-'+slot,'decisions':ready},note
 
 
+# S663: from 11-16 every decision stopped at decision_context_budget before any
+# model call. Six researched companies plus sixteen newsletter excerpts (~14K of
+# ~34K tokens) outgrew the 32K worker. Newsletters are secondary idea leads, so
+# the last-selected excerpts (the lowest round-robin priority) give way first and
+# the coverage counts say so. The headroom leaves room for a retry's correction
+# note and for the reviewer, which reads the context plus the proposal.
+DECISION_HEADROOM=1500
+
+
+def fit_decision_context(system,context,public,count=None):
+    """Drop trailing newsletter excerpts until the decision request fits; return their ids."""
+    count=count or media.token_count
+    excerpts=public.get('newsletter_excerpts') if isinstance(public,dict) else None
+    dropped=[]
+    while excerpts and count(system+'\n'+json.dumps(context))+2300+DECISION_HEADROOM>32768:
+        dropped.append(excerpts.pop())
+    stats=public.get('newsletter_coverage') if dropped else None
+    if stats:
+        stats['selected']-=len(dropped);stats['deferred']+=len(dropped)
+        stats['context_chars']-=sum(len(row.get('text','')) for row in dropped)
+        for row in dropped:
+            if row.get('source') in stats.get('sources',{}):stats['sources'][row['source']]['offered']-=1
+    return [row['id'] for row in dropped]
+
+
+def record_offered(folder,public):
+    """The saved packet names what the decision model was offered (S663), so a
+    delivery retry reports the same newsletter coverage as the first attempt."""
+    path=folder/'newsletter-evidence.json'
+    if not path.exists() or 'newsletter_coverage' not in public:return
+    saved=json.loads(path.read_text())
+    kept=[row['id'] for row in public.get('newsletter_excerpts',[])]
+    if kept==[row['id'] for row in saved.get('newsletter_excerpts',[])]:return
+    for rec in saved.get('audit',[]):
+        if rec.get('disposition')=='offered_to_model' and rec.get('id') not in kept:rec['disposition']='deferred_context_budget'
+    saved.update(newsletter_excerpts=public['newsletter_excerpts'],newsletter_coverage=public['newsletter_coverage'])
+    atomic(path,saved)
+
+
 def decision_complete(system,text,slot,companies,secondary_ids=None):
     from media_pipeline import MODEL
     system=knowledge_freshness.apply(system,MODEL)
@@ -280,6 +319,8 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
     feedback_text=''
     if not evidence['companies']:
         return {'request_id':'server-'+date+'-'+slot,'decisions':[]},'No trades: no company passed the source/research review. Collect verified primary evidence before considering any paper decision.'
+    deferred=fit_decision_context(knowledge_freshness.apply(system,media.MODEL),context,public or {})
+    if deferred and audit:audit({'stage':'context','newsletters_deferred':len(deferred)})
     # A scheduled decision can arrive behind an active media request. Keep the
     # shared lock and a bounded wait, but allow a normal request to finish.
     with media.lease(ROOT/'logs/media/worker.lock',timeout=300):
@@ -365,6 +406,7 @@ def daily(job,live,date,folder):
             decision_review='failed_'+research.error_code(exc)
             note='No trades this run. The independent evidence/decision review did not pass ('+type(exc).__name__+'). '
             note+='Collected research is retained below; incomplete coverage is not a recommendation to hold or buy.'
+        record_offered(folder,public)
         atomic(folder/('request.json' if live else 'preview-request.json'),{'request':request,'explanation':note,'decision_review':decision_review})
     outcomes=[]
     if live and request['decisions']:
@@ -932,7 +974,8 @@ def dispatch(job,live=False):
             record_status(job,ok,'status='+result.get('status','unknown')+
                           (' error='+result['error_type'] if result.get('error_type') else
                            ' adopted='+str(result['adopted']) if 'adopted' in result else
-                           ' decision_review='+result.get('decision_review','not_reported')))
+                           ' decision_review='+result.get('decision_review','not_reported'))+
+                          (' smtp_code=%d'%result['smtp_code'] if type(result.get('smtp_code')) is int else ''))
             if result.get('status') not in ('already_sent','holiday'):
                 result['telegram_confirmed']=telegram('Stock Pickers '+job+((': completed on CUMULUS; the email was accepted for your usual Yahoo address.' if job in ('am','pm') else ': the private weekly report is complete on CUMULUS; no extra email was sent.')+(" Review held today's paper decisions." if held_once else '') if ok else ': needs attention. Review its decision/research status and saved delivery receipt before any retry.'))
         atomic(root/(job+('-live' if live else '-preview')+'.json'),result)
@@ -945,6 +988,8 @@ def main():
     try:result=dispatch(a.job,a.live) if a.dispatch else run(a.job,a.live)
     except Exception as exc:
         result={'status':'failed','job':a.job,'error_type':research.error_code(exc)}
+        # S663: the numeric SMTP reply reaches the CIRRUS ledger; never its text.
+        if type(getattr(exc,'smtp_code',None)) is int:result['smtp_code']=exc.smtp_code
         if a.dispatch and a.live:
             from vendor_mail_watch import telegram
             import job_status

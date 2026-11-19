@@ -512,7 +512,8 @@ def dispatch(live=False):
         if p.returncode:result['status']='failed'
     except Exception as exc:result={'status':'failed','error_type':type(exc).__name__}
     if live:
-        ok=result['status'] in ('sent','already_sent');job_status.record('personalopinion',ok,'status='+result['status'])
+        ok=result['status'] in ('sent','already_sent');job_status.record('personalopinion',ok,'status='+result['status']+
+            (' error='+result['error_type'] if re.fullmatch(r'[A-Za-z_]{3,80}',str(result.get('error_type',''))) else ''))
         if result['status']!='already_sent':
             notice='Personal holdings opinion '+('completed locally and was accepted for your usual Yahoo address.' if ok else 'needs attention. Check its private review and delivery receipt before retrying.')
             if ok and result.get('export_stale'):notice+=' The holdings file is older than three days; refresh the export if your positions have changed.'

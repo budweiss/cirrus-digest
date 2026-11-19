@@ -68,6 +68,7 @@ class ScheduleChecks(unittest.TestCase):
                  patch.object(S.media.time,'monotonic',side_effect=[0,elapsed]), \
                  patch.object(S.media.time,'sleep'), \
                  patch.object(S.media.fcntl,'flock',side_effect=[BlockingIOError(),None]), \
+                 patch.object(S.media,'token_count',return_value=100), \
                  patch.object(S.research,'structured_review',return_value='{"passed":false,"issues":["unsupported"]}') as reviewer:
                 caller=unittest.mock.Mock(return_value=json.dumps(DEC))
                 with self.assertRaisesRegex(ValueError if succeeds else RuntimeError,
@@ -75,6 +76,70 @@ class ScheduleChecks(unittest.TestCase):
                     S.choose(evidence,{}, {},'2026-10-14','am',caller=caller)
                 self.assertEqual(caller.call_count,2 if succeeds else 0)
                 self.assertEqual(reviewer.call_count,2 if succeeds else 0)
+
+    @staticmethod
+    def _newsletter_public():
+        rows=[{'id':'exc-%d'%i,'source':'Pub%d'%(i%2),'text':'x'*100} for i in range(1,5)]
+        stats={'scanned':6,'eligible':6,'window_days':7,'excluded':{},'selected':4,'deferred':2,'context_chars':400,
+               'sources':{'Pub0':{'eligible':3,'offered':2},'Pub1':{'eligible':3,'offered':2}}}
+        return {'sources':[],'gaps':[],'newsletter_excerpts':rows,'newsletter_coverage':stats}
+
+    def test_decision_context_defers_trailing_newsletters_until_it_fits(self):
+        # S663: 11-16 to 11-19 the request outgrew the 32K worker and no decision ran.
+        import json
+        public=self._newsletter_public();context={'research':'fixed','public_source_followup':public}
+        limit=32768-2300-S.DECISION_HEADROOM
+        count=lambda text:limit-1000+1000*text.count('"exc-')
+        self.assertEqual(S.fit_decision_context('system',context,public,count),['exc-4','exc-3','exc-2'])
+        self.assertEqual([r['id'] for r in context['public_source_followup']['newsletter_excerpts']],['exc-1'])
+        self.assertLessEqual(count('system\n'+json.dumps(context))+2300+S.DECISION_HEADROOM,32768)
+        stats=public['newsletter_coverage']
+        self.assertEqual((stats['selected'],stats['deferred'],stats['context_chars']),(1,5,100))
+        self.assertEqual((stats['sources']['Pub0']['offered'],stats['sources']['Pub1']['offered']),(0,1))
+        self.assertIn('1 excerpts offered to the local decision model; 5 deferred',S.source_list({'companies':[]},public))
+        fits=self._newsletter_public()
+        self.assertEqual(S.fit_decision_context('system',{'p':fits},fits,lambda text:100),[])
+        self.assertEqual(len(fits['newsletter_excerpts']),4)
+        # Primary research alone over budget: every excerpt goes, then the existing budget error stands.
+        over=self._newsletter_public()
+        self.assertEqual(len(S.fit_decision_context('system',{'p':over},over,lambda text:40000)),4)
+        self.assertEqual(S.fit_decision_context('system',{},{},lambda text:40000),[])
+
+    def test_decision_model_never_sees_a_deferred_excerpt(self):
+        import json
+        from pathlib import Path
+        evidence=copy.deepcopy(EV)
+        evidence['companies'][0]['draft']={'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]}
+        public=self._newsletter_public();limit=32768-2300-S.DECISION_HEADROOM;checks=[]
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)),patch.object(S,'policy',return_value='Synthetic policy'), \
+             patch.object(S.media,'token_count',side_effect=lambda text:limit-2000+1000*text.count('"exc-')), \
+             patch.object(S.research,'structured_review',return_value='{"passed":true,"issues":[]}') as reviewer:
+            caller=unittest.mock.Mock(return_value=json.dumps(DEC))
+            S.choose(evidence,{},{},'2026-10-14','am',caller=caller,audit=checks.append,public=public)
+        sent=caller.call_args[0][1]
+        self.assertIn('exc-1',sent);self.assertIn('exc-2',sent);self.assertNotIn('exc-3',sent);self.assertNotIn('exc-4',sent)
+        self.assertNotIn('exc-3',reviewer.call_args[0][1])
+        self.assertEqual(checks[0],{'stage':'context','newsletters_deferred':2})
+
+    def test_retry_reports_the_newsletters_the_decision_saw(self):
+        import json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);public=self._newsletter_public()
+            audit=[{'id':r['id'],'disposition':'offered_to_model'} for r in public['newsletter_excerpts']]+[{'id':'other','disposition':'stale'}]
+            (folder/'newsletter-evidence.json').write_text(json.dumps(dict(copy.deepcopy(public),audit=audit)))
+            limit=32768-2300-S.DECISION_HEADROOM
+            S.fit_decision_context('system',{'p':public},public,lambda text:limit-1000+1000*text.count('"exc-'))
+            S.record_offered(folder,public)
+            saved=json.loads((folder/'newsletter-evidence.json').read_text())
+            self.assertEqual([r['id'] for r in saved['newsletter_excerpts']],['exc-1'])
+            self.assertEqual(saved['newsletter_coverage']['selected'],1)
+            self.assertEqual([a['disposition'] for a in saved['audit']],
+                             ['offered_to_model','deferred_context_budget','deferred_context_budget','deferred_context_budget','stale'])
+            (folder/'request.json').write_text('{}')
+            retry=S.newsletter_evidence({'companies':[]},folder)
+            self.assertEqual([r['id'] for r in retry['newsletter_excerpts']],['exc-1'])
+            self.assertNotIn('audit',retry)
 
     def test_sent_retry_preserves_failed_or_missing_review_without_side_effects(self):
         import json
@@ -135,6 +200,20 @@ class ScheduleChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             _,record,_=self._dispatch_pm(td,{'status':'failed','job':'pm','error_type':'source_adoption_review_failed'})
         record.assert_called_once_with('pm',False,'status=failed error=source_adoption_review_failed')
+
+    def test_smtp_refusal_code_reaches_the_ledger_note(self):
+        # S663: the CIRRUS ledger said only "SMTPDataError"; the numeric reply now shows.
+        with tempfile.TemporaryDirectory() as td:
+            _,record,_=self._dispatch_pm(td,{'status':'failed','job':'pm','error_type':'SMTPDataError','smtp_code':552})
+        record.assert_called_once_with('pm',False,'status=failed error=SMTPDataError smtp_code=552')
+        import smtplib
+        with patch('sys.argv',['stock_schedule.py','--job','am','--live']), \
+             patch.object(S,'run',side_effect=smtplib.SMTPDataError(552,b'5.7.0 PRIVATE')), \
+             patch('builtins.print') as shown:
+            S.main()
+        result=json.loads(shown.call_args[0][0])
+        self.assertEqual((result['error_type'],result['smtp_code']),('SMTPDataError',552))
+        self.assertNotIn('PRIVATE',shown.call_args[0][0])
 
     def test_every_scheduled_job_records_its_own_monitor_key(self):
         with patch('job_status.record') as record:
