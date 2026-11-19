@@ -67,6 +67,10 @@ SETTABLE = ("new", "explained", "fixing", "fixed", "needs-buddy", "accepted")
 OPEN = ("new", "explained", "regressed")         # waiting for the fixer
 VERIFY_H = 48            # a fix with no recurrence for this long is verified
 STUCK_H = 72             # target is 24h; three days open means the fixer is stuck
+# S663: a case outside the repair worker's scope waits for a session, listed in the
+# brief. It messages Buddy only once it has waited WAIT_H and is still happening.
+WAIT_H = 72
+WAITING_NOTE = "CIRRUS repair worker: outside its automatic repair scope, waiting for a session"
 WEEKLY_DAY, WEEKLY_HOUR = 6, 18   # Sunday 18:00: Buddy's "recap at the end of the week"
 SOURCE_ALARM_H = 1       # a source failing this long counts against the pass
 SILENT_H = 36            # a box that sends daily has stopped copying
@@ -688,6 +692,11 @@ def brief_lines(now=None):
         lines.append(f"• Needs you ({len(needs)}): {names(needs)}")
         att.append(f"Telewarden: {len(needs)} decision(s) need you")
     busy = [c for c in vals if c["status"] in OPEN + ("fixing",)]
+    waiting = sorted((c for c in busy if waiting_for_session(c)), key=lambda c: -c["last"])
+    busy = [c for c in busy if not waiting_for_session(c)]
+    if waiting:
+        lines.append(f"• Waiting for a session ({len(waiting)}), outside the fixer's scope; no message "
+                     f"unless one is still happening after {WAIT_H // 24} days: {names(waiting)}")
     stuck = sorted((c for c in busy if now - _created(c) > STUCK_H * 3600), key=_created)
     if stuck:
         lines.append(f"• ⚠️ {len(stuck)} case(s) open over {STUCK_H // 24} days, so the fixer "
@@ -709,6 +718,12 @@ def brief_lines(now=None):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return lines, att
+
+
+def waiting_for_session(c):
+    """Set aside by the repair worker for a session (S663), until its status changes."""
+    last = (c.get("history") or [{}])[-1]
+    return c["status"] == "explained" and last.get("note", "").startswith(WAITING_NOTE)
 
 
 def open_cases():
@@ -941,6 +956,21 @@ def selftest():
             lines, att = brief_lines(now=T + 80 * 3600)
             check("a case open over 3 days says the fixer may be stuck",
                   any("may be stuck" in l for l in lines) and any("3 days" in a for a in att))
+            saved = _load("cases.json", {})
+            parked = json.loads(json.dumps(saved))
+            for c in parked.values():
+                if c["status"] in OPEN + ("fixing",):
+                    c["status"] = "explained"
+                    c["history"].append({"t": T + 79 * 3600, "status": "explained",
+                                         "note": WAITING_NOTE + " (synthetic)"})
+            _save("cases.json", parked)
+            lines, att = brief_lines(now=T + 80 * 3600)
+            check("S663: cases waiting for a session are listed, not called stuck or a decision",
+                  any(l.startswith("• Waiting for a session (") for l in lines)
+                  and not any("may be stuck" in l for l in lines)
+                  and not any("3 days" in a or "need you" in a for a in att)
+                  and "Sell 10 shares" not in "\n".join(lines))
+            _save("cases.json", saved)
             offs = [json.loads(l) for l in (Path(td) / "events.jsonl").read_text().splitlines()
                     if '"off"' in l]
             check("paused heartbeats counted from the forwarder's batch",

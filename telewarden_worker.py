@@ -206,13 +206,50 @@ def remote(mode, payload=None):
                           timeout=700))
 
 
-def guarded_packet(case, filename, source):
+def protected_reason(case):
+    """Finance/private cases stay on an owned host and go to Buddy; None otherwise."""
     if case.get('private') or case.get('job') in tw.PRIVATE_JOBS:
-        raise Held('protected_job_requires_owned_host_workflow')
-    # Only the explicitly scoped infrastructure jobs are eligible for cloud.
+        return 'protected_job_requires_owned_host_workflow'
     text = json.dumps({k: case.get(k) for k in ('id', 'job', 'title', 'sample', 'explanation')})
     if tw.PRIVATE_RE.search(text) or any(j in text for j in tw.PRIVATE_JOBS):
-        raise Held('protected_case_requires_owned_host_workflow')
+        return 'protected_case_requires_owned_host_workflow'
+    return None
+
+
+def in_scope(case):
+    return CASE_TARGETS.get(case['id'], case.get('job')) in TARGETS
+
+
+# S663 (Buddy, 11-11: message him only when a case cannot be corrected). A case
+# outside the automatic repair scope is not that: on 11-19 one session fixed or
+# closed 31 of them, after the worker had sent 13 "Needs you" for them in 3 days.
+# It waits for a session, listed in the morning brief. It still goes to Buddy at
+# once when protected, or a lost Telegram send (he never got the warning, S624);
+# otherwise only after waiting tw.WAIT_H and being seen again in the last day.
+IMMEDIATE_JOBS = {'telegram_send'}
+STILL_HAPPENING_H = 24
+
+
+def scope_outcome(case, now):
+    """-> (status, note) for an open case outside the repair scope; None = keep waiting."""
+    reason = protected_reason(case)
+    if reason or case.get('job') in IMMEDIATE_JOBS:
+        return 'needs-buddy', 'CIRRUS repair worker could not safely correct this case: ' + (
+            reason or 'outside_automatic_repair_scope:' + str(case.get('job')))
+    if not tw.waiting_for_session(case):
+        return 'explained', tw.WAITING_NOTE + ' (' + str(case.get('job')) + ')'
+    since = case['history'][-1]['t']
+    if now - since >= tw.WAIT_H * 3600 and now - case.get('last', 0) <= STILL_HAPPENING_H * 3600:
+        return 'needs-buddy', ('Outside the repair worker scope, and still happening %d days after it '
+                               'began waiting for a session; no session has handled it.' % (tw.WAIT_H // 24))
+    return None
+
+
+def guarded_packet(case, filename, source):
+    reason = protected_reason(case)
+    if reason: raise Held(reason)
+    # Only the explicitly scoped infrastructure jobs are eligible for cloud.
+    text = json.dumps({k: case.get(k) for k in ('id', 'job', 'title', 'sample', 'explanation')})
     # Redact known secret values before forming any model packet.
     creds = json.loads((CODE_ROOT / 'config/credentials.json').read_text())
     def redact(o, s):
@@ -554,7 +591,13 @@ def main():
                 for cid, owner in expired:
                     finish(cid, owner, 'needs-buddy',
                            'Worker interrupted; inspect deployment receipts before another patch.')
-            for case in queue(tw.open_cases()):
+            for case in tw.open_cases():
+                if case['status'] == 'fixing' or in_scope(case) or session_hold(case): continue
+                outcome = scope_outcome(case, time.time())
+                if outcome is None or tw.disabled(): continue
+                if args.run: finish(case['id'], None, *outcome)
+                results.append({'case': case['id'], 'status': outcome[0], 'reason': 'outside_scope'})
+            for case in queue([c for c in tw.open_cases() if in_scope(c)]):
                 if tw.disabled(): break
                 owner = uuid.uuid4().hex
                 if args.run: case = claim(case['id'], owner)

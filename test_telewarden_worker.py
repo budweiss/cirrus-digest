@@ -122,6 +122,60 @@ class WorkerTests(unittest.TestCase):
         self.assertIn('held', [c['id'] for c in w.queue(cases)])
         self.assertFalse(w.session_hold(tried('t4', 1)))   # worker retries keep their turn
 
+    def test_out_of_scope_waits_then_escalates_only_while_still_happening(self):
+        # S663: 13 "Needs you" in 3 days for Nimbus gateway lines, Skywarden and
+        # bill_watch; a session fixed or closed all of them.
+        H = 3600
+        case = {'id': 'g', 'job': 'gateway', 'status': 'new', 'private': False, 'title': 'gateway: x failed',
+                'last': 0, 'history': [{'t': 0, 'status': 'new', 'note': 'first seen'}]}
+        status, note = w.scope_outcome(case, 10)
+        self.assertEqual(status, 'explained')
+        case.update(status=status); case['history'].append({'t': 10, 'status': status, 'note': note})
+        self.assertTrue(tw.waiting_for_session(case))
+        self.assertIsNone(w.scope_outcome(case, 20 * H))               # still waiting, no rewrite
+        self.assertIsNone(w.scope_outcome(case, 80 * H))               # one-off, never seen again
+        case['last'] = 60 * H                                          # seen again, but not lately
+        self.assertIsNone(w.scope_outcome(case, 90 * H))
+        case['last'] = 79 * H                                          # still happening
+        self.assertEqual(w.scope_outcome(case, 80 * H)[0], 'needs-buddy')
+        self.assertIsNone(w.scope_outcome(dict(case, last=40 * H), 40 * H + 30))  # not yet 3 days
+
+    def test_protected_and_lost_sends_still_reach_buddy_at_once(self):
+        base = {'id': 'p', 'status': 'new', 'private': False, 'title': 'x', 'last': 0,
+                'history': [{'t': 0, 'status': 'new', 'note': 'first seen'}]}
+        for extra in ({'job': 'stock_schedule'}, {'job': 'gateway', 'private': True},
+                      {'job': 'skywarden', 'sample': 'holdings file missing'}, {'job': 'telegram_send'}):
+            self.assertEqual(w.scope_outcome(dict(base, **extra), 10)[0], 'needs-buddy', extra)
+
+    def test_run_parks_out_of_scope_silently_and_keeps_repair_slots(self):
+        # End to end through main(): no Telegram for the waiting case, one for the
+        # protected case, and the repair queue only ever gets in-scope cases.
+        (Path(self.tmp.name)/'server-worker-enabled').touch()
+        first = {'t': 0, 'status': 'new', 'note': 'first seen'}
+        mk = lambda cid, job, **k: dict({'id': cid, 'job': job, 'status': 'new', 'private': False,
+                                         'title': cid, 'first': 0, 'last': 0, 'history': [dict(first)]}, **k)
+        cases = {c['id']: c for c in (mk('g1', 'gateway'), mk('g2', 'skywarden'), mk('g3', 'bill_watch'),
+                                       mk('p1', 'stock_schedule', private=True), dict(self.case, last=0))}
+        tw._save('cases.json', cases)
+        sent, handled = [], []
+        def fake_handle(case, owner, allow_deploy=False):
+            handled.append(case['id']); return {'status': 'tested', 'case': case['id']}
+        import job_status, sys
+        with patch.object(sys, 'argv', ['telewarden_worker.py', '--run']), \
+             patch.object(tw, 'notify', side_effect=lambda text, **k: sent.append(text) or True), \
+             patch.object(w, 'handle', side_effect=fake_handle), patch.object(job_status, 'record'), \
+             patch('builtins.print'):
+            w.main()
+        after = tw._load('cases.json', {})
+        self.assertEqual(handled, ['test-case'])
+        for cid in ('g1', 'g2', 'g3'):
+            self.assertTrue(tw.waiting_for_session(after[cid]), cid)
+        self.assertEqual(after['p1']['status'], 'needs-buddy')
+        self.assertEqual(len(sent), 1)
+        self.assertIn('[p1]', sent[0])
+        lines, att = tw.brief_lines()
+        self.assertTrue(any(l.startswith('• Waiting for a session (3)') for l in lines))
+
     def test_cloud_cannot_review_its_own_proposal(self):
         p=Path(self.tmp.name);(p/'telegram_outbox.py').write_text('x=1\n')
         routes=[]
