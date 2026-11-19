@@ -164,11 +164,28 @@ def _alive(pid):
         return False
 
 
+KEEP_DAYS = 7
+
+
+def prune(now=None):
+    """Buddy, 2026-11-18: clips go after 7 days. This box keeps a copy of each emailed clip; its
+    mp4 is removed 7 days after the reply (result.json's time). The job's records stay."""
+    now, gone = now or time.time(), []
+    for res in RUNS.glob("v-*/result.json") if RUNS.exists() else []:
+        if now - res.stat().st_mtime > KEEP_DAYS * 86400:
+            for clip in list(res.parent.glob("*.mp4")) + list(res.parent.glob("*.part")):
+                clip.unlink()
+                gone.append(f"{res.parent.name}/{clip.name}")
+    return gone
+
+
 def resume(popen=None, alive=_alive):
     """Each intake pass: restart a job whose worker died (an intake restart kills it)
     before it finished. The worker carries on from its saved page id; a job that
     already wrote result.json is never touched, so nothing is sent twice."""
     restarted = []
+    for gone in prune():
+        log(f"{gone}: removed, 7 days after the reply")
     for d in sorted(RUNS.glob("v-*")) if RUNS.exists() else []:
         if (d / "result.json").exists() or not (d / "meta.json").exists():
             continue
@@ -280,7 +297,8 @@ def reply_body(box, prompt, st, mp4_bytes, attached, link, sound, wall, run_id, 
         where = f"It is attached: {st['width']}x{st['height']}, 5 seconds with sound, {mb}."
     else:
         where = (f"It is {mb}, too big to attach. Download it here:\n{link}\n"
-                 "That page is private: it opens only for you, after you sign in.")
+                 "That page is private: it opens only for you, after you sign in. "
+                 "The clip stays there for 7 days.")
     took = ""
     if wall:
         took = f"It took {wall // 60} min {wall % 60} s from your email to the finished clip"
@@ -532,6 +550,20 @@ def selftest():
            and gave["sent"] is False)
         ok("start_job records cumulus2's load for the first reply",
            r.get("video_load", {}).get("reason") == "another video is rendering")
+        old = tmp / "runs" / "v-20261101-000000-aaaaaa"
+        old.mkdir(parents=True)
+        (old / "result.json").write_text("{}")
+        (old / "ltx25-x-AI-generated.mp4").write_bytes(b"x")
+        os.utime(old / "result.json", (time.time() - 8 * 86400,) * 2)
+        young = tmp / "runs" / "v-20261117-000000-bbbbbb"
+        young.mkdir()
+        (young / "result.json").write_text("{}")
+        (young / "ltx25-y-AI-generated.mp4").write_bytes(b"x")
+        gone = prune()
+        ok("a clip 7 days after its reply is removed, its records kept",
+           gone == ["v-20261101-000000-aaaaaa/ltx25-x-AI-generated.mp4"]
+           and (old / "result.json").exists() and not (old / "ltx25-x-AI-generated.mp4").exists())
+        ok("a younger clip stays", (young / "ltx25-y-AI-generated.mp4").exists())
         long_wait = reply_body("CUMULUS", "p", done, 2048, True, "", {}, 400, "v-x", waited=310)
         ok("a long wait is named in the reply", "5 min of it waiting for cumulus2" in long_wait)
         ok("a short wait is not", "waiting" not in reply_body("CUMULUS", "p", done, 2048, True, "", {}, 200,
