@@ -27,6 +27,17 @@ def no_recording(fn):
         finally:SUPPRESS.reset(token)
     return wrapped
 
+class MeasuredText(str):
+    """An ordinary text reply carrying only its own numeric receipt locally."""
+    pass
+
+def delivery(text, acknowledged):
+    if SUPPRESS.get() or not isinstance(text, MeasuredText):return
+    row=getattr(text, '_request_measurement', None)
+    if not row:return
+    text._request_measurement=None
+    emit(dict(row,event='delivery',delivery_acknowledged=acknowledged is True,delivered_at=time.time()))
+
 def measured(fn):
     @functools.wraps(fn)
     def wrapped(*args,**kwargs):
@@ -34,8 +45,14 @@ def measured(fn):
         row={'request':uuid.uuid4().hex,'harness':'bot_ask','started_at':time.time()}
         token=ACTIVE.set(row);started=time.monotonic()
         emit(dict(row,event='start'))
-        try:return fn(*args,**kwargs)
+        result=None
+        try:
+            result=fn(*args,**kwargs)
+            if isinstance(result,str):result=MeasuredText(result)
+            return result
         finally:
-            emit(dict(row,event='finish',ended_at=time.time(),wall_seconds=time.monotonic()-started))
+            finished=dict(row,event='finish',ended_at=time.time(),wall_seconds=time.monotonic()-started)
+            emit(finished)
+            if isinstance(result,MeasuredText):result._request_measurement=finished
             ACTIVE.reset(token)
     return wrapped

@@ -260,6 +260,8 @@ def send_message(chat_id, text):
                 log("sendMessage: markdown rejected — delivered as plain text")
         if n < total:
             time.sleep(0.5)
+    if hasattr(text, '_request_measurement'):
+        request_telemetry.delivery(text, delivered)
     return delivered
 
 

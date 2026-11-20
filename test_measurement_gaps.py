@@ -47,6 +47,21 @@ class MeasurementTests(unittest.TestCase):
    rows=[json.loads(x) for x in R.PATH.read_text().splitlines()]
    self.assertEqual(rows[0]['request'],rows[1]['request']);self.assertEqual(rows[1]['ready_harness'],1)
    self.assertNotIn('PRIVATE',R.PATH.read_text());self.assertNotIn('delivered_at',rows[1])
+ def test_delivery_links_only_actual_measured_text_once(self):
+  with tempfile.TemporaryDirectory() as td,patch.object(R,'PATH',Path(td)/'events'):
+   @R.measured
+   def answer():R.mark('ready_local');return 'synthetic answer'
+   result=answer()
+   tree=ast.parse(Path(__file__).with_name('cirrus_bot.py').read_text())
+   fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='send_message')
+   api=Mock(return_value={'ok':True});env=dict(request_telemetry=R,split_for_telegram=lambda t:[str(t)],api_call=api,time=Mock(),log=Mock())
+   exec(compile(ast.Module(body=[fn],type_ignores=[]),'sender','exec'),env)
+   self.assertTrue(env['send_message'](1,result));self.assertEqual(api.call_count,1)
+   R.delivery(result,True)
+   rows=[json.loads(x) for x in R.PATH.read_text().splitlines()]
+   self.assertEqual(len(rows),3);self.assertTrue(rows[-1]['delivery_acknowledged'])
+   self.assertEqual(rows[0]['request'],rows[-1]['request'])
+   self.assertNotIn('synthetic answer',R.PATH.read_text())
  def test_intake_first_milestone_survives_updates(self):
   with tempfile.TemporaryDirectory() as td:
    row=(1,'synthetic@example.test','x','x','synthetic');I.capture(td,row)
