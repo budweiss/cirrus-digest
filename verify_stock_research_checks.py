@@ -37,8 +37,26 @@ def status():
     if not RECEIPT.exists(): return {'status': 'not_started'}
     value = json.loads(RECEIPT.read_text())
     # Fixed metadata only; synthetic drafts and reviewers remain on C1 too.
-    return {k: value[k] for k in ('status', 'machine', 'models', 'tests', 'paper', 'personal',
+    result = {k: value[k] for k in ('status', 'machine', 'models', 'tests', 'paper', 'personal',
             'started_at', 'finished_at', 'error_type', 'sha256') if k in value}
+    if (HOME / 'tests-current.json').exists():
+        result['current_tests'] = json.loads((HOME / 'tests-current.json').read_text())
+    return result
+
+
+def unit_tests():
+    HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    suite = unittest.defaultTestLoader.loadTestsFromNames([
+        'test_stock_research_checks', 'test_stock_schedule', 'test_personal_schedule',
+        'test_stock_paper', 'test_stock_paper_ledger', 'test_stock_paper_market',
+        'test_stock_paper_delivery', 'test_stock_paper_email_format', 'test_personal_delivery_failure'])
+    with (HOME / 'tests-current.txt').open('w') as stream:
+        result = unittest.TextTestRunner(stream=stream).run(suite)
+    value = {'run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
+             'sha256': hashes(), 'checked_at': datetime.now(timezone.utc).isoformat()}
+    P.atomic(HOME / 'tests-current.json', value)
+    if not result.wasSuccessful(): raise ValueError('synthetic_tests_failed')
+    return value
 
 
 def timeout(signum, frame):
@@ -57,14 +75,7 @@ def run():
              'started_at': datetime.now(timezone.utc).isoformat(), 'sha256': hashes()}
     save(value); signal.signal(signal.SIGALRM, timeout); signal.alarm(MAX_SECONDS)
     try:
-        suite = unittest.defaultTestLoader.loadTestsFromNames([
-            'test_stock_research_checks', 'test_stock_schedule', 'test_personal_schedule',
-            'test_stock_paper', 'test_stock_paper_ledger', 'test_stock_paper_market',
-            'test_stock_paper_delivery', 'test_stock_paper_email_format', 'test_personal_delivery_failure'])
-        with (HOME / 'tests.txt').open('w') as stream:
-            result = unittest.TextTestRunner(stream=stream).run(suite)
-        value['tests'] = {'run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors)}
-        if not result.wasSuccessful(): raise ValueError('synthetic_tests_failed')
+        value['tests'] = unit_tests()
         save(value)
         quote = ('Synthetic company filing: the business makes industrial components. '
                  'No earnings date, analyst consensus, peer financials, market-move series '
@@ -105,6 +116,8 @@ def run():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--status', action='store_true')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--status', action='store_true')
+    modes.add_argument('--tests-only', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(status() if args.status else run()))
+    print(json.dumps(status() if args.status else unit_tests() if args.tests_only else run()))

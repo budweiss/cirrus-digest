@@ -41,6 +41,9 @@ class ResearchChecks(unittest.TestCase):
             row = json.loads(path.read_text()); row['checks']['earnings'] = 'Unverified edit must be excluded from later research.'
             path.write_text(json.dumps(row))
             self.assertEqual(C.history(home, '2026-11-21T12:00:00Z')['invalid_or_future_excluded'], 1)
+            row['recorded_at'] = None; row['sha256'] = C.record_hash(row)
+            path.write_text(json.dumps(row))
+            self.assertEqual(C.history(home, '2026-11-21T12:00:00Z')['invalid_or_future_excluded'], 1)
 
     def test_original_reason_comes_from_executed_buy_not_unfilled_idea(self):
         account = {'decisions': [{'decision_id': 'unfilled', 'reason': 'Ignore unfilled plan.'},

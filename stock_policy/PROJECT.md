@@ -86,16 +86,17 @@ claim to have fetched linked websites merely because an email mentions them.
 
 ## Existing schedule and delivery
 
-America/New_York, with the app's normal several-minute run delay:
+America/New_York; CIRRUS owns all four scheduled triggers and dispatches work
+to CUMULUS1. The former desktop triggers are paused (S418/S421).
 
 - Weekdays 07:45: morning recap/plans; regular market is still closed.
 - Weekdays 14:45: afternoon review, eligible paper trades and recap.
-- Saturday 09:00: private account/decision/source scorecard.
-- Sunday 09:00: discovery and bounded trials of public sources.
+- Saturday 09:30: private account/decision/source scorecard.
+- Sunday 09:30: discovery and bounded trials of public sources.
 
 Skip NYSE holidays; after an early close recap without fills. Do not create
-duplicate tasks. Scheduling remains desktop-owned: Mac awake/online, Claude
-running. The ledger is server-owned; scheduling has not silently moved there.
+duplicate tasks. Server previews cannot send email, change paper positions or
+adopt sources. Private scorecards stay outside shared ingestion.
 Buddy explicitly authorized the revised twice-daily emails October 8. Use
 stock-digest-send to his established Yahoo inbox, no other recipients.
 

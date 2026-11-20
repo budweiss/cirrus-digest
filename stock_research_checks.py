@@ -80,6 +80,8 @@ def render(value):
 
 
 def stamp(value):
+    if not isinstance(value, str):
+        raise ValueError('research_history_timestamp_required')
     result = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if result.tzinfo is None:
         raise ValueError('research_history_timezone_required')
