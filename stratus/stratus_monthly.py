@@ -74,7 +74,10 @@ SYSTEM = (
     "You are CIRRUS, doing a monthly research refresh to keep Buddy's STRATUS "
     "production-hardware and local-LLM plan current. Be concise, specific, and honest; "
     "name models/cards, memory capacity, memory bandwidth, and $/GB (not just TOPS). "
-    "Always say prices are to be verified before purchase. Do not pad or invent."
+    "Whenever a finding gives both a price and a memory capacity, state the $/GB "
+    "beside them (price divided by GB, rounded); never leave it for the reader to work out. "
+    "Mark each price you give as to be verified before purchase, beside the price itself; "
+    "if you give no price, say nothing about price verification. Do not pad or invent."
 )
 
 
@@ -196,7 +199,8 @@ M-series, AMD Strix Halo — track memory capacity, bandwidth, $/GB; clustering/
 local-LLM techniques: stronger small models, quantization, fine-tuning beyond QLoRA,
 distillation, serving throughput; and whether the local-vs-frontier gap is shrinking).
 End with a final line that is EITHER "Recommendation: unchanged." OR
-"Recommendation change suggested: <what and why>." Prices must say "verify before purchase."
+"Recommendation change suggested: <what and why>." Put "verify before purchase" beside
+each price you give; if you give no price, say nothing about price verification.
 Do not invent numbers you cannot support from the findings."""
 
 
