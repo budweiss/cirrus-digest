@@ -413,6 +413,7 @@ def call_gemini(prompt: str, timeout: int = 60):
     cand = (data.get("candidates") or [{}])[0]
     parts = ((cand.get("content") or {}).get("parts")) or []
     if not parts:
+        _ledger("gemini", GEMINI_MODEL, data, "cirrus_bot:gemini", prompt, "", wall_seconds=elapsed)
         usage = data.get("usageMetadata") or {}
         raise RuntimeError(
             f"gemini returned no content: finishReason="

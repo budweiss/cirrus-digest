@@ -21,13 +21,15 @@ class MeasurementTests(unittest.TestCase):
   source=ast.parse(Path(__file__).with_name('cirrus_bot.py').read_text())
   names={'_ledger','call_gemini','call_grok','call_claude'}
   module=ast.Module(body=[n for n in source.body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[])
-  for func,provider,response in [('call_gemini','gemini',{'usageMetadata':{'promptTokenCount':10,'candidatesTokenCount':2},'candidates':[{'content':{'parts':[{'text':'answer'}]}}]}),('call_grok','grok',{'usage':{'prompt_tokens':10,'completion_tokens':2},'choices':[{'message':{'content':'answer'}}]}),('call_claude','anthropic',{'usage':{'input_tokens':10,'output_tokens':2},'content':[{'text':'answer'}]})]:
+  for func,provider,response in [('call_gemini','gemini',{'usageMetadata':{'promptTokenCount':10,'candidatesTokenCount':2},'candidates':[{'content':{'parts':[{'text':'answer'}]}}]}),('call_gemini','gemini',{'usageMetadata':{'promptTokenCount':10,'candidatesTokenCount':2},'candidates':[]}),('call_grok','grok',{'usage':{'prompt_tokens':10,'completion_tokens':2},'choices':[{'message':{'content':'answer'}}]}),('call_claude','anthropic',{'usage':{'input_tokens':10,'output_tokens':2},'content':[{'text':'answer'}]})]:
    b=Mock();b.response_metrics=B.response_metrics;resp=Mock();resp.json.return_value=response;requests=Mock();requests.post.return_value=resp
    env=dict(_B=b,CREDS={},requests=requests,time=types.SimpleNamespace(monotonic=Mock(side_effect=[1,3])),request_telemetry=Mock(),knowledge_freshness=Mock())
    for p in ['GEMINI','GROK','ANTHROPIC']:env[p+'_API_KEY']='synthetic'
    for p in ['GEMINI','GROK','CLAUDE']:env[p+'_MODEL']='synthetic-model'
    exec(compile(module,'bot-functions','exec'),env)
-   self.assertEqual(env[func]('synthetic'), 'answer')
+   if func=='call_gemini' and not response['candidates']:
+    with self.assertRaises(RuntimeError):env[func]('synthetic')
+   else:self.assertEqual(env[func]('synthetic'), 'answer')
    self.assertEqual(b.record_call.call_count,1)
    self.assertEqual(b.record_call.call_args.kwargs['wall_seconds'],2)
    self.assertEqual(b.record_call.call_args.kwargs['in_tok'],10)

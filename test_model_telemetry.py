@@ -123,7 +123,7 @@ class TelemetryTests(unittest.TestCase):
         import personal_schedule as p
         reply={'model':'gpt-oss:120b','done':True,'done_reason':'stop','message':{'content':'synthetic'},
                'prompt_eval_count':10,'eval_count':2,'eval_duration':1_000_000_000}
-        with patch.object(M,'token_count',return_value=10),patch.object(p.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(reply).encode())), \
+        with patch('native_observation.before',return_value={'resident_before':True}),patch.object(M,'token_count',return_value=10),patch.object(p.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(reply).encode())), \
              patch.object(p.time,'monotonic',side_effect=[1,4]),patch.object(B,'record_call') as rec:
             self.assertEqual(p.c1_draft('system','synthetic'),'synthetic')
         self.assertEqual(rec.call_args.kwargs['wall_seconds'],3)
@@ -135,7 +135,7 @@ class TelemetryTests(unittest.TestCase):
         for model,ctx in [('gpt-oss:120b',65536),('qwen3.8:27b',32768)]:
             reply={'model':model,'done':True,'done_reason':'stop','message':{'content':json.dumps(
                 {'verdict':'invalid','draft_contradicts_evidence':False})}}
-            with patch.object(M,'token_count',return_value=10),patch.object(p.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(reply).encode())) as wire,patch.object(B,'record_call'):
+            with patch('native_observation.before',return_value={'resident_before':True}),patch.object(M,'token_count',return_value=10),patch.object(p.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(reply).encode())) as wire,patch.object(B,'record_call'):
                 p.arbiter_call(model,'medium',{},'synthetic','synthetic',10)
             body=json.loads(wire.call_args[0][0].data)
             self.assertEqual(body['options'],{'temperature':0,'num_ctx':ctx,'num_predict':4096})
