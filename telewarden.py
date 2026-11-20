@@ -325,6 +325,17 @@ ZERO_RE = re.compile(r"(?i)\b0 (?:[\w-]+ )?(?:overdue|fail\w*|errors?|warn\w*|mi
 NOT_RE = re.compile(r"(?i)\bnot (?:actually |really )?(?:stalled|stale|failing|down|missing|overdue|degraded)\b")
 
 
+def _clip(s, n):
+    """At most n chars. A cut ends on a whole word with "…", never mid-word: Buddy
+    read cut-off notices such as 'error="LLM request failed: co' (S664)."""
+    s = str(s or "")
+    if len(s) <= n:
+        return s
+    cut = s[:n - 1]
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp > n // 2 else cut).rstrip(" ,;:-") + "…"
+
+
 def _warns(s):
     return WARN_RE.search(NOT_RE.sub("", ZERO_RE.sub("", s)))
 
@@ -349,7 +360,8 @@ def classify(row):
     job, text = row["job"], row["text"]
     # S621: the CIRRUS worker's own notices are recorded as job telewarden_worker;
     # reading them back made a new case for each needs-buddy message.
-    if job in ("telewarden", "telewarden_worker") or text.startswith("🛡 Telewarden:"):
+    # S664: a long notice goes in parts headed "🛡 Telewarden (1/2): ".
+    if job in ("telewarden", "telewarden_worker") or text.startswith("🛡 Telewarden"):
         return "own", []
     if row.get("kind") == "off":                 # a paused Nimbus heartbeat, not a failure (F6)
         return "off", []
@@ -443,7 +455,7 @@ def touch_case(cases, cid, row, item, now, cache, notices):
             "id": cid, "source": row["source"], "job": row["job"], "private": private,
             "title": (k["title"] if k else
                       f"{row['job']}: warning (text kept on the host)" if private else
-                      item[:120]),
+                      _clip(item, 120)),
             "sample": "" if private or (k and k.get("nosample")) else item[:500],
             "first": row["t"], "last": row["t"], "count": 0, "days": {},
             "status": k["status"] if k else "new", "history": [],
@@ -594,17 +606,17 @@ def weekly_text(since, now):
     if fixed:
         out.append(f"\nCorrected ({len(fixed)}):")
         for c, h in fixed:
-            out.append(f"- {c['title'][:80]}: {h.get('note', '')[:160]}"
+            out.append(f"- {_clip(c['title'], 80)}: {_clip(h.get('note', ''), 160)}"
                        f" ({state_word.get(c['status'], c['status'])})")
     if changes:
         out.append(f"\nImproved ({len(changes)}):")
         out += [f"- {e['text'][:200]}" for e in changes]
     if accepted:
         out.append(f"\nClosed as by design ({len(accepted)}):")
-        out += [f"- {c['title'][:80]}: {h.get('note', '')[:120]}" for c, h in accepted]
+        out += [f"- {_clip(c['title'], 80)}: {_clip(h.get('note', ''), 120)}" for c, h in accepted]
     if needs:
         out.append(f"\nStill needs you ({len(needs)}):")
-        out += [f"- {c['title'][:80]}" for c in needs]
+        out += [f"- {_clip(c['title'], 80)}" for c in needs]
     if not (fixed or changes or accepted):
         out.append("\nQuiet week: nothing needed correcting.")
     out.append(f"\n{len(busy)} case(s) still being worked on.")
@@ -633,8 +645,28 @@ def maybe_weekly(now, send=None):
     return True
 
 
+def _parts(text, limit):
+    """Split at line breaks into pieces of at most limit chars; nothing is dropped."""
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    return parts + ([cur] if cur else [])
+
+
 def notify(text, send=None, now=None, limit=1500):
-    """One Telegram to Buddy, capped per day. Returns True if sent."""
+    """One notice to Buddy, capped per day. Returns True if every part was sent.
+    S664: a notice longer than limit goes in numbered parts. It was cut off with
+    "(truncated; full text on CIRRUS)", and the 11-16 recap lost its last items."""
     now = time.time() if now is None else now
     if disabled():
         return False
@@ -650,9 +682,12 @@ def notify(text, send=None, now=None, limit=1500):
     if send is None:
         import vendor_mail_watch
         send = vendor_mail_watch.telegram
-    if len(text) > limit:                # T40: say so when a message is cut short
-        text = text[:limit - 30] + "\n… (truncated; full text on CIRRUS)"
-    return bool(send("🛡 Telewarden: " + text))
+    parts = _parts(text, limit)
+    for i, part in enumerate(parts, 1):
+        head = "🛡 Telewarden" + (f" ({i}/{len(parts)})" if len(parts) > 1 else "") + ": "
+        if not send(head + part):
+            return False                 # stop: later parts never arrive out of order
+    return bool(parts)
 
 
 def brief_lines(now=None):
@@ -683,7 +718,7 @@ def brief_lines(now=None):
     # a case open far past the fixer's 24-hour target (the fixer is stuck, which
     # it cannot report itself).
     def names(sel, n=4):
-        return "; ".join(f"{c['title'][:70]} [{c['id']}]" for c in sel[:n]) + (
+        return "; ".join(f"{_clip(c['title'], 70)} [{c['id']}]" for c in sel[:n]) + (
             f" (+{len(sel) - n} more)" if len(sel) > n else "")
 
     vals = list(cases.values())
@@ -765,7 +800,8 @@ def set_status(cid, status, note, commit=None, undo=None, verify_after=None, now
                              **({"commit": commit} if commit else {})})
         _save("cases.json", cases)
     if status == "needs-buddy" and was != "needs-buddy":
-        notify(f"Needs you, could not be corrected: {c['title'][:120]} [{cid}]. {note[:600]}",
+        notify(f"Needs you, could not be corrected: {_clip(c.get('sample') or c['title'], 500)} "
+               f"[{cid}]. {_clip(note, 600)}",
                send=send, now=now)
     return c
 
@@ -1000,6 +1036,29 @@ def selftest():
                   and "Still needs you (1)" in rec)
             check("weekly recap never quotes private text",
                   "Sell 10 shares" not in rec and "holdings" not in rec.lower())
+            # S664: the 11-16 recap (3819 chars) went out cut off; titles were cut mid-word.
+            long_text = "Weekly recap\n" + "\n".join(f"- case {i}: " + "word " * 40 for i in range(40))
+            got = []
+            check("a long notice goes in numbered parts and loses nothing",
+                  notify(long_text, send=lambda m: got.append(m) or True, now=T + 30 * 86400, limit=3800)
+                  and len(got) > 1 and all(len(m) <= 3800 + 30 for m in got)
+                  and got[0].startswith(f"🛡 Telewarden (1/{len(got)}): ")
+                  and "\n".join(m.split(": ", 1)[1] for m in got) == long_text
+                  and not any("truncated" in m for m in got))
+            check("a notice part read back from another job's copy is still Telewarden's own",
+                  classify({"job": "python3", "text": got[1], "source": "cirrus"})[0] == "own")
+            check("a clipped title ends on a whole word, a short one is unchanged",
+                  _clip('gateway: error="LLM request failed: connection refused"', 40)
+                  == 'gateway: error="LLM request failed…'
+                  and _clip("short title", 70) == "short title")
+            cs = _load("cases.json", {})
+            lc = next(c for c in cs.values() if c["status"] in OPEN and not c["private"])
+            lc["sample"] = "gateway: " + "a long warning line " * 12 + "ends here (x1)"
+            _save("cases.json", cs)
+            before = len(sent)
+            set_status(lc["id"], "needs-buddy", "synthetic", send=send, now=T + 30 * 86400 + 60)
+            check("a needs-you notice shows the whole warning line",
+                  len(sent) == before + 1 and "ends here (x1)" in sent[-1])
             wk2 = T + 17 * 86400
             check("a failed weekly send is retried, not lost",
                   maybe_weekly(wk2, send=lambda m: False) is False
