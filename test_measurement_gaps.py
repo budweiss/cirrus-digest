@@ -8,6 +8,15 @@ import request_telemetry as R
 import intake_lifecycle as I
 
 class MeasurementTests(unittest.TestCase):
+ def test_bot_selftest_suppresses_new_side_effects(self):
+  tree=ast.parse(Path(__file__).with_name('cirrus_bot.py').read_text())
+  fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='selftest')
+  self.assertTrue(any(isinstance(d,ast.Attribute) and d.attr=='no_recording' for d in fn.decorator_list))
+  with patch.object(R,'emit') as emit:
+   @R.no_recording
+   @R.measured
+   def demo():R.mark('ready_harness')
+   demo();emit.assert_not_called()
  def test_bot_actual_helpers_preserve_wire_and_time(self):
   source=ast.parse(Path(__file__).with_name('cirrus_bot.py').read_text())
   names={'_ledger','call_gemini','call_grok','call_claude'}

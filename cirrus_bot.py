@@ -2561,6 +2561,7 @@ def run_bot():
             log(f"Bot error: {e}")
             time.sleep(5)
 
+@request_telemetry.no_recording
 def selftest() -> bool:
     """Exercise this module's pure decision-making functions with explicit
     inputs and expected outputs. Touches no network, no Telegram API, no
