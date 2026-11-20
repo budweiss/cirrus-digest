@@ -2,6 +2,7 @@
 import contextvars, functools, json, os, time, uuid
 from pathlib import Path
 ACTIVE=contextvars.ContextVar('request_telemetry',default=None)
+SUPPRESS=contextvars.ContextVar('request_telemetry_suppressed',default=False)
 PATH=Path(__file__).resolve().parent/'data/request-telemetry.jsonl'
 
 def emit(row):
@@ -18,9 +19,18 @@ def mark(key):
     row=ACTIVE.get()
     if row is not None:row[key]=row.get(key,0)+1
 
+def no_recording(fn):
+    @functools.wraps(fn)
+    def wrapped(*args,**kwargs):
+        token=SUPPRESS.set(True)
+        try:return fn(*args,**kwargs)
+        finally:SUPPRESS.reset(token)
+    return wrapped
+
 def measured(fn):
     @functools.wraps(fn)
     def wrapped(*args,**kwargs):
+        if SUPPRESS.get():return fn(*args,**kwargs)
         row={'request':uuid.uuid4().hex,'harness':'bot_ask','started_at':time.time()}
         token=ACTIVE.set(row);started=time.monotonic()
         emit(dict(row,event='start'))
