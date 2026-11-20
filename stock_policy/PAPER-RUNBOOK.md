@@ -135,3 +135,14 @@ Missing corporate actions cause a visible hold/provisional performance until
 source-reviewed adjustments are available. Year-end exports are simulated
 lot records, not filing-ready returns or automatic wash-sale calculations.
 An immature/limited sample cannot prove stock-picking skill.
+
+
+## Additional research checks (S671)
+
+The server report's five research-check sections cover earnings before/after,
+original executed-buy thesis, business-based peers, news/price-move attribution,
+and common exposures. Each must offer dated evidence or name the exact gap.
+An earlier review is historical opinion, not a primary source. Never treat a
+post-event note as a pre-event forecast. Keep current positions, paper orders,
+personal holdings and the two histories separate. See PROJECT.md for coverage
+and the two-prior-review retrieval limit.

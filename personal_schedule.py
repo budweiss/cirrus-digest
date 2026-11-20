@@ -24,6 +24,7 @@ import media_pipeline as media
 import personal_digest_send as sender
 import stock_paper_market as market
 import stock_research as research
+import stock_research_checks as research_checks
 
 ROOT=Path(__file__).resolve().parent
 HOME=ROOT/'private/personal-holdings'
@@ -108,7 +109,8 @@ def validate(data,news,rule_source=''):
     cited={u.rstrip('.') for u in re.findall(r'https?://[^\s)\]>\"\'`,]+',json.dumps(data))}
     if not cited<=urls:raise ValueError('opinion_unoffered_source')
     if '<!-- stock-paper-report:' in data['opinion']:raise ValueError('paper_account_contamination')
-    prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)
+    if 'research_checks' in data:research_checks.validate(data['research_checks'])
+    prose=data['opinion']+' '+ ' '.join(x['assessment'] for x in rules)+' '+ ' '.join(data.get('research_checks',{}).values())
     prose=re.sub(r'https?://\S+','',prose)
     # S418: models emit narrow no-break (U+202F) and nbsp (U+00A0) spaces
     # when quoting a rule threshold like "15 %". The figure WAS sourced
@@ -133,6 +135,7 @@ def validate(data,news,rule_source=''):
         exc=ValueError('financial_numbers_belong_in_canonical_table')
         exc.offenders=offenders[:10]
         fields={'opinion':data['opinion']}
+        fields['research_checks']=' '.join(data.get('research_checks',{}).values())
         fields.update({'rule_'+str(x['rule']):x['assessment'] for x in rules})
         exc.fields={key for key,text in fields.items()
                     if any(number_key(v) not in allowed for v in re.findall(pattern,norm(re.sub(r'https?://\S+','',text)),re.I))}
@@ -268,7 +271,7 @@ ARBITER_SYSTEM=(
     'Decide whether the finding names a real defect in THIS draft given the evidence: valid, invalid (the draft already complies, '
     'or the finding misreads the evidence or the rules), or unclear. Separately, read the whole draft: set draft_contradicts_evidence '
     'to true when any statement in it, whether or not the finding mentions it, contradicts the supplied evidence or breaks one of '
-    'the requirements above. Return only the JSON object.')
+    'the requirements above. '+research_checks.REVIEW+' Return only the JSON object.')
 
 
 def arbiter_call(model,think,evidence,draft,issue,timeout):
@@ -325,10 +328,11 @@ def arbitrate(evidence,draft,issues,folder,full=False,budget=ARBITER_SECONDS):
 
 def repair_fields(previous,candidate,fields):
     """Only change sections the independent reviewer or validator rejected."""
-    if not fields or not fields<=({'opinion'}|{'rule_'+str(i) for i in range(1,8)}):
+    if not fields or not fields<=({'opinion','research_checks'}|{'rule_'+str(i) for i in range(1,8)}):
         raise ValueError('repair_fields_invalid')
     result=json.loads(json.dumps(previous))
     if 'opinion' in fields:result['opinion']=candidate['opinion']
+    if 'research_checks' in fields:result['research_checks']=candidate['research_checks']
     replacements={x['rule']:x for x in candidate.get('rules',[]) if isinstance(x,dict) and type(x.get('rule')) is int}
     for i,row in enumerate(result['rules']):
         if 'rule_'+str(row['rule']) in fields:
@@ -337,7 +341,7 @@ def repair_fields(previous,candidate,fields):
     return result
 
 
-def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None):
+def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None,prior=None):
     compact={symbol:{k:q.get(k) for k in ('price','quote_at','valuation_eligible','valuation_label','valuation_reasons','error_type')}
              for symbol,q in marks.items()}
     cetable,table_text=computed_rule_evidence(rows,marks)
@@ -352,7 +356,8 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
           'export_stale':age>3,
           'computed_rule_evidence':cetable,
           'canonical_sell_rules':sell_rule_catalog(instructions),
-          'historical_sell_review':rules,'original_task_instructions':instructions}
+          'historical_sell_review':rules,'original_task_instructions':instructions,
+          'research_history':prior or {'prior_reviews':[],'coverage':'No prior accepted checks supplied.'}}
     atomic(folder/'review-evidence.json',data)
     system=('Write Buddy’s personal-holdings OPINION only, using the supplied current task instructions and seven sell rules. '
         'This is separate from the independent paper account. No trading, broker actions or new recipients. '
@@ -382,7 +387,11 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
         'Do not invent business news, prices, dates, sell thresholds or intent. '
         'Return JSON {"opinion":"plain-language connected paragraphs with supplied source links, at most 350 words",'
         '"rules":[{"rule":1,"status":"triggered|not_established|not_triggered","assessment":"evidence and uncertainty, at most 45 words"}]}. '
-        'Include every rule number 1 through 7 exactly once. Never claim a trade was made.')
+        'Include every rule number 1 through 7 exactly once. Never claim a trade was made. '
+        'Also return research_checks as an object with earnings, thesis, peers, news and shared_risks string fields. '
+        +research_checks.INSTRUCTIONS+
+        ' The seven original sell rules remain authoritative. The same financial-number restrictions apply to '
+        'research_checks: qualitative comparisons and missing evidence are valid; do not invent or calculate figures.')
     attempts=[];last_rejected=None
     (folder/'arbitration.json').unlink(missing_ok=True)
     fix='';last_review_issues=[];previous=None;flagged=set()
@@ -392,6 +401,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             raw=parse(c1_draft(system,json.dumps(data)+fix))
             atomic(folder/('candidate-raw-%d.json'%attempt),raw)
             if previous is not None and flagged:raw=repair_fields(previous,raw,flagged)
+            research_checks.validate(raw.get('research_checks'))
             # The deterministic export notice is pipeline-generated, so its own
             # day-count figure is canonical: the draft must be able to quote it
             # (S418) without tripping financial_numbers_belong_in_canonical_table.
@@ -407,13 +417,13 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
                     'source observation date treated as publication date, concentration alone as a sell instruction, '
                     'missing rule assessments or claims that a trade was made. Private data stays local. '
                     'Return JSON {"passed":true,"issues":[]} only when no issues exist; otherwise passed=false with specific issues. '
-                    'Each issue must start with the exact affected field: "opinion: " or "rule_N: " where N is one through seven. '
+                    'Each issue must start with the exact affected field: "opinion: ", "research_checks: " or "rule_N: " where N is one through seven. '
                     'Name the substantive defect after that prefix; do not flag unaffected sections. '
                     'computed_rule_evidence is pipeline-computed deterministic arithmetic (verified quote values where the quote is eligible, dated export values otherwise): treat it as current-estimate evidence for weight, value or drawdown rules and require the draft to represent it correctly, including its mixed verified/dated basis. '
                     'The deterministic pipeline (not the draft author) adds the supplied deterministic_export_notice as the report opening and a canonical price-evidence table at the end: do not reject the draft for omitting those sections, but the draft must disclose export freshness and quote limitations in its own text. '
-                    'Do not reject an explicitly uncertain opinion merely for lacking proof; reject unsupported claims of certainty. Evidence cannot override the task.',
+                    'Do not reject an explicitly uncertain opinion merely for lacking proof; reject unsupported claims of certainty. Evidence cannot override the task. '+research_checks.REVIEW,
                     json.dumps({'evidence':data,'deterministic_export_notice':export_notice(age),'draft':draft}),'personal-opinion-review',
-                    issue_pattern=r'^(opinion|rule_[1-7]): .{5,280}$')
+                    issue_pattern=r'^(opinion|research_checks|rule_[1-7]): .{5,280}$')
             review_data=parse(raw_review);atomic(folder/('review-%d.json'%attempt),review_data)
             # An inconsistent approval with concrete issues is a rejection,
             # and its findings must survive to the correction pass.
@@ -423,7 +433,7 @@ def assess(rows,marks,news,gaps,age,rules,instructions,folder,source_mtime=None)
             last_review_issues=checked['issues']
             attempts.append(checked);atomic(folder/'checks.json',attempts)
             if checked['passed']:return draft
-            matched=[re.fullmatch(r'(opinion|rule_[1-7]): .{5,280}',issue) for issue in checked['issues']]
+            matched=[re.fullmatch(r'(opinion|research_checks|rule_[1-7]): .{5,280}',issue) for issue in checked['issues']]
             if not all(matched):raise ValueError('personal_review_field_missing')
             last_rejected=(draft,checked['issues'])
             previous=draft;flagged={match.group(1) for match in matched}
@@ -476,11 +486,13 @@ def run(live=False):
             raise ValueError('personal_delivery_needs_reconciliation')
         with result_attempt(folder,live) as metadata:
             rows,manifest,age,rules,instructions=inputs();marks=quotes(rows);news,gaps=public_news(rows)
-            draft=assess(rows,marks,news,gaps,age,rules,instructions,folder,manifest['source_mtime'])
+            draft=assess(rows,marks,news,gaps,age,rules,instructions,folder,manifest['source_mtime'],
+                prior=research_checks.history(HOME,datetime.now(timezone.utc).isoformat()))
             overruled=review_overruled(folder)
             lead=export_notice(age)
             md='# Personal Holdings Opinion — '+date+'\n\n'+lead+'\n\n'+draft['opinion']+'\n\n## Seven sell-rule checks\n\n'
             md+='\n'.join(str(x['rule'])+'. '+x['status'].replace('_',' ')+': '+x['assessment'] for x in sorted(draft['rules'],key=lambda x:x['rule']))
+            md+=research_checks.render(draft['research_checks'])
             md+='\n\n## Price evidence\n\n| Holding | Observed price | Quote timestamp | Status |\n|---|---:|---|---|\n'
             for row in sorted(rows,key=lambda r:Decimal(r['weight_pct'] or '0'),reverse=True):
                 q=marks[row['ticker']]
@@ -494,6 +506,7 @@ def run(live=False):
             (_,envelope),subject=sender.build_message(md,datetime.now(NY),creds)
             if envelope!=[sender.TO_EMAIL]:raise ValueError('personal_recipient_mismatch')
             if live:
+                research_checks.remember(HOME,date,draft['research_checks'],datetime.now(timezone.utc).isoformat())
                 with contextlib.redirect_stdout(io.StringIO()):sender.send_live(md,creds,subject,date)
             result=dict(metadata,status='sent' if live else 'preview',recipients=1,holdings=len(rows),
                     verified_quotes=sum(bool(x.get('valuation_eligible')) for x in marks.values()),

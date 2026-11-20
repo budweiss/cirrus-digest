@@ -9,7 +9,8 @@ import stock_schedule as S
 QUOTE='Synthetic revenue for the period ended 2026-09-30 was 100 units.'
 EV={'companies':[{'ticker':'EXAMPLE','recorded_at':datetime.now(timezone.utc).isoformat(),
     'documents':[{'id':1,'text':QUOTE,'url':'https://example.com/filing','published':'2026-10-01'}]}]}
-DEC={'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported valuation.',
+CHECKS={k:'Missing synthetic source evidence; no conclusion established.' for k in S.research_checks.HEADINGS}
+DEC={'research_checks':dict(CHECKS),'decisions':[{'ticker':'EXAMPLE','action':'HOLD','reason':'Await supported valuation.',
     'valuation':'No verified valuation available.','counterargument':'Business evidence may deteriorate.',
     'exit_trigger':'Review a verified adverse business event.','evidence':[{'id':1,'quote':QUOTE}]}],
     'explanation':'No trades while valuation evidence remains incomplete; the primary filing remains context.'}
@@ -88,11 +89,11 @@ class ScheduleChecks(unittest.TestCase):
         # S663: 11-16 to 11-19 the request outgrew the 32K worker and no decision ran.
         import json
         public=self._newsletter_public();context={'research':'fixed','public_source_followup':public}
-        limit=32768-2300-S.DECISION_HEADROOM
+        limit=32768-S.DECISION_OUTPUT_RESERVE-S.DECISION_HEADROOM
         count=lambda text:limit-1000+1000*text.count('"exc-')
         self.assertEqual(S.fit_decision_context('system',context,public,count),['exc-4','exc-3','exc-2'])
         self.assertEqual([r['id'] for r in context['public_source_followup']['newsletter_excerpts']],['exc-1'])
-        self.assertLessEqual(count('system\n'+json.dumps(context))+2300+S.DECISION_HEADROOM,32768)
+        self.assertLessEqual(count('system\n'+json.dumps(context))+S.DECISION_OUTPUT_RESERVE+S.DECISION_HEADROOM,32768)
         stats=public['newsletter_coverage']
         self.assertEqual((stats['selected'],stats['deferred'],stats['context_chars']),(1,5,100))
         self.assertEqual((stats['sources']['Pub0']['offered'],stats['sources']['Pub1']['offered']),(0,1))
@@ -110,7 +111,7 @@ class ScheduleChecks(unittest.TestCase):
         from pathlib import Path
         evidence=copy.deepcopy(EV)
         evidence['companies'][0]['draft']={'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]}
-        public=self._newsletter_public();limit=32768-2300-S.DECISION_HEADROOM;checks=[]
+        public=self._newsletter_public();limit=32768-S.DECISION_OUTPUT_RESERVE-S.DECISION_HEADROOM;checks=[]
         with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)),patch.object(S,'policy',return_value='Synthetic policy'), \
              patch.object(S.media,'token_count',side_effect=lambda text:limit-2000+1000*text.count('"exc-')), \
              patch.object(S.research,'structured_review',return_value='{"passed":true,"issues":[]}') as reviewer:
@@ -128,7 +129,7 @@ class ScheduleChecks(unittest.TestCase):
             folder=Path(td);public=self._newsletter_public()
             audit=[{'id':r['id'],'disposition':'offered_to_model'} for r in public['newsletter_excerpts']]+[{'id':'other','disposition':'stale'}]
             (folder/'newsletter-evidence.json').write_text(json.dumps(dict(copy.deepcopy(public),audit=audit)))
-            limit=32768-2300-S.DECISION_HEADROOM
+            limit=32768-S.DECISION_OUTPUT_RESERVE-S.DECISION_HEADROOM
             S.fit_decision_context('system',{'p':public},public,lambda text:limit-1000+1000*text.count('"exc-'))
             S.record_offered(folder,public)
             saved=json.loads((folder/'newsletter-evidence.json').read_text())

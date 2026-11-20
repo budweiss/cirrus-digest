@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock,patch
 import personal_schedule as S
 
+CHECKS={k:"Missing synthetic source evidence; no conclusion established." for k in S.research_checks.HEADINGS}
+
 class PersonalChecks(unittest.TestCase):
     def source_rules(self):
         return '# Rules\n'+ '\n'.join('%d. Synthetic source test %d.'%(i,i) for i in range(1,8))
@@ -21,9 +23,9 @@ class PersonalChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'ambiguous_or_missing'):S.sell_rule_catalog(bad)
 
     def test_correction_cannot_rewrite_unflagged_report_sections(self):
-        previous={'opinion':'Accepted synthetic opinion.',
+        previous={'research_checks':dict(CHECKS),'opinion':'Accepted synthetic opinion.',
                   'rules':[{'rule':i,'status':'not_established','assessment':'Accepted source-grounded section.'} for i in range(1,8)]}
-        candidate={'opinion':'Unrequested replacement.',
+        candidate={'research_checks':dict(CHECKS),'opinion':'Unrequested replacement.',
                    'rules':[{'rule':i,'status':'triggered','assessment':'Changed section.'} for i in range(1,8)]}
         result=S.repair_fields(previous,candidate,{'rule_6'})
         self.assertEqual(result['opinion'],previous['opinion'])
@@ -77,7 +79,7 @@ class PersonalChecks(unittest.TestCase):
         rows=[{'ticker':'AAA','shares':'1','value_at_export':'15','price_at_export':'15'},
               {'ticker':'BBB','shares':'1','value_at_export':'85','price_at_export':'85'}]
         _,source=S.computed_rule_evidence(rows,{})
-        data={'opinion':'Synthetic dated estimate is 15\u202f% for AAA; this is not a verified current holding.',
+        data={'research_checks':dict(CHECKS),'opinion':'Synthetic dated estimate is 15\u202f% for AAA; this is not a verified current holding.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic trigger evidence established.'} for i in range(1,8)]}
         self.assertEqual(S.validate(data,[],source),data)
         data['opinion']='Synthetic dated estimate is 5% for AAA; this wrong substring must not pass.'
@@ -119,7 +121,7 @@ class PersonalChecks(unittest.TestCase):
 
     def test_inconsistent_approval_preserves_findings_for_correction(self):
         from contextlib import nullcontext
-        draft={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
+        draft={'research_checks':dict(CHECKS),'opinion':'Synthetic private opinion with limited evidence and no transactions.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic test evidence is not available for this rule.'} for i in range(1,8)]}
         reviews=iter(['{"passed":true,"issues":["rule_7: Missing the actual test for rule seven."]}','{"passed":true,"issues":[]}'])
         with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(draft)) as model,patch.object(S.research,'structured_review',side_effect=lambda *args,**kwargs:next(reviews)):
@@ -135,7 +137,7 @@ class PersonalChecks(unittest.TestCase):
 
     def test_repeated_substantive_review_failure_stays_held(self):
         from contextlib import nullcontext
-        draft={'opinion':'I executed the recommended trades in your brokerage account today.',
+        draft={'research_checks':dict(CHECKS),'opinion':'I executed the recommended trades in your brokerage account today.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Evidence is not available for this source test.'} for i in range(1,8)]}
         refusal=json.dumps({'passed':False,'issues':['opinion: Claims trades were executed without any execution evidence.']})
         agree={'verdict':'valid','draft_contradicts_evidence':True,'rationale':'Synthetic.'}
@@ -151,7 +153,7 @@ class PersonalChecks(unittest.TestCase):
 
     def rejected_four_times(self,td,judge):
         from contextlib import nullcontext
-        draft={'opinion':'Synthetic stale-export opinion that names its dated estimates and makes no trades.',
+        draft={'research_checks':dict(CHECKS),'opinion':'Synthetic stale-export opinion that names its dated estimates and makes no trades.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
         issues=['opinion: Synthetic objection one about the opinion.','rule_6: Synthetic objection two about rule six.']
         refusal=json.dumps({'passed':False,'issues':issues})
@@ -203,7 +205,7 @@ class PersonalChecks(unittest.TestCase):
 
     def test_no_reviewed_draft_means_no_arbitration(self):
         from contextlib import nullcontext
-        bad={'opinion':'Synthetic opinion that invents a 999% figure and so never reaches review.',
+        bad={'research_checks':dict(CHECKS),'opinion':'Synthetic opinion that invents a 999% figure and so never reaches review.',
              'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
         with tempfile.TemporaryDirectory() as td,patch.object(S.media,'lease',return_value=nullcontext()),patch.object(S,'c1_draft',return_value=json.dumps(bad)),patch.object(S.research,'structured_review') as reviewer,patch.object(S,'arbiter_call') as judge:
             (Path(td)/'arbitration.json').write_text(json.dumps({'overruled':True}))
@@ -230,7 +232,7 @@ class PersonalChecks(unittest.TestCase):
     def test_raw_candidate_precedes_unchallenged_field_preservation(self):
         from contextlib import nullcontext
         import copy
-        first={'opinion':'Synthetic opinion needing reconciliation with its supporting rule assessments.',
+        first={'research_checks':dict(CHECKS),'opinion':'Synthetic opinion needing reconciliation with its supporting rule assessments.',
                'rules':[{'rule':i,'status':'not_established','assessment':'Original synthetic assessment with limited evidence.'} for i in range(1,8)]}
         revised=copy.deepcopy(first)
         revised['opinion']='Synthetic corrected opinion consistent with the updated source assessment.'
@@ -251,7 +253,7 @@ class PersonalChecks(unittest.TestCase):
 
     def test_quantity_repair_keeps_the_previous_semantic_review_findings(self):
         from contextlib import nullcontext
-        good={'opinion':'Synthetic private opinion with limited evidence and no transactions.',
+        good={'research_checks':dict(CHECKS),'opinion':'Synthetic private opinion with limited evidence and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'Synthetic evidence is not available for this rule.'} for i in range(1,8)]}
         bad=dict(good,opinion='Synthetic correction mistakenly invents a 999% observation which must fail.')
         findings='opinion: The opinion must use the actual source tests.'
@@ -305,21 +307,21 @@ class PersonalChecks(unittest.TestCase):
             self.assertEqual(before,{p.name:p.read_bytes() for p in folder.iterdir()})
 
     def test_all_seven_rules_required(self):
-        data={'opinion':'Synthetic private opinion with clearly limited evidence and no transactions.',
+        data={'research_checks':dict(CHECKS),'opinion':'Synthetic private opinion with clearly limited evidence and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic trigger evidence established.'} for i in range(1,8)]}
         self.assertEqual(len(S.validate(data,[])['rules']),7)
         data['rules'].pop()
         with self.assertRaisesRegex(ValueError,'seven_sell_rules_required'):S.validate(data,[])
 
     def test_model_cannot_recalculate_financial_numbers_in_opinion(self):
-        data={'opinion':'Synthetic dated export is 40% in one holding; this invented weight must be rejected.',
+        data={'research_checks':dict(CHECKS),'opinion':'Synthetic dated export is 40% in one holding; this invented weight must be rejected.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic evidence established.'} for i in range(1,8)]}
         with self.assertRaisesRegex(ValueError,'canonical_table'):S.validate(data,[])
         data['opinion']='Synthetic user rule defines a 40% threshold; no current outcome is established.'
         self.assertEqual(S.validate(data,[],'Synthetic rule threshold is 40%.'),data)
 
     def test_unoffered_source_refused(self):
-        data={'opinion':'Synthetic opinion with invented source https://example.com/not-offered and no transactions.',
+        data={'research_checks':dict(CHECKS),'opinion':'Synthetic opinion with invented source https://example.com/not-offered and no transactions.',
               'rules':[{'rule':i,'status':'not_established','assessment':'No synthetic evidence established.'} for i in range(1,8)]}
         with self.assertRaisesRegex(ValueError,'opinion_unoffered_source'):S.validate(data,[])
 

@@ -121,3 +121,31 @@ private/ or digests/, on Buddy's existing machines and in emails to him.
 Only code and generic instructions go to Git. Personal holdings, legacy calls,
 old experiments and dated corrections remain preserved as separate history.
 No Robinhood credentials, API, real transactions or automatic go-live.
+
+
+## Research checks — November 20, 2026 (S671)
+
+Buddy approved adapting the uploaded Briefs research templates. Each accepted
+scheduled report now includes five reviewed sections: earnings expectations
+and results, the original investment thesis, relevant business/valuation peers,
+news and price moves, and shared portfolio risks. Before earnings, record the
+verified date, available consensus/guidance and three to five observable checks;
+afterward compare only with a demonstrably earlier expectation. Missing data
+is a valid visible gap, never a fabricated forecast or a backfilled baseline.
+
+`stock_research_checks.py` enforces section coverage/length and keeps immutable
+accepted live-run notes in each account's own private `research-check-history/`.
+At most two most recent prior notes enter the next prompt; earlier notes remain
+archived, not automatically retrieved by event. Previews and failed reviews do
+not enter that history. The paper workflow supplies original executed-buy
+reasons from its ledger; unfilled ideas are excluded. Primary-source review,
+quote/trade guards, schedules, recipients and local-only models remain in force.
+No new market-data feed, Briefs connector, paid access or extra model call is
+added. Evidence unavailable from existing collection remains explicitly missing.
+The output reserve is enlarged within the existing context ceiling; secondary
+newsletter excerpts yield first and their deferred counts remain visible.
+
+Personal Holdings Opinion uses the same checks with a separate private history.
+Only an explicitly supplied owner buying reason establishes the original thesis.
+Its seven sell rules remain authoritative; concentration alone is not a sell
+instruction, and the workflow cannot execute real transactions.
