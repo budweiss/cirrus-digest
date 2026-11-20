@@ -342,7 +342,7 @@ def is_deflection(answer: str) -> bool:
     """True for an uncertain answer, or one that points elsewhere instead of answering."""
     return is_uncertain(answer) or bool(DEFLECTION_RE.search(answer.replace("’", "'")))
 
-def _ledger(provider, model, data, task, prompt="", reply="", creds=None):
+def _ledger(provider, model, data, task, prompt="", reply="", creds=None, wall_seconds=None):
     """S135 (LOCAL-MODEL-PLAN.md step 6b): one spend-ledger row for a cloud call
     this file makes with its own requests.post, from the provider's REAL usage
     fields -- Anthropic `usage.input_tokens`, xAI `usage.prompt_tokens`, Gemini
@@ -365,7 +365,8 @@ def _ledger(provider, model, data, task, prompt="", reply="", creds=None):
             i, o = u.get("prompt_tokens"), u.get("completion_tokens")
         return _B.record_call(CREDS if creds is None else creds, provider, model,
                               len(prompt or ""), len(reply or ""),
-                              in_tok=i, out_tok=o, task=task)
+                              in_tok=i, out_tok=o, task=task,
+                              **_B.response_metrics(d, wall_seconds))
     except Exception:
         return None
 
@@ -378,6 +379,8 @@ def call_gemini(prompt: str, timeout: int = 60):
     # google_search grounding gives Gemini live web access (same as the
     # iPhone Gemini app) — required for real-time questions like sports
     # scores, current news, etc. Works with gemini-2.x models.
+    request_telemetry.mark('cloud_attempt')
+    started = time.monotonic()
     resp = requests.post(url, json={
         "system_instruction": {"parts": [{"text": knowledge_freshness.instruction(GEMINI_MODEL)}]},
         "contents": [{"parts": [{"text": prompt}]}],
@@ -385,6 +388,7 @@ def call_gemini(prompt: str, timeout: int = 60):
     }, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
+    elapsed = time.monotonic() - started
     # Gemini splits responses containing code blocks into MULTIPLE parts.
     # Taking only parts[0] silently truncated every proposal at its first
     # code fence (the cause of proposals missing their sketch + Risks
@@ -418,12 +422,14 @@ def call_gemini(prompt: str, timeout: int = 60):
             f"MAX_TOKENS finish here means the budget is below its preamble. "
             f"SAFETY means the grounded answer was filtered.")
     _txt = "".join(p.get("text", "") for p in parts).strip()
-    _ledger("gemini", GEMINI_MODEL, data, "cirrus_bot:gemini", prompt, _txt)
+    _ledger("gemini", GEMINI_MODEL, data, "cirrus_bot:gemini", prompt, _txt, wall_seconds=elapsed)
     return _txt
 
 def call_grok(prompt: str, timeout: int = 60):
     if not GROK_API_KEY:
         return None
+    request_telemetry.mark('cloud_attempt')
+    started = time.monotonic()
     resp = requests.post(
         "https://api.x.ai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROK_API_KEY}"},
@@ -432,13 +438,16 @@ def call_grok(prompt: str, timeout: int = 60):
     )
     resp.raise_for_status()
     data = resp.json()
+    elapsed = time.monotonic() - started
     _txt = data["choices"][0]["message"]["content"].strip()
-    _ledger("grok", GROK_MODEL, data, "cirrus_bot:grok", prompt, _txt)
+    _ledger("grok", GROK_MODEL, data, "cirrus_bot:grok", prompt, _txt, wall_seconds=elapsed)
     return _txt
 
 def call_claude(prompt: str, timeout: int = 60):
     if not ANTHROPIC_API_KEY:
         return None
+    request_telemetry.mark('cloud_attempt')
+    started = time.monotonic()
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -452,8 +461,9 @@ def call_claude(prompt: str, timeout: int = 60):
     )
     resp.raise_for_status()
     data = resp.json()
+    elapsed = time.monotonic() - started
     _txt = data["content"][0]["text"].strip()
-    _ledger("anthropic", CLAUDE_MODEL, data, "cirrus_bot:claude", prompt, _txt)
+    _ledger("anthropic", CLAUDE_MODEL, data, "cirrus_bot:claude", prompt, _txt, wall_seconds=elapsed)
     return _txt
 
 FALLBACK_CHAIN = [
@@ -2124,6 +2134,9 @@ CIRRUS uses this memory to connect dots across past digests when summarizing new
     except Exception as e:
         return f"❌ Knowledge base error: {e}"
 
+import request_telemetry
+
+@request_telemetry.measured
 def cmd_ask(question: str) -> str:
     """Answer a question using the agent tool loop (if Claude API key present)
     or RAG memory + Ollama with external fallback chain.
@@ -2138,6 +2151,7 @@ def cmd_ask(question: str) -> str:
     from verified_calculation import answer as calculate_answer
     calculated = calculate_answer(question)
     if calculated is not None:
+        request_telemetry.mark('ready_harness')
         return "🧮 *CIRRUS Calculation*\n\n" + calculated
     try:
         # ── 1. Claude API tool loop ───────────────────────────────────────────
@@ -2155,8 +2169,10 @@ def cmd_ask(question: str) -> str:
                 _sys.path.insert(0, _tools_dir)
             from registry import ask_with_tools, CLAUDE_API_KEY
             if CLAUDE_API_KEY:
+                request_telemetry.mark('tool_loop_attempt')
                 tool_answer, tool_model = ask_with_tools(question, context=context)
                 if tool_answer and not is_deflection(tool_answer):
+                    request_telemetry.mark('ready_unknown')
                     log(f"/ask answered via Claude tool loop ({tool_model})")
                     return (
                         f"🛠️ *CIRRUS Agent Answer*\n\n{tool_answer}"
@@ -2183,6 +2199,8 @@ Answer:"""
 
         answer = ""
         try:
+            request_telemetry.mark('local_attempt')
+            started = time.monotonic()
             resp = requests.post(
                 f"{OLLAMA_HOST}/api/generate",
                 json={"model": MODEL, "system": knowledge_freshness.instruction(MODEL), "prompt": prompt, "stream": False,
@@ -2190,11 +2208,17 @@ Answer:"""
                 timeout=120
             )
             resp.raise_for_status()
-            answer = resp.json().get("response", "").strip()
+            data = resp.json()
+            answer = data.get("response", "").strip()
+            if _B is not None:
+                _B.record_call(CREDS, 'ollama', data.get('model', MODEL), len(prompt), len(answer),
+                    task='cirrus_bot:ask-local', in_tok=data.get('prompt_eval_count'), out_tok=data.get('eval_count'),
+                    num_ctx=8192, **_B.response_metrics(data, time.monotonic()-started))
         except Exception as e:
             log(f"Ollama /ask error: {e}")
 
         if not is_deflection(answer):
+            request_telemetry.mark('ready_local')
             return f"🧠 *CIRRUS Memory Answer*\n\n{answer}{sources_note}"
 
         # ── 3. External fallback chain ────────────────────────────────────────
@@ -2207,8 +2231,10 @@ Answer:"""
             if context else
             f"Question: {question}\n\nAnswer directly and concisely. State when current facts cannot be verified."
         )
+        request_telemetry.mark('cloud_escalation')
         fb_answer, fb_name = ask_with_fallback(fallback_prompt)
         if fb_answer:
+            request_telemetry.mark('ready_cloud')
             return (f"🧠 *CIRRUS Answer (via {fb_name} fallback)*\n\n{fb_answer}"
                     f"{sources_note}\n\n_Local model was uncertain — escalated to {fb_name}._")
 

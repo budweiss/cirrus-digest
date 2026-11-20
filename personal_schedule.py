@@ -158,6 +158,8 @@ def c1_draft(system,text):
              'options':{'temperature':0,'num_ctx':65536,'num_predict':6144}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})
+    import native_observation
+    observation=native_observation.before(model)
     started=time.monotonic()
     with urllib.request.urlopen(req,timeout=420) as response:result=json.load(response)
     elapsed=time.monotonic()-started
@@ -166,7 +168,7 @@ def c1_draft(system,text):
     llm_budget.record_call({},'ollama',result.get('model','?'),len(system)+len(text),len(answer),
         task='personal-opinion-c1',tier='local',app_dir=ROOT,
         in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'),
-        num_ctx=65536, **llm_budget.response_metrics(result,elapsed))
+        num_ctx=65536, native_observation=observation, **llm_budget.response_metrics(result,elapsed))
     if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_personal_draft_model')
     return answer
@@ -280,6 +282,8 @@ def arbiter_call(model,think,evidence,draft,issue,timeout):
              'options':{'temperature':0,'num_ctx':context,'num_predict':4096}}
     req=urllib.request.Request('http://127.0.0.1:11434/api/chat',data=json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})
+    import native_observation
+    observation=native_observation.before(model)
     started=time.monotonic()
     with urllib.request.urlopen(req,timeout=timeout) as response:result=json.load(response)
     elapsed=time.monotonic()-started
@@ -288,7 +292,7 @@ def arbiter_call(model,think,evidence,draft,issue,timeout):
     llm_budget.record_call({},'ollama',result.get('model','?'),len(ARBITER_SYSTEM)+len(text),len(answer),
         task='personal-opinion-arbiter',tier='local',app_dir=ROOT,
         in_tok=result.get('prompt_eval_count'),out_tok=result.get('eval_count'),
-        num_ctx=context, **llm_budget.response_metrics(result,elapsed))
+        num_ctx=context, native_observation=observation, **llm_budget.response_metrics(result,elapsed))
     if result.get('model')!=model or result.get('done') is not True or result.get('done_reason')!='stop' or not answer.strip():
         raise RuntimeError('incomplete_or_wrong_arbiter_model')
     verdict=json.loads(answer)

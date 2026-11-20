@@ -253,7 +253,7 @@ def record_call(creds, provider, model, in_chars, out_chars, *, task="",
                 session_id=None, tier="", app_dir=None, in_tok=None, out_tok=None,
                 num_ctx=None, cached_tok=None, prompt_eval_seconds=None,
                 eval_seconds=None, wall_seconds=None, load_seconds=None,
-                server_seconds=None, finish_reason=None):
+                server_seconds=None, finish_reason=None, native_observation=None):
     """S132: best-effort ledger row for ONE completed model call. Never raises: a
     broken ledger must not break a client job. Returns the row, or None when
     nothing was written (recording off, no pricing file, unwritable path).
@@ -287,6 +287,13 @@ def record_call(creds, provider, model, in_chars, out_chars, *, task="",
                         ("wall_seconds", wall_seconds)):
             if type(v) in (int, float) and math.isfinite(v) and v >= 0:
                 extras[name] = round(float(v), 3)
+        observation = native_observation if isinstance(native_observation, dict) else {}
+        if type(observation.get('resident_before')) is bool:
+            extras['resident_before'] = observation['resident_before']
+        for key in ('resident_context_before', 'runtime_uptime_seconds'):
+            value = observation.get(key)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                extras[key] = round(value, 3)
         if finish_reason in ('stop', 'length', 'tool_calls', 'content_filter'):
             extras['finish_reason'] = finish_reason
         if extras:

@@ -1,0 +1,31 @@
+"""S664: numeric /ask lifecycle only. No identities, content or delivery claims."""
+import contextvars, functools, json, os, time, uuid
+from pathlib import Path
+ACTIVE=contextvars.ContextVar('request_telemetry',default=None)
+PATH=Path(__file__).resolve().parent/'data/request-telemetry.jsonl'
+
+def emit(row):
+    try:
+        import fcntl
+        PATH.parent.mkdir(parents=True,exist_ok=True)
+        fd=os.open(PATH,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+        with os.fdopen(fd,'a') as f:
+            fcntl.flock(f,fcntl.LOCK_EX);f.write(json.dumps(row,allow_nan=False)+'\n')
+    except (OSError,ValueError):pass
+
+def mark(key):
+    if key not in ('tool_loop_attempt','local_attempt','cloud_attempt','cloud_escalation','ready_local','ready_cloud','ready_harness','ready_unknown'):return
+    row=ACTIVE.get()
+    if row is not None:row[key]=row.get(key,0)+1
+
+def measured(fn):
+    @functools.wraps(fn)
+    def wrapped(*args,**kwargs):
+        row={'request':uuid.uuid4().hex,'harness':'bot_ask','started_at':time.time()}
+        token=ACTIVE.set(row);started=time.monotonic()
+        emit(dict(row,event='start'))
+        try:return fn(*args,**kwargs)
+        finally:
+            emit(dict(row,event='finish',ended_at=time.time(),wall_seconds=time.monotonic()-started))
+            ACTIVE.reset(token)
+    return wrapped

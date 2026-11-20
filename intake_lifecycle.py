@@ -102,8 +102,13 @@ def update(root, row, state, owner, next_action, evidence=None):
     if state == 'ready_for_send' and not (evidence or {}).get('artifact'):
         raise ValueError('Reviewable artifact required')
     with connect(root) as db:
-        current = db.execute('SELECT evidence FROM requests WHERE id=?', (key,)).fetchone()
+        current = db.execute('SELECT evidence,state FROM requests WHERE id=?', (key,)).fetchone()
         evidence = dict(json.loads(current['evidence']), **(evidence or {})) if current else (evidence or {})
+        # First observed milestone only; old already-ready rows are not backfilled.
+        timing = dict(evidence.get('measurement_timing') or {})
+        if current and current['state'] != state and state in ('ready_for_send','sent_verified'):
+            timing.setdefault('ready_at' if state=='ready_for_send' else 'delivered_at', time.time())
+        if timing: evidence['measurement_timing'] = timing
         if not db.execute('UPDATE requests SET state=?,owner=?,next_action=?,updated=?,evidence=? WHERE id=?',
             (state, owner, next_action, time.time(), json.dumps(evidence or {}), key)).rowcount:
             raise ValueError('Unknown request')
