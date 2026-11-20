@@ -76,6 +76,68 @@ class CallbackTests(unittest.TestCase):
         with life.connect(self.root) as db:
             self.assertEqual(db.execute('SELECT state,owner FROM requests').fetchone()[:], ('blocked_no_worker', 'cowork'))
 
+    def watch_fixture(self):
+        self.exhausted()
+        cb.acknowledge(self.root, self.rid)
+        with cb.receipts(self.root) as db:
+            db.execute('UPDATE receipts SET received=1000')
+        with life.connect(self.root) as db:
+            db.execute('UPDATE requests SET updated=1000')
+
+    def test_stall_threshold_and_observation_preserves_all_evidence(self):
+        self.watch_fixture()
+        paths = list(self.root.rglob('*.sqlite3'))
+        before = {p: p.read_bytes() for p in paths}
+        self.assertEqual(cb.work_status(self.root, 4599), {'open': 1, 'alerts': []})
+        for now in (4600, 90000):
+            self.assertEqual(cb.work_status(self.root, now), {'open': 1, 'alerts': [
+                {'id': self.rid, 'reason': 'no_progress'}]})
+        self.assertEqual({p: p.read_bytes() for p in paths}, before)
+        self.assertEqual(cb.pending(self.root), [])
+        self.assertNotIn('SECRET', json.dumps(cb.work_status(self.root, 4600)))
+
+    def test_claim_and_progress_do_not_hide_later_stall(self):
+        from unittest.mock import patch
+        self.watch_fixture()
+        with patch.object(life.time, 'time', return_value=4500):
+            self.assertTrue(life.claim_for_session(self.root, self.rid, 'synthetic'))
+        self.assertEqual(cb.work_status(self.root, 4600)['alerts'], [])
+        self.assertEqual(cb.work_status(self.root, 8100)['alerts'][0]['reason'], 'no_progress')
+        with life.connect(self.root) as db:
+            db.execute('UPDATE requests SET updated=8000')
+        self.assertEqual(cb.work_status(self.root, 8100)['alerts'], [])
+        self.assertEqual(cb.work_status(self.root, 11600)['alerts'][0]['reason'], 'no_progress')
+
+    def test_send_hold_uncertainty_and_verified_closure(self):
+        self.watch_fixture()
+        for state, reason in [('ready_for_send', 'awaiting_send'),
+                              ('sent_unverified', 'delivery_uncertain'),
+                              ('delivery_unknown', 'delivery_uncertain'),
+                              ('sent_verified', 'no_progress')]:
+            with life.connect(self.root) as db:
+                db.execute('UPDATE requests SET state=?', (state,))
+            self.assertEqual(cb.work_status(self.root, 4600)['alerts'][0]['reason'], reason)
+        with life.connect(self.root) as db:
+            db.execute("UPDATE requests SET evidence=?", (json.dumps({'sent_receipt': {'uid': 'synthetic'}}),))
+        self.assertEqual(cb.work_status(self.root, 4600), {'open': 0, 'alerts': []})
+        with life.connect(self.root) as db:
+            db.execute("UPDATE requests SET state='noted',evidence='{}'")
+        self.assertEqual(cb.work_status(self.root, 4600)['open'], 0)
+
+    def test_missing_row_and_bad_time_are_not_silent_completion(self):
+        self.watch_fixture()
+        with life.connect(self.root) as db:
+            db.execute('UPDATE requests SET updated=999999')
+        self.assertEqual(cb.work_status(self.root, 4600)['alerts'][0]['reason'], 'invalid_progress_time')
+        with life.connect(self.root) as db:
+            db.execute('DELETE FROM requests')
+        self.assertEqual(cb.work_status(self.root, 4600)['alerts'][0]['reason'], 'missing_request')
+
+    def test_synthetic_receipts_stay_in_their_own_root(self):
+        self.watch_fixture()
+        with tempfile.TemporaryDirectory() as other:
+            self.assertEqual(cb.work_status(other), {'open': 0, 'alerts': []})
+
     def test_wrong_ack_and_missing_store_fail(self):
         self.assertFalse(cb.acknowledge(self.root, 'a'*64))
         with self.assertRaises(ValueError):

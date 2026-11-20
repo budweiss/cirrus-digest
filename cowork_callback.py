@@ -7,6 +7,7 @@ callback receipts separately; receipt is not a claim, answer or delivery.
 import argparse
 from contextlib import closing
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,47 @@ import sqlite3
 import time
 
 CLIENTS = {'bill', 'aggie', 'alyssa', 'justin'}
+STALL_SECONDS = 3600
+
+
+def work_status(root, now=None):
+    """Observe acknowledged work, without claiming, retrying or touching budgets.
+
+    The existing lifecycle updated timestamp is the progress checkpoint. A
+    receipt alone never closes work. Only verified delivery or a noted no-work
+    disposition closes monitoring. Fixture receipts live in separate roots.
+    """
+    root = Path(root)
+    now = time.time() if now is None else now
+    result = {'open': 0, 'alerts': []}
+    path = root / 'data/cowork-callback/receipts.sqlite3'
+    if not path.exists():
+        return result
+    with closing(readonly(path)) as receipt_db, closing(readonly(
+            root / 'data/intake-lifecycle/requests.sqlite3')) as lifecycle:
+        for rid, received in receipt_db.execute('SELECT id,received FROM receipts ORDER BY id'):
+            if not re.fullmatch('[0-9a-f]{64}', rid):
+                raise ValueError('invalid receipt identity')
+            row = lifecycle.execute('SELECT state,updated,evidence FROM requests WHERE id=?', (rid,)).fetchone()
+            if row and (row[0] == 'noted' or
+                        (row[0] == 'sent_verified' and json.loads(row[2]).get('sent_receipt'))):
+                continue
+            result['open'] += 1
+            if row is None:
+                result['alerts'].append({'id': rid, 'reason': 'missing_request'})
+                continue
+            state, updated, _ = row
+            if any(type(t) not in (int, float) or not math.isfinite(t) or t > now
+                   for t in (received, updated)):
+                result['alerts'].append({'id': rid, 'reason': 'invalid_progress_time'})
+                continue
+            if now - max(received, updated) < STALL_SECONDS:
+                continue
+            reason = ('awaiting_send' if state == 'ready_for_send' else
+                      'delivery_uncertain' if state in ('sent_unverified', 'sending', 'delivery_unknown') else
+                      'no_progress')
+            result['alerts'].append({'id': rid, 'reason': reason})
+    return result
 
 
 def readonly(path):
@@ -119,7 +161,7 @@ def main():
             parser.error('ack requires --id')
         print(json.dumps({'received': acknowledge(root, args.id)}))
     else:
-        print(json.dumps({'version': 1, 'requests': pending(root)}))
+        print(json.dumps({'version': 1, 'requests': pending(root), 'work': work_status(root)}))
 
 
 if __name__ == '__main__':
