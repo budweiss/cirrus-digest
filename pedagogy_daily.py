@@ -140,6 +140,16 @@ def ollama(prompt, cfg, timeout=180, model=None):
     d = cfg.get("digest", {})
     host = d.get("ollama_host", "http://localhost:11434")
     mdl = model or d.get("ollama_model", "qwen2.5:14b")
+    # Observe only this host's native runtime; failed probes remain unknown.
+    observation = {}
+    try:
+        endpoint = urlparse(host)
+        if (endpoint.scheme == "http" and endpoint.hostname in ("localhost", "127.0.0.1", "::1")
+                and endpoint.port == 11434 and endpoint.path in ("", "/")):
+            import native_observation
+            observation = native_observation.before(mdl)
+    except Exception:
+        pass
     started = time.monotonic()
     try:
         resp = requests.post(f"{host}/api/generate",
@@ -162,7 +172,8 @@ def ollama(prompt, cfg, timeout=180, model=None):
                 len(prompt), len(out), task="pedagogy:local", tier="local",
                 app_dir=str(Path(__file__).resolve().parent),
                 in_tok=tokens("prompt_eval_count"), out_tok=tokens("eval_count"),
-                num_ctx=8192, **llm_budget.response_metrics(data, elapsed))
+                num_ctx=8192, native_observation=observation,
+                **llm_budget.response_metrics(data, elapsed))
             if row is None:
                 log("local usage accounting unavailable")
         except Exception:
