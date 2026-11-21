@@ -83,8 +83,13 @@ def directory_stale_days(journal, today):
 
 
 def lapsing(projects, now, advisory, window=24 * 3600):
-    """[(route, when, expired?)] for enabled routes whose approved records all
-    end within `window` (or already ended). Advisory-date tasks are skipped."""
+    """[(route, when, expired?)] for enabled routes that can no longer pick the
+    approved records they need within `window` (or already cannot). A route
+    with reviewers=2 needs two members from different providers, so it lapses
+    with its SECOND-latest member (S674: alopecia-brief lost Claude on 11-19
+    while Kimi ran to 11-24; the all-records rule stayed silent and the 11-20
+    brief was refused). P3 grace never counts as cover: it lasts only while
+    every daily retest passes. Advisory-date tasks are skipped."""
     out = []
     for name, rec in sorted(projects.items()):
         if not isinstance(rec, dict) or rec.get("enabled") is False:
@@ -93,14 +98,21 @@ def lapsing(projects, now, advisory, window=24 * 3600):
         if task in advisory:
             continue
         for kind in ("evaluations", "judge_evaluations"):
-            exps = [e.get("expires_at") for e in rec.get(kind) or []
-                    if isinstance(e, dict) and e.get("approved") is True
-                    and isinstance(e.get("expires_at"), (int, float))]
-            if not exps:
+            latest = {}
+            for e in rec.get(kind) or []:
+                if (isinstance(e, dict) and e.get("approved") is True
+                        and isinstance(e.get("expires_at"), (int, float))):
+                    who = e.get("id") or len(latest)
+                    latest[who] = max(latest.get(who, e["expires_at"]), e["expires_at"])
+            if not latest:
                 continue
-            last = max(exps)
-            if last - now < window:
-                out.append((name + ("" if kind == "evaluations" else " (judge)"), last, last <= now))
+            need = rec.get("reviewers") if kind == "evaluations" and rec.get("reviewers") in (1, 2) else 1
+            ends = sorted(latest.values(), reverse=True)
+            last = ends[need - 1] if len(ends) >= need else min(ends)
+            gone = last <= now or len(ends) < need
+            if last - now < window or gone:
+                out.append((name + ("" if kind == "evaluations" else " (judge)")
+                            + (" (needs %d members)" % need if need > 1 else ""), last, gone))
     return out
 
 
@@ -225,6 +237,27 @@ def selftest():
     ck("one record still valid for days covers the route", "foundation:split" not in hits)
     ck("advisory billsnow and disabled routes are skipped", "foundation:billsnow" not in hits and "foundation:old" not in hits)
     ck("a healthy route is silent", "foundation:pedagogy-topic" not in hits)
+    # S674: a two-member route lapses with its second-latest member.
+    pair = {"foundation:brief": {"reviewers": 2, "evaluations": [
+                {"id": "anthropic", "approved": True, "expires_at": now - 3600},
+                {"id": "kimi", "approved": True, "expires_at": now + 5 * 86400}]},
+            "foundation:soon": {"reviewers": 2, "evaluations": [
+                {"id": "anthropic", "approved": True, "expires_at": now + 3600},
+                {"id": "kimi", "approved": True, "expires_at": now + 5 * 86400}]},
+            "foundation:fine": {"reviewers": 2, "evaluations": [
+                {"id": "anthropic", "approved": True, "expires_at": now + 3 * 86400},
+                {"id": "kimi", "approved": True, "expires_at": now + 5 * 86400}]},
+            "foundation:alone": {"reviewers": 2, "evaluations": [
+                {"id": "kimi", "approved": True, "expires_at": now + 5 * 86400},
+                {"id": "kimi", "approved": True, "expires_at": now + 6 * 86400}]}}
+    hits = {n: (w, gone) for n, w, gone in lapsing(pair, now, set())}
+    ck("one lapsed member of a two-member route is flagged LAPSED (grace is not cover)",
+       hits.get("foundation:brief (needs 2 members)") == (now - 3600, True))
+    ck("a two-member route is flagged a day before its first member lapses",
+       hits.get("foundation:soon (needs 2 members)") == (now + 3600, False))
+    ck("a two-member route with both members valid for days is silent", not any("fine" in n for n in hits))
+    ck("two records from one provider cannot fill two member seats",
+       hits.get("foundation:alone (needs 2 members)", (0, False))[1] is True)
 
     # S537: retry first, tell Buddy only what is still broken.
     states = {"billsnow": [True], "billnewdev": [False, True], "billsam": [True], "entitykbdigest": [False, False]}
