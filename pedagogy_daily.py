@@ -150,17 +150,28 @@ def ollama(prompt, cfg, timeout=180, model=None):
             observation = native_observation.before(mdl)
     except Exception:
         pass
+    # S674: only the authorized C1 native caller can opt into the bounded trial.
+    context = 8192
+    trial = None
+    try:
+        import daily_context_trial as trial
+        context = trial.select(Path(__file__).resolve().parent, host, mdl)
+    except Exception:
+        pass
     started = time.monotonic()
     try:
         resp = requests.post(f"{host}/api/generate",
                              json={"model": mdl, "system": knowledge_freshness.instruction(mdl), "prompt": prompt,
                                    "stream": False,
-                                   "options": {"num_ctx": 8192}},
+                                   "options": {"num_ctx": context}},
                              timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
         elapsed = time.monotonic() - started
         out = data.get("response", "").strip()
+        if trial is not None:
+            trial.record(Path(__file__).resolve().parent, context, data, elapsed,
+                         observation=observation)
         # Native Ollama calls bypass llm_providers; account here exactly once.
         try:
             import llm_budget
@@ -172,7 +183,7 @@ def ollama(prompt, cfg, timeout=180, model=None):
                 len(prompt), len(out), task="pedagogy:local", tier="local",
                 app_dir=str(Path(__file__).resolve().parent),
                 in_tok=tokens("prompt_eval_count"), out_tok=tokens("eval_count"),
-                num_ctx=8192, native_observation=observation,
+                num_ctx=context, native_observation=observation,
                 **llm_budget.response_metrics(data, elapsed))
             if row is None:
                 log("local usage accounting unavailable")
@@ -180,6 +191,9 @@ def ollama(prompt, cfg, timeout=180, model=None):
             log("local usage accounting unavailable")
         return out
     except Exception as e:
+        if trial is not None:
+            trial.record(Path(__file__).resolve().parent, context,
+                         elapsed=time.monotonic()-started, error=True, observation=observation)
         return f"[Summarization error: {type(e).__name__}]"
 
 

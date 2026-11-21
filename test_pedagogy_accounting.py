@@ -5,6 +5,9 @@ import pedagogy_daily as p
 class Accounting(unittest.TestCase):
     def setUp(self):
         # Existing tests must never probe a live runtime through the new hook.
+        trial_patch = patch('daily_context_trial.select', return_value=8192)
+        trial_patch.start()
+        self.addCleanup(trial_patch.stop)
         observer_patch = patch('native_observation.before', return_value={})
         self.observer = observer_patch.start()
         self.addCleanup(observer_patch.stop)
