@@ -248,6 +248,38 @@ def record_offered(folder,public):
     atomic(path,saved)
 
 
+# S663: on 11-20 pm the decision model cited a spliced or edited copy of an exact
+# excerpt in every attempt (deterministic at temperature 0), so the exact-quote
+# check refused it before review. As in S465, the model now picks an excerpt key
+# and code copies that excerpt's exact text; the quote and date checks are unchanged.
+def decision_excerpts(companies):
+    """Stable keys for every verified research excerpt: key -> (ticker, document id, quote)."""
+    rows={}
+    for company in companies:
+        texts={d['id']:d.get('text') or '' for d in company['documents']}
+        for paragraph in company.get('draft',{}).get('paragraphs',[]):
+            for ref in paragraph['evidence']:
+                row=(company['ticker'],ref['id'],ref['quote'])
+                if 30<=len(row[2])<=500 and row[2] in texts.get(row[1],'') and row not in rows.values():
+                    rows['E%d'%(len(rows)+1)]=row
+    return rows
+
+
+def cite_excerpts(raw,excerpts):
+    """Replace each chosen excerpt key with its exact quote; other evidence is left for the checks."""
+    for value in raw.get('decisions',[]) if isinstance(raw,dict) else []:
+        if not isinstance(value,dict) or not isinstance(value.get('evidence'),list):continue
+        cited=[]
+        for ref in value['evidence']:
+            if isinstance(ref,dict) and 'excerpt' in ref:
+                row=excerpts.get(ref['excerpt'])
+                if not row or row[0]!=value.get('ticker'):raise ValueError('decision_excerpt_unknown')
+                ref={'id':row[1],'quote':row[2]}
+            cited.append(ref)
+        value['evidence']=cited
+    return raw
+
+
 def decision_complete(system,text,slot,companies,secondary_ids=None):
     from media_pipeline import MODEL
     system=knowledge_freshness.apply(system,MODEL)
@@ -259,7 +291,7 @@ def decision_complete(system,text,slot,companies,secondary_ids=None):
         'reason':{'type':'string','maxLength':300},'valuation':{'type':'string','maxLength':350},
         'counterargument':{'type':'string','maxLength':300},'exit_trigger':{'type':'string','maxLength':300},
         'evidence':{'type':'array','minItems':1,'maxItems':1,'items':{'type':'object','additionalProperties':False,
-            'required':['id','quote'],'properties':{'id':{'enum':ids},'quote':{'type':'string','minLength':30,'maxLength':300}}}},
+            'required':['excerpt'],'properties':{'excerpt':{'type':'string','enum':list(decision_excerpts(companies)) or ['none']}}}},
         'order':{'type':'object','additionalProperties':False,'required':['budget','shares','limit_price'],
             'properties':{'budget':{'type':['string','null'],'maxLength':25},'shares':{'type':['integer','null'],'minimum':1},
                           'limit_price':{'type':['string','null'],'maxLength':25}}}}
@@ -292,11 +324,12 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
     compact['quotes']={symbol:{k:q.get(k) for k in ('price','quote_at','executable','valuation_eligible','reasons','instrument_type')} for symbol,q in account.get('quotes',{}).items()}
     research_compact={k:v for k,v in evidence.items() if k not in ('report','companies')}
     research_compact['companies']=[]
+    excerpts=decision_excerpts(evidence['companies'])
     for company in evidence['companies']:
         item=dict(company);item['documents']=[]
         for doc in company['documents']:
-            quotes=[r['quote'] for p in company['draft']['paragraphs'] for r in p['evidence'] if r['id']==doc['id']]
-            item['documents'].append(dict(doc,text='\n[Separate exact source excerpt]\n'.join(dict.fromkeys(quotes))))
+            keyed=[{'key':k,'text':q} for k,(t,i,q) in excerpts.items() if t==company['ticker'] and i==doc['id']]
+            item['documents'].append(dict({k:v for k,v in doc.items() if k!='text'},excerpts=keyed))
         research_compact['companies'].append(item)
     as_of=datetime.now(timezone.utc).isoformat()
     context={'policy':policy(),'slot':slot,'account':compact,'feedback':replies,'research':research_compact,
@@ -316,10 +349,11 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
         'Do not claim that an excerpt is a complete article or use it as execution evidence. '
         'Return JSON {"explanation":"connected explanation, gaps and next checks", "decisions":['
         '{"ticker":"...","action":"BUY|SELL|HOLD","reason":"...","valuation":"...",'
-        '"counterargument":"...","exit_trigger":"...","evidence":[{"id":1,"quote":"exact text"}],'
+        '"counterargument":"...","exit_trigger":"...","evidence":[{"excerpt":"E1"}],'
         '"order":{"budget":"1000.00","limit_price":"10.00"}}]}. '
         'At most two decisions. The explanation must be at most 120 words; each reason, valuation, counterargument '
-        'and exit trigger at most 25 words. Use one short exact source quote per decision. '
+        'and exit trigger at most 25 words. Cite one excerpt key from that company\'s documents per decision; '
+        'its exact text is copied for you, so choose the excerpt that supports the decision. '
         'BUY order uses budget or shares; SELL uses owned shares. HOLD has no order. '
         'The example numbers are schema placeholders, never proposed orders. '+research_checks.INSTRUCTIONS)
     feedback_text=''
@@ -335,6 +369,7 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
                 raw=parse(caller(system,json.dumps(context)+feedback_text,'stock-schedule-decision') if caller else
                           decision_complete(system,json.dumps(context)+feedback_text,slot,evidence['companies'],
                               [s['id'] for s in (public or {}).get('newsletter_excerpts',[])]))
+                cite_excerpts(raw,excerpts)
                 for value in raw.get('decisions',[]):
                     if isinstance(value.get('order'),dict):value['order']={k:v for k,v in value['order'].items() if v is not None}
                 request,note=qualify_decisions(raw,evidence,account,date,slot)

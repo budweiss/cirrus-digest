@@ -283,7 +283,43 @@ class ScheduleChecks(unittest.TestCase):
         schema=request.call_args.args[1]['response_format']['json_schema']['schema']
         fields=schema['properties']['decisions']['items']['properties']
         self.assertEqual(fields['ticker']['enum'],['EXAMPLE']);self.assertEqual(fields['action']['enum'],['HOLD'])
-        self.assertEqual(fields['evidence']['items']['properties']['id']['enum'],[1])
+        self.assertEqual(fields['evidence']['items']['properties']['excerpt']['enum'],['none'])
+        drafted=copy.deepcopy(EV['companies']);drafted[0]['draft']={'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE}]}]}
+        with patch.object(S.media,'token_count',return_value=100),patch.object(S.media,'request',return_value=response) as request,patch('llm_budget.record_call'):
+            S.decision_complete('Synthetic policy','Synthetic evidence','pm',drafted)
+        fields=request.call_args.args[1]['response_format']['json_schema']['schema']['properties']['decisions']['items']['properties']
+        self.assertEqual(fields['evidence']['items'],{'type':'object','additionalProperties':False,'required':['excerpt'],
+                                                     'properties':{'excerpt':{'type':'string','enum':['E1']}}})
+
+    def test_decision_cites_an_excerpt_key_and_code_copies_the_exact_text(self):
+        # S663: 11-20 pm the model spliced exact excerpts in every attempt; keys cannot be misquoted.
+        import json
+        from pathlib import Path
+        other='Synthetic second company reported 7 units of backlog at period end.'
+        evidence=copy.deepcopy(EV)
+        evidence['companies'][0]['documents'][0]['text']='Preamble. '+QUOTE+' Unrelated full-filing text.'
+        evidence['companies'][0]['draft']={'paragraphs':[{'evidence':[{'id':1,'quote':QUOTE},{'id':1,'quote':QUOTE},{'id':1,'quote':'too short'}]}]}
+        evidence['companies'].append({'ticker':'OTHER','recorded_at':evidence['companies'][0]['recorded_at'],
+            'documents':[{'id':2,'text':other,'url':'https://example.com/other','published':'2026-10-02'}],
+            'draft':{'paragraphs':[{'evidence':[{'id':2,'quote':other}]}]}})
+        self.assertEqual(S.decision_excerpts(evidence['companies']),{'E1':('EXAMPLE',1,QUOTE),'E2':('OTHER',2,other)})
+        for key,want in (('E1',None),('E2','decision_excerpt_unknown'),('E9','decision_excerpt_unknown')):
+            with self.subTest(key=key),tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+                 patch.object(S,'policy',return_value='Synthetic policy'),patch.object(S.media,'token_count',return_value=100), \
+                 patch.object(S.research,'structured_review',return_value='{"passed":true,"issues":[]}') as reviewer:
+                dec=copy.deepcopy(DEC);dec['decisions'][0]['evidence']=[{'excerpt':key}];checks=[]
+                caller=unittest.mock.Mock(return_value=json.dumps(dec))
+                if want:
+                    with self.assertRaisesRegex(ValueError,'paper_decision_review_failed'):
+                        S.choose(evidence,{},{},'2026-10-14','am',caller=caller,audit=checks.append)
+                    self.assertEqual({c.get('reason') for c in checks},{want});self.assertEqual(reviewer.call_count,0)
+                    continue
+                request,_=S.choose(evidence,{},{},'2026-10-14','am',caller=caller,audit=checks.append)
+                self.assertEqual(request['decisions'][0]['evidence'][0]['claim'],QUOTE)
+                sent=json.loads(caller.call_args[0][1])
+                doc=sent['research']['companies'][0]['documents'][0]
+                self.assertEqual(doc['excerpts'],[{'key':'E1','text':QUOTE}]);self.assertNotIn('text',doc)
+                self.assertIn(QUOTE,reviewer.call_args[0][1])
 
     def test_accepted_primary_quote_beyond_article_opening_is_preserved(self):
         import json
