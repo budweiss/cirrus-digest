@@ -236,11 +236,24 @@ def compose(greeting, reply, sources):
             % (greeting, reply.strip(), links))
 
 
-def answer(question, subject, cfg, key, run=run_claude):
+def thread_context(memory, turn, signature=None, limit=3, budget=12000):
+    """Earlier exchanges in this email thread, oldest first, so a follow-up such as
+    "another 3 samples like this one" can be understood (S679: Bill's 18:34 reply)."""
+    parts = []
+    for row in memory.history(turn, same_thread=True, limit=limit):
+        if row.get('answer'):
+            parts.append('Client wrote:\n%s\n\nWe replied:\n%s' % (own_words(row['question'], signature), row['answer'][:6000]))
+    text = '\n\n---\n\n'.join(parts)
+    return text[-budget:] if text else ''
+
+
+def answer(question, subject, cfg, key, run=run_claude, context=''):
     """Research, code gate, independent check, one revision. Returns (result, problems, cost, log)."""
     import knowledge_freshness
     system = AGENT_RULES + '\n\n' + knowledge_freshness.instruction(cfg['model'])
-    ask = "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
+    earlier = ('Earlier in this email thread, oldest first (for context; the newest question is below):\n%s\n\n'
+               % context) if context else ''
+    ask = earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
     cost, log, feedback = 0.0, [], ''
     for attempt in range(2):
         out = run(ask + feedback, system, ['WebSearch', 'WebFetch'], cfg['agent_budget_usd'],
@@ -255,8 +268,8 @@ def answer(question, subject, cfg, key, run=run_claude):
             log.append({'attempt': attempt, 'stage': 'agent', 'problems': problems or ['stuck']})
             return result, problems or ['stuck'], cost, log
         if not problems:
-            check = run('Question:\n%s\n\nDraft reply:\n%s\n\nCited sources:\n%s' % (
-                        question, result['reply'], json.dumps(result['sources'])),
+            check = run('%sQuestion:\n%s\n\nDraft reply:\n%s\n\nCited sources:\n%s' % (
+                        earlier, question, result['reply'], json.dumps(result['sources'])),
                         CHECK_RULES, ['WebFetch'], cfg['check_budget_usd'], cfg['check_timeout'],
                         cfg['model'], key, max_turns=20)
             cost += check['cost']
@@ -295,7 +308,9 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
         return _stuck(root, ledger, row, client, greeting, subject, ['question_unreadable'], {}, 0.0, {}, notify)
     detail = {'model': cfg['model'], 'route': 'claude-code', 'cloud_research_basis': cfg['clients'][client].get('basis')}
     try:
-        result, problems, cost, log = answer(question, subject, cfg, key, run=run)
+        context = thread_context(memory, turn, cfg['clients'][client].get('signature'))
+        detail['thread_turns'] = context.count('Client wrote:')
+        result, problems, cost, log = answer(question, subject, cfg, key, run=run, context=context)
     except Exception as exc:
         result, problems, cost, log = {}, ['agent_crash:' + type(exc).__name__], 0.0, []
     detail.update(log=log, problems=problems[:5])

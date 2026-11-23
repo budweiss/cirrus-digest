@@ -134,6 +134,24 @@ class Agent(unittest.TestCase):
         self.assertEqual(notes, [])
         self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
 
+    def test_a_follow_up_sees_our_earlier_reply_in_the_same_thread(self):
+        memory = Memory(self.root)
+        first = memory.add(owner='cumulus1', client='bill', project='general', thread='research', message_id='<m0>',
+                           question='Give me story ideas.\n\nWilliam Example\n555-123-4567', state='delivered')
+        memory.update(first['id'], answer='Hi Bill, IDEA 1: MIRROR, about mirror-image bacteria.')
+        with sqlite3.connect(self.root / 'data/conversations/memory.sqlite3') as db:
+            db.execute('UPDATE turns SET created=created-100 WHERE id=?', (first['id'],))
+        self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True, verify=lambda *a: {'uid': '1'},
+                      notify=lambda t: None)
+        for call in run.calls:
+            self.assertIn('IDEA 1: MIRROR', call['prompt'])
+            self.assertNotIn('555-123-4567', call['prompt'])
+        self.assertLess(run.calls[0]['prompt'].index('IDEA 1'), run.calls[0]['prompt'].index("Client's question"))
+
     def test_stuck_goes_to_the_help_queue_with_one_message_and_no_send(self):
         self.held()
         run = fake_run([{'status': 'stuck', 'stuck_reason': 'no public source names a contact'}], [])
