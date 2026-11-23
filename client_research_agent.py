@@ -202,12 +202,18 @@ def gate(result):
     reply, sources = result.get('reply'), result.get('sources')
     if not isinstance(reply, str) or not 80 <= len(reply) <= 14000:
         problems.append('reply_length')
-    if (not isinstance(sources, list) or not 1 <= len(sources) <= 15
+    if (not isinstance(sources, list) or not 1 <= len(sources) <= 40
             or any(not isinstance(s, dict) or not re.match(r'https?://\S+$', str(s.get('url', ''))) for s in sources)):
         problems.append('sources')
     if isinstance(reply, str) and COMMITMENT.search(reply):
         problems.append('commitment')
     return problems
+
+
+REASONS = {'sources': 'the draft had no usable source list', 'reply_length': 'the draft was empty or far too long',
+           'commitment': 'the draft made a commitment on our behalf', 'agent_error': 'the research run failed',
+           'check_error': 'the source-check run failed', 'agent_output_not_json': 'the research output could not be read',
+           'check_output_not_json': 'the source-check output could not be read', 'stuck': 'no supported answer found'}
 
 
 def compose(greeting, reply, sources):
@@ -324,8 +330,9 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
 
 def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify):
     import intake_lifecycle
-    reason = (result or {}).get('stuck_reason') or problems[0]
-    reason = re.sub(r'\s+', ' ', str(reason))[:160]
+    reason = (result or {}).get('stuck_reason') or REASONS.get(problems[0]) or (
+        'the source check rejected the draft twice; first problem: ' + problems[0])
+    reason = re.sub(r'\s+', ' ', str(reason))[:200]
     ledger.finish(row['id'], 'stuck', cost, dict(detail, reason=reason))
     # The callback bridge forwards this exact action to the Cowork help queue.
     intake_lifecycle.update(root, row['payload'], 'blocked_no_worker', 'cowork', BRIDGE_ACTION,

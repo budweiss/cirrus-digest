@@ -83,6 +83,9 @@ class Agent(unittest.TestCase):
             A.parse_json('no json here')
         self.assertEqual(A.gate(GOOD), [])
         self.assertIn('sources', A.gate(dict(GOOD, sources=[])))
+        # S679 rehearsal: a complete list cited 16+ pages; that is not a defect.
+        self.assertEqual(A.gate(dict(GOOD, sources=[{'url': 'https://example.org/%d' % i} for i in range(30)])), [])
+        self.assertIn('sources', A.gate(dict(GOOD, sources=[{'url': 'https://example.org/%d' % i} for i in range(41)])))
         self.assertIn('commitment', A.gate(dict(GOOD, reply=GOOD['reply'] + ' We will submit a bid for you.')))
         self.assertEqual(A.gate({'status': 'stuck'}), ['not_answered'])
 
@@ -122,6 +125,14 @@ class Agent(unittest.TestCase):
         self.assertEqual(evidence['research_agent']['outcome'], 'stuck')
         self.assertEqual(len(notes), 1)
         self.assertIn('no public source names a contact', notes[0])
+
+    def test_stuck_message_says_why_in_plain_words(self):
+        self.held()
+        run = fake_run([dict(GOOD, sources=[]), dict(GOOD, sources=[])], [])
+        notes = []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        self.assertEqual(A.process(self.root, CFG, row, 'k', {}, run=run, notify=notes.append), 'stuck')
+        self.assertIn('the draft had no usable source list', notes[0])
 
     def test_failed_check_gets_one_revision_then_is_stuck(self):
         self.held()
