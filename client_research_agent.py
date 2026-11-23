@@ -327,7 +327,10 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     ts.dev_loop.ledger_append({'event': 'auto-answered', 'requester': client, 'title': subject,
                                'request_id': aid, 'thread': turn['thread'], 'route': 'research-agent',
                                **ts._answer_fingerprint(body)}, root)
-    receipt = _verify(root, aid, subject, payload[1], creds, verify)
+    errors = []
+    receipt = _verify(root, aid, subject, payload[1], creds, verify, errors=errors)
+    if errors:
+        detail['verify_errors'] = sorted(set(errors))
     if receipt:
         intake_lifecycle.update(root, payload, 'sent_verified', 'delivery-review',
                                 'completed with actual Sent Mail proof (research agent)',
@@ -353,14 +356,16 @@ def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost,
     return 'stuck'
 
 
-def _verify(root, aid, subject, to_addr, creds, verify=None, tries=3, wait=20):
+def _verify(root, aid, subject, to_addr, creds, verify=None, tries=3, wait=20, errors=None):
     import intake_delivery_evidence
     rec = {'solved': {'request_id': aid}, 'original_subject': subject, 'title': subject, 'from_email': to_addr}
     for attempt in range(tries):
         try:
             receipt = (verify or intake_delivery_evidence.verify)(root, rec, creds)
-        except Exception:
+        except Exception as exc:
             receipt = None
+            if errors is not None:
+                errors.append(type(exc).__name__)
         if receipt:
             return receipt
         if attempt < tries - 1:
@@ -421,6 +426,15 @@ def main():
                           'pending': [r['id'][:12] for r in candidates(root, cfg, ledger)],
                           'attempts_today': ledger.started_since(time.time() - 86400)}))
         return 0
+    if cfg['mode'] == 'live' and not os.environ.get('INTAKE_ACCOUNT_LABEL'):
+        # T214: without the intake mailbox label, Sent Mail proof reads the wrong account.
+        print(json.dumps({'error': 'INTAKE_ACCOUNT_LABEL unset; refusing a live run'}))
+        try:
+            import job_status
+            job_status.record('clientresearch', False, 'refused: INTAKE_ACCOUNT_LABEL unset (T214)')
+        except Exception:
+            pass
+        return 2
     lock = open(Path(root) / STATE / 'run.lock', 'a')
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

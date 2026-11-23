@@ -234,6 +234,28 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
         self.assertEqual(notes, [])
 
+    def test_live_run_refuses_without_the_intake_mailbox_label(self):
+        (self.root / A.CONFIG).write_text(json.dumps(CFG))
+        with patch.object(A, 'ROOT', self.root), patch.dict('os.environ', {}, clear=True), \
+             patch('sys.argv', ['client_research_agent.py', 'run']), patch('job_status.record') as record, \
+             patch('builtins.print'):
+            self.assertEqual(A.main(), 2)
+        self.assertIn('T214', record.call_args[0][2])
+
+    def test_a_proof_error_is_recorded_not_swallowed(self):
+        self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        def broken(*a):
+            raise KeyError('mailbox password')
+        with patch('task_solver.dev_loop.ledger_append'), patch.object(A.time, 'sleep'):
+            out = A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True, verify=broken,
+                            notify=lambda t: None)
+        self.assertEqual(out, 'sent_unverified')
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual(detail['verify_errors'], ['KeyError'])
+
     def test_missing_config_means_off(self):
         self.assertIsNone(A.load_config(self.root))
         (self.root / A.CONFIG).write_text(json.dumps({'mode': 'sometimes', 'clients': {}}))

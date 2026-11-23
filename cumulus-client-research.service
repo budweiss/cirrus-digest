@@ -8,5 +8,9 @@ Type=oneshot
 WorkingDirectory=/home/buddy/cirrus-digest
 Environment=HOME=/home/buddy
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# T214 (recurred S679): intake.find_account() reads the mailbox label from the environment;
+# without it the Sent Mail proof logs in to the wrong account and every reply reads unverified.
+Environment=INTAKE_ACCOUNT_LABEL=cumulus-research
+Environment=TARGET_ENV=beta
 ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/client_research_agent.py run
 TimeoutStartSec=3600
