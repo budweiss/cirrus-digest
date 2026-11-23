@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import sys
 from datetime import datetime, timezone
 from workflow_mail_sources import full_body_documents, attachment_text
 
@@ -203,7 +204,121 @@ def reconcile(packets, request_sha256, reviewed_sha256, matches=()):
     return dict(unknown, status='not_found_in_reviewed_scope')
 
 
+def selftest():
+    """Exercise decision-making functions with explicit inputs/outputs."""
+    # quoted(): escaping for IMAP search literals
+    assert quoted('a"b') == '"a\\"b"'
+    assert quoted('plain') == '"plain"'
+
+    # digest(): stable sha256 of bytes
+    assert digest(b'hello') == hashlib.sha256(b'hello').hexdigest()
+
+    # inspect_message(): oversized/empty raw bytes are flagged, not parsed
+    big = inspect_message(b'')
+    assert big['issues'] == ['message_size_limit_or_empty']
+    assert big['parts'] == []
+
+    oversized = inspect_message(b'x' * (MAX_REVIEW_MESSAGE_BYTES + 1))
+    assert oversized['issues'] == ['message_size_limit_or_empty']
+
+    # inspect_message(): plain text message is fully extracted, no issues
+    plain_raw = (
+        b'From: a@example.com\r\n'
+        b'To: b@example.com\r\n'
+        b'Subject: Hi\r\n'
+        b'Content-Type: text/plain\r\n'
+        b'\r\n'
+        b'hello world\r\n'
+    )
+    plain = inspect_message(plain_raw)
+    assert plain['subject'] == 'Hi'
+    assert len(plain['parts']) == 1
+    assert plain['parts'][0]['status'] == 'extracted'
+    assert plain['parts'][0]['text'].strip() == 'hello world'
+    assert plain['issues'] == []
+    assert plain['links'] == []
+
+    # inspect_message(): links are extracted and sorted/deduped
+    link_raw = (
+        b'From: a@example.com\r\n'
+        b'To: b@example.com\r\n'
+        b'Subject: Links\r\n'
+        b'Content-Type: text/plain\r\n'
+        b'\r\n'
+        b'see https://b.example/x and https://a.example/y and https://b.example/x\r\n'
+    )
+    linked = inspect_message(link_raw)
+    assert linked['links'] == ['https://a.example/y', 'https://b.example/x']
+
+    # summary(): aggregates counts and never claims work_owed on its own
+    packet = {
+        'client': 'acme', 'machine': 'host', 'mailbox': 'cirrustask@gmail.com',
+        'since': '01-Jan-2024', 'search_complete': True, 'errors': [],
+        'messages': [
+            {'direction': 'incoming', 'issues': [], 'links': []},
+            {'direction': 'outgoing', 'issues': ['unread_part:0'], 'links': ['https://x']},
+        ],
+    }
+    s = summary(packet)
+    assert s['messages'] == 2 and s['incoming'] == 1 and s['outgoing'] == 1
+    assert s['parts_requiring_review'] == 1
+    assert s['messages_with_links'] == 1
+    assert s['status'] == 'review_required' and s['work_owed'] is None
+    assert s['automatic_resend_allowed'] is False
+
+    # reconcile(): wrong packet shape/mailboxes yields unknown
+    assert reconcile([], 'sha', [])['status'] == 'unknown'
+    assert reconcile([{'mailbox': 'a', 'client': 'c', 'since': 's',
+                        'search_complete': True, 'errors': [], 'messages': []}],
+                      'sha', [])['status'] == 'unknown'
+
+    base = {
+        'client': 'acme', 'since': '01-Jan-2024', 'search_complete': True, 'errors': [],
+    }
+    req_sha = 'req' + '0' * 61
+    out_sha = 'out' + '0' * 61
+    in_row = {'sha256': req_sha, 'direction': 'incoming', 'issues': [], 'links': [], 'parts': []}
+    out_row = {'sha256': out_sha, 'direction': 'outgoing', 'issues': [], 'links': [],
+               'parts': [{'id': '0', 'text': 'delivered the file as requested'}]}
+    packets = [
+        dict(base, mailbox='cirrustask@gmail.com', messages=[in_row]),
+        dict(base, mailbox='cumulus@cumulustask.com', messages=[out_row]),
+    ]
+
+    # not fully reviewed -> unknown
+    assert reconcile(packets, req_sha, [req_sha])['status'] == 'unknown'
+
+    # fully reviewed, no issues/links, no matches -> bounded absence
+    r = reconcile(packets, req_sha, [req_sha, out_sha])
+    assert r['status'] == 'not_found_in_reviewed_scope'
+    assert r['work_owed'] is None and r['automatic_resend_allowed'] is False
+
+    # fully reviewed, explicit match quote found -> delivery evidence
+    r = reconcile(packets, req_sha, [req_sha, out_sha],
+                  matches=[(out_sha, '0', 'delivered the file')])
+    assert r['status'] == 'delivery_evidence_found'
+
+    # match quote not actually present -> unknown, not a false positive
+    r = reconcile(packets, req_sha, [req_sha, out_sha],
+                  matches=[(out_sha, '0', 'nonexistent phrase')])
+    assert r['status'] == 'unknown'
+
+    # an issue/link on a reviewed message blocks the absence finding
+    out_row_issue = dict(out_row, issues=['unread_part:0'])
+    packets_issue = [
+        dict(base, mailbox='cirrustask@gmail.com', messages=[in_row]),
+        dict(base, mailbox='cumulus@cumulustask.com', messages=[out_row_issue]),
+    ]
+    r = reconcile(packets_issue, req_sha, [req_sha, out_sha])
+    assert r['status'] == 'unknown'
+
+    print('selftest OK')
+    return 0
+
+
 def main():
+    if '--selftest' in sys.argv[1:]:
+        return selftest()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('client')
     ap.add_argument('--since', required=True, help='YYYY-MM-DD, on/before original request')
