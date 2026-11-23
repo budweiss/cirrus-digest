@@ -220,6 +220,17 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.alerts(self.root, CFG, ledger, notify=notes.append), 0)
         self.assertIn('bill', notes[0])
         self.assertIn('"Research"', notes[0])
+        self.assertIn('after 2 hours', notes[0])
+
+    def test_a_worker_owned_request_alerts_after_a_day_not_two_hours(self):
+        _, row = self.held(age=3 * 3600)
+        intake_lifecycle.update(self.root, row, 'working', 'lesson_build', 'lesson job builds, checks and sends each arc')
+        notes = []
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
+        with intake_lifecycle.connect(self.root) as db:
+            db.execute('UPDATE requests SET created=?', (time.time() - 25 * 3600,))
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 1)
+        self.assertIn('after 24 hours', notes[0])
 
     def test_no_alert_for_young_finished_or_unwatched_requests(self):
         ledger, notes = A.Ledger(self.root), []

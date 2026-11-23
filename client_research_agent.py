@@ -44,6 +44,11 @@ DONE = ('sent_verified', 'noted', 'waiting_on_client')
 BRIDGE_ACTION = 'request needs a research/file/tool worker; reconcile full mail and assign'
 MAX_AGE = 3 * 86400          # never pick up old backlog on its own
 ALERT_AFTER = 2 * 3600
+# A request an active worker owns (a lesson build, a digest research topic, a contact
+# list, a video) normally takes longer and the client already has an acknowledgment;
+# 24 hours is the safety net there. Anything waiting on nobody keeps 2 hours.
+WORKER_OWNERS = ('lesson_build', 'project-research', 'contact_list', 'video_intake')
+WORKER_ALERT_AFTER = 24 * 3600
 ALERT_WINDOW = 7 * 86400
 COMMITMENT = re.compile(r"\b(?:we|i)(?:'ll| will| can| would be happy to| are happy to)\s+"
                         r"(?:submit|sign|pay|bid|purchase|order|commit|guarantee|invoice|quote you)\b", re.I)
@@ -412,13 +417,14 @@ def alerts(root, cfg, ledger, notify=None, now=None):
     sent = 0
     for r in _rows(root, 'WHERE created>=? ORDER BY created', (now - ALERT_WINDOW,)):
         evidence = json.loads(r['evidence'] or '{}')
+        after = WORKER_ALERT_AFTER if r['state'] == 'working' and r['owner'] in WORKER_OWNERS else ALERT_AFTER
         if (evidence.get('client') not in cfg['alert_clients'] or r['state'] in DONE
-                or now - r['created'] < ALERT_AFTER or not ledger.alert_once(r['id'])):
+                or now - r['created'] < after or not ledger.alert_once(r['id'])):
             continue
         payload = json.loads(r['payload'])
         when = datetime.fromtimestamp(r['created']).strftime('%a %H:%M')
-        _notify(notify, "Client request still without a verified reply after 2 hours: %s, \"%s\" "
-                        "(arrived %s). Now: %s, %s." % (evidence['client'], payload[2] if len(payload) > 2 else '?',
+        _notify(notify, "Client request still without a verified reply after %d hours: %s, \"%s\" "
+                        "(arrived %s). Now: %s, %s." % (after // 3600, evidence['client'], payload[2] if len(payload) > 2 else '?',
                                                        when, r['state'], (r['next_action'] or '')[:90]))
         sent += 1
     return sent
