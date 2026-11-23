@@ -234,13 +234,23 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
         self.assertEqual(notes, [])
 
-    def test_live_run_refuses_without_the_intake_mailbox_label(self):
+    def test_live_run_refuses_when_the_proof_mailbox_is_not_this_box(self):
         (self.root / A.CONFIG).write_text(json.dumps(CFG))
-        with patch.object(A, 'ROOT', self.root), patch.dict('os.environ', {}, clear=True), \
+        (self.root / 'config/credentials.json').write_text('{}')
+        with patch.object(A, 'ROOT', self.root), patch.object(A, 'proof_account_ready', return_value=False), \
              patch('sys.argv', ['client_research_agent.py', 'run']), patch('job_status.record') as record, \
              patch('builtins.print'):
             self.assertEqual(A.main(), 2)
         self.assertIn('T214', record.call_args[0][2])
+
+    def test_proof_account_check_needs_the_password_and_the_sending_address(self):
+        account = {'label': 'x', 'address': 'Box@Example.test', 'credential_key': 'box_password'}
+        with patch('intake.find_account', return_value=account), patch('runtime_config.load_sources', return_value={}):
+            self.assertTrue(A.proof_account_ready({'box_password': 'p', 'outlook_email': 'box@example.test'}))
+            self.assertFalse(A.proof_account_ready({'outlook_email': 'box@example.test'}))
+            self.assertFalse(A.proof_account_ready({'box_password': 'p', 'outlook_email': 'other@example.test'}))
+        with patch('intake.find_account', return_value=None), patch('runtime_config.load_sources', return_value={}):
+            self.assertFalse(A.proof_account_ready({'box_password': 'p'}))
 
     def test_a_proof_error_is_recorded_not_swallowed(self):
         self.held()

@@ -373,6 +373,19 @@ def _verify(root, aid, subject, to_addr, creds, verify=None, tries=3, wait=20, e
     return None
 
 
+def proof_account_ready(creds):
+    """T214: the Sent Mail proof must read the mailbox this box sends from. intake reads
+    INTAKE_ACCOUNT_LABEL at import (cumulus1's unit sets it; CIRRUS uses the default)."""
+    try:
+        import intake
+        from runtime_config import load_sources
+        account = intake.find_account(load_sources(intake.CONFIG_PATH))
+    except Exception:
+        return False
+    return bool(account and creds.get(account.get('credential_key'))
+                and str(account.get('address', '')).lower() == str(creds.get('outlook_email', '')).lower())
+
+
 def _record_cost(root, creds, cfg, cost, client, rid):
     """The CLI's own measured dollar cost, once per request (idempotent by run id)."""
     try:
@@ -426,12 +439,12 @@ def main():
                           'pending': [r['id'][:12] for r in candidates(root, cfg, ledger)],
                           'attempts_today': ledger.started_since(time.time() - 86400)}))
         return 0
-    if cfg['mode'] == 'live' and not os.environ.get('INTAKE_ACCOUNT_LABEL'):
-        # T214: without the intake mailbox label, Sent Mail proof reads the wrong account.
-        print(json.dumps({'error': 'INTAKE_ACCOUNT_LABEL unset; refusing a live run'}))
+    creds = json.loads((Path(root) / 'config/credentials.json').read_text())
+    if cfg['mode'] == 'live' and not proof_account_ready(creds):
+        print(json.dumps({'error': 'Sent Mail proof account is not this box\'s mailbox; refusing a live run'}))
         try:
             import job_status
-            job_status.record('clientresearch', False, 'refused: INTAKE_ACCOUNT_LABEL unset (T214)')
+            job_status.record('clientresearch', False, 'refused: Sent Mail proof account not ready (T214)')
         except Exception:
             pass
         return 2
@@ -443,7 +456,6 @@ def main():
     outcomes = []
     pending = candidates(root, cfg, ledger)
     if pending:
-        creds = json.loads((Path(root) / 'config/credentials.json').read_text())
         for row in pending:
             if ledger.started_since(time.time() - 86400) >= cfg['daily_requests']:
                 outcomes.append('daily_cap')

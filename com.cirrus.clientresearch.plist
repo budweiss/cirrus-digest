@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- S679: client research agent on CIRRUS, every 5 minutes. An idle check reads two
+     local SQLite files and makes no model call. System LaunchDaemon as buddy, so it
+     runs with nobody logged in (a user LaunchAgent would not, S171). Claude Code is
+     the Homebrew cask in /opt/homebrew/bin. CIRRUS intake uses the default mailbox
+     label, so no INTAKE_ACCOUNT_LABEL is set; the agent checks the proof account itself. -->
+<plist version="1.0"><dict>
+<key>Label</key><string>com.cirrus.clientresearch</string>
+<key>UserName</key><string>buddy</string>
+<key>WorkingDirectory</key><string>/Users/buddy/projects/cirrus-digest</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>/Users/buddy</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+</dict>
+<key>ProgramArguments</key><array>
+<string>/usr/bin/python3</string><string>-u</string><string>/Users/buddy/projects/cirrus-digest/client_research_agent.py</string><string>run</string>
+</array>
+<key>StartInterval</key><integer>300</integer>
+<key>RunAtLoad</key><false/>
+<key>StandardOutPath</key><string>/Users/buddy/projects/cirrus-digest/logs/clientresearch.log</string>
+<key>StandardErrorPath</key><string>/Users/buddy/projects/cirrus-digest/logs/clientresearch.log</string>
+</dict></plist>
