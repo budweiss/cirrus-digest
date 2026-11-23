@@ -1,5 +1,6 @@
 """Synthetic checks for the server research agent: temp roots only, no network or mail."""
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -63,11 +64,32 @@ class Agent(unittest.TestCase):
         for gone in ('William', 'President', '555-123-4567', 'someone@example.test'):
             self.assertNotIn(gone, text)
 
+    def test_one_line_email_keeps_the_question_and_loses_the_signature(self):
+        one = ('I want new story ideas in his style. Provide a brief synopsis. William Example President '
+               'Example Property Services 555-123-4567')
+        self.assertEqual(A.own_words(one, 'William Example'), 'I want new story ideas in his style. Provide a brief synopsis.')
+        self.assertEqual(A.own_words('Call 555-123-4567 about the plow schedule, please.'),
+                         'Call  about the plow schedule, please.')
+
+    def test_unreadable_question_is_stuck_not_sent(self):
+        aid, _ = self.held()
+        Memory(self.root).update(aid, answer='')
+        with sqlite3.connect(self.root / 'data/conversations/memory.sqlite3') as db:
+            db.execute("UPDATE turns SET question='William Example' WHERE id=?", (aid,))
+        run, notes = fake_run([], []), []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        cfg = {**CFG, 'clients': {'bill': dict(CFG['clients']['bill'], signature='William Example')}}
+        self.assertEqual(A.process(self.root, cfg, row, 'k', {}, run=run, notify=notes.append), 'stuck')
+        self.assertEqual(run.calls, [])
+        self.assertIn('could not be read', notes[0])
+
     def test_candidates_take_only_research_or_review_holds_for_opted_in_clients(self):
         ledger = A.Ledger(self.root)
         self.held()
         self.assertEqual(len(A.candidates(self.root, CFG, ledger)), 1)
-        for kwargs in ({'label': 'asks for a new report or file; your decision'}, {'client': 'alyssa'},
+        self.tearDown(); self.setUp(); self.held(label='asks for a new report or file; your decision')
+        self.assertEqual(len(A.candidates(self.root, CFG, A.Ledger(self.root))), 1)
+        for kwargs in ({'label': 'interrupted handler: reconcile effects before retry'}, {'client': 'alyssa'},
                        {'age': 4 * 86400}):
             with self.subTest(**kwargs):
                 self.tearDown(); self.setUp(); self.held(**kwargs)

@@ -36,7 +36,9 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = 'config/client-research-agent.json'
 STATE = 'data/client-research-agent'
 LIFECYCLE = 'data/intake-lifecycle/requests.sqlite3'
-ELIGIBLE = ('needs web research', 'needs review')   # held_label.wording(); never "new report or file"
+# held_label.wording(). "New report or file" was Buddy's decision before S679; one-off
+# requests are now answered, and the agent may not promise recurring or future work.
+ELIGIBLE = ('needs web research', 'needs review', 'asks for a new report or file')
 HELD_ANSWER = 'review saved attempt'                  # intake_lifecycle.finish() for held answers
 DONE = ('sent_verified', 'noted', 'waiting_on_client')
 BRIDGE_ACTION = 'request needs a research/file/tool worker; reconcile full mail and assign'
@@ -53,6 +55,8 @@ service. Research it with web search and web fetch, then write the email reply.
   details. Use a short list when the client asks for a list. When the client asks about
   "all" of something, cover every item; if you must leave any out, name them and say why.
 - Write as CUMULUS, using "we", not "I".
+- If the client asks for original ideas or writing (for example story ideas), write them.
+  Make clear which parts are invented, and source only the real facts they rest on.
 - Every specific fact the client could act on (names, phone numbers, email addresses,
   street addresses, dates, dollar amounts, counts, rules) must come from a page you
   opened in this session, and that page goes in sources. Never guess contact details.
@@ -90,14 +94,18 @@ def load_config(root):
                  'alert_clients': sorted(cfg['clients'])}, **cfg)
 
 
-def own_words(text):
-    """The client's question without signature or contact lines."""
-    lines = [l.rstrip() for l in (text or '').splitlines()]
+def own_words(text, signature=None):
+    """The client's question without signature or contact details. Contact details
+    are removed inside a line, never by dropping the line: intake may deliver the
+    whole email as one line (S679)."""
+    text = text or ''
+    if signature and signature in text:
+        text = text[:text.index(signature)]
+    lines = [CONTACT_LINE.sub('', l).rstrip() for l in text.splitlines()]
     while lines and (not lines[-1].strip() or (len(lines[-1].split()) <= 6
                                                and not re.search(r'[.?!:]\s*$', lines[-1]))):
         lines.pop()
-    kept = [l for l in lines if not CONTACT_LINE.search(l)]
-    return re.sub(r'\n{3,}', '\n\n', '\n'.join(kept)).strip()
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
 
 
 class Ledger:
@@ -213,7 +221,8 @@ def gate(result):
 REASONS = {'sources': 'the draft had no usable source list', 'reply_length': 'the draft was empty or far too long',
            'commitment': 'the draft made a commitment on our behalf', 'agent_error': 'the research run failed',
            'check_error': 'the source-check run failed', 'agent_output_not_json': 'the research output could not be read',
-           'check_output_not_json': 'the source-check output could not be read', 'stuck': 'no supported answer found'}
+           'check_output_not_json': 'the source-check output could not be read', 'stuck': 'no supported answer found',
+           'question_unreadable': 'the question text could not be read after removing the signature'}
 
 
 def compose(greeting, reply, sources):
@@ -275,8 +284,10 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
         return 'skipped_turn_state'
     if not ledger.start(rid) or not claim(root, rid):
         return 'skipped_claimed'
-    question = own_words(turn['question'])
+    question = own_words(turn['question'], cfg['clients'][client].get('signature'))
     greeting = cfg['clients'][client].get('greeting') or client.title()
+    if len(question) < 15:
+        return _stuck(root, ledger, row, client, greeting, subject, ['question_unreadable'], {}, 0.0, {}, notify)
     detail = {'model': cfg['model'], 'route': 'claude-code', 'cloud_research_basis': cfg['clients'][client].get('basis')}
     try:
         result, problems, cost, log = answer(question, subject, cfg, key, run=run)
