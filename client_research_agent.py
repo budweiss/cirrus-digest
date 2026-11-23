@@ -202,7 +202,11 @@ def run_claude(prompt, system, tools, budget, timeout, model, key, max_turns=40)
         proc = subprocess.run(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, timeout=timeout)
     data = json.loads(proc.stdout or '{}')
-    return {'text': data.get('result') or '', 'cost': float(data.get('total_cost_usd') or 0),
+    # S679 (Buddy): record which models each run used. Claude Code reports every model
+    # it called, including small helpers it runs for itself, with that model's cost.
+    usage = data.get('modelUsage') if isinstance(data.get('modelUsage'), dict) else {}
+    models = {str(name): round(float((u or {}).get('costUSD') or 0), 6) for name, u in usage.items()}
+    return {'text': data.get('result') or '', 'cost': float(data.get('total_cost_usd') or 0), 'models': models,
             'turns': data.get('num_turns'), 'error': bool(data.get('is_error')) or proc.returncode != 0,
             'subtype': data.get('subtype')}
 
@@ -254,11 +258,17 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
     earlier = ('Earlier in this email thread, oldest first (for context; the newest question is below):\n%s\n\n'
                % context) if context else ''
     ask = earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
-    cost, log, feedback = 0.0, [], ''
+    cost, log, feedback, models = 0.0, [], '', {}
+
+    def used(out, stage, attempt):
+        for name, dollars in (out.get('models') or {}).items():
+            models[name] = round(models.get(name, 0) + dollars, 6)
+        return {'attempt': attempt, 'stage': stage, 'models': sorted(out.get('models') or {})}
     for attempt in range(2):
         out = run(ask + feedback, system, ['WebSearch', 'WebFetch'], cfg['agent_budget_usd'],
                   cfg['agent_timeout'], cfg['model'], key)
         cost += out['cost']
+        log.append(used(out, 'research', attempt))
         try:
             result = parse_json(out['text'])
         except ValueError:
@@ -266,6 +276,7 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
         problems = ['agent_error'] if out['error'] else gate(result)
         if result.get('status') == 'stuck' or 'agent_error' in problems:
             log.append({'attempt': attempt, 'stage': 'agent', 'problems': problems or ['stuck']})
+            log.append({'models_total': models})
             return result, problems or ['stuck'], cost, log
         if not problems:
             check = run('%sQuestion:\n%s\n\nDraft reply:\n%s\n\nCited sources:\n%s' % (
@@ -273,6 +284,7 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
                         CHECK_RULES, ['WebFetch'], cfg['check_budget_usd'], cfg['check_timeout'],
                         cfg['model'], key, max_turns=20)
             cost += check['cost']
+            log.append(used(check, 'source-check', attempt))
             try:
                 verdict = parse_json(check['text'])
                 passed = verdict.get('passed') is True and not verdict.get('issues')
@@ -283,9 +295,11 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
                 problems = ['check_error']
         log.append({'attempt': attempt, 'stage': 'check', 'passed': not problems, 'issues': len(problems)})
         if not problems:
+            log.append({'models_total': models})
             return result, [], cost, log
         feedback = ('\n\nAn independent check rejected your previous reply for these problems. Fix them; '
                     'remove anything you cannot support from a page you opened:\n' + json.dumps(problems))
+    log.append({'models_total': models})
     return result, problems, cost, log
 
 
@@ -313,8 +327,10 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
         result, problems, cost, log = answer(question, subject, cfg, key, run=run, context=context)
     except Exception as exc:
         result, problems, cost, log = {}, ['agent_crash:' + type(exc).__name__], 0.0, []
-    detail.update(log=log, problems=problems[:5])
-    _record_cost(root, creds, cfg, cost, client, rid)
+    models = next((e['models_total'] for e in reversed(log) if 'models_total' in e), {})
+    detail.update(log=[e for e in log if 'models_total' not in e], problems=problems[:5], models=models,
+                  hold_label=(row.get('next_action') or '').split(';')[0])
+    _record_cost(root, creds, cfg, cost, client, rid, models)
     if problems:
         return _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify)
     body = compose(greeting, result['reply'], result['sources'])
@@ -406,12 +422,13 @@ def proof_account_ready(creds):
                 and str(account.get('address', '')).lower() == str(creds.get('outlook_email', '')).lower())
 
 
-def _record_cost(root, creds, cfg, cost, client, rid):
-    """The CLI's own measured dollar cost, once per request (idempotent by run id)."""
+def _record_cost(root, creds, cfg, cost, client, rid, models=None):
+    """The CLI's own measured dollars: one ledger line per model it used, idempotent by run id."""
     try:
         import llm_budget
-        llm_budget.record_sdk_cost(creds, cost, task='client-research-agent:' + client,
-                                   run_id='client-research-agent:' + rid, model=cfg['model'], app_dir=root)
+        for name, dollars in (models or {cfg['model']: cost}).items():
+            llm_budget.record_sdk_cost(creds, dollars, task='client-research-agent:' + client,
+                                       run_id='client-research-agent:%s:%s' % (rid, name), model=name, app_dir=root)
     except Exception:
         pass
 
@@ -483,6 +500,11 @@ def main():
                 break
             outcomes.append(process(root, cfg, row, creds['anthropic_api_key'], creds))
     alerted = alerts(root, cfg, ledger)
+    try:
+        import client_request_trace   # S679: keep the how-it-was-answered record current
+        client_request_trace.update(root, days=7)
+    except Exception:
+        pass
     if outcomes or alerted:
         try:
             import job_status

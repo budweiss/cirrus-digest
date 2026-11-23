@@ -26,7 +26,9 @@ def fake_run(agent_results, checks):
     def run(prompt, system, tools, budget, timeout, model, key, max_turns=40):
         calls.append({'tools': tools, 'prompt': prompt, 'budget': budget})
         queue = checks if tools == ['WebFetch'] else agent_results
-        return {'text': json.dumps(queue.pop(0)), 'cost': 0.1, 'turns': 3, 'error': False, 'subtype': 'success'}
+        models = {'claude-sonnet-5-5': 0.08, 'claude-haiku-4-5': 0.02} if tools != ['WebFetch'] else {'claude-sonnet-5-5': 0.1}
+        return {'text': json.dumps(queue.pop(0)), 'cost': 0.1, 'turns': 3, 'error': False, 'subtype': 'success',
+                'models': models}
     run.calls = calls
     return run
 
@@ -151,6 +153,21 @@ class Agent(unittest.TestCase):
             self.assertIn('IDEA 1: MIRROR', call['prompt'])
             self.assertNotIn('555-123-4567', call['prompt'])
         self.assertLess(run.calls[0]['prompt'].index('IDEA 1'), run.calls[0]['prompt'].index("Client's question"))
+
+    def test_each_run_records_the_models_it_used_and_their_cost(self):
+        self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'), patch('llm_budget.record_sdk_cost') as cost:
+            A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True, verify=lambda *a: {'uid': '1'},
+                      notify=lambda t: None)
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual(detail['models'], {'claude-sonnet-5-5': 0.18, 'claude-haiku-4-5': 0.02})
+        self.assertEqual([e['models'] for e in detail['log'] if e.get('stage') in ('research', 'source-check')],
+                         [['claude-haiku-4-5', 'claude-sonnet-5-5'], ['claude-sonnet-5-5']])
+        self.assertTrue(detail['hold_label'].startswith('needs web research'))
+        self.assertEqual(sorted(c.kwargs['model'] for c in cost.call_args_list), ['claude-haiku-4-5', 'claude-sonnet-5-5'])
 
     def test_stuck_goes_to_the_help_queue_with_one_message_and_no_send(self):
         self.held()
