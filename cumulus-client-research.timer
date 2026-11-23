@@ -1,0 +1,12 @@
+[Unit]
+Description=Client research agent, every 5 minutes (S679)
+
+# A poller, not a heavy job: an idle check reads two local SQLite files and makes
+# no model call. Work starts only when intake has held a client question.
+# Installed as a user unit (~/.config/systemd/user, Linger=yes), no sudo.
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

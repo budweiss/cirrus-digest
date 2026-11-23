@@ -169,3 +169,7 @@ private/personal-schedule/
 
 # S659: video attachments are copied to the host for one send, never committed
 mail/*.mp4
+
+# S679 research agent: host-only switch and per-client cloud opt-in (see client_research_agent.py)
+config/client-research-agent.json
+data/client-research-agent/

@@ -1,0 +1,12 @@
+[Unit]
+Description=Client research agent (S679): answer held client questions on this box; alert on unanswered requests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/buddy/cirrus-digest
+Environment=HOME=/home/buddy
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/buddy/cirrus-digest/.venv/bin/python /home/buddy/cirrus-digest/client_research_agent.py run
+TimeoutStartSec=3600

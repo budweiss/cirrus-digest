@@ -1,0 +1,212 @@
+"""Synthetic checks for the server research agent: temp roots only, no network or mail."""
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import client_research_agent as A
+import intake_lifecycle
+from conversation_memory import Memory
+
+QUESTION = ('Research this topic and give me a list of topics with the science behind each story.\n\n'
+            'William Example\nPresident\nExample Property Services\n555-123-4567')
+CFG = {'mode': 'live', 'clients': {'bill': {'greeting': 'Bill', 'basis': 'synthetic test'}},
+       'model': 'claude-sonnet-5-5', 'agent_budget_usd': 1.25, 'check_budget_usd': 0.4, 'daily_requests': 5,
+       'agent_timeout': 900, 'check_timeout': 360, 'alert_clients': ['bill', 'alyssa']}
+GOOD = {'status': 'answered', 'reply': 'Here is the list you asked for. ' * 5,
+        'sources': [{'title': 'Bibliography', 'url': 'https://example.org/books'}], 'stuck_reason': ''}
+
+
+def fake_run(agent_results, checks):
+    calls = []
+
+    def run(prompt, system, tools, budget, timeout, model, key, max_turns=40):
+        calls.append({'tools': tools, 'prompt': prompt, 'budget': budget})
+        queue = checks if tools == ['WebFetch'] else agent_results
+        return {'text': json.dumps(queue.pop(0)), 'cost': 0.1, 'turns': 3, 'error': False, 'subtype': 'success'}
+    run.calls = calls
+    return run
+
+
+class Agent(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / 'config').mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def held(self, client='bill', label='needs web research; no job started, so it waits for you', age=600, mid='<m1>'):
+        turn = Memory(self.root).add(owner='cumulus1', client=client, project='general', thread='research',
+                                     message_id=mid, question=QUESTION, state='needs_review',
+                                     meta={'requires_buddy': True})
+        row = [1, 'client@example.test', 'Research', QUESTION, mid]
+        intake_lifecycle.capture(self.root, row)
+        intake_lifecycle.update(self.root, row, 'blocked_on_evidence', 'cowork',
+                                label + '; review saved attempt; preserve budget and send uncertainty',
+                                {'client': client, 'answer_request_id': turn['id']})
+        with intake_lifecycle.connect(self.root) as db:
+            db.execute('UPDATE requests SET created=?', (time.time() - age,))
+        return turn['id'], row
+
+    def state(self):
+        with intake_lifecycle.connect(self.root) as db:
+            r = db.execute('SELECT state,owner,next_action,evidence FROM requests').fetchone()
+        return r['state'], r['owner'], r['next_action'], json.loads(r['evidence'])
+
+    def test_own_words_drop_signature_and_contact_lines(self):
+        text = A.own_words(QUESTION + '\nwrite to me at someone@example.test')
+        self.assertTrue(text.startswith('Research this topic'))
+        for gone in ('William', 'President', '555-123-4567', 'someone@example.test'):
+            self.assertNotIn(gone, text)
+
+    def test_candidates_take_only_research_or_review_holds_for_opted_in_clients(self):
+        ledger = A.Ledger(self.root)
+        self.held()
+        self.assertEqual(len(A.candidates(self.root, CFG, ledger)), 1)
+        for kwargs in ({'label': 'asks for a new report or file; your decision'}, {'client': 'alyssa'},
+                       {'age': 4 * 86400}):
+            with self.subTest(**kwargs):
+                self.tearDown(); self.setUp(); self.held(**kwargs)
+                self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+        self.tearDown(); self.setUp()
+        _, row = self.held()
+        intake_lifecycle.update(self.root, row, 'blocked_on_evidence', 'cowork', 'review request safety hold locally')
+        self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+
+    def test_parse_json_and_gate(self):
+        self.assertEqual(A.parse_json('Done.\n```json\n{"status":"stuck"}\n```')['status'], 'stuck')
+        with self.assertRaises(ValueError):
+            A.parse_json('no json here')
+        self.assertEqual(A.gate(GOOD), [])
+        self.assertIn('sources', A.gate(dict(GOOD, sources=[])))
+        self.assertIn('commitment', A.gate(dict(GOOD, reply=GOOD['reply'] + ' We will submit a bid for you.')))
+        self.assertEqual(A.gate({'status': 'stuck'}), ['not_answered'])
+
+    def test_answered_request_is_sent_once_and_proven(self):
+        aid, _ = self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        sent, notes = [], []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'synthetic-key', {}, run=run,
+                            send=lambda *a: sent.append(a) or True, verify=lambda *a: {'uid': '7'},
+                            notify=notes.append)
+        self.assertEqual(out, 'sent_verified')
+        self.assertEqual(len(sent), 1)
+        frm, pw, to, cc, subject, body = sent[0]
+        self.assertEqual((to, subject), ('client@example.test', 'Re: Research'))
+        self.assertTrue(body.startswith('Hi Bill,') and body.rstrip().endswith('-- CUMULUS'))
+        self.assertIn('https://example.org/books', body)
+        self.assertNotIn('555-123-4567', run.calls[0]['prompt'])
+        self.assertNotIn('William', run.calls[0]['prompt'])
+        turn = Memory(self.root).get(aid)
+        self.assertEqual((turn['state'], turn['answer'], turn['meta']['requires_buddy']), ('delivered', body, False))
+        self.assertEqual(self.state()[:2], ('sent_verified', 'delivery-review'))
+        self.assertEqual(notes, [])
+        self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+
+    def test_stuck_goes_to_the_help_queue_with_one_message_and_no_send(self):
+        self.held()
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no public source names a contact'}], [])
+        sent, notes = [], []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        out = A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: sent.append(a), notify=notes.append)
+        self.assertEqual(out, 'stuck')
+        self.assertEqual(sent, [])
+        state, owner, action, evidence = self.state()
+        self.assertEqual((state, owner, action), ('blocked_no_worker', 'cowork', A.BRIDGE_ACTION))
+        self.assertEqual(evidence['research_agent']['outcome'], 'stuck')
+        self.assertEqual(len(notes), 1)
+        self.assertIn('no public source names a contact', notes[0])
+
+    def test_failed_check_gets_one_revision_then_is_stuck(self):
+        self.held()
+        bad = {'passed': False, 'issues': ['phone number not on the cited page']}
+        run = fake_run([GOOD, GOOD], [bad, bad])
+        notes = []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        self.assertEqual(A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True,
+                                   notify=notes.append), 'stuck')
+        agent_calls = [c for c in run.calls if c['tools'] != ['WebFetch']]
+        self.assertEqual(len(agent_calls), 2)
+        self.assertIn('phone number not on the cited page', agent_calls[1]['prompt'])
+
+    def test_revision_that_passes_is_sent(self):
+        self.held()
+        run = fake_run([GOOD, GOOD], [{'passed': False, 'issues': ['unsupported date']}, {'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True,
+                            verify=lambda *a: {'uid': '1'}, notify=lambda t: None)
+        self.assertEqual(out, 'sent_verified')
+
+    def test_uncertain_send_is_held_and_never_retried(self):
+        aid, _ = self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        notes, sent = [], []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        out = A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: sent.append(a) or False,
+                        notify=notes.append)
+        self.assertEqual(out, 'delivery_unknown')
+        self.assertEqual(Memory(self.root).get(aid)['state'], 'delivery_unknown')
+        self.assertIn('never resend', self.state()[2])
+        self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+        self.assertEqual((len(sent), len(notes)), (1, 1))
+
+    def test_a_claimed_request_is_not_processed_twice(self):
+        self.held()
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        self.assertTrue(A.claim(self.root, row['id']))
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        self.assertEqual(A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True), 'skipped_claimed')
+        self.assertEqual(run.calls, [])
+
+    def test_dry_run_writes_the_draft_and_leaves_the_request_held(self):
+        aid, _ = self.held()
+        run = fake_run([GOOD], [{'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        out = A.process(self.root, dict(CFG, mode='dry-run'), row, 'k', {}, run=run,
+                        send=lambda *a: self.fail('dry run sent mail'))
+        self.assertEqual(out, 'dry_run_ready')
+        self.assertEqual(self.state()[:2], ('blocked_on_evidence', 'cowork'))
+        self.assertEqual(Memory(self.root).get(aid)['state'], 'needs_review')
+        drafts = list((self.root / A.STATE / 'dry-run').glob('*.txt'))
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].stat().st_mode & 0o777, 0o600)
+        # Still held for a person, but never picked up again automatically.
+        self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+
+    def test_unanswered_alert_fires_once_after_two_hours(self):
+        self.held(age=3 * 3600)
+        ledger, notes = A.Ledger(self.root), []
+        self.assertEqual(A.alerts(self.root, CFG, ledger, notify=notes.append), 1)
+        self.assertEqual(A.alerts(self.root, CFG, ledger, notify=notes.append), 0)
+        self.assertIn('bill', notes[0])
+        self.assertIn('"Research"', notes[0])
+
+    def test_no_alert_for_young_finished_or_unwatched_requests(self):
+        ledger, notes = A.Ledger(self.root), []
+        self.held(age=600)
+        self.assertEqual(A.alerts(self.root, CFG, ledger, notify=notes.append), 0)
+        self.tearDown(); self.setUp()
+        _, row = self.held(age=3 * 3600)
+        intake_lifecycle.update(self.root, row, 'sent_verified', 'delivery-review', 'done', {'sent_receipt': {'uid': '1'}})
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
+        self.tearDown(); self.setUp()
+        self.held(client='aggie', age=3 * 3600)
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
+        self.assertEqual(notes, [])
+
+    def test_missing_config_means_off(self):
+        self.assertIsNone(A.load_config(self.root))
+        (self.root / A.CONFIG).write_text(json.dumps({'mode': 'sometimes', 'clients': {}}))
+        with self.assertRaises(ValueError):
+            A.load_config(self.root)
+
+
+if __name__ == '__main__':
+    unittest.main()
