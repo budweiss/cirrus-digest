@@ -50,7 +50,9 @@ CONTACT_LINE = re.compile(r'[\w.+-]+@[\w-]+\.[\w.]+|\(?\b\d{3}\)?[\s.-]\d{3}[\s.
 AGENT_RULES = """You research and answer one client question for CUMULUS, a small research
 service. Research it with web search and web fetch, then write the email reply.
 - Answer what was asked in plain, short sentences: the direct answer first, then the
-  details. Use a short list when the client asks for a list.
+  details. Use a short list when the client asks for a list. When the client asks about
+  "all" of something, cover every item; if you must leave any out, name them and say why.
+- Write as CUMULUS, using "we", not "I".
 - Every specific fact the client could act on (names, phone numbers, email addresses,
   street addresses, dates, dollar amounts, counts, rules) must come from a page you
   opened in this session, and that page goes in sources. Never guess contact details.
@@ -83,7 +85,7 @@ def load_config(root):
     cfg = json.loads(path.read_text())
     if cfg.get('mode') not in ('live', 'dry-run') or not isinstance(cfg.get('clients'), dict):
         raise ValueError('client_research_config_invalid')
-    return dict({'model': 'claude-sonnet-5-5', 'agent_budget_usd': 1.25, 'check_budget_usd': 0.4,
+    return dict({'model': 'claude-sonnet-5-5', 'agent_budget_usd': 2.0, 'check_budget_usd': 0.4,
                  'daily_requests': 5, 'agent_timeout': 900, 'check_timeout': 360,
                  'alert_clients': sorted(cfg['clients'])}, **cfg)
 
@@ -261,7 +263,7 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     ledger, memory = Ledger(root), Memory(root)
     rid, aid, payload = row['id'], row['evidence']['answer_request_id'], row['payload']
     client = row['evidence']['client']
-    subject = payload[2] if len(payload) > 2 else 'your request'
+    subject = (payload[2] if len(payload) > 2 else '').strip() or 'your request'
     turn = memory.get(aid)
     if turn is None or turn['state'] != 'needs_review':
         return 'skipped_turn_state'
