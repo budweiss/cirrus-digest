@@ -600,11 +600,32 @@ def alerts(root, cfg, ledger, notify=None, now=None):
     return sent
 
 
+def manual_answer(root, prefix, note):
+    """Operator step after a session answers a held request by hand (S679 open item 5).
+    Records the answer on that one turn and clears that turn's hold only. thread_review
+    would also clear every older hold in the thread, answered or not."""
+    from conversation_memory import Memory
+    if not re.fullmatch(r'[0-9a-f]{8,}', prefix or '') or not (note or '').strip():
+        raise ValueError('need a turn id prefix (8+ hex characters) and a note')
+    memory = Memory(Path(root))
+    with memory.connect() as db:
+        ids = [r[0] for r in db.execute('SELECT id FROM turns WHERE id LIKE ?', (prefix + '%',))]
+    if len(ids) != 1:
+        raise ValueError('%d turns match %s; give a longer prefix' % (len(ids), prefix))
+    row = memory.update(ids[0], meta={'manual_answer': note.strip(), 'requires_buddy': False})
+    return {'turn': row['id'][:12], 'state': row['state'], 'thread_held': memory.thread_review(row)[1]}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('command', choices=('run', 'status'))
+    p.add_argument('command', choices=('run', 'status', 'manual-answer'))
+    p.add_argument('turn', nargs='?', help='manual-answer: turn id prefix')
+    p.add_argument('note', nargs='?', help='manual-answer: who answered, when, and the proof')
     a = p.parse_args()
     root = ROOT
+    if a.command == 'manual-answer':
+        print(json.dumps(manual_answer(root, a.turn, a.note)))
+        return 0
     cfg = load_config(root)
     if cfg is None:
         print(json.dumps({'enabled': False}))

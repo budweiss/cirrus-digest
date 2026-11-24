@@ -352,6 +352,21 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
         self.assertEqual(len(notes), 1)
 
+    def test_manual_answer_clears_only_that_turns_hold(self):
+        memory = Memory(self.root)
+        older = memory.add(owner='cumulus1', client='bill', project='general', thread='research',
+                           message_id='<o>', question=QUESTION, state='needs_review', meta={'requires_buddy': True})
+        aid, _ = self.held()
+        out = A.manual_answer(self.root, aid[:12], 'S679 session send, verified in Sent Mail')
+        turn = memory.get(aid)
+        self.assertEqual(turn['meta']['manual_answer'], 'S679 session send, verified in Sent Mail')
+        self.assertFalse(turn['meta']['requires_buddy'])
+        self.assertTrue(memory.get(older['id'])['meta']['requires_buddy'])   # the other hold stays
+        self.assertTrue(out['thread_held'])
+        for bad in (('zz', 'note'), (aid[:12], ' '), ('', 'note')):
+            with self.assertRaises(ValueError):
+                A.manual_answer(self.root, *bad)
+
     def test_reply_never_carries_a_second_greeting(self):
         body = A.compose('Bill', 'Hi Bill,\n\nWe wrote Chapters 9 to 13.', [{'title': 't', 'url': 'https://x.test'}])
         self.assertEqual(body.count('Hi Bill'), 1)
