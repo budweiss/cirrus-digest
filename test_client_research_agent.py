@@ -29,8 +29,9 @@ def fake_run(agent_results, checks, verifies=None):
         if system == A.VERIFY_RULES:
             queue = verifies if verifies is not None else checks
         models = {'claude-sonnet-5-5': 0.08, 'claude-haiku-4-5': 0.02} if tools != ['WebFetch'] else {'claude-sonnet-5-5': 0.1}
-        return {'text': json.dumps(queue.pop(0)), 'cost': 0.1, 'turns': 3, 'error': False, 'subtype': 'success',
-                'models': models}
+        item = queue.pop(0)            # a str is raw model text (S679: a plain-text reply, not JSON)
+        return {'text': item if isinstance(item, str) else json.dumps(item), 'cost': 0.1, 'turns': 3,
+                'error': False, 'subtype': 'success', 'models': models}
     run.calls = calls
     return run
 
@@ -431,6 +432,31 @@ class Agent(unittest.TestCase):
         agent_calls = [c for c in run.calls if c['tools'] != ['WebFetch']]
         self.assertEqual(len(agent_calls), 2)
         self.assertIn('phone number not on the cited page', agent_calls[1]['prompt'])
+
+    def test_plain_text_research_reply_gets_one_more_try_and_is_sent(self):
+        # S679: Bill's 11-24 word-count question went stuck when Claude wrote the email as plain text.
+        self.held()
+        plain = 'A typical Michael Crichton novel runs about 100,000 words. ' * 3
+        run = fake_run([plain, GOOD], [{'passed': True, 'issues': []}])
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', {}, run=run, send=lambda *a: True,
+                            verify=lambda *a: {'uid': '1'}, notify=lambda t: None)
+        self.assertEqual(out, 'sent_verified')
+        agent_calls = [c for c in run.calls if c['tools'] != ['WebFetch']]
+        self.assertEqual(len(agent_calls), 2)
+        self.assertIn('not the JSON object', agent_calls[1]['prompt'])
+        self.assertTrue(all(c['prompt'].endswith(A.JSON_REMINDER) for c in agent_calls))
+
+    def test_two_unreadable_research_replies_are_stuck_after_two_tries(self):
+        self.held()
+        run, notes = fake_run(['no json here, just prose ' * 5, 'still prose ' * 5], []), []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        cfg = dict(CFG, fallback=False)
+        self.assertEqual(A.process(self.root, cfg, row, 'k', {}, run=run, send=lambda *a: True,
+                                   notify=notes.append), 'stuck')
+        self.assertEqual(len(run.calls), 2)
+        self.assertIn('could not be read', notes[0])
 
     def test_revision_that_passes_is_sent(self):
         self.held()

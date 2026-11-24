@@ -400,7 +400,7 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
             models[name] = round(models.get(name, 0) + dollars, 6)
         return {'attempt': attempt, 'stage': stage, 'models': sorted(out.get('models') or {})}
     for attempt in range(2):
-        out = run(ask + feedback, system, ['WebSearch', 'WebFetch'], cfg['agent_budget_usd'],
+        out = run(ask + feedback + JSON_REMINDER, system, ['WebSearch', 'WebFetch'], cfg['agent_budget_usd'],
                   cfg['agent_timeout'], cfg['model'], key)
         cost += out['cost']
         log.append(used(out, 'research', attempt))
@@ -408,6 +408,13 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
             result = parse_json(out['text'])
         except ValueError:
             result = {'status': 'stuck', 'stuck_reason': 'agent_output_not_json'}
+            # S679 (Buddy: "make sure this is still an issue and fix it"): on Bill's 11-24 word-count
+            # question Claude wrote a good reply as plain email text, not the JSON object, in 2 of 8
+            # rehearsals, and the request went stuck. One more try, as the ladder does (60aabe3).
+            if attempt == 0 and not out['error']:
+                log.append({'attempt': attempt, 'stage': 'agent', 'retried': 'unreadable_json'})
+                feedback = '\n\nYour previous reply could not be read because it was not the JSON object.'
+                continue
         problems = ['agent_error'] if out['error'] else gate(result)
         if result.get('status') == 'stuck' or 'agent_error' in problems:
             # S679: process() replaces result with the "all models failed" summary when the
@@ -735,7 +742,9 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
 
 def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify, box):
     import intake_lifecycle
-    reason = (result or {}).get('stuck_reason') or REASONS.get(problems[0]) or (
+    own = (result or {}).get('stuck_reason')
+    # S679: a code such as agent_output_not_json reached Buddy's Telegram as-is; say it in words.
+    reason = REASONS.get(own, own) or REASONS.get(problems[0]) or (
         'the source check rejected the draft twice; first problem: ' + problems[0])
     reason = re.sub(r'\s+', ' ', str(reason))[:200]
     ledger.finish(row['id'], 'stuck', cost, dict(detail, reason=reason))
