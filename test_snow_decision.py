@@ -52,6 +52,17 @@ class Decision(unittest.TestCase):
                       'directional estimate','placeholders pending',"You NEVER fabricate numbers",'never blend sources into a new range','what happens when Bill replies','exact node signature']:
             self.assertIn(words,s.SYSTEM)
 
+    def test_report_is_dated_by_the_task_not_the_current_date(self):
+        # S682: renewal re-runs replay a fixed report date while every prompt also carries the real
+        # date (S650); the refresh header used the real one. The task now states the report date.
+        with patch.object(s,'TODAY','2026-11-09'),patch.object(s,'_read',return_value='fixture'):
+            prompt=s.build_prompt('synthetic evidence',[])
+        self.assertTrue(prompt.startswith('REPORT DATE: 2026-11-09\n'))
+        self.assertIn('markdown dated 2026-11-09',prompt)
+        self.assertIn('Update (2026-11-09)',prompt)
+        self.assertIn("Date refresh_md and email_subject with the task's REPORT DATE only",s.SYSTEM)
+        self.assertIn('no asterisks or other Markdown in email_body',s.SYSTEM)
+
     def test_every_query_gets_a_turn_before_any_gets_a_second(self):
         def search(q,max_results=6):return [f'{s.QUERIES.index(q)}-{i}' for i in range(max_results)]
         picked=[u for u,_ in s.select_sources(s.QUERIES,search,lambda u:'x'*400)]

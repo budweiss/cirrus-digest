@@ -183,7 +183,10 @@ SYSTEM = (
         "web source used and 'published <date>' as that source shows it, or 'publish date not shown' when the "
         "source shows none; never guess a date. Report a published forecast's own figures beside our "
         "estimate; never blend sources into a new range of your own. Anything already in the "
-        "baseline goes under what did not change: never present last week's facts as new.\n\nFinal evidence "
+        "baseline goes under what did not change: never present last week's facts as new. Write that "
+        "heading on its own line: a Markdown heading in refresh_md, plain words with no asterisks or "
+        "other Markdown in email_body.\n8. Date refresh_md and email_subject with the task's REPORT DATE only. "
+        "Never use any other date, including a current date given elsewhere, as the report's date.\n\nFinal evidence "
         'audit: check each factual clause and commitment against '
         'the original supplied task. Delete anything supported only by a member draft or by your background '
         'knowledge. In a disagreement, describe the unsupported proposition itself, without adding an '
@@ -202,7 +205,9 @@ def build_prompt(web_block, urls):
     corridor = _read("corridor-snowfall.md")
     rates    = _read("DEFAULT-SNOW-RATES.md")
     voice    = _read("voice-sample.md")
-    return f"""Decide whether this week's winter outlook has MATERIALLY changed versus
+    return f"""REPORT DATE: {TODAY}
+
+Decide whether this week's winter outlook has MATERIALLY changed versus
 the current baseline, and if so, draft the update for Bill.
 
 MATERIAL = an ENSO category shift (e.g. strengthening/weakening/label change), a new
@@ -240,7 +245,7 @@ Return ONLY a JSON object, no prose around it, with EXACTLY these keys:
 {{
   "material_change": true|false,
   "reason": "<one or two sentences on what changed or why nothing did>",
-  "refresh_md": "<if material: a dated outlook-refresh markdown in the honest,
+  "refresh_md": "<if material: an outlook-refresh markdown dated {TODAY}, in the honest,
      probabilistic baseline style, anchored to the climatology/drivers, scenario
      odds not a single number, under {REFRESH_MAX_CHARS - 2000} characters, including the
      section '{CHANGE_HEADING}'; else empty string>",
