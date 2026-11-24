@@ -438,6 +438,14 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
     return result, problems, cost, log
 
 
+# S679, 11-24 (Buddy: "fix the gpt-6-astra JSON issue now"): gpt-6-astra wrote the reply as plain
+# text instead of the JSON object in 6 of 24 real ladder calls. This closing reminder cut it to 2
+# of 24, and fallback() tries once more on an unreadable reply. OpenAI's JSON mode would need
+# llm_providers.py, which is in the qualified contract (capability_registry.contract_digest).
+JSON_REMINDER = ('\n\nReply with the JSON object only: start with { and end with }. Put the whole email body, '
+                 'as plain text, inside "reply". No text before or after the object.')
+
+
 def fallback(question, subject, context, cfg, key, creds, client, *, run=run_claude, call=None):
     """Other foundation models draft; a Claude web check must confirm each draft.
     Returns (result, problems, claude_cost, tried) and stops at the first verified draft."""
@@ -445,7 +453,8 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
     call = call or llm_providers.call
     providers = [p for p in cfg.get('fallback_providers', FALLBACK_ORDER) if creds.get(llm_providers._KEY_FIELD.get(p, ''))]
     earlier = ('Earlier in this email thread, oldest first:\n%s\n\n' % context) if context else ''
-    ask = earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
+    ask = (earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
+           + JSON_REMINDER)
     tried, cost, problems = [], 0.0, ['no_fallback_provider']
     # S679: Kimi K3 took 74 s on a real fallback prompt and timed out at the 120 s default
     # once; K3.1 Pro took 159 s. A longer limit for this ladder only; shared settings stay.
@@ -458,8 +467,15 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
         entry = {'provider': provider, 'model': llm_providers.configured_model(provider, creds)}
         tried.append(entry)
         try:
-            draft = parse_json(call(provider, FALLBACK_RULES, ask, creds, max_tokens=6000, retries=0,
-                                    task='client-research-fallback:' + client))
+            for attempt in (1, 2):     # one more try only when the reply is not the JSON object
+                try:
+                    draft = parse_json(call(provider, FALLBACK_RULES, ask, creds, max_tokens=6000, retries=0,
+                                            task='client-research-fallback:' + client))
+                    break
+                except ValueError:
+                    if attempt == 2:
+                        raise
+                    entry['retried'] = 'unreadable_json'
         except Exception as exc:
             entry['outcome'] = 'error:' + type(exc).__name__
             continue

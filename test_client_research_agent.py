@@ -229,6 +229,29 @@ class Agent(unittest.TestCase):
         self.assertEqual([e.get('stuck_reason') for e in detail['log'] if e.get('stage') == 'agent'], ['no source'])
         self.assertEqual(creds['openai_model'], 'gpt-4o-mini')      # the shared setting is untouched
 
+    def test_unreadable_draft_gets_one_more_try(self):
+        # S679: gpt-6-astra wrote plain text instead of the JSON in 6 of 24 real calls
+        self.held()
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], [],
+                       verifies=[{'passed': True, 'issues': [], 'sources': [{'title': 'Checked', 'url': 'https://example.org/ok'}]}])
+        prose = 'The program is VetCert. Apply on the SBA site.'          # no JSON at all
+        replies = {'gemini': [prose, prose], 'openai': [prose, json.dumps(dict(GOOD, sources=[]))]}
+        calls, sent = [], []
+        def call(provider, system, user, creds, **kw):
+            calls.append(provider)
+            self.assertTrue(user.endswith(A.JSON_REMINDER))
+            return replies[provider].pop(0)
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', {'gemini_api_key': 'x', 'openai_api_key': 'y'}, run=run, call=call,
+                            send=lambda *a: sent.append(a) or True, verify=lambda *a: {'uid': '1'}, notify=lambda m: None)
+        self.assertEqual(out, 'sent_verified')
+        self.assertEqual(calls, ['gemini', 'gemini', 'openai', 'openai'])   # two tries each, never a third
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual([(t['outcome'], t.get('retried')) for t in detail['fallback']],
+                         [('error:ValueError', 'unreadable_json'), ('verified', 'unreadable_json')])
+
     def test_telegram_only_after_every_model_fails(self):
         self.held()
         bad = {'passed': False, 'issues': ['contact name not found on any page'], 'sources': []}
