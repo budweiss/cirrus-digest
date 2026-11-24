@@ -13,7 +13,7 @@ from conversation_memory import Memory
 
 QUESTION = ('Research this topic and give me a list of topics with the science behind each story.\n\n'
             'William Example\nPresident\nExample Property Services\n555-123-4567')
-CFG = {'mode': 'live', 'signoff': 'CUMULUS', 'clients': {'bill': {'greeting': 'Bill', 'basis': 'synthetic test'}},
+CFG = {'mode': 'live', 'signoff': 'CUMULUS', 'web_providers': [], 'clients': {'bill': {'greeting': 'Bill', 'basis': 'synthetic test'}},
        'model': 'claude-sonnet-5-5', 'agent_budget_usd': 1.25, 'check_budget_usd': 0.4, 'daily_requests': 5,
        'agent_timeout': 900, 'check_timeout': 360, 'alert_clients': ['bill', 'alyssa']}
 GOOD = {'status': 'answered', 'reply': 'Here is the list you asked for. ' * 5,
@@ -24,7 +24,7 @@ def fake_run(agent_results, checks, verifies=None):
     calls = []
 
     def run(prompt, system, tools, budget, timeout, model, key, max_turns=40):
-        calls.append({'tools': tools, 'prompt': prompt, 'budget': budget})
+        calls.append({'tools': tools, 'prompt': prompt, 'budget': budget, 'system': system})
         queue = checks if tools == ['WebFetch'] else agent_results
         if system == A.VERIFY_RULES:
             queue = verifies if verifies is not None else checks
@@ -264,6 +264,52 @@ class Agent(unittest.TestCase):
         with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
             detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
         self.assertEqual(detail['fallback'][0]['link_fixes'], 1)
+
+    def test_ladder_rules_name_the_box_and_say_whether_it_can_search(self):
+        web, memory = A.ladder_rules('CIRRUS', True), A.ladder_rules('CIRRUS', False)
+        self.assertIn(A.WEB, web)
+        self.assertNotIn(A.NO_WEB, web)
+        self.assertIn(A.NO_WEB, memory)
+        for rules in (web, memory):
+            self.assertIn('CIRRUS', rules)
+            self.assertNotIn('CUMULUS', rules)
+
+    def test_web_search_models_draft_with_search_and_others_from_memory(self):
+        # S679, Buddy 11-24: "give the backup models web search now"
+        self.held()
+        cfg = dict(CFG, web_providers=['openai'], signoff='CIRRUS')
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], [],
+                       verifies=[{'passed': False, 'issues': ['wrong'], 'sources': []},
+                                 {'passed': True, 'issues': [], 'sources': [{'title': 'SBA', 'url': 'https://www.sba.gov/vetcert'}]}])
+        memory_calls, web_calls, sent, notes = [], [], [], []
+        def call(provider, system, user, creds, **kw):
+            memory_calls.append((provider, A.NO_WEB in system))
+            return json.dumps(dict(GOOD, sources=[]))
+        def web(provider, system, user, creds, client):
+            web_calls.append((provider, A.WEB in system, 'CIRRUS' in system and 'CUMULUS' not in system))
+            return json.dumps(dict(GOOD, sources=[])), 2
+        row = A.candidates(self.root, cfg, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, cfg, row, 'k', {'gemini_api_key': 'x', 'openai_api_key': 'y'}, run=run,
+                            call=call, web=web, send=lambda *a: sent.append(a) or True,
+                            verify=lambda *a: {'uid': '1'}, notify=notes.append)
+        self.assertEqual(out, 'sent_verified')
+        self.assertEqual(memory_calls, [('gemini', True)])           # not on the web list: drafts from memory
+        self.assertEqual(web_calls, [('openai', True, True)])        # searches, and writes as CIRRUS
+        self.assertIn('CIRRUS', run.calls[0]['system'])                # the main writer is told its box too
+        self.assertNotIn('CUMULUS', run.calls[0]['system'])
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual(detail['fallback'][1]['searches'], 2)
+
+    def test_stuck_telegram_names_the_box(self):
+        self.held()
+        cfg = dict(CFG, signoff='CIRRUS', fallback=False)
+        notes = []
+        row = A.candidates(self.root, cfg, A.Ledger(self.root))[0]
+        A.process(self.root, cfg, row, 'k', {}, run=fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], []),
+                  send=lambda *a: True, verify=lambda *a: None, notify=notes.append)
+        self.assertTrue(notes[0].startswith('CIRRUS research agent'))
 
     def test_unreadable_draft_gets_one_more_try(self):
         # S679: gpt-6-astra wrote plain text instead of the JSON in 6 of 24 real calls

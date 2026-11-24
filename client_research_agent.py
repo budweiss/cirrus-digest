@@ -389,7 +389,7 @@ def thread_context(memory, turn, signature=None, limit=3, budget=12000):
 def answer(question, subject, cfg, key, run=run_claude, context=''):
     """Research, code gate, independent check, one revision. Returns (result, problems, cost, log)."""
     import knowledge_freshness
-    system = AGENT_RULES + '\n\n' + knowledge_freshness.instruction(cfg['model'])
+    system = AGENT_RULES.replace('CUMULUS', cfg['signoff']) + '\n\n' + knowledge_freshness.instruction(cfg['model'])
     earlier = ('Earlier in this email thread, oldest first (for context; the newest question is below):\n%s\n\n'
                % context) if context else ''
     ask = earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
@@ -469,11 +469,79 @@ def fix_links(reply, fixes, sources):
     return reply, count
 
 
-def fallback(question, subject, context, cfg, key, creds, client, *, run=run_claude, call=None):
+# S679, Buddy 11-24: "give the backup models web search now". Gemini and OpenAI draft with their
+# own built-in web search (Google Search grounding; the Responses API web_search tool). Grok, Kimi
+# and DeepSeek still draft from memory. Host config 'web_providers' overrides the list.
+WEB_PROVIDERS = ('gemini', 'openai')
+NO_WEB = 'You have no web access here:\nanswer from what you know reliably.'
+WEB = ('Search the web before you answer, every time, even when you think you know:\nconfirm each '
+       'fact on a page you found, and cite those pages.')
+
+
+def ladder_rules(box, web):
+    """The backup models' rules, naming the box that answers and saying whether they can search."""
+    rules = FALLBACK_RULES.replace('CUMULUS', box)
+    return rules.replace(NO_WEB, WEB) if web else rules
+
+
+def web_draft(provider, system, user, creds, client):
+    """One draft using the provider's own web search. Returns (text, searches). Called directly,
+    not through llm_providers.py, which is in the qualified contract (contract_digest). The key is
+    sent in a header, never in the URL. Token use is recorded in llm_budget as llm_providers does;
+    search fees (Gemini $14/1k after 5,000 free a month, OpenAI $10/1k, 11-24) are per search."""
+    import requests
+    import llm_providers
+    model = llm_providers.configured_model(provider, creds)
+    started = time.monotonic()
+    if provider == 'gemini':
+        resp = requests.post('https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent' % model,
+                             headers={'x-goog-api-key': creds['gemini_api_key']},
+                             json={'system_instruction': {'parts': [{'text': system}]},
+                                   'contents': [{'role': 'user', 'parts': [{'text': user}]}],
+                                   'tools': [{'google_search': {}}], 'generationConfig': {'maxOutputTokens': 8000}},
+                             timeout=240)
+        resp.raise_for_status()
+        data = resp.json()
+        cand = (data.get('candidates') or [{}])[0]
+        text = ''.join(p.get('text', '') for p in (cand.get('content') or {}).get('parts') or [] if not p.get('thought'))
+        use = data.get('usageMetadata') or {}
+        tokens = (use.get('promptTokenCount'), (use.get('candidatesTokenCount') or 0) + (use.get('thoughtsTokenCount') or 0))
+        searches = len((cand.get('groundingMetadata') or {}).get('webSearchQueries') or [])
+    elif provider == 'openai':
+        body = {'model': model, 'instructions': system, 'input': user, 'tools': [{'type': 'web_search'}],
+                'max_output_tokens': 8000}
+        if model == 'gpt-6-astra':
+            body['reasoning'] = {'effort': 'low'}
+        resp = requests.post('https://api.openai.com/v1/responses', json=body, timeout=240,
+                             headers={'Authorization': 'Bearer ' + creds['openai_api_key']})
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get('output') or []
+        text = ''.join(c.get('text', '') for i in items if i.get('type') == 'message'
+                       for c in i.get('content') or [] if c.get('type') == 'output_text')
+        use = data.get('usage') or {}
+        tokens = (use.get('input_tokens'), use.get('output_tokens'))
+        searches = sum(1 for i in items if i.get('type') == 'web_search_call')
+    else:
+        raise ValueError('no built-in web search for ' + provider)
+    try:
+        import llm_budget
+        llm_budget.record_call(creds, provider, model, len(system) + len(user), len(text),
+                               task='client-research-fallback-web:' + client,
+                               app_dir=str(Path(__file__).resolve().parent), in_tok=tokens[0], out_tok=tokens[1],
+                               wall_seconds=round(time.monotonic() - started, 3))
+    except Exception:
+        pass
+    return text, searches
+
+
+def fallback(question, subject, context, cfg, key, creds, client, *, run=run_claude, call=None, web=None):
     """Other foundation models draft; a Claude web check must confirm each draft.
     Returns (result, problems, claude_cost, tried) and stops at the first verified draft."""
     import llm_providers
     call = call or llm_providers.call
+    web = web or web_draft
+    searching = cfg.get('web_providers', WEB_PROVIDERS)
     providers = [p for p in cfg.get('fallback_providers', FALLBACK_ORDER) if creds.get(llm_providers._KEY_FIELD.get(p, ''))]
     earlier = ('Earlier in this email thread, oldest first:\n%s\n\n' % context) if context else ''
     ask = (earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
@@ -489,11 +557,16 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
     for provider in providers:
         entry = {'provider': provider, 'model': llm_providers.configured_model(provider, creds)}
         tried.append(entry)
+        rules = ladder_rules(cfg['signoff'], provider in searching)
         try:
             for attempt in (1, 2):     # one more try only when the reply is not the JSON object
                 try:
-                    draft = parse_json(call(provider, FALLBACK_RULES, ask, creds, max_tokens=6000, retries=0,
-                                            task='client-research-fallback:' + client))
+                    if provider in searching:
+                        text, entry['searches'] = web(provider, rules, ask, creds, client)
+                    else:
+                        text = call(provider, rules, ask, creds, max_tokens=6000, retries=0,
+                                    task='client-research-fallback:' + client)
+                    draft = parse_json(text)
                     break
                 except ValueError:
                     if attempt == 2:
@@ -534,7 +607,7 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
     return {}, problems, cost, tried
 
 
-def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=None, notify=None, call=None):
+def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=None, notify=None, call=None, web=None):
     """One held request, start to finish. Returns its outcome label."""
     import intake_lifecycle
     from conversation_memory import Memory
@@ -550,7 +623,8 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     question = own_words(turn['question'], cfg['clients'][client].get('signature'))
     greeting = cfg['clients'][client].get('greeting') or client.title()
     if len(question) < 15:
-        return _stuck(root, ledger, row, client, greeting, subject, ['question_unreadable'], {}, 0.0, {}, notify)
+        return _stuck(root, ledger, row, client, greeting, subject, ['question_unreadable'], {}, 0.0, {}, notify,
+                      cfg['signoff'])
     detail = {'model': cfg['model'], 'route': 'claude-code', 'cloud_research_basis': cfg['clients'][client].get('basis')}
     context = thread_context(memory, turn, cfg['clients'][client].get('signature'))
     detail['thread_turns'] = context.count('Client wrote:')
@@ -565,7 +639,7 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     if problems and cfg.get('fallback', True):
         try:
             fb_result, fb_problems, fb_cost, tried = fallback(question, subject, context, cfg, key, creds, client,
-                                                              run=run, call=call)
+                                                              run=run, call=call, web=web)
         except Exception as exc:
             fb_result, fb_problems, fb_cost, tried = {}, ['fallback_crash:' + type(exc).__name__], 0.0, []
         cost += fb_cost
@@ -587,7 +661,7 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
                       'first problem: %s' % (len(tried), ', '.join(t['provider'] for t in tried),
                                              (problems[1] if len(problems) > 1 else '')[:120])}
     if problems:
-        return _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify)
+        return _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify, cfg['signoff'])
     attachment = word_copy(root, rid, subject, result['reply']) if WANTS_FILE.search(question) else None
     if attachment:
         detail['attachment'] = attachment.name
@@ -621,8 +695,8 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
         ledger.finish(rid, 'delivery_unknown', cost, detail)
         intake_lifecycle.update(root, payload, 'blocked_on_evidence', 'cowork',
                                 'delivery uncertain after research-agent send; verify Sent Mail, never resend')
-        _notify(notify, "CUMULUS research agent: the reply to %s's \"%s\" may not have gone out. "
-                        "It will not resend; check Sent Mail." % (greeting, subject))
+        _notify(notify, "%s research agent: the reply to %s's \"%s\" may not have gone out. "
+                        "It will not resend; check Sent Mail." % (cfg['signoff'], greeting, subject))
         return 'delivery_unknown'
     ts.dev_loop.ledger_append({'event': 'auto-answered', 'requester': client, 'title': subject,
                                'request_id': aid, 'thread': turn['thread'], 'route': 'research-agent',
@@ -642,7 +716,7 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     return 'sent_verified' if receipt else 'sent_unverified'
 
 
-def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify):
+def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost, detail, notify, box):
     import intake_lifecycle
     reason = (result or {}).get('stuck_reason') or REASONS.get(problems[0]) or (
         'the source check rejected the draft twice; first problem: ' + problems[0])
@@ -651,8 +725,8 @@ def _stuck(root, ledger, row, client, greeting, subject, problems, result, cost,
     # The callback bridge forwards this exact action to the Cowork help queue.
     intake_lifecycle.update(root, row['payload'], 'blocked_no_worker', 'cowork', BRIDGE_ACTION,
                             {'research_agent': {'outcome': 'stuck', 'reason': reason}})
-    _notify(notify, "CUMULUS research agent could not answer %s's \"%s\": %s. "
-                    "It is in the Cowork help queue; no reply was sent." % (greeting, subject, reason))
+    _notify(notify, "%s research agent could not answer %s's \"%s\": %s. "
+                    "It is in the Cowork help queue; no reply was sent." % (box, greeting, subject, reason))
     return 'stuck'
 
 
