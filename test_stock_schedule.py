@@ -190,6 +190,17 @@ class ScheduleChecks(unittest.TestCase):
         record.assert_called_once_with('pm',True,'status=sent decision_review=failed_paper_decision_review_failed')
         self.assertIn('held',notice.call_args[0][0])
 
+    def test_s679_withheld_research_checks_reach_the_ledger_note(self):
+        value={'status':'sent','decision_review':'passed','research_checks':'withheld','job':'pm','date':'2026-11-24'}
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as td,patch.object(S,'ROOT',Path(td)), \
+             patch.object(S.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(value))), \
+             patch.object(S,'record_status') as record,patch('vendor_mail_watch.telegram',return_value=True):
+            S.dispatch('pm',live=True)
+        record.assert_called_once_with('pm',True,'status=sent decision_review=passed research_checks=withheld')
+
     def test_a_second_review_hold_in_a_row_alerts(self):
         value={'status':'sent','decision_review':'failed_paper_decision_review_failed','job':'pm','date':'2026-10-29'}
         with tempfile.TemporaryDirectory() as td:
