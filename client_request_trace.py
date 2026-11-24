@@ -54,6 +54,10 @@ def _ro(path):
 def _workflow(turn, where):
     """The local answer workflow's stages, from the conversation memory."""
     steps, meta = [], turn['meta']
+    if meta.get('progress_check'):
+        steps.append('The answer workflow sent only its fixed progress-check question ("are we getting '
+                     'closer?"); no model ran, and the request itself was not answered.')
+        return steps
     stages = meta.get('stages') or {}
     if not stages and 'awaiting' in str(meta.get('reason', '')).lower():
         steps.append('The answer workflow stopped before any model ran: %s' % meta['reason'])
@@ -124,8 +128,11 @@ def trace(root, row, memory_db, ledger_db, where=None):
     if (not out.get('answered_by') and turn and turn['state'] == 'delivered'
             and not turn['meta'].get('research_agent')):
         local = [s for s in (turn['meta'].get('stages') or {}).values() if isinstance(s, dict) and s.get('model')]
-        out['answered_by'] = 'answer workflow (%s)' % model_name(local[-1].get('provider'), local[-1].get('model'), where) \
-            if local else 'answer workflow'
+        if turn['meta'].get('progress_check'):
+            out['answered_by'] = 'nobody yet: the answer workflow sent only its fixed progress-check question (no model)'
+        else:
+            out['answered_by'] = 'answer workflow (%s)' % model_name(local[-1].get('provider'), local[-1].get('model'), where) \
+                if local else 'answer workflow'
     if not out.get('answered_by') and row['owner'] in WORKERS:
         out['answered_by'] = WORKERS[row['owner']]
         steps.append('Handled by %s.' % WORKERS[row['owner']])

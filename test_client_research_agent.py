@@ -326,6 +326,51 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
         self.assertEqual(notes, [])
 
+    def _question_only(self, age):
+        aid, row = self.held(age=age)
+        Memory(self.root).update(aid, state='delivered', meta={'progress_check': True})
+        intake_lifecycle.update(self.root, row, 'sent_verified', 'delivery-review', 'done',
+                                {'client': 'bill', 'answer_request_id': aid, 'sent_receipt': {'uid': '1'}})
+        return aid
+
+    def test_a_progress_check_question_alone_alerts_until_the_client_writes_again(self):
+        self._question_only(age=3 * 3600)
+        notes = []
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 1)
+        self.assertIn('progress-check question', notes[0])
+        # The client wrote again: the newer request is the one to answer, so no alert here.
+        self.tearDown(); self.setUp()
+        self._question_only(age=3 * 3600)
+        later = [1, 'client@example.test', 'Re: Research', QUESTION, '<m2>']
+        intake_lifecycle.capture(self.root, later)
+        intake_lifecycle.update(self.root, later, 'working', 'answer', 'answering', {'client': 'bill'})
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
+        # A session answered it by hand: no alert.
+        self.tearDown(); self.setUp()
+        aid = self._question_only(age=3 * 3600)
+        Memory(self.root).update(aid, meta={'manual_answer': 'session send, verified'})
+        self.assertEqual(A.alerts(self.root, CFG, A.Ledger(self.root), notify=notes.append), 0)
+        self.assertEqual(len(notes), 1)
+
+    def test_reply_never_carries_a_second_greeting(self):
+        body = A.compose('Bill', 'Hi Bill,\n\nWe wrote Chapters 9 to 13.', [{'title': 't', 'url': 'https://x.test'}])
+        self.assertEqual(body.count('Hi Bill'), 1)
+        self.assertIn('We wrote Chapters 9 to 13.', body)
+        self.assertIn('Hi there is', A.compose('Bill', 'Hi there is a catch.', []))   # not a greeting line
+
+    def test_thread_context_keeps_the_end_of_a_long_earlier_reply(self):
+        memory = Memory(self.root)
+        first = memory.add(owner='cumulus1', client='bill', project='general', thread='research',
+                           message_id='<a>', question='Continue the story.', state='delivered', meta={})
+        story = 'Chapter 6. Start.\n' + 'word ' * 1800 + '\nLAST LINE OF CHAPTER 11.'
+        memory.update(first['id'], answer=story)
+        turn = memory.add(owner='cumulus1', client='bill', project='general', thread='research',
+                          message_id='<b>', question='Continue again.', state='needs_review', meta={})
+        text = A.thread_context(memory, memory.get(turn['id']))
+        self.assertIn('Chapter 6. Start.', text)
+        self.assertIn('LAST LINE OF CHAPTER 11.', text)
+        self.assertIn('client received all of it', text)
+
     def test_live_run_refuses_when_the_proof_mailbox_is_not_this_box(self):
         (self.root / A.CONFIG).write_text(json.dumps(CFG))
         (self.root / 'config/credentials.json').write_text('{}')

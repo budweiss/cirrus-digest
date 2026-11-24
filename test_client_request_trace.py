@@ -48,6 +48,15 @@ class Trace(unittest.TestCase):
             self.assertIn(want, out)
         self.assertNotIn('PRIVATE', json.dumps(t) + out)
 
+    def test_a_progress_check_question_is_not_reported_as_an_answer(self):
+        turn, row = self.request(meta={'progress_check': True,
+                                       'reason': 'One concrete progress check before further inference.'})
+        intake_lifecycle.update(self.root, row, 'sent_verified', 'delivery-review', 'done',
+                                {'client': 'bill', 'answer_request_id': turn['id'], 'sent_receipt': 'r'})
+        t = T.collect(self.root)[0]
+        self.assertTrue(t['answered_by'].startswith('nobody yet'))
+        self.assertIn('no model ran, and the request itself was not answered', T.text(t))
+
     def test_refused_local_stage_and_manual_session_answer(self):
         turn, row = self.request(meta={'manual_answer': 'S679 session send, verified in Sent Mail',
             'stages': {'local': {'provider': '', 'error_type': 'ValueError',

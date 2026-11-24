@@ -263,10 +263,22 @@ REASONS = {'sources': 'the draft had no usable source list', 'reply_length': 'th
            'question_unreadable': 'the question text could not be read after removing the signature'}
 
 
+GREETING_LINE = re.compile(r'^(?:hi|hello|dear)\b[^\n]{0,40}\n+', re.I)
+OMITTED = '\n\n[... the middle of this reply is left out here; the client received all of it ...]\n\n'
+
+
 def compose(greeting, reply, sources):
     links = '\n'.join('- %s %s' % (str(s.get('title') or '').strip(), s['url']) for s in sources)
+    # The model sometimes greets too; Bill got "Hi Bill, Hi Bill," on 11-24.
+    body = GREETING_LINE.sub('', reply.strip(), count=1)
     return ('Hi %s,\n\n%s\n\nSources:\n%s\n\nIs this what you were looking for?\n\n-- CUMULUS\n'
-            % (greeting, reply.strip(), links))
+            % (greeting, body, links))
+
+
+def _clip(answer, head=2500, tail=3500):
+    """Keep the start and the END of a long earlier reply. Cutting only the end made the
+    agent think a sent chapter had stopped mid-sentence and rewrite it (Bill, 11-24)."""
+    return answer if len(answer) <= head + tail else answer[:head] + OMITTED + answer[-tail:]
 
 
 def thread_context(memory, turn, signature=None, limit=3, budget=12000):
@@ -275,9 +287,11 @@ def thread_context(memory, turn, signature=None, limit=3, budget=12000):
     parts = []
     for row in memory.history(turn, same_thread=True, limit=limit):
         if row.get('answer'):
-            parts.append('Client wrote:\n%s\n\nWe replied:\n%s' % (own_words(row['question'], signature), row['answer'][:6000]))
+            parts.append('Client wrote:\n%s\n\nWe replied:\n%s' % (own_words(row['question'], signature), _clip(row['answer'])))
     text = '\n\n---\n\n'.join(parts)
-    return text[-budget:] if text else ''
+    if len(text) > budget:
+        text = '[... earlier exchanges left out ...]\n\n' + text[-budget:]
+    return text
 
 
 def answer(question, subject, cfg, key, run=run_claude, context=''):
@@ -542,21 +556,46 @@ def _notify(notify, text):
         pass
 
 
+def progress_check_only(root, evidence):
+    """True when the reply we sent was only the answer workflow's fixed progress-check
+    question, with no model run and no session answer (Bill, 11-23 19:05). Sent Mail proves
+    that question went out, but the request itself was not answered."""
+    if not evidence.get('answer_request_id'):
+        return False
+    try:
+        from conversation_memory import Memory
+        turn = Memory(root).get(evidence['answer_request_id'])
+    except Exception:
+        return False
+    meta = (turn or {}).get('meta') or {}
+    return bool(meta.get('progress_check')) and not meta.get('manual_answer')
+
+
 def alerts(root, cfg, ledger, notify=None, now=None):
     """One Telegram per client request still without a verified reply after two hours."""
     now = time.time() if now is None else now
     sent = 0
-    for r in _rows(root, 'WHERE created>=? ORDER BY created', (now - ALERT_WINDOW,)):
+    rows = _rows(root, 'WHERE created>=? ORDER BY created', (now - ALERT_WINDOW,))
+    latest = {}
+    for r in rows:
+        client = json.loads(r['evidence'] or '{}').get('client')
+        latest[client] = max(latest.get(client, 0), r['created'])
+    for r in rows:
         evidence = json.loads(r['evidence'] or '{}')
         after = WORKER_ALERT_AFTER if r['state'] == 'working' and r['owner'] in WORKER_OWNERS else ALERT_AFTER
-        if (evidence.get('client') not in cfg['alert_clients'] or r['state'] in DONE
+        # A progress-check question counts as unanswered until the client writes again.
+        question_only = (r['state'] == 'sent_verified' and latest.get(evidence.get('client')) == r['created']
+                         and progress_check_only(root, evidence))
+        if (evidence.get('client') not in cfg['alert_clients'] or (r['state'] in DONE and not question_only)
                 or now - r['created'] < after or not ledger.alert_once(r['id'])):
             continue
         payload = json.loads(r['payload'])
         when = datetime.fromtimestamp(r['created']).strftime('%a %H:%M')
+        status = ('only the answer workflow\'s fixed progress-check question was sent; no model answered it'
+                  if question_only else '%s, %s' % (r['state'], (r['next_action'] or '')[:90]))
         _notify(notify, "Client request still without a verified reply after %d hours: %s, \"%s\" "
-                        "(arrived %s). Now: %s, %s." % (after // 3600, evidence['client'], payload[2] if len(payload) > 2 else '?',
-                                                       when, r['state'], (r['next_action'] or '')[:90]))
+                        "(arrived %s). Now: %s." % (after // 3600, evidence['client'], payload[2] if len(payload) > 2 else '?',
+                                                    when, status))
         sent += 1
     return sent
 
