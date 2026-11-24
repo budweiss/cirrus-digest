@@ -229,6 +229,42 @@ class Agent(unittest.TestCase):
         self.assertEqual([e.get('stuck_reason') for e in detail['log'] if e.get('stage') == 'agent'], ['no source'])
         self.assertEqual(creds['openai_model'], 'gpt-4o-mini')      # the shared setting is untouched
 
+    def test_fix_links_uses_only_pages_the_check_opened(self):
+        dead, good = 'https://sba.gov/old-vetcert', 'https://www.sba.gov/vetcert'
+        reply = 'Apply at %s today. More at %s/faq and https://elsewhere.test/x.' % (dead, dead)
+        opened = [{'title': 'VetCert', 'url': good}]
+        out, n = A.fix_links(reply, [{'old': dead, 'new': good}], opened)
+        self.assertEqual(n, 1)
+        self.assertIn('Apply at %s today.' % good, out)
+        self.assertIn('%s/faq' % dead, out)                      # a longer link is never cut into
+        for fixes in ([{'old': dead, 'new': 'https://not-opened.test'}],      # not a page it opened
+                      [{'old': 'https://not-in-reply.test', 'new': good}],     # nothing to replace
+                      [{'old': dead, 'new': 'javascript:alert(1)'}],           # not a web link
+                      'not a list', [None, 'x']):
+            with self.subTest(fixes=fixes):
+                self.assertEqual(A.fix_links(reply, fixes, opened + [{'url': 'javascript:alert(1)'}]), (reply, 0))
+
+    def test_ladder_draft_with_a_dead_link_is_fixed_not_failed(self):
+        # S679: the check failed whole drafts over a 404 it had already found the right page for
+        self.held()
+        dead, good = 'https://sba.gov/old-vetcert', 'https://www.sba.gov/vetcert'
+        draft = dict(GOOD, reply='The program is VetCert. Apply at %s with your DD-214 and SAM.gov record.' % dead, sources=[])
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], [],
+                       verifies=[{'passed': True, 'issues': [], 'sources': [{'title': 'VetCert', 'url': good}],
+                                  'link_fixes': [{'old': dead, 'new': good}]}])
+        sent = []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', {'openai_api_key': 'y'}, run=run,
+                            call=lambda *a, **k: json.dumps(draft), send=lambda *a: sent.append(a) or True,
+                            verify=lambda *a: {'uid': '1'}, notify=lambda m: None)
+        self.assertEqual(out, 'sent_verified')
+        self.assertIn('Apply at %s with' % good, sent[0][5])
+        self.assertNotIn(dead, sent[0][5])
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual(detail['fallback'][0]['link_fixes'], 1)
+
     def test_unreadable_draft_gets_one_more_try(self):
         # S679: gpt-6-astra wrote plain text instead of the JSON in 6 of 24 real calls
         self.held()
