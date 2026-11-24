@@ -355,6 +355,9 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
     earlier = ('Earlier in this email thread, oldest first:\n%s\n\n' % context) if context else ''
     ask = earlier + "Client's subject: %s\nClient's question, in their own words:\n%s" % (subject, question)
     tried, cost, problems = [], 0.0, ['no_fallback_provider']
+    # S679: Kimi K3 took 74 s on a real fallback prompt and timed out at the 120 s default
+    # once; K3.1 Pro took 159 s. A longer limit for this ladder only; shared settings stay.
+    creds = dict(creds, kimi_timeout=cfg.get('kimi_timeout', 300))
     for provider in providers:
         entry = {'provider': provider, 'model': llm_providers.configured_model(provider, creds)}
         tried.append(entry)

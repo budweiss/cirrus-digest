@@ -179,6 +179,7 @@ class Agent(unittest.TestCase):
         calls, sent, notes = [], [], []
         def call(provider, system, user, creds, **kw):
             calls.append((provider, kw.get('task'), system == A.FALLBACK_RULES))
+            self.assertEqual(creds['kimi_timeout'], 300)     # the ladder's own longer Kimi limit
             return json.dumps(drafts[provider])
         creds = {'gemini_api_key': 'x', 'openai_api_key': 'y'}
         row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
