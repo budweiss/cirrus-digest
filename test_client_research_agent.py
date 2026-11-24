@@ -121,6 +121,8 @@ class Agent(unittest.TestCase):
                      'We send one reply per question, so this email is the only one.',
                      'and we cannot send it as a file or as one email per chapter.'):
             self.assertIn('delivery_claim', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + said)), said)
+        self.assertIn('voice', A.gate(dict(GOOD, reply=GOOD['reply'] + ' The client asked for one email per scene.')))
+        self.assertNotIn('voice', A.gate(GOOD))
         for fine in ('We cannot confirm the file number on the county page.',
                      'We could not find a public file for that permit.', 'The file is attached.'):
             self.assertNotIn('delivery_claim', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + fine)), fine)
