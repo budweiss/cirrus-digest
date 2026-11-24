@@ -192,8 +192,9 @@ class Agent(unittest.TestCase):
         def call(provider, system, user, creds, **kw):
             calls.append((provider, kw.get('task'), system == A.FALLBACK_RULES))
             self.assertEqual(creds['kimi_timeout'], 300)     # the ladder's own longer Kimi limit
+            self.assertEqual(creds['openai_model'], 'gpt-6-astra')   # same model on both boxes
             return json.dumps(drafts[provider])
-        creds = {'gemini_api_key': 'x', 'openai_api_key': 'y'}
+        creds = {'gemini_api_key': 'x', 'openai_api_key': 'y', 'openai_model': 'gpt-4o-mini'}
         row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
         with patch('task_solver.dev_loop.ledger_append'):
             out = A.process(self.root, CFG, row, 'k', creds, run=run, call=call, send=lambda *a: sent.append(a) or True,
@@ -207,6 +208,8 @@ class Agent(unittest.TestCase):
             detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
         self.assertEqual(detail['answered_by_fallback'], 'openai')
         self.assertEqual([t['outcome'] for t in detail['fallback']], ['stuck', 'verified'])
+        self.assertEqual(detail['fallback'][1]['model'], 'gpt-6-astra')
+        self.assertEqual(creds['openai_model'], 'gpt-4o-mini')      # the shared setting is untouched
 
     def test_telegram_only_after_every_model_fails(self):
         self.held()

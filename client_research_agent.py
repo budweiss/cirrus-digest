@@ -431,7 +431,11 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
     tried, cost, problems = [], 0.0, ['no_fallback_provider']
     # S679: Kimi K3 took 74 s on a real fallback prompt and timed out at the 120 s default
     # once; K3.1 Pro took 159 s. A longer limit for this ladder only; shared settings stay.
-    creds = dict(creds, kimi_timeout=cfg.get('kimi_timeout', 300))
+    # S679 (Buddy: "match the OpenAI model on both boxes"): the shared openai_model differs
+    # (gpt-4o-mini on CUMULUS1, gpt-4.1 on CIRRUS) and other jobs read it. The ladder uses
+    # the qualified answer workflow's model on both: knowledge to 2026-04 (MODEL-KNOWLEDGE-DATES).
+    creds = dict(creds, kimi_timeout=cfg.get('kimi_timeout', 300),
+                 openai_model=cfg.get('openai_model', 'gpt-6-astra'))
     for provider in providers:
         entry = {'provider': provider, 'model': llm_providers.configured_model(provider, creds)}
         tried.append(entry)
