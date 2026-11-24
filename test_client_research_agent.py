@@ -20,12 +20,14 @@ GOOD = {'status': 'answered', 'reply': 'Here is the list you asked for. ' * 5,
         'sources': [{'title': 'Bibliography', 'url': 'https://example.org/books'}], 'stuck_reason': ''}
 
 
-def fake_run(agent_results, checks):
+def fake_run(agent_results, checks, verifies=None):
     calls = []
 
     def run(prompt, system, tools, budget, timeout, model, key, max_turns=40):
         calls.append({'tools': tools, 'prompt': prompt, 'budget': budget})
         queue = checks if tools == ['WebFetch'] else agent_results
+        if system == A.VERIFY_RULES:
+            queue = verifies if verifies is not None else checks
         models = {'claude-sonnet-5-5': 0.08, 'claude-haiku-4-5': 0.02} if tools != ['WebFetch'] else {'claude-sonnet-5-5': 0.1}
         return {'text': json.dumps(queue.pop(0)), 'cost': 0.1, 'turns': 3, 'error': False, 'subtype': 'success',
                 'models': models}
@@ -168,6 +170,50 @@ class Agent(unittest.TestCase):
                          [['claude-haiku-4-5', 'claude-sonnet-5-5'], ['claude-sonnet-5-5']])
         self.assertTrue(detail['hold_label'].startswith('needs web research'))
         self.assertEqual(sorted(c.kwargs['model'] for c in cost.call_args_list), ['claude-haiku-4-5', 'claude-sonnet-5-5'])
+
+    def test_other_foundation_models_try_before_anyone_is_told(self):
+        self.held()
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], [],
+                       verifies=[{'passed': True, 'issues': [], 'sources': [{'title': 'Checked', 'url': 'https://example.org/ok'}]}])
+        drafts = {'gemini': {'status': 'stuck'}, 'openai': dict(GOOD, sources=[])}
+        calls, sent, notes = [], [], []
+        def call(provider, system, user, creds, **kw):
+            calls.append((provider, kw.get('task'), system == A.FALLBACK_RULES))
+            return json.dumps(drafts[provider])
+        creds = {'gemini_api_key': 'x', 'openai_api_key': 'y'}
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', creds, run=run, call=call, send=lambda *a: sent.append(a) or True,
+                            verify=lambda *a: {'uid': '1'}, notify=notes.append)
+        self.assertEqual(out, 'sent_verified')
+        self.assertEqual([c[0] for c in calls], ['gemini', 'openai'])
+        self.assertTrue(all(c[1] == 'client-research-fallback:bill' and c[2] for c in calls))
+        self.assertIn('https://example.org/ok', sent[0][5])
+        self.assertEqual(notes, [])
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual(detail['answered_by_fallback'], 'openai')
+        self.assertEqual([t['outcome'] for t in detail['fallback']], ['stuck', 'verified'])
+
+    def test_telegram_only_after_every_model_fails(self):
+        self.held()
+        bad = {'passed': False, 'issues': ['contact name not found on any page'], 'sources': []}
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'no source'}], [], verifies=[bad, bad])
+        calls, notes = [], []
+        def call(provider, system, user, creds, **kw):
+            calls.append(provider)
+            return json.dumps(dict(GOOD, reply=GOOD['reply'] + (' We will submit a bid.' if provider == 'grok' else '')))
+        creds = {k: 'x' for k in ('gemini_api_key', 'openai_api_key', 'grok_api_key')}
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        out = A.process(self.root, CFG, row, 'k', creds, run=run, call=call, send=lambda *a: self.fail('sent'),
+                        notify=notes.append)
+        self.assertEqual(out, 'stuck')
+        self.assertEqual(calls, ['gemini', 'openai', 'grok'])
+        self.assertEqual(len(notes), 1)
+        self.assertIn('3 other foundation models (gemini, openai, grok)', notes[0])
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual([t['outcome'] for t in detail['fallback']], ['check_failed', 'check_failed', 'gate:commitment'])
 
     def test_stuck_goes_to_the_help_queue_with_one_message_and_no_send(self):
         self.held()

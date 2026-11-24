@@ -109,8 +109,14 @@ def trace(root, row, memory_db, ledger_db, where=None):
         if checks:
             steps.append('Independent source check: %s.' % (
                 'passed on try %d' % passed_on if passed_on else 'did not pass (%d tries)' % len(checks)))
-        steps.append('Research agent result: %s, $%.2f in all.' % (attempt['outcome'].replace('_', ' '), attempt['cost'] or 0))
-        out['answered_by'] = 'research agent' if attempt['outcome'].startswith('sent') else None
+        for t in d.get('fallback') or []:
+            steps.append('Foundation-model fallback: %s via the %s API, %s.' % (
+                t.get('model') or t['provider'], t['provider'], str(t.get('outcome', '?')).replace('_', ' ')))
+        steps.append('Research agent result: %s, $%.2f of Claude Code in all%s.' % (
+            attempt['outcome'].replace('_', ' '), attempt['cost'] or 0,
+            '; fallback providers bill separately in the cost ledger' if d.get('fallback') else ''))
+        out['answered_by'] = (('research agent, answer drafted by %s and verified on the web by Claude' % d['answered_by_fallback'])
+                              if d.get('answered_by_fallback') else 'research agent') if attempt['outcome'].startswith('sent') else None
         out['models'] = models
     if turn and turn['meta'].get('manual_answer'):
         steps.append('Answered by a Cowork session: %s.' % turn['meta']['manual_answer'])
