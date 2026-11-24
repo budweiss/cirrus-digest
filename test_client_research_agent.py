@@ -209,6 +209,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(detail['answered_by_fallback'], 'openai')
         self.assertEqual([t['outcome'] for t in detail['fallback']], ['stuck', 'verified'])
         self.assertEqual(detail['fallback'][1]['model'], 'gpt-6-astra')
+        self.assertEqual([e.get('stuck_reason') for e in detail['log'] if e.get('stage') == 'agent'], ['no source'])
         self.assertEqual(creds['openai_model'], 'gpt-4o-mini')      # the shared setting is untouched
 
     def test_telegram_only_after_every_model_fails(self):
@@ -230,6 +231,8 @@ class Agent(unittest.TestCase):
         with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
             detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
         self.assertEqual([t['outcome'] for t in detail['fallback']], ['check_failed', 'check_failed', 'gate:commitment'])
+        # Claude's own reason survives the "all models failed" summary (11-24 09:44: it did not)
+        self.assertEqual([e.get('stuck_reason') for e in detail['log'] if e.get('stage') == 'agent'], ['no source'])
 
     def test_stuck_goes_to_the_help_queue_with_one_message_and_no_send(self):
         self.held()

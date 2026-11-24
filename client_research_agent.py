@@ -391,7 +391,10 @@ def answer(question, subject, cfg, key, run=run_claude, context=''):
             result = {'status': 'stuck', 'stuck_reason': 'agent_output_not_json'}
         problems = ['agent_error'] if out['error'] else gate(result)
         if result.get('status') == 'stuck' or 'agent_error' in problems:
-            log.append({'attempt': attempt, 'stage': 'agent', 'problems': problems or ['stuck']})
+            # S679: process() replaces result with the "all models failed" summary when the
+            # ladder also fails, so Claude's own reason survives only here (11-24 09:44: lost).
+            log.append({'attempt': attempt, 'stage': 'agent', 'problems': problems or ['stuck'],
+                        'stuck_reason': str(result.get('stuck_reason') or '')[:300]})
             log.append({'models_total': models})
             return result, problems or ['stuck'], cost, log
         if not problems:
