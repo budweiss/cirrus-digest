@@ -64,7 +64,12 @@ def label(subject, own_words, creds, call=None):
         return REVIEW
 
 
-def wording(category):
-    """Only fixed notice text; research remains disabled after its failed replay."""
-    return {WEB_RESEARCH: "needs web research; no job started, so it waits for you",
+AGENT_TAKES = "the research agent picks it up within minutes; you hear only if it is not answered"
+
+
+def wording(category, agent=False):
+    """Only fixed notice text. agent: this box's client research agent takes the request
+    (S679: on 11-24 the notice said it waited for Buddy while the agent was already on it)."""
+    text = {WEB_RESEARCH: "needs web research; no job started, so it waits for you",
             NEW_REPORT: "asks for a new report or file; your decision"}.get(category, "needs review")
+    return text.split(";")[0] + "; " + AGENT_TAKES if agent else text

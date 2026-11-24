@@ -425,6 +425,18 @@ class Agent(unittest.TestCase):
         self.assertEqual(sent[0][1], {})
         self.assertNotIn('Word file', sent[0][0][5])
 
+    def test_takes_only_live_configured_clients(self):
+        # intake's held notice relies on this to say the agent is on it (S679)
+        path = self.root / A.CONFIG
+        self.assertFalse(A.takes(self.root, 'bill'))                       # no config on this box
+        path.write_text(json.dumps(CFG))
+        self.assertTrue(A.takes(self.root, 'bill'))
+        self.assertFalse(A.takes(self.root, 'aggie'))                      # not this box's client
+        path.write_text(json.dumps(dict(CFG, mode='dry-run')))
+        self.assertFalse(A.takes(self.root, 'bill'))                       # dry run never sends
+        path.write_text(json.dumps({'mode': 'off'}))
+        self.assertFalse(A.takes(self.root, 'bill'))                       # invalid config
+
     def test_daily_limits_count_and_dollars(self):
         cfg = dict(CFG, daily_requests=15, daily_budget_usd=10.0)
         ledger = A.Ledger(self.root)

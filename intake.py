@@ -1090,6 +1090,16 @@ def _record_status(ok: bool, note: str = "") -> None:
         log(f"job_status.record failed: {e}")
 
 
+def _agent_takes(client) -> bool:
+    """S679: does this box's client research agent pick up this client's held answers?
+    Any failure keeps the old "waits for you" wording."""
+    try:
+        import client_research_agent
+        return client_research_agent.takes(PROJECT_DIR, client)
+    except Exception:                           # noqa: BLE001
+        return False
+
+
 def run(dry_run: bool = False, rescan: bool = False) -> int:
     allowlist = load_allowlist()
     if not allowlist:
@@ -1629,7 +1639,8 @@ def run(dry_run: bool = False, rescan: bool = False) -> int:
                     flag = f"✅ Answer delivered — request {request_id}"
                 else:
                     # Only fixed category wording leaves the box; reasons stay local.
-                    flag = (f"✋ Answer held: {held_label.wording(r.get('held_label'))} "
+                    flag = (f"✋ Answer held: "
+                            f"{held_label.wording(r.get('held_label'), _agent_takes(r.get('requester')))} "
                             f"— request {request_id}")
             elif r.get("kind") == "clarify":
                 mm = r.get("attachment_mismatch") or {}

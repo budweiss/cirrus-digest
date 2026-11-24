@@ -54,6 +54,16 @@ class LabelTests(unittest.TestCase):
         self.assertIn("your decision", held_label.wording("new_report"))
         self.assertEqual(held_label.wording("anything else"), "needs review")
 
+    def test_wording_says_the_agent_takes_it_when_it_does(self):
+        # S679: on 11-24 the notice said "waits for you" while the agent was already on it
+        for category, start in (("web_research", "needs web research; "),
+                                ("new_report", "asks for a new report or file; "),
+                                ("anything else", "needs review; ")):
+            text = held_label.wording(category, agent=True)
+            self.assertEqual(text, start + held_label.AGENT_TAKES)
+            self.assertNotIn("waits for you", text)
+            self.assertNotIn("your decision", text)
+
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):

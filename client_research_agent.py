@@ -143,6 +143,16 @@ def load_config(root):
                  'alert_clients': sorted(cfg['clients'])}, **cfg)
 
 
+def takes(root, client):
+    """True when this box's agent picks up held answers for client: intake's notice says so
+    instead of "waits for you" (S679, 11-24 09:44)."""
+    try:
+        cfg = load_config(root)
+    except ValueError:
+        return False
+    return bool(cfg) and cfg['mode'] == 'live' and client in cfg['clients']
+
+
 def own_words(text, signature=None):
     """The client's question without signature or contact details. Contact details
     are removed inside a line, never by dropping the line: intake may deliver the
