@@ -13,7 +13,7 @@ from conversation_memory import Memory
 
 QUESTION = ('Research this topic and give me a list of topics with the science behind each story.\n\n'
             'William Example\nPresident\nExample Property Services\n555-123-4567')
-CFG = {'mode': 'live', 'clients': {'bill': {'greeting': 'Bill', 'basis': 'synthetic test'}},
+CFG = {'mode': 'live', 'signoff': 'CUMULUS', 'clients': {'bill': {'greeting': 'Bill', 'basis': 'synthetic test'}},
        'model': 'claude-sonnet-5-5', 'agent_budget_usd': 1.25, 'check_budget_usd': 0.4, 'daily_requests': 5,
        'agent_timeout': 900, 'check_timeout': 360, 'alert_clients': ['bill', 'alyssa']}
 GOOD = {'status': 'answered', 'reply': 'Here is the list you asked for. ' * 5,
@@ -149,6 +149,23 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.state()[:2], ('sent_verified', 'delivery-review'))
         self.assertEqual(notes, [])
         self.assertEqual(A.candidates(self.root, CFG, A.Ledger(self.root)), [])
+
+    def test_reply_is_signed_by_the_box_the_client_wrote_to(self):
+        # S679: compose() hard-coded "-- CUMULUS"; CIRRUS covers Bill too since 11-24
+        self.held()
+        cfg = dict(CFG, signoff='CIRRUS')
+        sent = []
+        row = A.candidates(self.root, cfg, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            A.process(self.root, cfg, row, 'synthetic-key', {}, run=fake_run([GOOD], [{'passed': True, 'issues': []}]),
+                      send=lambda *a: sent.append(a) or True, verify=lambda *a: {'uid': '8'}, notify=lambda m: None)
+        self.assertTrue(sent[0][5].rstrip().endswith('-- CIRRUS'))
+        self.assertNotIn('CUMULUS', sent[0][5])
+        path = self.root / A.CONFIG
+        path.write_text(json.dumps({k: v for k, v in CFG.items() if k != 'signoff'}))
+        with self.assertRaises(ValueError):                         # no sign-off, no sends
+            A.load_config(self.root)
+        self.assertFalse(A.takes(self.root, 'bill'))               # and intake says it waits
 
     def test_a_follow_up_sees_our_earlier_reply_in_the_same_thread(self):
         memory = Memory(self.root)
@@ -391,7 +408,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.gate(story), [])
         self.assertIn('sources', A.gate(dict(GOOD, sources=[])))                      # no flag
         self.assertIn('sources', A.gate(dict(GOOD, sources=[], invented_only='yes')))  # not a real true
-        body = A.compose('Bill', story['reply'], [])
+        body = A.compose('Bill', story['reply'], [], 'CUMULUS')
         self.assertNotIn('Sources:', body)
         self.assertTrue(body.rstrip().endswith('-- CUMULUS'))
 
@@ -452,10 +469,10 @@ class Agent(unittest.TestCase):
         self.assertFalse(A.over_limits(ledger, cfg, now=time.time() + 86401))   # rolling 24 hours
 
     def test_reply_never_carries_a_second_greeting(self):
-        body = A.compose('Bill', 'Hi Bill,\n\nWe wrote Chapters 9 to 13.', [{'title': 't', 'url': 'https://x.test'}])
+        body = A.compose('Bill', 'Hi Bill,\n\nWe wrote Chapters 9 to 13.', [{'title': 't', 'url': 'https://x.test'}], 'CUMULUS')
         self.assertEqual(body.count('Hi Bill'), 1)
         self.assertIn('We wrote Chapters 9 to 13.', body)
-        self.assertIn('Hi there is', A.compose('Bill', 'Hi there is a catch.', []))   # not a greeting line
+        self.assertIn('Hi there is', A.compose('Bill', 'Hi there is a catch.', [], 'CUMULUS'))   # not a greeting line
 
     def test_thread_context_keeps_the_end_of_a_long_earlier_reply(self):
         memory = Memory(self.root)

@@ -42,7 +42,8 @@ ELIGIBLE = ('needs web research', 'needs review', 'asks for a new report or file
 HELD_ANSWER = 'review saved attempt'                  # intake_lifecycle.finish() for held answers
 DONE = ('sent_verified', 'noted', 'waiting_on_client')
 BRIDGE_ACTION = 'request needs a research/file/tool worker; reconcile full mail and assign'
-MAX_AGE = 3 * 86400          # never pick up old backlog on its own
+SIGNOFFS = ('CUMULUS', 'CIRRUS')      # host config 'signoff': the box the client wrote to
+MAX_AGE = 3 * 86400         # never pick up old backlog on its own
 ALERT_AFTER = 2 * 3600
 # A request an active worker owns (a lesson build, a digest research topic, a contact
 # list, a video) normally takes longer and the client already has an acknowledgment;
@@ -138,6 +139,10 @@ def load_config(root):
     cfg = json.loads(path.read_text())
     if cfg.get('mode') not in ('live', 'dry-run') or not isinstance(cfg.get('clients'), dict):
         raise ValueError('client_research_config_invalid')
+    if cfg.get('signoff') not in SIGNOFFS:
+        # S679: replies are signed by the box the client wrote to; compose() hard-coded CUMULUS,
+        # so a CIRRUS reply would have come from CIRRUS signed "-- CUMULUS". No default on purpose.
+        raise ValueError('client_research_signoff_missing')
     return dict({'model': 'claude-sonnet-5-5', 'agent_budget_usd': 2.0, 'check_budget_usd': 0.4,
                  'daily_requests': 15, 'daily_budget_usd': 10.0, 'agent_timeout': 900, 'check_timeout': 360,
                  'alert_clients': sorted(cfg['clients'])}, **cfg)
@@ -324,14 +329,14 @@ GREETING_LINE = re.compile(r'^(?:hi|hello|dear)\b[^\n]{0,40}\n+', re.I)
 OMITTED = '\n\n[... the middle of this reply is left out here; the client received all of it ...]\n\n'
 
 
-def compose(greeting, reply, sources, attached=None):
+def compose(greeting, reply, sources, box, attached=None):
     links = '\n'.join('- %s %s' % (str(s.get('title') or '').strip(), s['url']) for s in sources)
     # The model sometimes greets too; Bill got "Hi Bill, Hi Bill," on 11-24.
     body = GREETING_LINE.sub('', reply.strip(), count=1)
     if attached:
         body = 'This reply is also attached as a Word file, %s.\n\n%s' % (attached, body)
-    return ('Hi %s,\n\n%s\n\n%sIs this what you were looking for?\n\n-- CUMULUS\n'
-            % (greeting, body, 'Sources:\n%s\n\n' % links if links else ''))
+    return ('Hi %s,\n\n%s\n\n%sIs this what you were looking for?\n\n-- %s\n'
+            % (greeting, body, 'Sources:\n%s\n\n' % links if links else '', box))
 
 
 # Buddy, 11-24: "Yes, add attachments" when a client asks for a file. Read from the
@@ -544,7 +549,8 @@ def process(root, cfg, row, key, creds, *, run=run_claude, send=None, verify=Non
     attachment = word_copy(root, rid, subject, result['reply']) if WANTS_FILE.search(question) else None
     if attachment:
         detail['attachment'] = attachment.name
-    body = compose(greeting, result['reply'], result['sources'], attached=attachment.name if attachment else None)
+    body = compose(greeting, result['reply'], result['sources'], cfg['signoff'],
+                   attached=attachment.name if attachment else None)
     reply_subject = subject if subject.lower().startswith('re:') else 'Re: ' + subject
     if cfg['mode'] == 'dry-run':
         folder = Path(root) / STATE / 'dry-run'
