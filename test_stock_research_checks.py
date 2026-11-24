@@ -118,6 +118,20 @@ class ResearchChecks(unittest.TestCase):
         self.assertEqual(review.call_count, 3)
         self.assertEqual(request['research_checks'], DEC['research_checks'])
 
+    def test_s681_decision_context_is_kept_privately_for_exact_replay(self):
+        ok = '{"passed":true,"issues":[]}'
+        with tempfile.TemporaryDirectory() as td, patch.object(S, 'ROOT', Path(td)), \
+                patch.object(S, 'policy', return_value='Synthetic policy'), \
+                patch.object(S.media, 'lease', return_value=nullcontext()), \
+                patch.object(S.media, 'token_count', return_value=100), \
+                patch.object(S.research, 'structured_review', side_effect=[ok, ok]):
+            path = Path(td) / 'decision-context.json'
+            S.choose(copy.deepcopy(EV), {}, {}, '2026-11-24', 'pm', caller=lambda *a: json.dumps(DEC), context_path=path)
+            saved = json.loads(path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(saved['slot'], 'pm')
+        self.assertEqual(saved['research']['companies'][0]['ticker'], 'EXAMPLE')
+
     def test_s679_rejected_checks_withhold_only_the_checklist_never_the_reviewed_decision(self):
         ok = '{"passed":true,"issues":[]}'
         bad = '{"passed":false,"issues":["research_checks.thesis: invented original buying reason"]}'

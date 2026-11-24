@@ -318,7 +318,7 @@ def decision_complete(system,text,slot,companies,secondary_ids=None):
     return answer
 
 
-def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None,prior=None):
+def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None,prior=None,context_path=None):
     # All private account inputs stay on the local model. No paid fallback.
     compact={k:account[k] for k in ('snapshot','market','benchmark','order_outcomes') if k in account}
     compact['quotes']={symbol:{k:q.get(k) for k in ('price','quote_at','executable','valuation_eligible','reasons','instrument_type')} for symbol,q in account.get('quotes',{}).items()}
@@ -361,6 +361,9 @@ def choose(evidence,account,replies,date,slot,caller=None,audit=None,public=None
         return {'request_id':'server-'+date+'-'+slot,'decisions':[]},'No trades: no company passed the source/research review. Collect verified primary evidence before considering any paper decision.'
     deferred=fit_decision_context(knowledge_freshness.apply(system,media.MODEL),context,public or {})
     if deferred and audit:audit({'stage':'context','newsletters_deferred':len(deferred)})
+    # S681: keep the exact decision context (private, this run folder) so a held
+    # decision or withheld checklist can be replayed exactly, not reconstructed.
+    if context_path:atomic(context_path,context)
     # A scheduled decision can arrive behind an active media request. Keep the
     # shared lock and a bounded wait, but allow a normal request to finish.
     with media.lease(ROOT/'logs/media/worker.lock',timeout=300):
@@ -466,7 +469,7 @@ def daily(job,live,date,folder):
         try:
             attempts=[]
             request,note=choose(evidence,before,replies,date,job,audit=lambda d:(attempts.append(d),atomic(folder/'decision-checks.json',attempts)),public=public,
-                prior=research_checks.history(HOME,datetime.now(timezone.utc).isoformat()))
+                prior=research_checks.history(HOME,datetime.now(timezone.utc).isoformat()),context_path=folder/'decision-context.json')
             decision_review='passed'
         except Exception as exc:
             request={'request_id':'server-'+date+'-'+job,'decisions':[]}
