@@ -470,11 +470,24 @@ def report(out_dir=OUT_DIR):
 
 # ── selftest ─────────────────────────────────────────────────────────────────
 
-def build_note(stats):
-    """The ledger note for one run. Self-contained (S150)."""
+def build_note(stats, wide=None):
+    """The ledger note for one run. Self-contained (S150).
+
+    S685: the wide lanes (alopecia_wide.py) ride in the same run and note,
+    AFTER the main sources. supervisor/completeness.py reads only the FIRST
+    "N found", so the main sources going silently empty still fires that rule;
+    the wide pass detects its own all-zero case and reports it as an error.
+    """
     note = "%d found, %d new" % (stats.get("found", 0), stats.get("new", 0))
     if stats.get("errors"):
         note += ", %d source error(s)" % len(stats["errors"])
+    if wide is not None:
+        if wide.get("crashed"):
+            note += "; wide lanes: crashed"
+        else:
+            note += "; wide lanes: %d found, %d new" % (wide.get("found", 0), wide.get("new", 0))
+            if wide.get("errors"):
+                note += ", %d source error(s)" % len(wide["errors"])
     return note
 
 
@@ -492,6 +505,13 @@ def note_samples():
          build_note({"found": 100, "new": 0, "errors": ["medRxiv"]}), "productive"),
         ("found nothing AND a source errored",
          build_note({"found": 0, "new": 0, "errors": ["medRxiv", "pubmed"]}), "zero"),
+        # S685: the wide lanes must not mask the main sources going empty.
+        ("a normal day with the wide lanes",
+         build_note({"found": 48, "new": 1}, {"found": 57, "new": 12}), "productive"),
+        ("main sources empty, wide lanes busy",
+         build_note({"found": 0, "new": 0}, {"found": 57, "new": 12, "errors": ["x"]}), "zero"),
+        ("the wide pass crashed",
+         build_note({"found": 48, "new": 1}, {"crashed": True}), "productive"),
     ]
 
 
@@ -789,12 +809,27 @@ def main():
         % (stats["found"], stats["new"], stats["seen_total"],
            (", %d source error(s)" % len(stats["errors"])) if stats["errors"] else ""))
 
+    # S685 (Buddy 2026-11-24, RESEARCH-PLAN section 0b): the wider-field lanes.
+    # Own store (alopecia/wide/), never read by the brief or the agent. A crash
+    # here must not lose the main collection above, and must not hide either.
+    try:
+        import alopecia_wide
+        wide = alopecia_wide.run(dry_run=dry)
+        wide_ok = alopecia_wide.healthy(wide)
+        log("wide lanes: found %d, new %d%s" % (
+            wide["found"], wide["new"],
+            (", %d search error(s)" % len(wide["errors"])) if wide["errors"] else ""))
+    except Exception as e:
+        wide, wide_ok = {"crashed": True, "errors": [str(e)]}, False
+        log("wide lanes CRASHED: %s" % e)
+
     if not dry:
         try:
             import job_status
-            # A run where EVERY source failed is not a healthy run.
-            healthy = len(stats["errors"]) < len(COLLECTORS)
-            job_status.record("alopeciacollect", healthy, build_note(stats))
+            # A run where EVERY source failed is not a healthy run; nor is one
+            # where the wide pass crashed or every wide search failed.
+            healthy = len(stats["errors"]) < len(COLLECTORS) and wide_ok
+            job_status.record("alopeciacollect", healthy, build_note(stats, wide))
         except Exception as e:
             print("job_status.record failed: %s" % e)
     return 0
