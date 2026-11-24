@@ -12,6 +12,19 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+try:   # S679: Date headers carry the sending box's zone (Pacific on CUMULUS), unlabelled
+    from zoneinfo import ZoneInfo
+    EASTERN = ZoneInfo("America/New_York")
+except Exception:   # no time-zone data: show the header's own offset instead
+    EASTERN = None
+
+
+def _stamp(when):
+    """A send time Buddy can read at a glance: Eastern and labelled, never a bare zone."""
+    if EASTERN is not None:
+        return f"{when.astimezone(EASTERN):%Y-%m-%d %H:%M} ET"
+    return f"{when:%Y-%m-%d %H:%M} UTC{when:%z}"
+
 
 # How long may each client go without hearing from us before that is worth
 # saying? Absence of a client here means the default. An EXEMPTION is explicit
@@ -263,7 +276,7 @@ def main(d):
         if client in EXEMPT:
             print(f"    exempt: {EXEMPT[client]}")
         for when, s in rows[:5]:
-            print(f"    {when:%Y-%m-%d %H:%M}  [{s['box']}]  {s['subject'][:78]}")
+            print(f"    {_stamp(when)}  [{s['box']}]  {s['subject'][:78]}")
         if len(rows) > 5:
             print(f"    ... and {len(rows) - 5} more in the window")
         print()
@@ -323,6 +336,21 @@ def selftest() -> int:
             {"box": "hostA", "ok": False, "error": "sudo denied", "mailbox": A}))
         box(d, "two", "hostB", B, [one])
         ck("a probe reporting ok=false refuses", main(d) == 3)
+
+    # S679: CUMULUS stamps Date in Pacific; an unlabelled 06:14 was read as Eastern.
+    import contextlib, io
+    pacific = dict(one, date="Tue, 24 Nov 2026 06:14:08 -0800")
+    ck("a Pacific send time prints in Eastern, labelled",
+       _stamp(parsedate_to_datetime(pacific["date"])) == "2026-11-24 09:14 ET")
+    ck("a summer (EDT) send time keeps its Eastern hour",
+       _stamp(parsedate_to_datetime(one["date"])) == "2026-09-10 12:00 ET")
+    with tempfile.TemporaryDirectory() as d:
+        box(d, "one", "hostA", A, [pacific]); box(d, "two", "hostB", B, [])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(d)
+        ck("...and the report itself shows it that way",
+           "    2026-11-24 09:14 ET  [" in out.getvalue())
 
     # ---- S152: the USAGE half. Different question from contact, and the one
     # the Aggie investigation showed was actually load-bearing.
