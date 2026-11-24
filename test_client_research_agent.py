@@ -311,6 +311,48 @@ class Agent(unittest.TestCase):
                   send=lambda *a: True, verify=lambda *a: None, notify=notes.append)
         self.assertTrue(notes[0].startswith('CIRRUS research agent'))
 
+    def responses(self, provider, replies, creds):
+        bodies = []
+        class Reply:
+            def __init__(self, data): self.data = data
+            def raise_for_status(self): pass
+            def json(self): return self.data
+        def post(url, json=None, timeout=None, headers=None):
+            bodies.append((url, json, headers))
+            return Reply(replies[len(bodies) - 1])
+        import sys, types        # the MacBook has no requests; both boxes do
+        fakes = {'requests': types.SimpleNamespace(post=post),
+                 'llm_budget': types.SimpleNamespace(record_call=lambda *a, **k: None)}
+        with patch.dict(sys.modules, fakes):
+            out = A.web_draft(provider, 'rules', 'question', creds, 'bill')
+        return out, bodies
+
+    def test_kimi_extra_tool_calls_are_answered_and_the_exchange_resent(self):
+        # S679, 11-24: Kimi K3 asked for web_fetch it was not given and stopped; Moonshot keeps no state
+        final = {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(GOOD)}]}],
+                 'usage': {'input_tokens': 20, 'output_tokens': 5}}
+        first = {'output': [{'type': 'web_search_call'}, {'type': 'function_call', 'call_id': 'c1', 'name': 'web_fetch'}],
+                 'usage': {'input_tokens': 10, 'output_tokens': 2}}
+        (text, searches), bodies = self.responses('kimi', [first, final], {'kimi_api_key': 'SECRET-KEY', 'kimi_model': 'kimi-k3'})
+        self.assertEqual(A.parse_json(text)['status'], 'answered')
+        self.assertEqual(searches, 1)
+        self.assertEqual([b[0] for b in bodies], ['https://api.moonshot.ai/v1/responses'] * 2)
+        self.assertEqual(bodies[0][1]['input'], 'question')
+        resent = bodies[1][1]['input']
+        self.assertEqual(resent[0], {'role': 'user', 'content': 'question'})
+        self.assertEqual(resent[-1], {'type': 'function_call_output', 'call_id': 'c1', 'output': A.NOT_AVAILABLE})
+        for url, body, headers in bodies:
+            self.assertNotIn('SECRET-KEY', url)                   # keys go in the header only
+            self.assertEqual(headers['Authorization'], 'Bearer SECRET-KEY')
+
+    def test_grok_asks_for_json_and_stops_after_three_rounds(self):
+        loop = {'output': [{'type': 'function_call', 'call_id': 'c', 'name': 'web_search'}], 'usage': {}}
+        (text, searches), bodies = self.responses('grok', [loop, loop, loop], {'grok_api_key': 'g', 'grok_model': 'grok-x'})
+        self.assertEqual(len(bodies), 3)                            # never an endless tool loop
+        self.assertEqual(text, '')                                  # unreadable, so the ladder's retry or next model
+        self.assertEqual(bodies[0][1]['text'], {'format': {'type': 'json_object'}})
+        self.assertTrue(bodies[0][0].startswith('https://api.x.ai/'))
+
     def test_unreadable_draft_gets_one_more_try(self):
         # S679: gpt-6-astra wrote plain text instead of the JSON in 6 of 24 real calls
         self.held()

@@ -469,10 +469,15 @@ def fix_links(reply, fixes, sources):
     return reply, count
 
 
-# S679, Buddy 11-24: "give the backup models web search now". Gemini and OpenAI draft with their
-# own built-in web search (Google Search grounding; the Responses API web_search tool). Grok, Kimi
-# and DeepSeek still draft from memory. Host config 'web_providers' overrides the list.
-WEB_PROVIDERS = ('gemini', 'openai')
+# S679, Buddy 11-24: "give the backup models web search now" and "add web search for Grok and
+# Kimi now". Gemini uses Google Search grounding; OpenAI, Grok and Kimi use the server-side
+# web_search tool on each provider's Responses API. DeepSeek has none and drafts from memory.
+# Host config 'web_providers' overrides the list.
+WEB_PROVIDERS = ('gemini', 'openai', 'grok', 'kimi')
+RESPONSES = {'openai': ('https://api.openai.com/v1/responses', 'openai_api_key'),
+             'grok': ('https://api.x.ai/v1/responses', 'grok_api_key'),
+             'kimi': ('https://api.moonshot.ai/v1/responses', 'kimi_api_key')}
+NOT_AVAILABLE = 'That tool is not available here. Answer now from your search results, in the required JSON.'
 NO_WEB = 'You have no web access here:\nanswer from what you know reliably.'
 WEB = ('Search the web before you answer, every time, even when you think you know:\nconfirm each '
        'fact on a page you found, and cite those pages.')
@@ -507,21 +512,33 @@ def web_draft(provider, system, user, creds, client):
         use = data.get('usageMetadata') or {}
         tokens = (use.get('promptTokenCount'), (use.get('candidatesTokenCount') or 0) + (use.get('thoughtsTokenCount') or 0))
         searches = len((cand.get('groundingMetadata') or {}).get('webSearchQueries') or [])
-    elif provider == 'openai':
-        body = {'model': model, 'instructions': system, 'input': user, 'tools': [{'type': 'web_search'}],
-                'max_output_tokens': 8000}
+    elif provider in RESPONSES:
+        url, key_field = RESPONSES[provider]
+        body = {'model': model, 'instructions': system, 'tools': [{'type': 'web_search'}], 'max_output_tokens': 8000}
         if model == 'gpt-6-astra':
             body['reasoning'] = {'effort': 'low'}
-        resp = requests.post('https://api.openai.com/v1/responses', json=body, timeout=240,
-                             headers={'Authorization': 'Bearer ' + creds['openai_api_key']})
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get('output') or []
+        if provider == 'grok':
+            body['text'] = {'format': {'type': 'json_object'}}     # 11-24: plain text without it
+        history, sent, searches, tokens = [{'role': 'user', 'content': user}], user, 0, [0, 0]
+        for _ in range(3):
+            resp = requests.post(url, json=dict(body, input=sent), timeout=240,
+                                 headers={'Authorization': 'Bearer ' + creds[key_field]})
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get('output') or []
+            use = data.get('usage') or {}
+            tokens = [tokens[0] + (use.get('input_tokens') or 0), tokens[1] + (use.get('output_tokens') or 0)]
+            searches += sum(1 for i in items if i.get('type') == 'web_search_call')
+            # 11-24: Kimi K3 asks for tools it was not given (web_fetch, more web_search) and stops.
+            # Moonshot keeps no state (previous_response_id refused), so the whole exchange is resent.
+            calls = [i for i in items if i.get('type') == 'function_call']
+            if not calls:
+                break
+            history += items + [{'type': 'function_call_output', 'call_id': c.get('call_id'), 'output': NOT_AVAILABLE}
+                                for c in calls]
+            sent = history
         text = ''.join(c.get('text', '') for i in items if i.get('type') == 'message'
                        for c in i.get('content') or [] if c.get('type') == 'output_text')
-        use = data.get('usage') or {}
-        tokens = (use.get('input_tokens'), use.get('output_tokens'))
-        searches = sum(1 for i in items if i.get('type') == 'web_search_call')
     else:
         raise ValueError('no built-in web search for ' + provider)
     try:
