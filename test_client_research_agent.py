@@ -44,9 +44,10 @@ class Agent(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def held(self, client='bill', label='needs web research; no job started, so it waits for you', age=600, mid='<m1>'):
+    def held(self, client='bill', label='needs web research; no job started, so it waits for you', age=600, mid='<m1>',
+             question=QUESTION):
         turn = Memory(self.root).add(owner='cumulus1', client=client, project='general', thread='research',
-                                     message_id=mid, question=QUESTION, state='needs_review',
+                                     message_id=mid, question=question, state='needs_review',
                                      meta={'requires_buddy': True})
         row = [1, 'client@example.test', 'Research', QUESTION, mid]
         intake_lifecycle.capture(self.root, row)
@@ -114,6 +115,15 @@ class Agent(unittest.TestCase):
         self.assertIn('sources', A.gate(dict(GOOD, sources=[{'url': 'https://example.org/%d' % i} for i in range(41)])))
         self.assertIn('commitment', A.gate(dict(GOOD, reply=GOOD['reply'] + ' We will submit a bid for you.')))
         self.assertEqual(A.gate({'status': 'stuck'}), ['not_answered'])
+        # Bill's 11-23 replies said these; none is true of CUMULUS.
+        for said in ("This channel only takes a plain-text email body, so we can't attach a file.",
+                     'We can’t send the novel as a series of emails.',
+                     'We send one reply per question, so this email is the only one.',
+                     'and we cannot send it as a file or as one email per chapter.'):
+            self.assertIn('delivery_claim', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + said)), said)
+        for fine in ('We cannot confirm the file number on the county page.',
+                     'We could not find a public file for that permit.', 'The file is attached.'):
+            self.assertNotIn('delivery_claim', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + fine)), fine)
 
     def test_answered_request_is_sent_once_and_proven(self):
         aid, _ = self.held()
@@ -367,6 +377,59 @@ class Agent(unittest.TestCase):
         for bad in (('zz', 'note'), (aid[:12], ' '), ('', 'note')):
             with self.assertRaises(ValueError):
                 A.manual_answer(self.root, *bad)
+
+    def test_invented_story_needs_no_sources_but_anything_else_does(self):
+        story = dict(GOOD, sources=[], invented_only=True)
+        self.assertEqual(A.gate(story), [])
+        self.assertIn('sources', A.gate(dict(GOOD, sources=[])))                      # no flag
+        self.assertIn('sources', A.gate(dict(GOOD, sources=[], invented_only='yes')))  # not a real true
+        body = A.compose('Bill', story['reply'], [])
+        self.assertNotIn('Sources:', body)
+        self.assertTrue(body.rstrip().endswith('-- CUMULUS'))
+
+    def test_a_file_request_gets_a_word_copy_attached(self):
+        import zipfile
+        self.held(question='Write a short story about a lighthouse and send it to me as an attachment.')
+        story = dict(GOOD, reply='Chapter 1. The Light\n\nTomas kept the light & the log. ' + 'The sea was calm. ' * 6,
+                     sources=[], invented_only=True)
+        run = fake_run([story], [{'passed': True, 'issues': []}])
+        sent = []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, CFG, row, 'k', {}, run=run, verify=lambda *a: {'uid': '1'},
+                            send=lambda *a, **k: sent.append((a, k)) or True, notify=lambda t: None)
+        self.assertEqual(out, 'sent_verified')
+        args, kw = sent[0]
+        path = Path(kw['attachments'][0])
+        self.assertTrue(path.exists() and path.suffix == '.docx')
+        with zipfile.ZipFile(path) as z:
+            xml = z.read('word/document.xml').decode()
+        self.assertIn('Tomas kept the light &amp; the log.', xml)
+        self.assertIn('attached as a Word file, %s' % path.name, args[5])
+        # A plain question still goes out the old way, with no attachment.
+        self.tearDown(); self.setUp()
+        self.held()
+        run, sent = fake_run([GOOD], [{'passed': True, 'issues': []}]), []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            A.process(self.root, CFG, row, 'k', {}, run=run, verify=lambda *a: {'uid': '1'},
+                      send=lambda *a, **k: sent.append((a, k)) or True, notify=lambda t: None)
+        self.assertEqual(sent[0][1], {})
+        self.assertNotIn('Word file', sent[0][0][5])
+
+    def test_daily_limits_count_and_dollars(self):
+        cfg = dict(CFG, daily_requests=15, daily_budget_usd=10.0)
+        ledger = A.Ledger(self.root)
+        for i in range(14):
+            ledger.start('r%d' % i); ledger.finish('r%d' % i, 'sent_verified', 0.3, {})
+        self.assertFalse(A.over_limits(ledger, cfg))
+        ledger.start('r14')
+        self.assertTrue(A.over_limits(ledger, cfg))                       # 15 requests
+        self.tearDown(); self.setUp()
+        ledger = A.Ledger(self.root)
+        ledger.start('big'); ledger.finish('big', 'stuck', 10.0, {})
+        self.assertTrue(A.over_limits(ledger, cfg))                       # $10 reached
+        self.assertFalse(A.over_limits(ledger, cfg, now=time.time() + 86401))   # rolling 24 hours
 
     def test_reply_never_carries_a_second_greeting(self):
         body = A.compose('Bill', 'Hi Bill,\n\nWe wrote Chapters 9 to 13.', [{'title': 't', 'url': 'https://x.test'}])
