@@ -1,4 +1,4 @@
-"""S674: bounded C1 daily-caller context trial; numeric-only, no inference."""
+"""S674/S685: guarded C1 daily-caller context policy; numeric-only, no inference."""
 import json, math, os, socket, time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,8 +29,15 @@ def select(root, endpoint, model):
         cfg=settings(root)
         if cfg.get('trial') != 's674' or cfg.get('enabled') is not True: return 8192
         if str(root) in _STOPPED or (Path(root)/'config'/STOP).exists(): return 8192
-        if not cfg['starts_at'] <= time.time() < cfg['ends_at']: return 8192
-        if cfg['ends_at']-cfg['starts_at'] > 4*86400: return 8192
+        mode = cfg.get('mode', 'trial')
+        if mode == 'retained':
+            # Buddy's explicit retention approval; preserve the original trial dates.
+            since = cfg.get('retained_from')
+            if type(since) not in (int, float) or not math.isfinite(since) or not 0 <= since <= time.time(): return 8192
+        elif mode == 'trial':
+            if not cfg['starts_at'] <= time.time() < cfg['ends_at']: return 8192
+            if cfg['ends_at']-cfg['starts_at'] > 4*86400: return 8192
+        else: return 8192
         if memory() < 32: stop(root); return 8192
         # Prove the numeric monitor can be opened before admitting a trial call.
         ledger=Path(root)/'out/daily-context-trial.jsonl'

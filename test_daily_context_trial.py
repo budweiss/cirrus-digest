@@ -44,6 +44,48 @@ class Trial(unittest.TestCase):
         self.assertEqual(self.select(),8192)
     def test_inactive_calls_never_write(self):
         t.record(self.root,8192,self.good(),20);self.assertFalse((self.root/'out').exists())
+    def retained(self):
+        self.cfg.update(mode='retained', retained_from=time.time()-60,
+                        starts_at=time.time()-10*86400, ends_at=time.time()-7*86400)
+        self.save()
+    def test_retained_policy_survives_trial_expiry_with_exact_scope(self):
+        self.retained(); self.assertEqual(self.select(),65536)
+        with patch.object(t.socket,'gethostname',return_value='cirrus'):
+            self.assertEqual(self.select(),8192)
+        self.assertEqual(self.select(model='other'),8192)
+        self.assertEqual(self.select(host='http://remote:11434'),8192)
+        self.cfg['enabled']=False;self.save();self.assertEqual(self.select(),8192)
+    def test_retained_metadata_fails_closed(self):
+        self.retained()
+        for value in [None,True,-1,float('nan'),time.time()+86400]:
+            self.cfg['retained_from']=value;self.save();self.assertEqual(self.select(),8192)
+        self.cfg.update(mode='unknown',retained_from=time.time()-60)
+        self.save();self.assertEqual(self.select(),8192)
+    def test_retained_safeguards_still_latch(self):
+        cases=[dict(error=True),dict(data=self.good(response='')),
+               dict(data=self.good(done_reason='length')),
+               dict(data=self.good(load_duration=16000000000)),dict(elapsed=36)]
+        for changes in cases:
+            with self.subTest(changes=list(changes)),tempfile.TemporaryDirectory() as td:
+                root=Path(td);(root/'config').mkdir()
+                cfg=dict(self.cfg,mode='retained',retained_from=time.time()-60)
+                (root/'config'/t.CONTROL).write_text(json.dumps(cfg))
+                args={'data':self.good(),'elapsed':20};args.update(changes)
+                t.record(root,65536,**args)
+                self.assertEqual(t.select(root,'http://localhost:11434','gpt-oss:120b'),8192)
+                self.assertTrue((root/'config'/t.STOP).exists())
+    def test_retained_memory_monitor_and_existing_stop(self):
+        self.retained()
+        with patch.object(t,'memory',return_value=31):self.assertEqual(self.select(),8192)
+        self.assertEqual(self.select(),8192)
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'config').mkdir()
+            (root/'config'/t.CONTROL).write_text(json.dumps(self.cfg))
+            with patch.object(t.os,'open',side_effect=OSError()):
+                self.assertEqual(t.select(root,'http://localhost:11434','gpt-oss:120b'),8192)
+            # os.open also prevents writing the stop file; the process latch must hold.
+            self.assertIn(str(root),t._STOPPED)
+            self.assertEqual(t.select(root,'http://localhost:11434','gpt-oss:120b'),8192)
     def test_real_caller_wire_and_accounting(self):
         response=Mock();response.json.return_value=self.good()
         with patch.object(p.requests,'post',return_value=response) as wire, patch('native_observation.before',return_value={}), patch.object(t,'select',return_value=65536),patch.object(t,'record') as record,patch.object(p,'load_json',return_value={}),patch('llm_budget.record_call') as ledger:
