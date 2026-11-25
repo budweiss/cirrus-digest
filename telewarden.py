@@ -78,7 +78,13 @@ NOTIFY_PER_DAY = 6
 
 PRIVATE_JOBS = {"stock_schedule", "personal_schedule", "stockscorecard",
                 "stock_scorecard", "holdings_download_watch", "personal_input_sync",
-                "strike", "strike_desk", "stock_pickers"}
+                "strike", "strike_desk", "stock_pickers",
+                # S685: jobs_check names them by ledger name; these lines went to
+                # the worker's cloud fallback as "jobs_check" cases.
+                "stockam", "stockpm", "stockdiscovery", "personalopinion"}
+# A line in a digest (jobs_check) that reports one of them: its own private case.
+PRIVATE_NAME_RE = re.compile(r"(?i)\b(stock(?:am|pm|discovery|scorecard|_schedule)|"
+                             r"personal_?opinion|personal_schedule)\b")
 PRIVATE_RE = re.compile(
     r"(?i)\b(holdings?|portfolio|brokerage|cost basis|shares|positions?|tickers?|"
     r"dividends?|strike|options? (desk|trade|chain)|seeking alpha|net worth|"
@@ -230,7 +236,8 @@ def parse_jsonl(text, source):
             continue
         out.append({"t": t, "rid": _rid(line), "source": source,
                     "job": str(r.get("job") or "?"), "ok": r.get("ok"),
-                    "kind": r.get("kind"), "text": str(r.get("text") or "")})
+                    "kind": r.get("kind"), "text": str(r.get("text") or ""),
+                    "held": r.get("held") is True})
     return out
 
 
@@ -377,6 +384,13 @@ def classify(row):
         return "info", []
     out = []
     for item in items:
+        m = PRIVATE_NAME_RE.search(item)
+        if m:                                    # S685: counted only, no text kept
+            name = m[1].lower()
+            cid = "tw-" + hashlib.sha1(f"private|{row['source']}|{job}|{name}".encode()).hexdigest()[:10]
+            if cid not in [c[0] for c in out]:
+                out.append((cid, "", name))
+            continue
         cid = None
         for k in KNOWN:
             if re.search(k["job"], job) and re.search(k["text"], item, re.I):
@@ -385,7 +399,7 @@ def classify(row):
         if cid is None:
             cid = "tw-" + hashlib.sha1(
                 f"{row['source']}|{job}|{norm(item)}".encode()).hexdigest()[:10]
-        if cid not in [c for c, _ in out]:
+        if cid not in [c[0] for c in out]:
             out.append((cid, item))
     return "warning", out
 
@@ -496,6 +510,7 @@ def run_pass(readers=None, now=None, send=None, record=None):
     now = time.time() if now is None else now
     if disabled():
         return True, "disabled"
+    production = readers is None
     readers = readers or {"cirrus": lambda c: read_cirrus(),
                           "cumulus1": lambda c: read_cumulus1(),
                           "skywarden": lambda c: read_skywarden(c.get("t") or now - 7 * 86400),
@@ -522,8 +537,9 @@ def run_pass(readers=None, now=None, send=None, record=None):
             for row in fresh:
                 kind, items = classify(row)
                 counts[kind] = counts.get(kind, 0) + 1
-                for cid, item in items:
-                    touch_case(cases, cid, row, item, now, cache, notices)
+                for cid, item, *name in items:
+                    touch_case(cases, cid, dict(row, job=name[0]) if name else row,
+                               item, now, cache, notices)
                 if row.get("ok") is False and src != "nimbus":
                     # S624: CUMULUS1's bot hung from 11-14 ~11:00; its warnings never
                     # reached Buddy and nothing noticed. A lost send is itself a case.
@@ -531,7 +547,11 @@ def run_pass(readers=None, now=None, send=None, record=None):
                                f"Telegram send failed on {src} ({row['job']}); Buddy did not get it",
                                now, cache, notices)
                 ev = {"t": row["t"], "src": src, "job": row["job"], "kind": kind,
-                      "cases": [cid for cid, _ in items]}
+                      "cases": [it[0] for it in items]}
+                if row.get("held"):              # S685: Buddy did not get this one
+                    ev["held"] = True
+                    if not items and not kind.startswith("private"):
+                        ev["line"] = _clip(" ".join(row["text"].split()), 110)
                 if kind == "off":                # the forwarder sends one row per batch
                     m = re.search(r"paused (\d+)x", row["text"])
                     ev["n"] = int(m.group(1)) if m else 1
@@ -544,6 +564,8 @@ def run_pass(readers=None, now=None, send=None, record=None):
         _save("cases.json", cases)
         state["last_pass"] = now
         _save("state.json", state)
+    if production:
+        renew_leases(health, now)
     for n in notices:
         notify(n, send=send, now=now)
     maybe_weekly(now, send=send)
@@ -555,6 +577,48 @@ def run_pass(readers=None, now=None, send=None, record=None):
     if record:
         record(not bad, summary[:200])
     return not bad, summary
+
+
+# ── S685 gate lease ─────────────────────────────────────────────────────────
+# telegram_outbox.hold() holds a monitor job's message only while this lease is
+# fresh on its host, so a stopped or failing Telewarden lets every message
+# through again (fail-open). Renewed only after a pass has read and saved.
+LEASE = "logs/telewarden-lease"
+
+
+def renew_leases(health, now):
+    for src in ("cirrus", "cumulus1"):
+        if (health.get(src) or {}).get("ok_at") != now:
+            continue                             # not read this pass: let it lapse
+        try:
+            if src == "cirrus":
+                (HERE / LEASE).touch()
+            else:
+                subprocess.run(SSH + ["-n", C1, f"touch cirrus-digest/{LEASE}"],
+                               capture_output=True, timeout=30)
+        except Exception:                        # noqa: BLE001 -- a lapsed lease sends
+            pass
+
+
+def held_lines(now, hours=24):
+    """Rows the gate held in the last day: (n held, n into cases, {job: n}, notices)."""
+    n = cased = 0
+    jobs, notes = {}, []
+    for line in reversed(_tail_local(base() / "events.jsonl").splitlines()[-5000:]):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("t", 0) < now - hours * 3600:
+            break
+        if not ev.get("held"):
+            continue
+        n += 1
+        cased += bool(ev.get("cases"))
+        jobs[ev.get("job", "?")] = jobs.get(ev.get("job", "?"), 0) + 1
+        if ev.get("line"):
+            notes.append(ev["line"])
+    return n, cased, jobs, notes
 
 
 # ── outputs ──────────────────────────────────────────────────────────────────
@@ -737,6 +801,12 @@ def brief_lines(now=None):
         lines.append(f"• ⚠️ {len(stuck)} case(s) open over {STUCK_H // 24} days, so the fixer "
                      f"may be stuck: {names(stuck)}")
         att.append(f"Telewarden: {len(stuck)} case(s) open over {STUCK_H // 24} days")
+    n, cased, jobs, notes = held_lines(now)
+    if n:
+        lines.append(f"• Held instead of a Telegram (24h): {n}, {cased} into cases, "
+                     f"{n - cased} notices ("
+                     + ", ".join(f"{j} {k}" for j, k in sorted(jobs.items(), key=lambda x: -x[1]))
+                     + ")" + ("; latest: " + " / ".join(notes[:3]) if notes else ""))
     lines.append(f"• {len(busy)} case(s) being handled automatically; corrections go in "
                  f"Sunday's weekly recap" if busy else
                  "• Nothing open; corrections go in Sunday's weekly recap")
@@ -879,7 +949,12 @@ def selftest():
             check("pass ok and recorded", okp and recs == [True])
             check("known Case 1 matched", "case-1" in cases and cases["case-1"]["status"] == "explained")
             jc = [c for c in cases.values() if c["job"] == "jobs_check"]
-            check("digest split into line cases (2 warning lines, ok line ignored)", len(jc) == 2)
+            check("digest split into line cases (2 warning lines, ok line ignored)",
+                  len(jc) == 1 and "stratusreview" in jc[0]["sample"])
+            ps = [c for c in cases.values() if c["job"] == "stockscorecard"]
+            check("S685: a digest line about a private job is its own case, no text kept",
+                  len(ps) == 1 and ps[0]["private"] and ps[0]["sample"] == ""
+                  and "ValueError" not in json.dumps(ps[0]))
             check("brief, own and info rows make no case",
                   not [c for c in cases.values() if c["job"] in ("morning_brief", "telewarden", "telewarden_worker", "environment_scan")])
             pv = [c for c in cases.values() if c["job"] == "stock_schedule"]
@@ -895,6 +970,20 @@ def selftest():
             run_pass(readers, now=T + 40, send=send, record=record)
             sc = [c for c in _load("cases.json", {}).values() if "stockscorecard" in c["title"]]
             check("repeat with a new date joins the same case", len(sc) == 1 and sc[0]["count"] == 2)
+
+            # S685 gate: held rows are cases or notices like any copy, flagged held
+            feed["cirrus"].append(dict(row("model_health", "🩺 NEW: a provider shipped gemini-9", T + 31), held=True))
+            feed["cirrus"].append(dict(row("jobs_check", "Jobs\n⚠️ shoredigest: 2026-11-06T08:36 FAILED — ValueError\n✅ a", T + 32), held=True))
+            run_pass(readers, now=T + 41, send=send, record=record)
+            n, cased, jobs, notes = held_lines(T + 41)
+            check("held rows are counted: one into a case, one notice with its line",
+                  n == 2 and cased == 1 and jobs == {"model_health": 1, "jobs_check": 1}
+                  and notes and "gemini-9" in notes[0])
+            bl, _ = brief_lines(now=T + 41)
+            check("the brief says what was held instead of sent",
+                  any(l.startswith("• Held instead of a Telegram (24h): 2, 1 into cases") for l in bl))
+            check("injected readers never renew a real lease", not (HERE / LEASE).exists()
+                  or (HERE / LEASE).stat().st_mtime < time.time() - 5)
 
             feed["cumulus1"] = [row("foundation_renewal",
                                     "Approvals expire Thu 04:47: review the renewal packet", T + 50, "cumulus1")]

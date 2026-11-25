@@ -58,37 +58,108 @@ def _redact(text):
     return text
 
 
+def _names(frame):
+    """(job, via) for the sender: the running script, and the module that called us."""
+    main = sys.modules.get("__main__")
+    job = Path(getattr(main, "__file__", "") or sys.argv[0] or "?").stem
+    via = frame.f_globals.get("__name__", "?")
+    if job in ("", "?") or job.startswith("-"):   # G1 (S613): python3 -c / - name no script
+        job = via if via != "__main__" else "?"
+    return job, (via if via != "__main__" else job)
+
+
+def _row(text, ok, job, via):
+    return {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "host": socket.gethostname().split(".")[0].lower(),
+            "job": job, "via": via,
+            "ok": ok if ok in (True, False) else None,
+            "chars": len(text), "text": _redact(text[:MAX_TEXT])}
+
+
+def _write(row, sync=False):
+    """Append one row; raises on failure."""
+    line = (json.dumps(row, ensure_ascii=False) + "\n").encode()
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.fstat(fd).st_size > MAX_BYTES:
+            os.replace(str(path), str(path) + ".1")
+            os.close(fd)
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, line)
+        if sync:
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+# ── S685 gate: handled first, then Buddy (Buddy, 2026-11-25) ─────────────────
+# "implement a solution so these errors are handled before they are message to
+# me. Only issues that can't be resolved by the local harness and LLM using the
+# foundational models for help, should be sent to me."
+# A monitor job's warning or notice is written here (held) instead of sent.
+# Telewarden reads it like any copy: a warning becomes a case that the CIRRUS
+# repair worker tries (local model, then foundation model). Buddy hears only
+# when a case moves to needs-buddy, or is still happening after WAIT_H. Held
+# notices are counted in the morning brief. Everything else is sent as before.
+# Fail-open: no fresh Telewarden lease (it renews one on each host every pass),
+# an off switch, any error, or a fake token means the message is sent.
+HOLD_JOBS = {"jobs_check", "foundation_renewal", "foundation_renewal_cirrus",
+             "foundation_renewal_auto", "renewal_recovery", "bill_watch", "model_health",
+             "client_contact_daily", "environment_scan", "fleet_qualify",
+             "opinionai_review", "intake", "macbook_selfheal"}
+FYI_ONLY_JOBS = {"intake"}       # client pipeline: only its notices wait; its warnings go now
+# Words that ask for Buddy himself, or that Bill's reports may miss a week (S537).
+SEND_RE = re.compile(
+    r"(?i)(human needed|needs? (?:a )?live session|could not answer|without a verified "
+    r"reply|retry did not fix|need a look|would miss|credential|password|security|breach|"
+    r"over budget|budget (?:exceeded|exhausted)|spend (?:limit|cap)|payment|invoice)")
+LEASE_MAX_S = 20 * 60            # Telewarden passes every 5 min
+
+
+def _lease():
+    return Path(os.environ.get("TELEGRAM_GATE_LEASE")
+                or Path(__file__).resolve().parent / "logs" / "telewarden-lease")
+
+
+def hold(text, token, job=None):
+    """True: the message is safely queued for Telewarden; do not send it.
+    False: send it as before. Never raises."""
+    try:
+        if not _live_send(token):
+            return False
+        text = text if isinstance(text, str) else str(text)
+        name, via = _names(sys._getframe(1))
+        name = job or name
+        lease = _lease()
+        if (name not in HOLD_JOBS or (lease.parent / "telegram-gate-off").exists()
+                or time.time() - lease.stat().st_mtime > LEASE_MAX_S
+                or SEND_RE.search(text)):
+            return False
+        import telewarden as tw
+        probe = {"job": name, "text": text, "source": "", "kind": None}
+        if tw.is_private(probe):
+            return False
+        kind, _ = tw.classify(probe)
+        if name in FYI_ONLY_JOBS and kind == "warning":
+            return False
+        _write(dict(_row(text, None, name, via), held=True), sync=True)
+        return True
+    except Exception:
+        return False
+
+
 def record(text, ok, token):
     """Append one row for a message just sent. ok: True, False or None (unknown)."""
     try:
         if not _live_send(token):
             return
         text = text if isinstance(text, str) else str(text)
-        main = sys.modules.get("__main__")
-        job = Path(getattr(main, "__file__", "") or sys.argv[0] or "?").stem
-        via = sys._getframe(1).f_globals.get("__name__", "?")
-        if job in ("", "?") or job.startswith("-"):   # G1 (S613): python3 -c / - name no script
-            job = via if via != "__main__" else "?"
-        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-               "host": socket.gethostname().split(".")[0].lower(),
-               "job": job, "via": via if via != "__main__" else job,
-               "ok": ok if ok in (True, False) else None,
-               "chars": len(text), "text": _redact(text[:MAX_TEXT])}
-        line = (json.dumps(row, ensure_ascii=False) + "\n").encode()
-        path = _path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            if os.fstat(fd).st_size > MAX_BYTES:
-                os.replace(str(path), str(path) + ".1")
-                os.close(fd)
-                fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            os.write(fd, line)
-        finally:
-            os.close(fd)
+        _write(_row(text, ok, *_names(sys._getframe(1))))
     except Exception as e:  # never let the copy hurt the send
         try:
             print(f"telegram_outbox: not recorded ({type(e).__name__})", file=sys.stderr)
@@ -116,9 +187,10 @@ def report(days=7, path=None):
     for r in rows:
         d = str(r.get("ts", ""))[:10]
         if d >= cut:
-            c = per.setdefault(d, {}).setdefault(r.get("job", "?"), [0, 0])
+            c = per.setdefault(d, {}).setdefault(r.get("job", "?"), [0, 0, 0])
             c[0] += 1
             c[1] += r.get("ok") is False
+            c[2] += r.get("held") is True
     out, gaps = [f"{path}: {len(rows)} rows in file, last {days} days below"], 0
     for n in range(days, -1, -1):
         d = time.strftime("%Y-%m-%d", time.localtime(time.time() - n * 86400))
@@ -128,6 +200,7 @@ def report(days=7, path=None):
                 out.append(f"{d}  NO ROWS (copy not running?)")
             continue
         jobs = ", ".join(f"{j} {c[0]}" + (f" ({c[1]} failed)" if c[1] else "")
+                         + (f" ({c[2]} held)" if c[2] else "")
                          for j, c in sorted(per[d].items(), key=lambda kv: -kv[1][0]))
         out.append(f"{d}  {sum(c[0] for c in per[d].values()):3d}  {jobs}")
     return "\n".join(out), 1 if gaps else 0
@@ -210,8 +283,52 @@ def selftest():
                 record("after rotate", True, real_token)
             check("an oversized file moves to .1 and a fresh file starts",
                   Path(str(big) + ".1").exists() and "after rotate" in big.read_text())
+
+            # S685 gate
+            g = Path(td) / "gate" / "out.jsonl"
+            lease = g.parent / "telewarden-lease"
+            os.environ["TELEGRAM_OUTBOX"] = str(g)
+            os.environ["TELEGRAM_GATE_LEASE"] = str(lease)
+            warn = "⚠️ *CIRRUS jobs need attention*\n⚠️ shoredigest: 2026-11-06T08:36 FAILED — ValueError"
+            check("no Telewarden lease: sent as before", not hold(warn, real_token, job="jobs_check"))
+            lease.parent.mkdir(parents=True)
+            lease.touch()
+            check("a fake token is never held", not hold(warn, "t", job="jobs_check"))
+            check("a job outside the hold list is sent", not hold(warn, real_token, job="cirrus_bot"))
+            check("a monitor warning is held", hold(warn, real_token, job="jobs_check"))
+            rows = [json.loads(x) for x in g.read_text().splitlines()]
+            check("the held row is marked held, ok unknown, text kept",
+                  len(rows) == 1 and rows[0]["held"] is True and rows[0]["ok"] is None
+                  and rows[0]["job"] == "jobs_check" and "shoredigest" in rows[0]["text"])
+            check("the job comes from the script when not given",
+                  not hold(warn, real_token) or Path(sys.argv[0]).stem in HOLD_JOBS)
+            for text, why in (("bill_watch: Bill's Monday emails need a look; automatic retry did not fix",
+                               "Bill may miss a week"),
+                              ("model_health: HUMAN NEEDED, credential expired", "asks for Buddy"),
+                              ("model_health failed on the holdings feed", "private")):
+                check(f"sent, not held: {why}", not hold(text, real_token, job="model_health"))
+            check("intake: a client-pipeline warning is sent",
+                  not hold("intake failed: IMAP timed out", real_token, job="intake"))
+            check("intake: a notice is held",
+                  hold("📥 *Intake*: 1 new request(s)\n• bill: Re: Research — ✅ Answer delivered",
+                       real_token, job="intake"))
+            old_t = time.time() - LEASE_MAX_S - 60
+            os.utime(lease, (old_t, old_t))
+            check("a stale lease (Telewarden stopped) sends", not hold(warn, real_token, job="jobs_check"))
+            lease.touch()
+            (lease.parent / "telegram-gate-off").touch()
+            check("the off switch sends", not hold(warn, real_token, job="jobs_check"))
+            (lease.parent / "telegram-gate-off").unlink()
+            n = len(g.read_text().splitlines())
+            os.environ["TELEGRAM_OUTBOX"] = str(Path(td) / "blocked")
+            check("an unwritable outbox sends (never lost)", not hold(warn, real_token, job="jobs_check"))
+            os.environ["TELEGRAM_OUTBOX"] = str(g)
+            check("nothing extra was written by refusals", len(g.read_text().splitlines()) == n == 2)
+            text, rc = report(days=0)
+            check("report shows held rows", "jobs_check 1 (1 held)" in text and "intake 1 (1 held)" in text)
         finally:
             os.environ.pop("TELEGRAM_OUTBOX", None)
+            os.environ.pop("TELEGRAM_GATE_LEASE", None)
     print("selftest", "OK" if ok else "FAILED")
     return ok
 

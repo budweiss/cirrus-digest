@@ -206,6 +206,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def send_telegram(message):
@@ -215,6 +220,8 @@ def send_telegram(message):
     token, chat = creds.get("telegram_bot_token", ""), creds.get("telegram_user_id", "")
     if not token or not chat:
         return "FAILED: telegram creds missing"
+    if _hold(message, token):   # S685: Telewarden handles it first; it tells Buddy if it cannot
+        return "sent"
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps({"chat_id": chat, "text": message[:4000]}).encode(),

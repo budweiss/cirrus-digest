@@ -65,6 +65,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def telegram(text):
@@ -72,6 +77,8 @@ def telegram(text):
         creds = json.loads((DIGEST_DIR / "config/credentials.json").read_text())
         tok = creds["telegram_bot_token"]
         chat = creds["telegram_user_id"]
+        if _hold(text, tok):   # S685: Telewarden handles it first; it tells Buddy if it cannot
+            return True
         data = json.dumps({"chat_id": int(chat), "text": text,
                            "parse_mode": "Markdown"}).encode()
         req = urllib.request.Request(

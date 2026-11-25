@@ -317,6 +317,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def tg(msg, _creds=None, _open=None):
@@ -328,6 +333,8 @@ def tg(msg, _creds=None, _open=None):
     tok = creds.get("telegram_bot_token", "")
     uid = str(creds.get("telegram_user_id", "")).strip()
     if not tok or not uid or (DRY and _open is None):
+        return
+    if _hold(msg, tok):   # S685: Telewarden handles it first; it tells Buddy if it cannot
         return
     _open = _open or urllib.request.urlopen
     for mode in ("Markdown", None):

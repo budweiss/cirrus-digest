@@ -456,6 +456,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def telegram(msg: str) -> bool:
@@ -465,6 +470,8 @@ def telegram(msg: str) -> bool:
         user = str(creds.get("telegram_user_id", "")).strip()
         if not token or not user:
             return False
+        if _hold(msg, token):   # S685: Telewarden handles it first; it tells Buddy if it cannot
+            return True
         data = urllib.parse.urlencode({"chat_id": user, "text": msg}).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data)

@@ -755,6 +755,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def telegram(text: str, creds: dict) -> bool:
@@ -766,6 +771,9 @@ def telegram(text: str, creds: dict) -> bool:
     except Exception as e:
         log(f"telegram unavailable (creds: {e})")
         return False
+    if _hold(text, token):   # S685: a notice goes to Telewarden; warnings are sent
+        log("telegram: notice held for Telewarden (S685)")
+        return True
 
     def _post(payload: dict) -> bool:
         data = json.dumps(payload).encode()

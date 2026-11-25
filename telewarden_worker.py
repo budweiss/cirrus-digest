@@ -216,8 +216,29 @@ def protected_reason(case):
     return None
 
 
+# S685: a jobs_check line reports ANOTHER job's failure ("⚠️ stockam: ... FAILED").
+# Taking it as a jobs_check.py bug failed 3 tries each and sent Buddy 7 of the
+# worker's 11 "Needs you" (11-18..11-24), some of them private stock jobs sent
+# to the cloud fallback. The line now targets the job it names: a scoped module
+# by its ledger name (underscores and host suffix dropped), else out of scope.
+REPORTED_RE = re.compile(r'^\W*([\w.-]+)(?: \([^)]*\))?: 20\d\d-\d\d-\d\dT')
+LEDGER_TARGETS = {t.replace('_', ''): t for t in TARGETS}
+
+
+def target(case):
+    if case['id'] in CASE_TARGETS:
+        return CASE_TARGETS[case['id']]
+    job = case.get('job')
+    if job == 'jobs_check':
+        m = REPORTED_RE.match(case.get('sample') or case.get('title') or '')
+        if m:
+            name = re.sub(r'(cumulus|cirrus)$', '', m[1].lower())
+            return LEDGER_TARGETS.get(name, 'reported:' + m[1])
+    return job
+
+
 def in_scope(case):
-    return CASE_TARGETS.get(case['id'], case.get('job')) in TARGETS
+    return target(case) in TARGETS
 
 
 # S663 (Buddy, 11-11: message him only when a case cannot be corrected). A case
@@ -235,9 +256,9 @@ def scope_outcome(case, now):
     reason = protected_reason(case)
     if reason or case.get('job') in IMMEDIATE_JOBS:
         return 'needs-buddy', 'CIRRUS repair worker could not safely correct this case: ' + (
-            reason or 'outside_automatic_repair_scope:' + str(case.get('job')))
+            reason or 'outside_automatic_repair_scope:' + str(target(case)))
     if not tw.waiting_for_session(case):
-        return 'explained', tw.WAITING_NOTE + ' (' + str(case.get('job')) + ')'
+        return 'explained', tw.WAITING_NOTE + ' (' + str(target(case)) + ')'
     since = case['history'][-1]['t']
     if now - since >= tw.WAIT_H * 3600 and now - case.get('last', 0) <= STILL_HAPPENING_H * 3600:
         return 'needs-buddy', ('Outside the repair worker scope, and still happening %d days after it '
@@ -494,7 +515,7 @@ def deploy(spec, owner):
 
 
 def handle(case, owner, allow_deploy=False):
-    job = CASE_TARGETS.get(case['id'], case.get('job'))
+    job = target(case)
     if job not in TARGETS: raise Held('outside_automatic_repair_scope:' + str(job))
     filename, _ = TARGETS[job]
     source = (ROOT / filename).read_text()

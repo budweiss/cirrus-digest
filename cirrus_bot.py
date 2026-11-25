@@ -228,6 +228,11 @@ try:
 except ImportError:  # not deployed beside this copy: send exactly as before
     def _outbox(*_a):
         pass
+try:
+    from telegram_outbox import hold as _hold
+except ImportError:  # S685 gate not deployed beside this copy: send exactly as before
+    def _hold(*_a, **_k):
+        return False
 
 
 def send_message(chat_id, text):
@@ -625,7 +630,16 @@ HB_STALE_MIN = 90            # alert when no ping for this many minutes
 HB_QUIET_START = 22          # no stale alerts from 22:00...
 HB_QUIET_END   = 8           # ...until 08:00 (MacBook sleep window)
 HB_CHECK_SEC = 900           # how often the bot loop checks
-_hb_watch = {"last_check": 0.0, "stale_alerted": False, "last_reported_ts": ""}
+_hb_watch = {"last_check": 0.0, "stale_alerted": False, "last_reported_ts": "",
+             "last_reported_key": None}
+
+
+def _hb_key(hb):
+    """What a self-heal report says, without the parts that change each ping.
+    S685: the same 'com.cowork.callbacks ... NOT REPAIRED' went out 11 times on
+    11-25, once per 30-minute heartbeat, because only the timestamp was compared."""
+    note = str(hb.get("note", "")).split("; routes:")[0]
+    return hb.get("status"), re.sub(r"\d+", "#", note)
 
 def _load_heartbeat(src="macbook"):
     try:
@@ -694,12 +708,18 @@ def check_heartbeats():
 
     # Fresh heartbeat with a self-heal / degradation report → surface it once.
     # ("sleeping" is a deliberate state, not a fault — never report it here.)
+    if hb.get("status") == "ok":
+        _hb_watch["last_reported_key"] = None      # a later recurrence is news again
     if hb.get("status") not in ("ok", "sleeping") and hb.get("ts") != _hb_watch["last_reported_ts"]:
         _hb_watch["last_reported_ts"] = hb.get("ts", "")
+        if _hb_key(hb) == _hb_watch.get("last_reported_key"):
+            return                                  # same report as last time (S685)
+        _hb_watch["last_reported_key"] = _hb_key(hb)
         icon = "🔧" if hb.get("status") == "repaired" else "⚠️"
-        send_alert(ALLOWED_ID,
-            f"{icon} *MacBook self-heal report* ({hb.get('status')}):\n"
-            f"{hb.get('note','')[:350]}")
+        text = (f"{icon} *MacBook self-heal report* ({hb.get('status')}):\n"
+                f"{hb.get('note','')[:350]}")
+        if not _hold(text, BOT_TOKEN, job="macbook_selfheal"):   # S685: Telewarden first
+            send_alert(ALLOWED_ID, text)
 
 def cmd_disk():
     digest_gb  = folder_size_gb(OUTPUT_DIR)

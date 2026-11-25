@@ -39,6 +39,29 @@ class WorkerTests(unittest.TestCase):
         self.case['sample'] = 'stockscorecard failed'
         with self.assertRaisesRegex(w.Held, 'protected'): w.guarded_packet(self.case,'a.py','')
 
+    def test_jobs_check_line_targets_the_job_it_reports(self):
+        """S685: 7 of 11 'Needs you' came from repairing jobs_check.py for another job's failure."""
+        def case(sample, job='jobs_check'):
+            return {'id': 'tw-x', 'job': job, 'sample': sample, 'title': sample}
+        self.assertEqual(w.target(case('⚠️ environmentscan: 2026-11-20T06:50 FAILED — Review held')),
+                         'reported:environmentscan')
+        self.assertFalse(w.in_scope(case('⚠️ alopeciabrief (CUMULUS): 2026-11-13T07:01 OVERDUE — brief')))
+        self.assertEqual(w.target(case('⚠️ foundationrenewalcumulus (CUMULUS): 2026-11-22T04:57 FAILED — x')),
+                         'foundation_renewal')
+        self.assertEqual(w.target(case('⚠️ modelhealth: 2026-11-22T05:30 FAILED — x')), 'model_health')
+        self.assertEqual(w.target(case('jobs_check could not read the CUMULUS ledger')), 'jobs_check')
+        self.assertEqual(w.target(case('anything', job='telegram_outbox')), 'telegram_outbox')
+        self.assertEqual(w.target({'id': 'case-f3', 'job': 'jobs_check', 'sample': '⚠️ x: 2026-11-01T00:00 F'}),
+                         'job_status')
+
+    def test_private_stock_line_is_protected_and_never_cloud(self):
+        stock = {'id': 'tw-y', 'job': 'jobs_check', 'private': False, 'history': [], 'status': 'new',
+                 'title': '⚠️ stockam: 2026-11-19T07:45 FAILED — status=failed error=SMTPDataError',
+                 'sample': '⚠️ stockam: 2026-11-19T07:45 FAILED — status=failed error=SMTPDataError'}
+        self.assertFalse(w.in_scope(stock))
+        self.assertIn('protected', w.protected_reason(stock))
+        with self.assertRaisesRegex(w.Held, 'protected'): w.guarded_packet(stock, 'jobs_check.py', '')
+
     def test_small_patch_and_assertions_preserved(self):
         src='def f(x):\n    return x - 1\ndef selftest():\n    assert f(1) == 0\n'
         p={'edits':[{'find':'return x - 1','replace':'return x + 1'}]}
