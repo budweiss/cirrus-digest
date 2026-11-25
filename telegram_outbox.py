@@ -8,8 +8,9 @@ Telegram. Telegram cannot be read instead: bots "will not be able to see
 messages from other bots" (Telegram bot FAQ), and a second getUpdates receiver
 on a token breaks the first (S471: 190 conflicts in one morning).
 
-Delivery never changes. record() never raises, never blocks a send, and never
-writes the bot token. A copy that cannot be written prints one line on stderr,
+record() never changes delivery: it never raises, never blocks a send, and never
+writes the bot token. S685: hold() is the one exception, for monitor jobs only;
+see the gate section below. A copy that cannot be written prints one line on stderr,
 which lands in the calling job's own log.
 
 Rows go to logs/telegram-outbox.jsonl beside this file (TELEGRAM_OUTBOX

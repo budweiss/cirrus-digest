@@ -6,8 +6,12 @@ Reads every warning Buddy gets on Telegram and keeps one case per distinct
 problem, so each one gets explained and then fixed. Plan and approval:
 docs/sessions/S609-HANDOFF-telewarden-step-two-plan.md (Buddy approved 11-11).
 
-It never sits between a job and Buddy: nothing he receives passes through it,
-so a broken Telewarden cannot stop, delay or reword a warning. It reads copies.
+Since S685 (Buddy, 11-25: handle it first, message me only if it can't be
+resolved) monitor jobs hand their warnings and notices to it instead of
+Telegram: telegram_outbox.hold() writes them as held copies, which it reads
+like any other. That holds only while this pass renews its lease on each host
+(renew_leases), so a stopped or failing Telewarden lets every message through
+again. Every other job still sends directly; for those it reads copies.
 
 Sources, each with its own cursor (a failed read never advances it):
   cirrus     logs/telegram-outbox.jsonl on this box (step one, S592)
