@@ -167,7 +167,12 @@ def own_words(text, signature=None):
     are removed inside a line, never by dropping the line: intake may deliver the
     whole email as one line (S679)."""
     text = text or ''
-    if signature and signature in text:
+    # Cut at the signature on its own line, not at the name inside the request: Bill's
+    # "List the author as William Hutchins." lost the name and every model was stuck (S685).
+    alone = re.search(r'(?m)^[ \t]*%s[ \t]*\r?$' % re.escape(signature), text) if signature else None
+    if alone:
+        text = text[:alone.start()]
+    elif signature and signature in text:
         text = text[:text.index(signature)]
     scrubbed = [CONTACT_LINE.sub('', l).rstrip() for l in text.splitlines()]
     lines = list(scrubbed)

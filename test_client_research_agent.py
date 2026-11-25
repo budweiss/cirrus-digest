@@ -77,6 +77,12 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.own_words('Call 555-123-4567 about the plow schedule, please.'),
                          'Call  about the plow schedule, please.')
 
+    def test_name_inside_the_request_is_not_the_signature(self):
+        text = ('Format the book and create the cover. List the author as William Example. Send me the '
+                'artwork.\r\n\r\nWilliam Example\r\nPresident\r\nExample Property Services\r\n555-123-4567')
+        self.assertEqual(A.own_words(text, 'William Example'),
+                         'Format the book and create the cover. List the author as William Example. Send me the artwork.')
+
     def test_short_unpunctuated_request_survives_signature_cleanup(self):
         text = 'Hi Bill\nPlease send the snow list\nThanks\nWilliam Example\n555-123-4567'
         self.assertEqual(A.own_words(text, 'William Example'),
