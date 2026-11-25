@@ -16,7 +16,8 @@ again. Every other job still sends directly; for those it reads copies.
 Sources, each with its own cursor (a failed read never advances it):
   cirrus     logs/telegram-outbox.jsonl on this box (step one, S592)
   cumulus1   the same file on cumulus1, read-only over the LAN
-  skywarden  notify rows in Skywarden's ledger on cumulus1 (first 80 chars)
+  skywarden  notify rows in Skywarden's ledger on cumulus1 (full summary since S685;
+             its pass summaries are held there, not sent, while this pass renews a lease)
   nimbus     rows the MacBook forwarder delivers (--ingest-nimbus)
 
 Each message is sorted as own (Telewarden's), private, routine, info or
@@ -99,7 +100,7 @@ WARN_RE = re.compile(
     r"(?i)(fail|error|exception|traceback|❌|⚠|warn|overdue|stale|\bdown\b|"
     r"unreachable|timed? ?out|not completed|missing|cut off|empty repl|refus|"
     r"needs attention|expir|exit code|unavailable|denied|stalled|degraded|"
-    r"human needed|could not|cannot)")
+    r"human needed|could not|cannot|unreadable)")
 
 # Known cases from the 11-11 review. Matched on (job, line) before anything else.
 KNOWN = [
@@ -284,8 +285,15 @@ for line in open("/opt/cumulus-supervisor/state/ledger.jsonl"):
     except Exception:
         continue
     if t >= since:
-        print(json.dumps({"t": t, "job": "skywarden", "ok": r.get("result") == "sent",
-                          "text": r.get("detail", "")}))
+        held = r.get("held") is True
+        print(json.dumps({"t": t, "job": "skywarden", "kind": r.get("kind"), "held": held,
+                          "ok": None if held else r.get("result") == "sent",
+                          "text": r.get("summary") or r.get("detail", "")}))
+'''
+# S685: Skywarden holds its pass summaries only while this lease is fresh.
+_SKY_LEASE = r'''
+from pathlib import Path
+Path("/opt/cumulus-supervisor/state/telewarden-lease").touch()
 '''
 
 
@@ -331,7 +339,8 @@ def norm(s):
 
 
 # S623: "clean, 0 overdue" in a Skywarden all-clear made a case; a zero count is not a warning.
-ZERO_RE = re.compile(r"(?i)\b0 (?:[\w-]+ )?(?:overdue|fail\w*|errors?|warn\w*|missing|stale|expired)(?:\(s\))?")
+# S685: Skywarden's full all-clears say "nothing overdue", "no failed units".
+ZERO_RE = re.compile(r"(?i)\b(?:0|no|nothing|none) (?:[\w-]+ )?(?:overdue|fail\w*|errors?|warn\w*|missing|stale|expired)(?:\(s\))?")
 # S624: Skywarden's "billsnow: NOT actually stalled" all-clear made three cases.
 NOT_RE = re.compile(r"(?i)\bnot (?:actually |really )?(?:stalled|stale|failing|down|missing|overdue|degraded)\b")
 
@@ -349,6 +358,55 @@ def _clip(s, n):
 
 def _warns(s):
     return WARN_RE.search(NOT_RE.sub("", ZERO_RE.sub("", s)))
+
+
+# S685: Skywarden's pass summaries arrive in full. Each finding names a unit or job;
+# one case per name, so a daily repeat adds to a count. Before, the first 80
+# characters of each summary made a new case: 25 cases of count 1 by 11-25.
+SKY_DECISION_RE = re.compile(r"^Skywarden (?:needs direction|requests one Opus pass|request \S+:)")
+SKY_NAME_RE = re.compile(
+    r"(?i)\b(?:unit|failed_runs|stalled|overdue|blind|unreadable):([\w@.-]+)"
+    r"|\b([a-z0-9][\w@-]*\.(?:service|timer))\b"
+    r"|^\W*([a-z][\w.@-]{2,40})(?: \([^)]*\))?:\s")
+SKY_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[•])|\s+•\s+|\s+(?=\(\d\)\s)")
+NAME_START_RE = re.compile(r"^\W*([\w.@-]+)(?: \([^)]*\))?:\s")
+# Words that open a sentence ("Checked: ...", "NEW: ..."), not a unit or job name.
+SKY_NOT_NAMES = {"checked", "check", "new", "ok", "note", "review", "verified", "summary",
+                 "daily", "incident", "heartbeat", "result", "results", "findings", "status",
+                 "update", "correction", "fixed", "still", "done", "cumulus", "cirrus", "both",
+                 "found", "skywarden"}
+
+
+def sky_key(item):
+    for m in SKY_NAME_RE.finditer(item or ""):
+        raw = next(g for g in m.groups() if g).lower()
+        if raw in SKY_NOT_NAMES:
+            continue
+        name = re.sub(r"\.(?:service|timer)$", "", raw)
+        name = name[len("cirrus-"):] if name.startswith("cirrus-") else name
+        key = re.sub(r"[^a-z0-9]", "", name)[:60]
+        if key:
+            return key
+    return None
+
+
+def _finding_line(line):
+    m = NAME_START_RE.match(line)
+    return bool(m) and m[1].lower() not in SKY_NOT_NAMES and len(line) <= 300
+
+
+def sky_items(text):
+    """Warning findings in a Skywarden summary: its contract (supervisor/CLAUDE.md
+    sec 6) puts a headline first, one finding per line, and an OK: line last. An
+    older single-paragraph summary is split into sentences."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    parts = []
+    for l in lines[1:] if len(lines) > 1 else lines:
+        if re.match(r"(?i)^OK\b", l):
+            continue
+        parts += ([l] if _finding_line(l)
+                  else [x.strip() for x in SKY_SPLIT_RE.split(l) if x.strip()])
+    return [x for x in parts if _warns(x)][:20]
 
 
 def warning_items(text):
@@ -376,9 +434,12 @@ def classify(row):
         return "own", []
     if row.get("kind") == "off":                 # a paused Nimbus heartbeat, not a failure (F6)
         return "off", []
-    if job in ROUTINE_JOBS or ROUTINE_RE.search(text.strip()):
+    sky = row.get("source") == "skywarden"
+    if sky and (row.get("kind") in ("guidance", "opus") or SKY_DECISION_RE.match(text)):
+        return "decision", []                    # Buddy has it; Telewarden cannot decide it
+    if not sky and (job in ROUTINE_JOBS or ROUTINE_RE.search(text.strip())):
         return "routine", []
-    items = warning_items(text)
+    items = sky_items(text) if sky else warning_items(text)
     if is_private(row):
         if not items:
             return "private", []
@@ -400,6 +461,8 @@ def classify(row):
             if re.search(k["job"], job) and re.search(k["text"], item, re.I):
                 cid = k["id"]
                 break
+        if cid is None and sky and sky_key(item):
+            cid = "tw-" + hashlib.sha1(f"skywarden|{job}|unit:{sky_key(item)}".encode()).hexdigest()[:10]
         if cid is None:
             cid = "tw-" + hashlib.sha1(
                 f"{row['source']}|{job}|{norm(item)}".encode()).hexdigest()[:10]
@@ -556,6 +619,12 @@ def run_pass(readers=None, now=None, send=None, record=None):
                     ev["held"] = True
                     if not items and not kind.startswith("private"):
                         ev["line"] = _clip(" ".join(row["text"].split()), 110)
+                if src == "skywarden" and kind in ("info", "warning"):
+                    # S685: the brief lists Skywarden's latest pass, which no longer
+                    # reaches Buddy as a Telegram while held.
+                    state["skywarden_latest"] = {
+                        "t": row["t"], "held": bool(row.get("held")), "cases": len(items),
+                        "text": _clip(" ".join(row["text"].split()), 300)}
                 if kind == "off":                # the forwarder sends one row per batch
                     m = re.search(r"paused (\d+)x", row["text"])
                     ev["n"] = int(m.group(1)) if m else 1
@@ -591,6 +660,12 @@ LEASE = "logs/telewarden-lease"
 
 
 def renew_leases(health, now):
+    if (health.get("skywarden") or {}).get("ok_at") == now:
+        try:                                     # S685: Skywarden's summary gate
+            subprocess.run(SSH + [C1] + SKY, input=_SKY_LEASE, capture_output=True,
+                           text=True, timeout=30)
+        except Exception:                        # noqa: BLE001 -- a lapsed lease sends
+            pass
     for src in ("cirrus", "cumulus1"):
         if (health.get(src) or {}).get("ok_at") != now:
             continue                             # not read this pass: let it lapse
@@ -811,6 +886,16 @@ def brief_lines(now=None):
                      f"{n - cased} notices ("
                      + ", ".join(f"{j} {k}" for j, k in sorted(jobs.items(), key=lambda x: -x[1]))
                      + ")" + ("; latest: " + " / ".join(notes[:3]) if notes else ""))
+    sky = state.get("skywarden_latest")
+    if sky:
+        when = time.strftime("%m-%d %H:%M", time.localtime(sky["t"]))
+        if now - sky["t"] > SILENT_H * 3600:
+            lines.append(f"• ⚠️ no Skywarden pass summary since {when} (it reviews daily at 10:00)")
+            att.append(f"no Skywarden summary in {SILENT_H}h")
+        else:
+            lines.append(f"• Skywarden's latest pass ({when}, "
+                         + ("held, not sent" if sky.get("held") else "sent to you")
+                         + f", {sky.get('cases', 0)} finding(s) into cases): {sky['text']}")
     lines.append(f"• {len(busy)} case(s) being handled automatically; corrections go in "
                  f"Sunday's weekly recap" if busy else
                  "• Nothing open; corrections go in Sunday's weekly recap")
@@ -1188,6 +1273,59 @@ def selftest():
                   set(cur["ids"]) == {"a", "b"} and not new_rows([{"t": 5.0, "rid": "a"}], cur))
             check("epoch parses outbox and Skywarden times",
                   _epoch("2026-11-09T19:20:55-0500") and _epoch("2026-11-10 04:55:38"))
+
+            # S685: Skywarden's held pass summaries, in full (fresh state).
+            with tempfile.TemporaryDirectory() as td2:
+                os.environ["TELEWARDEN_DIR"] = td2
+                def sky(text, t, **k):
+                    r = dict(row("skywarden", text, t, "skywarden"), held=True, ok=None, kind="summary")
+                    r.update(k)
+                    return r
+                sfeed = {"skywarden": []}
+                sread = {"skywarden": lambda c: list(sfeed["skywarden"])}
+                sfeed["skywarden"] = [
+                    sky("Daily check 11-26\n"
+                        "alopecia-brief.service: failed since 11-20 07:00 (ProviderError); ticket T-1 queued; next check 11-27 10:00\n"
+                        "foundation-renewal.service: failed (exit 1) daily, approvals lapsed; Cowork owns it; next check 11-27\n"
+                        "OK: promises clean both boxes, nothing overdue; intake polling; no failed units on the allowlist", T),
+                    sky("Daily check 11-26\nOK: promises clean, nothing overdue; credentials ok; no restarts attempted", T + 1),
+                    sky("Skywarden needs direction [g1]:\nbillsnow stalled\nRaise the cap?", T + 2,
+                        held=False, ok=True, kind="guidance")]
+                run_pass(sread, now=T + 10, send=send)
+                cs = _load("cases.json", {})
+                ab = [c for c in cs.values() if c["source"] == "skywarden" and "alopecia" in c["title"]]
+                check("S685: a held Skywarden finding becomes a case by unit; the known one joins it",
+                      len(ab) == 1 and cs.get("case-f4", {}).get("count") == 1
+                      and not [c for c in cs.values() if "OK:" in c["title"] or "direction" in c["title"]])
+                check("S685: a held summary is not a lost send, and a guidance request is no case",
+                      "tw-send-skywarden" not in cs and len(cs) == 2)
+                sfeed["skywarden"].append(sky(
+                    "Incident review: failed_runs:alopeciabrief\n"
+                    "failed_runs:alopeciabrief: still failing, same ProviderError; ticket T-1 still queued", T + 86400))
+                sfeed["skywarden"].append(sky(
+                    "Checked per heartbeat. alopecia-brief.service: still failed since Nov20 07:00 (ProviderError). "
+                    "No restarts attempted. Next check tomorrow.", T + 86401))
+                run_pass(sread, now=T + 86410, send=send)
+                cs = _load("cases.json", {})
+                check("S685: the same unit in another phrasing, or in an old paragraph, adds to its count",
+                      cs[ab[0]["id"]]["count"] == 3 and len(cs) == 2)
+                bl, ba = brief_lines(now=T + 86420)
+                check("S685: the brief lists Skywarden's latest pass, held",
+                      any(l.startswith("• Skywarden's latest pass (") and "held, not sent" in l
+                          and "still failed since Nov20" in l for l in bl))
+                bl, ba = brief_lines(now=T + 86401 + (SILENT_H + 1) * 3600)
+                check("S685: no Skywarden summary for 36h is flagged",
+                      any("no Skywarden pass summary since" in l for l in bl)
+                      and any("Skywarden" in a for a in ba))
+                check("S685: Skywarden's full all-clear words are not warnings",
+                      sky_items("Daily check\nOK: nothing overdue; no failed units") == []
+                      and sky_items("Checked: nothing overdue (CUMULUS 10 offered). CIRRUS UNREADABLE (timeout).")
+                      == ["CIRRUS UNREADABLE (timeout)."]
+                      and sky_key("Promises: nothing overdue. CIRRUS UNREADABLE (timeout).") == "promises")
+                check("S685: the reader script passes the full text, held flag and kind",
+                      '"held": held' in _SKY_SCRIPT and 'r.get("summary")' in _SKY_SCRIPT
+                      and '"kind"' in _SKY_SCRIPT and "telewarden-lease" in _SKY_LEASE)
+            os.environ["TELEWARDEN_DIR"] = td
         finally:
             if old is None:
                 os.environ.pop("TELEWARDEN_DIR", None)

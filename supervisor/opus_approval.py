@@ -3,8 +3,8 @@
 Legacy primary request plus bounded incident-keyed decision files.
 Two request kinds share a compatibility reader; unrelated guidance cannot block.
 Previously, two request kinds shared one pending-request slot. Skywarden ends every run
-with exactly one send_telegram call (CLAUDE.md sec 6), so in practice only
-one ask is outstanding at a time. An unanswered or unconsumed request is
+with exactly one record_summary call (CLAUDE.md sec 6; S685: recorded for
+Telewarden, not sent), so in practice only one ask is outstanding at a time. An unanswered or unconsumed request is
 never overwritten; repeated guidance for the same incident is suppressed:
 
 - "opus_upgrade": yes/no. Buddy's reply must be exactly
@@ -14,7 +14,7 @@ never overwritten; repeated guidance for the same incident is suppressed:
   on its next invocation. For when Skywarden is genuinely stuck — tried its
   allowed diagnostics/fixes, the problem persists, and it has no remaining
   tool that could address it (CLAUDE.md sec 3) — not for routine anomalies
-  it can already report-and-move-on from via send_telegram.
+  it can already report-and-move-on from via record_summary.
 
 On CUMULUS, the main bot is the sole Telegram receiver. Its durable local
 inbox (SKYWARDEN_TELEGRAM_INBOX) is drained by the existing heartbeat tick.

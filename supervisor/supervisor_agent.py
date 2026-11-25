@@ -162,11 +162,27 @@ def _build_mcp_tools():
     async def _reset_failed(args):
         return {"content": [{"type": "text", "text": tools.reset_failed(args["unit"])}]}
 
-    @tool("send_telegram",
-          "Send Buddy a one-way notification summarizing this check (notify-only, no reply expected)",
+    # S685 (Buddy, 11-25): only what cannot be resolved reaches him. The pass
+    # summary is recorded for Telewarden; alert_buddy is gated in tools.py.
+    @tool("record_summary",
+          "End every pass with exactly one call: your summary (headline line, one line per "
+          "finding starting with the unit or job name, one OK: line). Recorded for Telewarden "
+          "on CIRRUS, which cases each finding and lists it in Buddy's morning brief. It is NOT "
+          "sent to Buddy unless Telewarden has stopped reading.",
           {"message": str})
-    async def _send_telegram(args):
-        return {"content": [{"type": "text", "text": tools.send_telegram(args["message"])}]}
+    async def _record_summary(args):
+        return {"content": [{"type": "text", "text": tools.record_summary(args["message"])}]}
+
+    @tool("alert_buddy",
+          "Telegram Buddy now about a NEW incident that affects a client (Bill, Alyssa, Aggie, "
+          "Justin or RCW) today, that you could not fix and could not file as a repair ticket. "
+          "incident = the unit or job name. A repeat within 7 days, a ticketed incident, a "
+          "non-client case or more than 2 a day is held for Telewarden instead. Decisions that "
+          "are his go through request_guidance. Still end with record_summary.",
+          {"message": str, "incident": str, "client": str})
+    async def _alert_buddy(args):
+        return {"content": [{"type": "text", "text": tools.alert_buddy(
+            args["message"], args.get("incident", ""), args.get("client", ""))}]}
 
     @tool("file_repair_ticket",
           "File a repair ticket so the dev-loop can write an actual CODE FIX for a unit that a "
@@ -174,8 +190,8 @@ def _build_mcp_tools():
           "restart_service, and it failed again — that means the fault is in the code, not in a "
           "dead process. Pass the diagnosis you already gathered (what the unit does, the failing "
           "line from tail_journal, what you tried); that text is what gets built against. Nothing "
-          "ships from this: at most it becomes a patch awaiting Buddy's one tap. Send him a short "
-          "send_telegram as well, so he knows the repair is queued.",
+          "ships from this: at most it becomes a patch awaiting Buddy's one tap. Say in your "
+          "record_summary that you filed it.",
           {"unit": str, "diagnosis": str})
     async def _file_repair_ticket(args):
         return {"content": [{"type": "text",
@@ -191,7 +207,7 @@ def _build_mcp_tools():
     @tool("request_guidance",
           "Ask Buddy for actual direction (via Telegram) when genuinely stuck: you've tried your "
           "allowed diagnostics/fixes, the problem persists, and no remaining tool can address it. "
-          "NOT for routine anomalies you can already report via send_telegram. His free-text reply "
+          "NOT for routine anomalies you can already report via record_summary. His free-text reply "
           "is handed to you at the start of your next run.", {"issue": str, "question": str})
     async def _request_guidance(args):
         return {"content": [{"type": "text",
@@ -202,7 +218,7 @@ def _build_mcp_tools():
             _check_thread_stalls, _check_high_value_field_overwrites,
             _check_intake_health,
             _check_credentials_health, _check_cirrus_timemachine,
-            _restart_service, _reset_failed, _file_repair_ticket, _send_telegram,
+            _restart_service, _reset_failed, _file_repair_ticket, _record_summary, _alert_buddy,
             _request_opus_upgrade, _request_guidance]
 
 
@@ -303,9 +319,11 @@ def _handle_trigger(reason: str, is_daily: bool):
                            "tier_name": "n/a", "detail": reason, "result": why})
             # S292 (T113): send_telegram never raises -- it RETURNS "FAILED: ...".
             # Only a notice that went out starts the hour's quiet period.
+            # S685: a spend cap is Buddy's decision, so this still goes to him.
             if _should_notify_skip() and tools.send_telegram(
                     f"CUMULUS supervisor: {reason}. Skipping AI review — this month's "
-                    f"${budget.MONTHLY_CAP_USD:.2f} cap reached (${spent:.2f} spent).") == "sent":
+                    f"${budget.MONTHLY_CAP_USD:.2f} cap reached (${spent:.2f} spent).",
+                    kind="budget") == "sent":
                 _mark_skip_notified()
     except Exception as exc:
         if getattr(exc, 'cost', None) is not None:
@@ -323,7 +341,8 @@ def main_loop():
     while True:
         hb = heartbeat.run_heartbeat()
         try:
-            opus_approval.retry_failed_deliveries(tools.send_telegram)
+            opus_approval.retry_failed_deliveries(
+                lambda text: tools.send_telegram(text, kind="guidance", via="retry"))
             opus_approval.check_for_reply()
             hb['reply_id'] = opus_approval.ready_reply_id()
         except (OSError, ValueError, TypeError, KeyError):

@@ -142,8 +142,8 @@ def check_open_client_promises() -> str:
 
     It reports, it does not fix. Delivering a client deliverable -- and any
     client send at all -- is firmly in the NEVER tier of the operating contract
-    and stays there. The right action on a hit is send_telegram, or
-    request_guidance if it is unclear what is blocking.
+    and stays there. The right action on a hit is alert_buddy (a client is
+    waiting), or request_guidance if it is unclear what is blocking.
     """
     # S78 — two things were wrong here and both are fixed. It used to `import
     # client_promises` off APP_DIR, which could never work (this account cannot
@@ -622,9 +622,8 @@ def file_repair_ticket(unit: str, diagnosis: str) -> str:
     patch. Include the actual error, not a paraphrase of it.
 
     Nothing ships from this. The ticket is risk-classified; at most it becomes
-    a patch that waits in `awaiting-confirm` for Buddy's one tap. Still send
-    Buddy a short send_telegram saying you filed it — he should know the repair
-    is queued, not be surprised by a build in the morning.
+    a patch that waits in `awaiting-confirm` for Buddy's one tap. Say in your
+    record_summary that you filed it (S685: Telewarden lists it in his brief).
     """
     unit = _normalize_unit(unit)
     # T11 — namespace gate. The unit name reaches a script that writes to the
@@ -701,7 +700,7 @@ def request_opus_upgrade(reason: str) -> str:
     if text is None:
         return "SUPPRESSED: an unanswered/unconsumed request already occupies the reply slot"
     try:
-        result = send_telegram(text)
+        result = send_telegram(text, kind="opus", via="request_opus_upgrade")
     except Exception:
         opus_approval.record_request_delivery(False)
         raise
@@ -718,7 +717,7 @@ def request_guidance(issue: str, question: str) -> str:
     (restart_service/reset_failed on the allowlist, the read-only checks),
     the problem persists, and you have no remaining tool that could address
     it. NOT for routine anomalies you can already report-and-move-on from
-    via send_telegram — this is for when you need a human decision. Sends
+    via record_summary — this is for when you need a human decision. Sends
     Buddy a Telegram describing the issue and your question; his free-text
     reply (within 7 days) is read back to you at the START of your NEXT
     invocation, before you begin your checks. This pass itself still
@@ -728,7 +727,7 @@ def request_guidance(issue: str, question: str) -> str:
     S142: THE BAR IS HIGH. Escalate only when the decision is genuinely
     Buddy's: it commits over $25, it is irreversible/destructive or changes
     where data goes, or it is client-facing. Otherwise handle it or report it
-    via send_telegram. Your own cross-check contradicting an alert is an
+    via record_summary. Your own cross-check contradicting an alert is an
     ANSWER, not a question. A defect you have no tool to reach is a
     file_repair_ticket, not this. An unanswered request re-fires on every wake
     and costs a reasoning pass each time -- see CLAUDE.md section 2."""
@@ -743,7 +742,7 @@ def request_guidance(issue: str, question: str) -> str:
                        "tier_name": "notify", "detail": "unchanged incident or busy reply slot", "result": result})
         return result
     try:
-        result = send_telegram(text)
+        result = send_telegram(text, kind="guidance", via="request_guidance")
     except Exception:
         opus_approval.record_request_delivery(False)
         raise
@@ -755,19 +754,154 @@ def request_guidance(issue: str, question: str) -> str:
 
 
 # ── Notify ────────────────────────────────────────────────────────────────────
+# S685 (Buddy, 2026-11-25: "Only issues that can't be resolved by the local
+# harness and LLM using the foundational models for help, should be sent to
+# me."). The agent no longer has send_telegram. It ends a pass with
+# record_summary, which writes the full summary to this ledger for Telewarden
+# on CIRRUS; Telewarden cases it and lists it in the morning brief. Buddy is
+# messaged by request_guidance / request_opus_upgrade (unchanged) and by
+# alert_buddy, which is gated below. send_telegram stays as their transport.
+#
+# Fail-open, as telegram_outbox.hold() on the other boxes: Telewarden touches
+# GATE_LEASE after each pass that read this ledger. A lease older than
+# LEASE_MAX_S, or GATE_OFF present, means nobody is reading, so the summary is
+# sent as before.
+GATE_LEASE_NAME = "telewarden-lease"
+GATE_OFF_NAME = "telegram-gate-off"
+LEASE_MAX_S = 20 * 60            # Telewarden passes every 5 minutes
+SUMMARY_MAX = 4000
+ALERT_CLIENTS = {"bill", "alyssa", "aggie", "justin", "rcw"}
+ALERT_REPEAT_S = 7 * 86400       # one alert per incident per week
+ALERTS_PER_DAY = 2
 
-def send_telegram(message: str) -> str:
+
+def _state_dir() -> Path:
+    import ledger as _l
+    return Path(_l.STATE_DIR)
+
+
+def _telewarden_reading() -> bool:
+    try:
+        d = _state_dir()
+        if (d / GATE_OFF_NAME).exists():
+            return False
+        return time.time() - (d / GATE_LEASE_NAME).stat().st_mtime <= LEASE_MAX_S
+    except OSError:
+        return False
+
+
+def _hold(text: str, tool: str, kind: str, why: str) -> bool:
+    """Write one held notify row. False if it could not be written."""
+    try:
+        ledger_append({"event": "notify", "tool": tool, "tier_name": "held",
+                       "kind": kind, "held": True, "detail": text[:80],
+                       "summary": text, "result": "held: " + why})
+        return True
+    except Exception:
+        return False
+
+
+def record_summary(message: str) -> str:
+    """S685: end-of-pass summary, recorded for Telewarden instead of sent.
+    Sent to Buddy only when Telewarden is not reading (fail-open)."""
+    text = str(message or "").strip()[:SUMMARY_MAX]
+    if not text:
+        return "REFUSED: empty summary"
+    if _telewarden_reading() and _hold(text, "record_summary", "summary", "for Telewarden"):
+        return ("recorded for Telewarden, not sent to Buddy. It opens a case per finding, "
+                "tries a repair, and lists this summary in his morning brief.")
+    result = send_telegram(text, kind="summary", via="record_summary")
+    return (f"Telewarden is not reading this ledger (lease stale or gate off), so the "
+            f"summary was sent to Buddy instead: {result}")
+
+
+def _incident_key(s: str) -> str:
+    s = str(s or "").lower().strip()
+    for suffix in (".service", ".timer"):
+        s = s[:-len(suffix)] if s.endswith(suffix) else s
+    s = s[len("cirrus-"):] if s.startswith("cirrus-") else s
+    return "".join(ch for ch in s if ch.isalnum())[:60]
+
+
+def _load_alerts() -> dict:
+    try:
+        data = json.loads((_state_dir() / "alerted-incidents.json").read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_alerts(data: dict) -> None:
+    import os
+    import tempfile
+    d = _state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".alerted-", dir=str(d))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, d / "alerted-incidents.json")
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def alert_buddy(message: str, incident: str, client: str) -> str:
+    """S685: message Buddy directly about a NEW incident that affects a client
+    now, which you could not fix and could not file as a repair ticket.
+    Deterministic gate: anything else is recorded for Telewarden instead."""
+    text = str(message or "").strip()[:SUMMARY_MAX]
+    key = _incident_key(incident)
+    who = str(client or "").strip().lower().split(" ")[0] if client else ""
+    now = time.time()
+    alerts = {k: v for k, v in _load_alerts().items()
+              if isinstance(v, (int, float)) and now - v < ALERT_REPEAT_S}
+    ticketed = [a for a in INCIDENT_ACTIONS if a.get("owner") == "dev-loop"
+                and _incident_key(a.get("unit", "")) == key]
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    sent_today = sum(1 for v in alerts.values()
+                     if time.strftime("%Y-%m-%d", time.localtime(v)) == today)
+    why = (None if text and key and who in ALERT_CLIENTS else
+           "alert_buddy needs a message, an incident name and the affected client "
+           "(Bill, Alyssa, Aggie, Justin or RCW)")
+    if why is None and key in alerts:
+        why = ("this incident was already alerted on "
+               + time.strftime("%m-%d %H:%M", time.localtime(alerts[key])))
+    if why is None and ticketed:
+        why = "a repair ticket is queued for it this pass; the ticket is the disposition"
+    if why is None and sent_today >= ALERTS_PER_DAY:
+        why = f"{ALERTS_PER_DAY} alerts already went to Buddy today"
+    if why is not None:
+        _hold(text or "(empty alert)", "alert_buddy", "alert", why)
+        return ("HELD, not sent: " + why + ". Recorded for Telewarden. Put it in your "
+                "record_summary as usual.")
+    result = send_telegram(f"Skywarden alert ({who.capitalize() if who != 'rcw' else 'RCW'}): {text}",
+                           kind="alert", via="alert_buddy")
+    if result == "sent":
+        alerts[key] = now
+        try:
+            _save_alerts(alerts)
+        except OSError:
+            pass
+    return result
+
+
+def send_telegram(message: str, kind: str = "notify", via: str = "") -> str:
     """Send a one-way notification to Buddy via the existing shared bot
     token. Token is read here, server-side, and never returned to the
-    caller — the LLM only ever sees 'sent'/'FAILED: ...'."""
+    caller — the LLM only ever sees 'sent'/'FAILED: ...'. S685: no longer an
+    agent tool; the transport for requests, alerts and fail-open summaries.
+    The ledger row keeps the full text for Telewarden; `tool` stays
+    send_telegram for every real send (runner/skywarden_evidence.py counts it)."""
+    message = str(message or "")
     secrets = _load_secrets()
     token = secrets.get("telegram_bot_token", "")
     chat_id = secrets.get("telegram_user_id", "")
     if not token or not chat_id:
         result = "FAILED: telegram creds missing from secrets.json"
-        ledger_append({"event": "notify", "tool": "send_telegram",
+        ledger_append({"event": "notify", "tool": "send_telegram", "kind": kind, "via": via,
                        "tier_name": "notify", "detail": message[:80],
-                       "result": result})
+                       "summary": message[:SUMMARY_MAX], "result": result})
         return result
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = json.dumps({"chat_id": chat_id, "text": message[:4000]}).encode()
@@ -785,9 +919,9 @@ def send_telegram(message: str) -> str:
         # Network errors can contain request URLs and credentials. Never return
         # or ledger their raw text, nor mistake an invalid response for delivery.
         result = "FAILED: telegram transport or response error"
-    ledger_append({"event": "notify", "tool": "send_telegram",
+    ledger_append({"event": "notify", "tool": "send_telegram", "kind": kind, "via": via,
                    "tier_name": "notify", "detail": message[:80],
-                   "result": result})
+                   "summary": message[:SUMMARY_MAX], "result": result})
     return result
 
 
