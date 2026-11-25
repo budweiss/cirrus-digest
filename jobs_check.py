@@ -42,12 +42,13 @@ def compose(lines, all_ok, report):
         shown.append(f"✅ {len(lines) - len(shown)} other job(s) healthy")
     parts, cur = [], header
     for line in shown or ["(no jobs recorded yet)"]:
-        line = line[:LIMIT]
-        if len(cur) + 1 + len(line) > LIMIT:
-            parts.append(cur)
-            cur = line
-        else:
-            cur += "\n" + line
+        chunks = [line[i:i + LIMIT] for i in range(0, len(line), LIMIT)] or [line]
+        for chunk in chunks:
+            if len(cur) + 1 + len(chunk) > LIMIT:
+                parts.append(cur)
+                cur = chunk
+            else:
+                cur += "\n" + chunk
     return parts + [cur]
 
 
