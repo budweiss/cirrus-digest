@@ -77,6 +77,12 @@ class Agent(unittest.TestCase):
         self.assertEqual(A.own_words('Call 555-123-4567 about the plow schedule, please.'),
                          'Call  about the plow schedule, please.')
 
+    def test_short_unpunctuated_request_survives_signature_cleanup(self):
+        text = 'Hi Bill\nPlease send the snow list\nThanks\nWilliam Example\n555-123-4567'
+        self.assertEqual(A.own_words(text, 'William Example'),
+                         'Hi Bill\nPlease send the snow list\nThanks')
+        self.assertEqual(A.own_words('555-123-4567\nWilliam Example', 'William Example'), '')
+
     def test_unreadable_question_is_stuck_not_sent(self):
         aid, _ = self.held()
         Memory(self.root).update(aid, answer='')

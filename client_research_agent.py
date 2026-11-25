@@ -169,10 +169,15 @@ def own_words(text, signature=None):
     text = text or ''
     if signature and signature in text:
         text = text[:text.index(signature)]
-    lines = [CONTACT_LINE.sub('', l).rstrip() for l in text.splitlines()]
+    scrubbed = [CONTACT_LINE.sub('', l).rstrip() for l in text.splitlines()]
+    lines = list(scrubbed)
     while lines and (not lines[-1].strip() or (len(lines[-1].split()) <= 6
                                                and not re.search(r'[.?!:]\s*$', lines[-1]))):
         lines.pop()
+    # Short unpunctuated requests can consist entirely of lines the trailing
+    # signature heuristic would remove. Keep their contact-scrubbed text.
+    if not any(line.strip() for line in lines):
+        lines = scrubbed
     return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
 
 
