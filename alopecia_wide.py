@@ -59,43 +59,53 @@ PAGE_SIZE = 100
 LANE_CAP = 300                 # per lane per run; a truncated lane is an error, never silent
 ABSTRACT_CHARS = 2500
 
-# (id, field, what it catches, Europe PMC query). Fixed text, reviewed with the
-# design (docs/evaluations/s685-alopecia-widened/DESIGN.md). Volumes measured
-# 2026-11-10..23: about 130 hits in two weeks across the lanes.
+# (id, field, what it catches, term groups). Every group must match the TITLE
+# or ABSTRACT (Europe PMC TITLE_ABS): S685's first real run searched full text
+# and 199 of 304 items were unrelated (a cattle-gestation paper matched
+# "hair follicle" + "T cell" somewhere in its body). Reviewed with the design
+# (docs/evaluations/s685-alopecia-widened/DESIGN.md). Volumes measured on
+# title/abstract, 2026-11-10..24: about 90 hits in 14 days across the lanes.
+FOLLICLE = '"hair follicle" OR "hair follicles"'
 LANES = [
     ("aa", "all fields",
      "alopecia areata in any field and on every preprint server",
-     '("alopecia areata" OR "alopecia universalis" OR "alopecia totalis")'),
+     ['"alopecia areata" OR "alopecia universalis" OR "alopecia totalis"']),
     ("follicle-immunology", "biology & immunology",
      "immune privilege, T cells and interferon in the hair follicle",
-     '"hair follicle" AND ("immune privilege" OR "T cell" OR "T cells" OR interferon '
-     'OR autoimmune OR autoimmunity)'),
+     [FOLLICLE, '"immune privilege" OR "T cell" OR "T cells" OR interferon OR autoimmune '
+                'OR autoimmunity']),
     ("follicle-regeneration", "biology",
      "follicle stem cells, regrowing follicles, the dermal papilla",
-     '("hair follicle stem cell" OR "hair follicle stem cells" OR "hair follicle regeneration" '
-     'OR "hair neogenesis" OR "dermal papilla")'),
+     ['"hair follicle stem cell" OR "hair follicle stem cells" OR "hair follicle regeneration" '
+      'OR "hair neogenesis" OR "dermal papilla"']),
     ("shared-mechanism", "immunology",
      "vitiligo and similar diseases, where treatments often carry over",
-     'vitiligo AND (JAK OR "resident memory" OR CXCL10 OR "regulatory T" OR interferon)'),
+     ['vitiligo', 'JAK OR "resident memory" OR CXCL10 OR "regulatory T" OR interferon']),
     ("tolerance", "immunology & biotech",
-     "CAR-T, regulatory T-cell therapy, low-dose IL-2 in skin autoimmunity",
-     '("CAR-T" OR "CAR T" OR "regulatory T cell therapy" OR "low-dose IL-2" '
-     'OR "antigen-specific tolerance") AND (autoimmune OR autoimmunity) '
-     'AND (skin OR dermatology OR dermatologic OR cutaneous)'),
+     "CAR-T, regulatory T-cell therapy, low-dose IL-2: drug-free remission in autoimmunity",
+     ['"CAR-T" OR "CAR T" OR "regulatory T cell therapy" OR "low-dose IL-2" '
+      'OR "antigen-specific tolerance"', 'autoimmune OR autoimmunity']),
     ("chemistry", "chemistry",
      "new molecules and ways of getting drugs into the follicle",
-     '("hair follicle" OR alopecia) AND ("small molecule" OR "drug delivery" OR nanoparticle '
-     'OR nanoparticles OR "topical formulation" OR microneedle OR microneedles OR "JAK inhibitor")'),
+     [FOLLICLE + ' OR alopecia', '"small molecule" OR "drug delivery" OR nanoparticle '
+      'OR nanoparticles OR "topical formulation" OR microneedle OR microneedles OR "JAK inhibitor"']),
     ("physics", "physics",
      "light, UV, lasers, ultrasound, electrical stimulation, microneedling",
-     '("hair follicle" OR alopecia) AND (photobiomodulation OR "low-level laser" '
-     'OR "low level laser" OR ultraviolet OR phototherapy OR excimer OR "electrical stimulation" '
-     'OR ultrasound OR microneedling OR cryotherapy)'),
+     [FOLLICLE + ' OR alopecia', 'photobiomodulation OR "low-level laser" OR "low level laser" '
+      'OR ultraviolet OR phototherapy OR excimer OR "electrical stimulation" OR ultrasound '
+      'OR microneedling OR cryotherapy']),
     ("diet", "diet & microbiome",
      "diet, nutrients, vitamin D, zinc and gut bacteria linked to hair or AA",
-     '(alopecia OR "hair follicle") AND (diet OR dietary OR microbiome OR microbiota '
-     'OR "vitamin D" OR zinc OR gluten OR probiotic OR probiotics)'),
+     [FOLLICLE + ' OR alopecia OR "hair loss"', 'diet OR dietary OR microbiome OR microbiota '
+      'OR "vitamin D" OR zinc OR gluten OR probiotic OR probiotics']),
 ]
+
+
+def lane_query(lane):
+    """The free-text part of a lane: each group must hit the title or abstract."""
+    return " AND ".join("TITLE_ABS:(%s)" % g for g in lane[3])
+
+
 REPORTER_TEXT = '"alopecia areata"'
 REPORTER_SOURCE = "NIH RePORTER"
 
@@ -113,7 +123,7 @@ WIDE_QUERY_VOCAB = {
     "low-level", "low", "level", "laser", "ultraviolet", "phototherapy", "excimer",
     "electrical", "stimulation", "ultrasound", "microneedling", "cryotherapy", "diet",
     "dietary", "microbiome", "microbiota", "vitamin", "d", "zinc", "gluten", "probiotic",
-    "probiotics", "car-t",
+    "probiotics", "car-t", "follicles", "loss",
 }
 
 AA_RX = re.compile(r"areata|alopecia universalis|alopecia totalis|\balopecia (?:universalis|totalis)", re.I)
@@ -129,7 +139,7 @@ def log(msg):
 
 def outbound_queries():
     """EVERY free-text query this module can issue (dates are added in code)."""
-    q = {"epmc:" + lane[0]: lane[3] for lane in LANES}
+    q = {"epmc:" + lane[0]: " AND ".join(lane[3]) for lane in LANES}
     q["reporter"] = REPORTER_TEXT
     return q
 
@@ -166,7 +176,8 @@ def _request(method, url, params=None, body=None):
 
 
 def _clean(text, limit):
-    text = html.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+    # Europe PMC titles arrive escaped once or twice ("&lt;i&gt;in vivo&lt;/i&gt;").
+    text = html.unescape(re.sub(r"<[^>]+>", " ", html.unescape(text or "")))
     text = re.sub(r"\s+([.,;:)])", r"\1", re.sub(r"\s+", " ", text)).strip()
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " ..."
 
@@ -220,7 +231,7 @@ def epmc_item(r):
 def fetch_lane(lane, today, days, request=None):
     """All records for one lane in the window, following cursorMark pages."""
     request = request or _request
-    query = "(%s) AND %s" % (lane[3], window(today, days))
+    query = "%s AND %s" % (lane_query(lane), window(today, days))
     out, cursor, total = [], "*", None
     while True:
         data = request("GET", EPMC_URL, params={
@@ -453,7 +464,7 @@ def _fake_request(pages, grants=None, fail=()):
                 raise RuntimeError("ReadTimeout after 3 attempts")
             g = grants or []
             return {"meta": {"total": len(g)}, "results": g}
-        lane = next(l for l in LANES if params["query"].startswith("(" + l[3] + ")"))
+        lane = next(l for l in LANES if params["query"].startswith(lane_query(l) + " AND FIRST_IDATE"))
         if lane[0] in fail:
             raise RuntimeError("HTTPError after 3 attempts")
         seq = pages.get(lane[0], [{"hitCount": 0, "resultList": {"result": []}}])
@@ -493,7 +504,7 @@ def selftest():
     ck("privacy: the check covers every lane and the grant search",
        set(outbound_queries()) == {"epmc:" + l[0] for l in LANES} | {"reporter"})
     saved = LANES
-    LANES = LANES + [("x", "x", "x", '"alopecia areata" AND Reykjavik')]   # irrelevant place, on purpose
+    LANES = LANES + [("x", "x", "x", ['"alopecia areata"', 'Reykjavik'])]   # irrelevant place, on purpose
     try:
         planted_ok, planted_bad = check_queries_condition_level()
         ck("privacy: the check FIRES on a planted place-name", not planted_ok and planted_bad)
@@ -530,10 +541,12 @@ def selftest():
        evidence_grade({"title": "x", "source": REPORTER_SOURCE})[0] == "T")
 
     ck("item: an Admin record is dropped", epmc_item(_rec(pmid="1", types=("Admin",))) is None)
-    it = epmc_item(_rec(pmid="42", doi="10.1/X", title="A <i>study</i>.", abstract="a &amp; b"))
+    it = epmc_item(_rec(pmid="42", doi="10.1/X", title="A <i>study</i> &lt;i&gt;in vivo&lt;/i&gt;.", abstract="a &amp; b"))
     ck("item: PubMed ID is the key, matching the main collector's", it["key"] == "pmid:42")
     ck("item: markup stripped from title and abstract",
-       it["title"] == "A study" and it["abstract"] == "a & b")
+       it["title"] == "A study in vivo" and it["abstract"] == "a & b")
+    ck("query: every group is confined to title and abstract",
+       all(lane_query(l).count("TITLE_ABS:(") == len(l[3]) for l in LANES))
     ck("item: first and last author with affiliation kept for 'who'",
        len(it["who"]) == 2 and "Sample College" in it["who"][1])
     pp = epmc_item(_rec(doi="10.1101/ABC", src="PPR", title="p"))
