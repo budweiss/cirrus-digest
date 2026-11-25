@@ -550,7 +550,12 @@ def touch_case(cases, cid, row, item, now, cache, notices):
     c["days"][d] = c["days"].get(d, 0) + 1
     c["days"] = dict(sorted(c["days"].items())[-14:])
     stamp = _item_time(item, row["job"])
-    if (c["status"] in ("fixed", "verified") and c.get("fixed_at") and row["t"] > c["fixed_at"]
+    # S685: Skywarden reports an incident until the unit's next good run (case-f4,
+    # 11-25: fixed 15:23, its 15:30 summary repeated the 04:40 failure). Inside the
+    # fix's verification window a Skywarden repeat is the old failure; after it, a
+    # repeat is a regression. Faster sources (jobs_check, the job itself) still count.
+    lag = c.get("verify_after_h", VERIFY_H) * 3600 if row["source"] == "skywarden" else 0
+    if (c["status"] in ("fixed", "verified") and c.get("fixed_at") and row["t"] > c["fixed_at"] + lag
             and (stamp is None or stamp > c["fixed_at"])):
         # S621: jobs_check repeats a job's last failure until its next success, so an
         # item stamped before the fix is the old failure again, not a regression.
@@ -1317,6 +1322,15 @@ def selftest():
                 check("S685: no Skywarden summary for 36h is flagged",
                       any("no Skywarden pass summary since" in l for l in bl)
                       and any("Skywarden" in a for a in ba))
+                fx = ab[0]["id"]
+                set_status(fx, "fixed", "patched", commit="abc1234", undo="git revert abc1234", now=T + 86500)
+                sfeed["skywarden"].append(sky("Daily check\nalopecia-brief.service: still failed (old run)", T + 86500 + 3600))
+                run_pass(sread, now=T + 86500 + 3610, send=send)
+                inside = _load("cases.json", {})[fx]["status"]
+                sfeed["skywarden"].append(sky("Daily check\nalopecia-brief.service: failed again", T + 86500 + 49 * 3600))
+                run_pass(sread, now=T + 86500 + 49 * 3600 + 10, send=send)
+                check("S685: a Skywarden repeat inside the fix's window is the old failure; after it, a regression",
+                      inside == "fixed" and _load("cases.json", {})[fx]["status"] == "regressed")
                 check("S685: Skywarden's full all-clear words are not warnings",
                       sky_items("Daily check\nOK: nothing overdue; no failed units") == []
                       and sky_items("Checked: nothing overdue (CUMULUS 10 offered). CIRRUS UNREADABLE (timeout).")
