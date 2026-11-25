@@ -49,6 +49,8 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(w.target(case('⚠️ foundationrenewalcumulus (CUMULUS): 2026-11-22T04:57 FAILED — x')),
                          'foundation_renewal')
         self.assertEqual(w.target(case('⚠️ modelhealth: 2026-11-22T05:30 FAILED — x')), 'model_health')
+        # CIRRUS's foundationrenewal is foundation_renewal_cirrus.py, outside the scope
+        self.assertFalse(w.in_scope(case('⚠️ foundationrenewal: 2026-11-24T04:54 FAILED — answer workflow')))
         self.assertEqual(w.target(case('jobs_check could not read the CUMULUS ledger')), 'jobs_check')
         self.assertEqual(w.target(case('anything', job='telegram_outbox')), 'telegram_outbox')
         self.assertEqual(w.target({'id': 'case-f3', 'job': 'jobs_check', 'sample': '⚠️ x: 2026-11-01T00:00 F'}),

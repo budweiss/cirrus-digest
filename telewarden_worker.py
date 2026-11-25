@@ -220,9 +220,11 @@ def protected_reason(case):
 # Taking it as a jobs_check.py bug failed 3 tries each and sent Buddy 7 of the
 # worker's 11 "Needs you" (11-18..11-24), some of them private stock jobs sent
 # to the cloud fallback. The line now targets the job it names: a scoped module
-# by its ledger name (underscores and host suffix dropped), else out of scope.
+# by the ledger name that module itself records, else out of scope. Explicit, not
+# guessed from the name: CIRRUS's "foundationrenewal" is foundation_renewal_cirrus.py.
 REPORTED_RE = re.compile(r'^\W*([\w.-]+)(?: \([^)]*\))?: 20\d\d-\d\d-\d\dT')
-LEDGER_TARGETS = {t.replace('_', ''): t for t in TARGETS}
+LEDGER_TARGETS = {'modelhealth': 'model_health', 'foundationrenewalcumulus': 'foundation_renewal',
+                  'foundationrenewalrecovery': 'renewal_recovery'}
 
 
 def target(case):
@@ -232,8 +234,7 @@ def target(case):
     if job == 'jobs_check':
         m = REPORTED_RE.match(case.get('sample') or case.get('title') or '')
         if m:
-            name = re.sub(r'(cumulus|cirrus)$', '', m[1].lower())
-            return LEDGER_TARGETS.get(name, 'reported:' + m[1])
+            return LEDGER_TARGETS.get(m[1].lower(), 'reported:' + m[1])
     return job
 
 
