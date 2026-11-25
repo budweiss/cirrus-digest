@@ -34,12 +34,15 @@ class GateTests(unittest.TestCase):
             return "sent"
         self.p = patch.object(tools, "send_telegram", side_effect=fake_send)
         self.p.start()
-        tools.INCIDENT_ACTIONS = []
+        # Module globals the run loop sets; another suite's main_loop test can
+        # leave a Mock in ALERT_CONTEXT, so set both here and restore them.
+        self.globals = (tools.INCIDENT_ACTIONS, tools.ALERT_CONTEXT)
+        tools.INCIDENT_ACTIONS, tools.ALERT_CONTEXT = [], ""
 
     def tearDown(self):
         self.p.stop()
         ledger.STATE_DIR, ledger.LEDGER_JSONL, ledger.LEDGER_MD = self.saved
-        tools.INCIDENT_ACTIONS = []
+        tools.INCIDENT_ACTIONS, tools.ALERT_CONTEXT = self.globals
         self.td.cleanup()
 
     def rows(self):
