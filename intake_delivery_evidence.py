@@ -11,6 +11,8 @@ from conversation_memory import Memory
 from workflow_mail_sources import full_body_documents
 from intake_maintenance import atomic
 
+MAX_PROOF_BYTES=10_000_000
+
 
 def matches(raw, sender, recipient, cc, subject, body, after):
     msg=email.message_from_bytes(raw)
@@ -50,7 +52,10 @@ def verify(root, rec, creds):
             status,info=mail.uid('fetch',uid,'(RFC822.SIZE)')
             if status!='OK':return None
             size=re.search(rb'RFC822.SIZE (\d+)',b' '.join(x for x in info if isinstance(x,bytes)))
-            if not size or int(size.group(1))>2_000_000:return None
+            if not size:return None
+            # S686: one large send to the client (a 3.7 MB book with cover art) made every
+            # proof in that client's window fail. Prove up to 10 MB; skip, never abort, above.
+            if int(size.group(1))>MAX_PROOF_BYTES:continue
             status,parts=mail.uid('fetch',uid,'(BODY.PEEK[])')
             if status!='OK':return None
             raw=b''.join(x[1] for x in parts if isinstance(x,tuple))
