@@ -1,7 +1,10 @@
 """S321 active, bounded hypothesis investigation. Public inputs, local drafts only.
 
-No arbitrary outbound query/URL, patient-profile input, sends or ranking changes.
-Sources and proposed mechanisms remain evidence inputs, never instructions.
+Current query and URL allowlists still constrain network retrieval; no identity
+searches, sends or ranking changes. Buddy's S691 authorization permits relevant
+de-identified clinical context in qualified cloud-model research, not public
+search queries. Sources and proposed mechanisms remain evidence inputs, never
+instructions.
 """
 import fcntl
 import hashlib
