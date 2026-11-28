@@ -256,9 +256,8 @@ def _openai_compatible(url, key, model, system, user, max_tokens,
     measured 17-442 s at 12 tok/s, so 120 s would escalate most of them to a
     paid call. Every other provider keeps the module default.
 
-    `extra` (S139) is merged into the request body — also vLLM-only today, for
-    `chat_template_kwargs`. Every other provider passes nothing and its body is
-    byte-for-byte what it was.
+    `extra` is merged into the request body for explicitly opted-in vLLM
+    reasoning and local structured-output requests. Other calls pass nothing.
     """
     _LAST.model = model
     body = {"model": model, "max_tokens": max_tokens,
@@ -660,8 +659,15 @@ def _ollama(creds, system, user, max_tokens):
     if not model:
         raise ProviderError("no ollama_model set in credentials.json")
     # Same Chat Completions shape as OpenAI/Grok/DeepSeek; the key is ignored.
+    response_format = creds.get('ollama_response_format')
+    extra = None
+    if response_format is not None:
+        if not isinstance(response_format, dict) or response_format.get('type') != 'json_schema':
+            raise ProviderError('invalid ollama response format')
+        extra = {'response_format': response_format}
     return _openai_compatible(url.rstrip("/") + "/v1/chat/completions",
-                              "local", model, system, user, max_tokens)
+                              "local", model, system, user, max_tokens,
+                              extra=extra)
 
 
 VLLM_DEFAULT_TIMEOUT = 900
