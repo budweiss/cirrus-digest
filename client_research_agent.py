@@ -314,6 +314,8 @@ def gate(result):
         problems.append('commitment')
     if isinstance(reply, str) and DELIVERY_CLAIM.search(reply):
         problems.append('delivery_claim')
+    if isinstance(reply, str) and not invented and FUTURE_WORK.search(reply):
+        problems.append('future_work')
     if isinstance(reply, str) and re.search(r'\bthe client\b', reply, re.I):
         problems.append('voice')          # 11-24 rehearsal: "The client asked for one email per scene."
     return problems
@@ -328,12 +330,25 @@ DELIVERY_CLAIM = re.compile(
     r"|\bone (?:reply|email|answer) per (?:question|request)\b"
     r"|\bonly (?:takes|accepts|sends|allows) (?:a |one )?plain[- ]text\b", re.I)
 
+# S689, Bill 11-27: the Kimi fallback's verified reply ended "Send us the Word version and we will
+# return the consolidated book with new descriptive chapter titles". Nothing on the box could keep
+# that promise: Bill sent the file, and his request sat 13 hours with no worker. The rules already
+# forbid promising future work and the check let it pass, so code backs them. A purely invented
+# reply (a story) is exempt, because its characters may say "we'll send a crew". Only "we":
+# the agent writes as "we", and fiction says "I'll send you a photo" (Bill's chapter 13).
+FUTURE_WORK = re.compile(
+    r"\bwe(?:['’]ll| will| shall)\s+(?:then\s+|also\s+|gladly\s+|happily\s+|promptly\s+)?"
+    r"(?:return|send|deliver|e-?mail|forward|follow up|get back to you|prepare|produce|revise|redo|"
+    r"have (?:it|that|them|this|the [a-z ]{1,30}) (?:ready|done|back))\b", re.I)
+
 
 REASONS = {'sources': 'the draft had no usable source list', 'reply_length': 'the draft was empty or far too long',
            'commitment': 'the draft made a commitment on our behalf', 'agent_error': 'the research run failed',
            'delivery_claim': ('the draft told the client what we cannot deliver (files, more emails); '
                               'say only what this reply covers'),
            'voice': 'the draft called the reader "the client"; the email goes to them, so say "you"',
+           'future_work': ('the draft promised work later ("we will send/return..."); give only what this '
+                           'reply contains and say plainly what it does not cover'),
            'check_error': 'the source-check run failed', 'agent_output_not_json': 'the research output could not be read',
            'check_output_not_json': 'the source-check output could not be read', 'stuck': 'no supported answer found',
            'question_unreadable': 'the question text could not be read after removing the signature'}
@@ -612,8 +627,10 @@ def fallback(question, subject, context, cfg, key, creds, client, *, run=run_cla
         if draft.get('status') != 'answered' or not isinstance(draft.get('reply'), str):
             entry['outcome'] = 'stuck'
             continue
-        if COMMITMENT.search(draft['reply']) or not 80 <= len(draft['reply']) <= 14000:
-            entry['outcome'] = 'gate:' + ('commitment' if COMMITMENT.search(draft['reply']) else 'reply_length')
+        promise = draft.get('invented_only') is not True and FUTURE_WORK.search(draft['reply'])
+        if COMMITMENT.search(draft['reply']) or promise or not 80 <= len(draft['reply']) <= 14000:
+            entry['outcome'] = 'gate:' + ('commitment' if COMMITMENT.search(draft['reply'])
+                                          else 'future_work' if promise else 'reply_length')
             continue
         check = run('%sQuestion:\n%s\n\nDraft reply:\n%s\n\nDraft\'s own sources (unverified):\n%s' % (
                     earlier, question, draft['reply'], json.dumps(draft.get('sources') or [])),

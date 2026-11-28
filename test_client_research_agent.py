@@ -389,6 +389,37 @@ class Agent(unittest.TestCase):
         self.assertEqual([(t['outcome'], t.get('retried')) for t in detail['fallback']],
                          [('error:ValueError', 'unreadable_json'), ('verified', 'unreadable_json')])
 
+    def test_a_promise_of_later_work_is_turned_back(self):
+        # S689: Bill's 11-27 reply from the Kimi fallback, verified and sent. Nothing could keep it.
+        kimi = ('The print-ready PDF we produced cannot be reflowed and retitled accurately. Send us the Word '
+                'version and we will return the consolidated book with new descriptive chapter titles.')
+        for said in (kimi, "Once we have it, we'll send you the revised file.", 'We will then prepare the list.',
+                     'We’ll have the chapters done by Friday.'):
+            self.assertIn('future_work', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + said)), said)
+        story = dict(GOOD, reply='"We\'ll send a crew at dawn," Pruitt said. ' * 4, sources=[], invented_only=True)
+        for fine in ('"Longer than your software has been running. I\'ll send you a photo," Ortiz said.',
+                     'We sent the list on Tuesday.', 'We will need the parcel number to look further.'):
+            self.assertNotIn('future_work', A.gate(dict(GOOD, reply=GOOD['reply'] + ' ' + fine)), fine)
+        self.assertEqual(A.gate(story), [])                      # invented writing: characters may promise
+        # The ladder turns it back before paying for a verifier run, and the next model gets the question.
+        self.held()
+        run = fake_run([{'status': 'stuck', 'stuck_reason': 'the manuscript is not available'}], [],
+                       verifies=[{'passed': True, 'issues': [], 'sources': GOOD['sources']}])
+        def call(provider, system, user, creds, **kw):
+            return json.dumps(dict(GOOD, reply=GOOD['reply'] + (' ' + kimi if provider == 'kimi' else '')))
+        sent = []
+        row = A.candidates(self.root, CFG, A.Ledger(self.root))[0]
+        with patch('task_solver.dev_loop.ledger_append'):
+            out = A.process(self.root, dict(CFG, fallback_providers=['kimi', 'deepseek']), row, 'k',
+                            {'kimi_api_key': 'x', 'deepseek_api_key': 'y'}, run=run, call=call,
+                            send=lambda *a: sent.append(a) or True, verify=lambda *a: {'uid': '1'}, notify=lambda m: None)
+        self.assertEqual(out, 'sent_verified')
+        self.assertNotIn('we will return', sent[0][5])
+        self.assertEqual(len([c for c in run.calls if c['system'] == A.VERIFY_RULES]), 1)
+        with sqlite3.connect(self.root / A.STATE / 'ledger.sqlite3') as db:
+            detail = json.loads(db.execute('SELECT detail FROM attempts').fetchone()[0])
+        self.assertEqual([t['outcome'] for t in detail['fallback']], ['gate:future_work', 'verified'])
+
     def test_telegram_only_after_every_model_fails(self):
         self.held()
         bad = {'passed': False, 'issues': ['contact name not found on any page'], 'sources': []}
